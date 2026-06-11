@@ -320,8 +320,24 @@ namespace TDPdf
             });
 
             ShutdownMode = ShutdownMode.OnLastWindowClose;
+
+            // Immediate startup feedback. MainWindow has a heavy first render
+            // (large XAML, FindName resolution, tab strip / context menu build,
+            // grain texture, signature load, then the async document open), so a
+            // bare double-click looks unresponsive for a beat. The splash runs on
+            // its own UI thread, so it stays painted and animated even while this
+            // thread is blocked constructing the window below; it is dismissed the
+            // instant the real window has rendered. Best-effort: a splash failure
+            // must never break launch. Reached only on the genuine interactive
+            // path — the /install, /uninstall, telemetry, and single-instance
+            // forward branches above have all returned before here.
+            StartupSplash? splash = null;
+            try { splash = StartupSplash.Show(); } catch { /* splash is best-effort */ }
+
             var window = new MainWindow();
             MainWindow = window;
+            if (splash is { } shownSplash)
+                window.ContentRendered += (_, _) => shownSplash.Close();
             window.Show();
         }
 

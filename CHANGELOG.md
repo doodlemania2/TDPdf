@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.8.3.0] - 2026-06-11
+
+### Added
+
+- **Startup splash.** Launching TDPdf now shows an immediate splash (brand crest, "TDPdf", and an animated progress bar) so a double-click gives instant feedback while the main window — which has a heavy first render — is being built. The splash runs on its own dedicated UI thread, so it stays painted and animated even while the main thread is blocked constructing the window, and it disappears the moment the real window has rendered. It only appears for genuine interactive launches; the `/install`, `/uninstall`, telemetry-provisioning, and single-instance "open this PDF in the already-running window" paths never show it. A hard max-lifetime fallback guarantees a crash or hang during window construction can never strand the splash on screen.
+
+### Notes
+
+- **"Windows cannot access the specified device, path, or file. You may not have the appropriate permissions to access the item." when opening a PDF attachment from the _new_ Outlook is an Outlook-side problem, not something TDPdf can change from its own code.** The new Outlook for Windows ("Olk") stages opened attachments under `%LOCALAPPDATA%\Microsoft\Olk\Attachments\…` and then asks the shell to launch the registered handler. This error is raised by the shell _before `TDPdf.exe` ever starts_, when that staging folder is missing/corrupt or Outlook's local state is corrupt; it affects every PDF handler (Adobe, Edge, etc.), not just TDPdf. It is distinct from the two attachment issues already addressed: the `1.8.1.0` Attachment-Manager `FTA_OpenIsSafe` change (the "Open File – Security Warning" prompt) and the Defender ASR block noted under `1.8.2.0`. Remediation is environment-side: ensure `%LOCALAPPDATA%\Microsoft\Olk\Attachments` exists (create the `Attachments` folder if missing), reset Outlook's attachment cache with `olk.exe --clearLocalState`, or Repair/Reset "Outlook (new)" in **Settings → Apps**. Saving the attachment first and opening it from Explorer, the File menu, or drag-and-drop is unaffected.
+
 ## [1.8.2.0] - 2026-06-09
 
 ### Fixed
@@ -323,7 +333,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.8.2.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.8.3.0...HEAD
+[1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.2.0...v1.8.3.0
 [1.8.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.1.0...v1.8.2.0
 [1.8.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.0.0...v1.8.1.0
 [1.8.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.3.1.0...v1.8.0.0

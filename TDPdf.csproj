@@ -12,9 +12,9 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\tdpdf-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.8.2.0</Version>
-    <AssemblyVersion>1.8.2.0</AssemblyVersion>
-    <FileVersion>1.8.2.0</FileVersion>
+    <Version>1.8.3.0</Version>
+    <AssemblyVersion>1.8.3.0</AssemblyVersion>
+    <FileVersion>1.8.3.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
@@ -44,6 +44,8 @@
     <!-- Generic stock PDF icon used for the .pdf file-type association
          (DefaultIcon). The company logo stays as the application icon. -->
     <Resource Include="Resources\pdf-file.ico" />
+    <!-- Brand crest shown on the startup splash (see StartupSplash.cs). -->
+    <Resource Include="Resources\splash-logo.png" />
   </ItemGroup>
 
   <!--
