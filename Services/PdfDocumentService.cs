@@ -55,37 +55,65 @@ namespace TDPdf.Services
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 int pageCount = pageSizes.Count;
-                int maxW = 1, maxH = 1;
-                for (int i = 0; i < pageCount; i++)
-                {
-                    int pw = (int)(pageSizes[i].WidthPoint * 150 / 72.0);
-                    int ph = (int)(pageSizes[i].HeightPoint * 150 / 72.0);
-                    if (pw > maxW) maxW = pw;
-                    if (ph > maxH) maxH = ph;
-                }
 
+                // Rasterize pages across CPU cores. Docnet/PDFium (pdfium.dll) is NOT
+                // thread-safe, so the page render is serialized behind a lock; the
+                // CPU-bound PNG encode (GDI+) runs in parallel. Each page's encoded
+                // bytes are stored by index so the PDF can be assembled in order.
+                var pngPages = new byte[pageCount][];
+                var docGate = new object();
+                var po = new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount),
+                    CancellationToken = cancellationToken,
+                };
+
+                Parallel.For(0, pageCount, po, i =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Per-page pixel dimensions at 150 DPI, sized to the page box.
+                    int pw = Math.Max(1, (int)(pageSizes[i].WidthPoint * 150 / 72.0));
+                    int ph = Math.Max(1, (int)(pageSizes[i].HeightPoint * 150 / 72.0));
+                    // PageDimensions requires dimOne <= dimTwo (short-edge, long-edge).
+                    int dimMin = Math.Min(pw, ph);
+                    int dimMax = Math.Max(pw, ph);
+
+                    byte[] bgra; int rw, rh;
+                    lock (docGate)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        using var pageDocReader = DocLib.Instance.GetDocReader(sourcePath, new PageDimensions(dimMin, dimMax));
+                        using var pageReader = pageDocReader.GetPageReader(i);
+                        bgra = pageReader.GetImage();
+                        rw = pageReader.GetPageWidth();
+                        rh = pageReader.GetPageHeight();
+                    }
+
+                    if (bgra == null || bgra.Length == 0 || rw <= 0 || rh <= 0) return;
+
+                    // Encode BGRA to PNG (GDI+) outside the lock so it parallelizes.
+                    pngPages[i] = EncodeBgraToPng(bgra, rw, rh);
+                });
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Assemble the output PDF in page order (PdfSharpCore is single-threaded).
                 using (var outDoc = new PdfDocument())
-                using (var docReader = DocLib.Instance.GetDocReader(sourcePath, new PageDimensions(maxW, maxH)))
                 {
                     for (int i = 0; i < pageCount; i++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        using (var pageReader = docReader.GetPageReader(i))
-                        {
-                            var bgra = pageReader.GetImage();
-                            int rw = pageReader.GetPageWidth();
-                            int rh = pageReader.GetPageHeight();
-                            if (bgra == null || bgra.Length == 0 || rw <= 0 || rh <= 0) continue;
+                        var pngBytes = pngPages[i];
+                        if (pngBytes == null) continue;
 
-                            var pngBytes = EncodeBgraToPng(bgra, rw, rh);
-                            var newPage = outDoc.AddPage();
-                            newPage.Width = pageSizes[i].WidthPoint;
-                            newPage.Height = pageSizes[i].HeightPoint;
-                            using (var xi = XImage.FromStream(() => new MemoryStream(pngBytes)))
-                            using (var gfx = XGraphics.FromPdfPage(newPage))
-                            {
-                                gfx.DrawImage(xi, 0, 0, newPage.Width.Point, newPage.Height.Point);
-                            }
+                        var newPage = outDoc.AddPage();
+                        newPage.Width = pageSizes[i].WidthPoint;
+                        newPage.Height = pageSizes[i].HeightPoint;
+                        using (var xi = XImage.FromStream(() => new MemoryStream(pngBytes)))
+                        using (var gfx = XGraphics.FromPdfPage(newPage))
+                        {
+                            gfx.DrawImage(xi, 0, 0, newPage.Width.Point, newPage.Height.Point);
                         }
                     }
 
@@ -359,6 +387,102 @@ namespace TDPdf.Services
         internal static bool IsOwnerPasswordException(Exception ex) =>
             ex.Message.IndexOf("owner", StringComparison.OrdinalIgnoreCase) >= 0 &&
             ex.Message.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        /// <summary>
+        /// Heuristic for the broken cross-reference / "Unexpected token 'xref'" errors that
+        /// PdfSharpCore can throw when it re-saves or re-opens an encrypted (owner-restricted
+        /// RC4) PDF after modification — e.g. rotating pages. The save/reload path uses this to
+        /// decide when to fall back to a PDFium-based lossless repair.
+        /// </summary>
+        internal static bool IsXRefException(Exception ex) =>
+            ex.Message.IndexOf("xref", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            ex.Message.IndexOf("cross-reference", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            ex.Message.IndexOf("trailer", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            ex.Message.IndexOf("startxref", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            ex.Message.IndexOf("Unexpected token", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            ex.Message.IndexOf("Invalid PDF file", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        // ── PDFium P/Invoke ──────────────────────────────────────────────────────────
+        // pdfium.dll ships with Docnet. We use it here to losslessly re-serialize a PDF
+        // (stripping encryption / page rotations) when PdfSharpCore produces a broken xref
+        // after modifying an encrypted document. PDFium is already initialised by Docnet,
+        // which we force via DocLib.Instance before any direct P/Invoke.
+
+        [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr FPDF_LoadDocument(
+            [MarshalAs(UnmanagedType.LPStr)] string filePath,
+            [MarshalAs(UnmanagedType.LPStr)] string? password);
+
+        [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void FPDF_CloseDocument(IntPtr document);
+
+        [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDF_SaveWithVersion(
+            IntPtr document, ref FPDF_FILEWRITE fileWrite, uint flags, int fileVersion);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FPDF_FILEWRITE
+        {
+            public int version;       // must be 1
+            public IntPtr WriteBlock; // cdecl: int WriteBlock(FPDF_FILEWRITE*, const void*, unsigned long)
+        }
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int PdfWriteBlockDelegate(IntPtr pThis, IntPtr pData, uint size);
+
+        private const uint FPDF_REMOVE_SECURITY = 3;
+
+        /// <summary>
+        /// Losslessly re-serializes <paramref name="sourcePath"/> through PDFium to
+        /// <paramref name="destPath"/>, rebuilding a valid cross-reference table and stripping
+        /// encryption. Page rotations (/Rotate), text, and other content are preserved — this is a
+        /// pure repair, NOT a flatten. Called from the rotate→save→reopen xref-error fallback when
+        /// PdfSharpCore emits a file whose xref PdfSharpCore itself then refuses to re-open.
+        /// PDFium is guaranteed initialised by then because the page preview already rendered via
+        /// Docnet. Returns true on success.
+        /// </summary>
+        internal static bool TryPdfiumRepair(string sourcePath, string destPath)
+        {
+            try
+            {
+                try { _ = DocLib.Instance; } catch { /* force PDFium init */ }
+
+                var doc = FPDF_LoadDocument(sourcePath, null);
+                if (doc == IntPtr.Zero) return false;
+                try
+                {
+                    return PdfiumSave(doc, destPath);
+                }
+                finally { FPDF_CloseDocument(doc); }
+            }
+            catch { return false; }
+        }
+
+        private static bool PdfiumSave(IntPtr doc, string destPath)
+        {
+            using var ms = new MemoryStream();
+            PdfWriteBlockDelegate cb = (_, pData, size) =>
+            {
+                var buf = new byte[size];
+                Marshal.Copy(pData, buf, 0, (int)size);
+                ms.Write(buf, 0, (int)size);
+                return 1;
+            };
+            var gch = GCHandle.Alloc(cb);
+            try
+            {
+                var fw = new FPDF_FILEWRITE
+                {
+                    version = 1,
+                    WriteBlock = Marshal.GetFunctionPointerForDelegate(cb),
+                };
+                if (!FPDF_SaveWithVersion(doc, ref fw, FPDF_REMOVE_SECURITY, 0))
+                    return false;
+            }
+            finally { gch.Free(); }
+            File.WriteAllBytes(destPath, ms.ToArray());
+            return true;
+        }
     }
 
     internal sealed class PdfOpenResult

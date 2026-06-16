@@ -42,5 +42,16 @@ namespace TDPdf.Properties
             get => (bool)this[nameof(SingleInstanceTabs)];
             set => this[nameof(SingleInstanceTabs)] = value;
         }
+
+        // Persisted page view mode (app-wide). One of the ViewMode enum names:
+        // "Single", "Continuous", "TwoPage", "Grid". Defaults to Grid, which is
+        // the layout the app opened in before view modes were introduced.
+        [UserScopedSetting]
+        [DefaultSettingValue("Grid")]
+        public string ViewMode
+        {
+            get => (string)this[nameof(ViewMode)];
+            set => this[nameof(ViewMode)] = value;
+        }
     }
 }

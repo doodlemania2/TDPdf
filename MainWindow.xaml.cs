@@ -67,6 +67,13 @@ namespace TDPdf
         private Dictionary<int, List<PageAnnotation>> _annotations => _ctx.Annotations;
         private Dictionary<int, (int w, int h)> _renderDims => _ctx.RenderDims;
         private Dictionary<(int pageIndex, int dpiX), RenderedPage> _renderCache => _ctx.RenderCache;
+
+        // Interactive form-field state — forwarded from the active DocumentContext so it
+        // survives tab switches (see the PDF Form Field Overlays region).
+        private Dictionary<int, string>    _formTextValues  => _ctx.FormTextValues;
+        private Dictionary<int, bool>      _formCheckValues => _ctx.FormCheckValues;
+        private Dictionary<string, string> _formRadioValues => _ctx.FormRadioValues;
+        private const string FormOverlayTag = "FormFieldOverlay";
         private double _currentDpiScale = 1.0;
 
         // Snapshot-based undo/redo.
@@ -222,7 +229,26 @@ namespace TDPdf
         private Button _saveAsBtnRef = null!;
         private Button _closeFileBtnRef = null!;
         private System.Windows.Controls.Primitives.ToggleButton _gridViewToggle = null!;
-        private bool _gridViewEnabled = true;
+
+        // ============================================================
+        // View mode (app-wide). Single and Grid behave exactly as the original
+        // single-page / grid layouts did; Continuous and TwoPage are additive.
+        // ============================================================
+        private enum ViewMode { Single, Continuous, TwoPage, Grid }
+        private ViewMode _viewMode = ViewMode.Grid;
+
+        // Continuous-view state.
+        private StackPanel _continuousPanel = null!;
+        private CancellationTokenSource? _continuousRenderCts;
+        private readonly List<double> _continuousTops = [];
+        private int _continuousScrollTarget = -1; // re-scroll here once true heights are known
+        private double _continuousPageW;
+        private bool _suppressContinuousScrollSync;
+
+        // Back-compat shim: the bulk of the grid layout code was written against a
+        // boolean. Grid mode is now one of the ViewMode values; keep this read-only
+        // alias so those code paths stay byte-for-byte identical for Single/Grid.
+        private bool _gridViewEnabled => _viewMode == ViewMode.Grid;
         private ComboBox _zoomBox = null!;
         private StackPanel _portableBadge = null!;
         private TextBox _pageJumpBox = null!;
@@ -276,6 +302,12 @@ namespace TDPdf
             _saveAsBtnRef = (Button)FindName("SaveAsBtn")!;
             _closeFileBtnRef = (Button)FindName("CloseFileBtn")!;
             _gridViewToggle = (System.Windows.Controls.Primitives.ToggleButton)FindName("GridViewToggle")!;
+            _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
+            // Restore the persisted view mode (defaults to Grid, matching the original layout).
+            if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
+                _viewMode = savedVm;
+            _gridViewToggle.IsChecked = _viewMode == ViewMode.Grid;
+            PagePreviewPanel.ScrollChanged += PagePreviewPanel_ScrollChanged;
             _zoomBox = (ComboBox)FindName("ZoomBox")!;
             _portableBadge = (StackPanel)FindName("PortableBadge")!;
             _pageJumpBox = (TextBox)FindName("PageJumpBox")!;
@@ -578,6 +610,13 @@ namespace TDPdf
 
             public readonly Dictionary<int, List<PageAnnotation>> Annotations = new();
             public readonly Dictionary<int, (int w, int h)> RenderDims = new();
+
+            // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
+            // by widget object number, checkboxes by widget object number, radios by field
+            // name (shared across the widgets in a group). Persisted into the PDF on save.
+            public readonly Dictionary<int, string>    FormTextValues  = new();
+            public readonly Dictionary<int, bool>      FormCheckValues = new();
+            public readonly Dictionary<string, string> FormRadioValues = new();
             public readonly Dictionary<(int pageIndex, int dpiX), RenderedPage> RenderCache = new();
             public readonly LinkedList<UndoEntry> UndoStack = new();
             public readonly LinkedList<UndoEntry> RedoStack = new();
@@ -786,6 +825,39 @@ namespace TDPdf
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Page view",
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushResource("TextPrimary"),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            foreach (var (vm, labelText) in new[]
+            {
+                (ViewMode.Single,     "Single page"),
+                (ViewMode.Continuous, "Continuous scroll"),
+                (ViewMode.TwoPage,    "Two pages"),
+                (ViewMode.Grid,       "Grid"),
+            })
+            {
+                var vmRadio = new RadioButton
+                {
+                    Content = labelText,
+                    GroupName = "ViewMode",
+                    Tag = vm,
+                    IsChecked = vm == _viewMode,
+                    Foreground = BrushResource("TextPrimary"),
+                    Margin = new Thickness(0, 0, 0, 6)
+                };
+                vmRadio.Checked += (_, _) =>
+                {
+                    if (vmRadio.Tag is ViewMode m) SetViewMode(m);
+                };
+                panel.Children.Add(vmRadio);
+            }
+
+            panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
+
             var nativeFrame = new CheckBox
             {
                 Content = "Use native window frame (requires restart)",
@@ -954,6 +1026,11 @@ namespace TDPdf
                 int restoreIdx = PageList.SelectedIndex;
                 SaveTempAndReload();
                 PageList.SelectedIndex = Math.Min(restoreIdx, PageList.Items.Count - 1);
+                // After a rotation the page aspect ratio changes; always fit-to-page so the
+                // full rotated page is visible regardless of the previous zoom level. Re-fit
+                // again at Loaded priority once the new page bitmap has laid out.
+                FitToPage();
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)FitToPage);
                 SetStatus($"Rotated {indices.Count} page(s)");
             }
             catch (Exception ex)
@@ -1080,6 +1157,7 @@ namespace TDPdf
                 _currentFile = result.WorkingPath;
                 SetDisplayName(System.IO.Path.GetFileName(result.DisplayPath));
                 _annotations.Clear();
+                ClearFormState();
                 _undoStack.Clear();
                 _redoStack.Clear();
                 _renderDims.Clear();
@@ -1103,11 +1181,11 @@ namespace TDPdf
                 if (_doc.PageCount > 0)
                 {
                     PageList.SelectedIndex = 0;
-                    // Auto-fit to width once the first page has rendered and layout has settled.
-                    // DispatcherPriority.Background is lower than Loaded, so this fires after
+                    // Apply the persisted view mode's layout + open-fit rule once the first page
+                    // has rendered and layout has settled. DispatcherPriority.Background fires after
                     // all pending RenderPage / RefreshPageView callbacks have completed.
                     _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
-                        (Action)FitToWidth);
+                        (Action)ApplyViewModeOnOpen);
                 }
                 var readOnlySuffix = result.OpenedReadOnly ? " (read-only - owner restrictions)" : string.Empty;
                 if (result.RecoveredFromRaster)
@@ -1304,6 +1382,7 @@ namespace TDPdf
                 {
                     RenderAdditionalPages(pageIndex);
                     RenderPageLinks(pageIndex, linkBitmapW, linkBitmapH);
+                    RenderFormFields(pageIndex, linkBitmapW, linkBitmapH);
                 });
             }
             catch (OperationCanceledException)
@@ -1368,7 +1447,10 @@ namespace TDPdf
 
             ClearSecondaryPages();
 
-            if (!_gridViewEnabled)
+            // Only Grid and Two-Page render secondary tiles into the wrap panel. Single and
+            // Continuous never do (Continuous uses its own ContinuousPanel).
+            bool twoPage = _viewMode == ViewMode.TwoPage;
+            if (!_gridViewEnabled && !twoPage)
             {
                 _pageContentPanel.Width = double.NaN;
                 return;
@@ -1390,7 +1472,8 @@ namespace TDPdf
             double primaryPageW = _annotationCanvas.Width > 0 ? _annotationCanvas.Width : 595;
             double pageSlotW = primaryPageW + 12; // page width + right-gutter margin
             double availablePreZoom = (viewportW - 24) / Zoom.ZoomLevel; // inner space in pre-zoom coords
-            int pagesPerRow = Math.Max(1, (int)(availablePreZoom / pageSlotW));
+            // Two-Page always shows exactly two columns; Grid wraps to fit the viewport.
+            int pagesPerRow = twoPage ? 2 : Math.Max(1, (int)(availablePreZoom / pageSlotW));
             double panelW = pagesPerRow * pageSlotW;
             if (panelW > 0) _pageContentPanel.Width = panelW;
 
@@ -1401,8 +1484,9 @@ namespace TDPdf
 
             // Cap how many secondary pages we render at once. Long documents otherwise
             // allocate a (potentially multi-MB) bitmap per page on first grid display.
-            const int MaxSecondaryPages = 25;
-            int lastPage = Math.Min(_doc.PageCount - 1, primaryPageIdx + MaxSecondaryPages);
+            // Two-Page renders just the single page to the right of the primary.
+            int maxSecondaryPages = twoPage ? 1 : 25;
+            int lastPage = Math.Min(_doc.PageCount - 1, primaryPageIdx + maxSecondaryPages);
             string currentFile = _currentFile;
 
             List<(int pi, int w, int h, byte[] rawBytes)> pages;
@@ -1498,7 +1582,14 @@ namespace TDPdf
         /// </summary>
         private void RefreshPageView(int pageIndex)
         {
-            if (_gridViewEnabled)
+            // Continuous manages its own rendering through SetupContinuousView; nothing to do here.
+            if (_viewMode == ViewMode.Continuous) return;
+
+            // Grid wraps to fit the viewport (no horizontal scrollbar); other modes use Auto.
+            PagePreviewPanel.HorizontalScrollBarVisibility =
+                _viewMode == ViewMode.Grid ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+
+            if (_viewMode == ViewMode.Grid || _viewMode == ViewMode.TwoPage)
             {
                 RenderAdditionalPages(pageIndex);
             }
@@ -1508,23 +1599,331 @@ namespace TDPdf
                 _pageContentPanel.Width = double.NaN;
             }
             if (_renderDims.TryGetValue(pageIndex, out var dims))
+            {
                 RenderPageLinks(pageIndex, dims.w, dims.h);
+                RenderFormFields(pageIndex, dims.w, dims.h);
+            }
         }
 
+        // The toolbar toggle is a quick switch between Grid and Single views.
         private void GridViewToggle_Click(object sender, RoutedEventArgs e)
         {
-            _gridViewEnabled = _gridViewToggle.IsChecked == true;
-            int idx = PageList.SelectedIndex;
-            if (idx < 0) return;
-            if (_gridViewEnabled)
+            SetViewMode(_gridViewToggle.IsChecked == true ? ViewMode.Grid : ViewMode.Single);
+        }
+
+        // ============================================================
+        // View mode switching
+        // ============================================================
+
+        /// <summary>
+        /// Switches the app-wide page view mode, persists it, swaps the visible layout host
+        /// (wrap panel vs. continuous strip), and applies the open-fit rule for the new mode:
+        /// Single/Two-Page → fit page, Continuous → fit width, Grid → existing column-fit.
+        /// </summary>
+        private void SetViewMode(ViewMode mode)
+        {
+            if (_viewMode == mode)
+            {
+                // Keep the toolbar toggle in sync even on a no-op (e.g. settings re-selecting
+                // the active mode) so it never drifts out of step with _viewMode.
+                _gridViewToggle.IsChecked = mode == ViewMode.Grid;
+                return;
+            }
+            _viewMode = mode;
+            _gridViewToggle.IsChecked = mode == ViewMode.Grid;
+            try
+            {
+                TDPdf.Properties.Settings.Default.ViewMode = mode.ToString();
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            catch { /* non-critical user preference */ }
+
+            bool isContinuous = mode == ViewMode.Continuous;
+            _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
+            // The primary page's parent Border (first child of PageContentGrid) must also hide
+            // so its leftover bitmap/overlay doesn't show behind the continuous strip.
+            if (PageImage.Parent is FrameworkElement pageGridChild
+                && pageGridChild.Parent is FrameworkElement primaryBorder)
+                primaryBorder.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
+            _continuousPanel.Visibility = isContinuous ? Visibility.Visible : Visibility.Collapsed;
+
+            if (!isContinuous)
+            {
+                _continuousRenderCts?.Cancel();
+                _continuousPanel.Children.Clear();
+                _continuousTops.Clear();
+            }
+
+            if (_doc is null) return;
+            int idx = Math.Max(0, PageList.SelectedIndex);
+
+            if (mode == ViewMode.Continuous)
             {
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                    () => RefreshPageView(idx));
+                    () => SetupContinuousView(idx));
+                return;
             }
-            else
+
+            // Leaving continuous (or switching between wrap-panel modes): re-render the primary
+            // page and its secondary tiles, then apply the per-mode open-fit rule.
+            _secondaryRenderCts?.Cancel();
+            ClearSecondaryPages();
+            _pageContentPanel.Width = double.NaN;
+            RenderPage(mode == ViewMode.Grid ? 0 : idx);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
             {
-                ClearSecondaryPages();
-                _pageContentPanel.Width = double.NaN;
+                if (mode == ViewMode.Single || mode == ViewMode.TwoPage) FitToPage();
+                // Grid keeps its existing column-fit default (applied via RefreshPageView).
+                RefreshPageView(mode == ViewMode.Grid ? 0 : idx);
+            });
+        }
+
+        /// <summary>
+        /// Applies the persisted view mode's layout and open-fit rule when a document is first
+        /// opened (the mode itself doesn't change, so SetViewMode's no-op guard would skip this).
+        /// </summary>
+        private void ApplyViewModeOnOpen()
+        {
+            if (_doc is null) return;
+            bool isContinuous = _viewMode == ViewMode.Continuous;
+            _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
+            if (PageImage.Parent is FrameworkElement pageGridChild
+                && pageGridChild.Parent is FrameworkElement primaryBorder)
+                primaryBorder.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
+            _continuousPanel.Visibility = isContinuous ? Visibility.Visible : Visibility.Collapsed;
+
+            if (isContinuous)
+            {
+                SetupContinuousView(Math.Max(0, PageList.SelectedIndex));
+                return;
+            }
+
+            // Single / Two-Page open fit-to-page; Grid keeps its column-fit default (fit-width
+            // is a sensible neutral starting zoom that RefreshPageView then column-snaps).
+            if (_viewMode == ViewMode.Single || _viewMode == ViewMode.TwoPage) FitToPage();
+            else FitToWidth();
+            RefreshPageView(_viewMode == ViewMode.Grid ? 0 : Math.Max(0, PageList.SelectedIndex));
+        }
+
+        // ============================================================
+        // Continuous (vertical-strip) view
+        // ============================================================
+
+        /// <summary>
+        /// Builds the continuous strip: one placeholder slot per page sized from the PDF's
+        /// natural aspect ratio, then kicks off progressive background rendering. Pages fill
+        /// in asynchronously so even very long documents never block the UI thread.
+        /// Continuous view is view + navigate only — annotation editing happens in Single,
+        /// Two-Page, or Grid view.
+        /// </summary>
+        private void SetupContinuousView(int initialPage)
+        {
+            if (_doc is null) return;
+            _continuousRenderCts?.Cancel();
+            _continuousPanel.Children.Clear();
+            _continuousTops.Clear();
+
+            // PDF natural page width in WPF DIPs (96 DIP/in, 72 pt/in). Zoom-independent so
+            // FitToWidth (= viewportW / _continuousPageW) doesn't cancel against the zoom level.
+            var refPage = _doc.Pages[0];
+            _continuousPageW = Math.Max(200.0, refPage.Width.Point * (96.0 / 72.0));
+
+            double y = 0;
+            for (int i = 0; i < _doc.PageCount; i++)
+            {
+                _continuousTops.Add(y);
+                var pdfPage = _doc.Pages[i];
+                double pw = pdfPage.Width.Point, ph = pdfPage.Height.Point;
+                // PdfSharpCore reports the un-rotated box; swap for quarter rotations so the
+                // placeholder aspect matches what Docnet will rasterize.
+                int rot = ((pdfPage.Rotate % 360) + 360) % 360;
+                if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
+                double ratio = Math.Max(0.1, ph / Math.Max(1, pw));
+                double slotH = _continuousPageW * ratio;
+
+                var pageImg = new Image { Stretch = Stretch.None, Width = _continuousPageW, Height = slotH };
+                RenderOptions.SetBitmapScalingMode(pageImg, BitmapScalingMode.HighQuality);
+
+                int capturedI = i;
+                var placeholder = new Border
+                {
+                    Width = _continuousPageW,
+                    Height = slotH,
+                    Margin = new Thickness(0, 0, 0, 12),
+                    Background = BrushResource("BgPanel"),
+                    Tag = i,
+                    Child = pageImg
+                };
+                placeholder.PreviewMouseLeftButtonDown += (_, _) => SelectContinuousPage(capturedI);
+                _continuousPanel.Children.Add(placeholder);
+                y += slotH + 12;
+            }
+
+            // Continuous opens fit-to-width per the open-fit rules.
+            FitToWidth();
+
+            _continuousScrollTarget = initialPage;
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                () => ScrollContinuousToPageSuppressed(initialPage));
+
+            _ = RenderContinuousPages();
+        }
+
+        /// <summary>Selects a page in continuous view without re-triggering a scroll loop.</summary>
+        private void SelectContinuousPage(int pageIndex)
+        {
+            if (pageIndex < 0 || PageList.SelectedIndex == pageIndex) return;
+            _suppressContinuousScrollSync = true;
+            PageList.SelectedIndex = pageIndex;
+            _suppressContinuousScrollSync = false;
+        }
+
+        /// <summary>
+        /// Progressively rasterizes every page on a background thread and streams each bitmap
+        /// into its placeholder slot as soon as it is ready. Slot heights are corrected from the
+        /// actual rendered bitmap so cropped/rotated pages fit cleanly, and scroll offsets are
+        /// recomputed so the initial scroll target lands on the right page.
+        /// </summary>
+        private async System.Threading.Tasks.Task RenderContinuousPages()
+        {
+            if (_doc is null || _currentFile is null) return;
+            _continuousRenderCts?.Cancel();
+            _continuousRenderCts = new CancellationTokenSource();
+            var cts = _continuousRenderCts;
+
+            string currentFile = _currentFile;
+            int pageCount = _doc.PageCount;
+            double targetW = _continuousPageW;
+            int renderW = Math.Max(800, Math.Min(2048, (int)(targetW * 2)));
+
+            try
+            {
+                await System.Threading.Tasks.Task.Run(() =>
+                {
+                    using var docReader = DocLib.Instance.GetDocReader(
+                        currentFile, new PageDimensions(renderW, renderW * 2));
+
+                    for (int i = 0; i < pageCount; i++)
+                    {
+                        if (cts.IsCancellationRequested) return;
+                        using var pr = docReader.GetPageReader(i);
+                        int w = pr.GetPageWidth();
+                        int h = pr.GetPageHeight();
+                        var raw = pr.GetImage();
+                        if (w <= 0 || h <= 0 || raw is null) continue;
+
+                        int fi = i, fw = w, fh = h;
+                        byte[] bytes = raw;
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
+                            if (fi >= _continuousPanel.Children.Count) return;
+                            if (_continuousPanel.Children[fi] is not Border slot) return;
+
+                            double dipW = slot.Width;
+                            double dipH = dipW * fh / fw;
+                            double dpiX = 96.0 * fw / dipW;
+                            double dpiY = 96.0 * fh / dipH;
+
+                            var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
+                            bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
+                            bmp.Freeze();
+
+                            if (slot.Child is Image pageImg)
+                            {
+                                pageImg.Source = bmp;
+                                pageImg.Width = dipW;
+                                pageImg.Height = dipH;
+                                slot.Background = Brushes.White;
+                                slot.Height = dipH;
+                            }
+
+                            // Pages render strictly top-to-bottom, so when page fi finishes every
+                            // page above it already has its final height and top. Update only this
+                            // page's top from the previous page's finalized bottom (O(1) per page,
+                            // avoiding an O(n^2) full rebuild on long documents). Pages below fi are
+                            // still placeholders; they correct their own tops as they render.
+                            if (fi < _continuousTops.Count)
+                            {
+                                if (fi == 0)
+                                {
+                                    _continuousTops[0] = 0;
+                                }
+                                else
+                                {
+                                    double prevH = ((FrameworkElement)_continuousPanel.Children[fi - 1]).Height;
+                                    if (double.IsNaN(prevH)) prevH = 0;
+                                    _continuousTops[fi] = _continuousTops[fi - 1] + prevH + 12;
+                                }
+                            }
+
+                            // Pages render in order, so once the target page is reached every page
+                            // above it has its final height; re-scroll so we land precisely on it.
+                            if (_continuousScrollTarget >= 0 && fi >= _continuousScrollTarget)
+                            {
+                                int tgt = _continuousScrollTarget;
+                                _continuousScrollTarget = -1;
+                                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                                    (Action)(() => ScrollContinuousToPageSuppressed(tgt)));
+                            }
+                        });
+                    }
+                }, cts.Token);
+            }
+            catch { /* render cancelled or doc closed */ }
+        }
+
+        private void ScrollContinuousToPage(int pageIndex)
+        {
+            if (pageIndex < 0 || pageIndex >= _continuousTops.Count) return;
+            double target = _continuousTops[pageIndex] * Zoom.ZoomLevel;
+            PagePreviewPanel.ScrollToVerticalOffset(target);
+        }
+
+        /// <summary>
+        /// Programmatically scrolls to a page while suppressing the scroll→selection feedback
+        /// loop. ScrollToVerticalOffset raises ScrollChanged on a later layout pass, so the
+        /// suppression flag is held until after that callback (cleared at Loaded priority).
+        /// </summary>
+        private void ScrollContinuousToPageSuppressed(int pageIndex)
+        {
+            _suppressContinuousScrollSync = true;
+            ScrollContinuousToPage(pageIndex);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                (Action)(() => _suppressContinuousScrollSync = false));
+        }
+
+        /// <summary>
+        /// Tracks scroll position in continuous view: updates the page-number box and the sidebar
+        /// thumbnail selection to whichever page is nearest the viewport center.
+        /// </summary>
+        private void PagePreviewPanel_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (_viewMode != ViewMode.Continuous || _continuousTops.Count == 0) return;
+            // Ignore scroll events caused by our own programmatic scrolls (sidebar selection,
+            // zoom re-anchor, setup) so they don't bounce back into a selection change.
+            if (_suppressContinuousScrollSync) return;
+
+            double viewportCenter = (PagePreviewPanel.VerticalOffset + PagePreviewPanel.ViewportHeight * 0.5)
+                                    / Math.Max(0.01, Zoom.ZoomLevel);
+            int nearest = 0;
+            double minDist = double.MaxValue;
+            for (int i = 0; i < _continuousTops.Count && i < _continuousPanel.Children.Count; i++)
+            {
+                double h = ((FrameworkElement)_continuousPanel.Children[i]).Height;
+                if (double.IsNaN(h)) h = 0;
+                double center = _continuousTops[i] + h * 0.5;
+                double dist = Math.Abs(center - viewportCenter);
+                if (dist < minDist) { minDist = dist; nearest = i; }
+            }
+
+            if (PageList.SelectedIndex != nearest)
+            {
+                _pageJumpBox.Text = (nearest + 1).ToString();
+                // Update the sidebar selection without re-scrolling the strip back.
+                _suppressContinuousScrollSync = true;
+                PageList.SelectedIndex = nearest;
+                _suppressContinuousScrollSync = false;
             }
         }
 
@@ -1532,7 +1931,18 @@ namespace TDPdf
         // PDF Link Annotation Overlays
         // ============================================================
 
-        private readonly record struct LinkInfo(double Cx, double Cy, double Cw, double Ch, object Tag, string Tip);
+        private readonly record struct LinkInfo(double Cx, double Cy, double Cw, double Ch, object Tag, string Tip, int AnnotIndex);
+
+        /// <summary>
+        /// Carries the link target (page index or URI string) plus the annotation's location in
+        /// the PDF so the overlay can be used to remove the native annotation on demand.
+        /// </summary>
+        private sealed class LinkAnnotInfo(object target, int pageIndex, int annotIndex)
+        {
+            public object Target     { get; } = target;      // int pageIndex or string URI
+            public int    PageIndex  { get; } = pageIndex;    // 0-based page in _doc
+            public int    AnnotIndex { get; } = annotIndex;   // index inside page /Annots array
+        }
 
         /// <summary>
         /// Parses all link annotations from a PDF page and converts them to canvas-space
@@ -1598,7 +2008,7 @@ namespace TDPdf
 
                     object tag = targetPage.HasValue ? (object)targetPage.Value : uri!;
                     string tip = targetPage.HasValue ? $"Go to page {targetPage.Value + 1}" : uri!;
-                    links.Add(new LinkInfo(cx, cy, cw, ch, tag, tip));
+                    links.Add(new LinkInfo(cx, cy, cw, ch, tag, tip, i));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageLinks: {ex}"); }
@@ -1617,6 +2027,7 @@ namespace TDPdf
             var links = GetPageLinks(pageIndex, bitmapW, bitmapH);
             foreach (var lnk in links)
             {
+                var info = new LinkAnnotInfo(lnk.Tag, pageIndex, lnk.AnnotIndex);
                 var overlay = new Canvas
                 {
                     Width            = lnk.Cw,
@@ -1624,11 +2035,22 @@ namespace TDPdf
                     Background       = Brushes.Transparent,
                     Cursor           = Cursors.Hand,
                     ToolTip          = lnk.Tip,
-                    Tag              = lnk.Tag,
+                    Tag              = info,
                     IsHitTestVisible = true,
                 };
                 Canvas.SetLeft(overlay, lnk.Cx);
                 Canvas.SetTop(overlay, lnk.Cy);
+
+                // Right-click context menu: copy the target or remove the native PDF annotation.
+                var cm = new ContextMenu();
+                if (lnk.Tag is string uriTag && uriTag.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+                    cm.Items.Add(MakeMenuItem("Copy Email Address", (_, _) =>
+                        Clipboard.SetText(uriTag["mailto:".Length..])));
+                else if (lnk.Tag is string httpTag)
+                    cm.Items.Add(MakeMenuItem("Copy URL", (_, _) => Clipboard.SetText(httpTag)));
+                cm.Items.Add(MakeMenuItem("Remove Link from PDF", (_, _) =>
+                    RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex)));
+                overlay.ContextMenu = cm;
 
                 _annotationCanvas.Children.Add(overlay);
                 _linkOverlays.Add(overlay);
@@ -1690,6 +2112,65 @@ namespace TDPdf
 
             // Add container last so it is topmost in z-order; non-link areas fall through.
             pageGrid.Children.Add(linkCanvas);
+        }
+
+        /// <summary>
+        /// Removes a native PDF link annotation from the page /Annots array and persists the change.
+        /// Called from the "Remove Link from PDF" context-menu item on link overlays.
+        /// </summary>
+        private void RemoveLinkAnnotation(int pageIndex, int annotIndex)
+        {
+            if (_doc is null || pageIndex >= _doc.PageCount) return;
+            try
+            {
+                var pdfPage = _doc.Pages[pageIndex];
+                var annotsArr = pdfPage.Elements.GetArray("/Annots");
+                if (annotsArr is null || annotIndex >= annotsArr.Elements.Count) return;
+                annotsArr.Elements.RemoveAt(annotIndex);
+                MarkDirty();
+                SaveTempAndReload();
+                // Refresh the current page view so the overlay disappears.
+                int sel = PageList.SelectedIndex;
+                PageList.SelectedIndex = -1;
+                PageList.SelectedIndex = sel;
+                SetStatus("Link removed.");
+            }
+            catch (Exception ex)
+            {
+                TdpDialog.Show(this, $"Remove link failed:\n{ex.Message}", "TDPdf",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// Strips visual styling (border, color, appearance stream) from all Link annotations
+        /// in the document so they render as invisible clickable areas rather than colored
+        /// rectangles that can look like strikethroughs in other PDF viewers.
+        /// </summary>
+        private static void StripLinkAnnotationBorders(PdfDocument doc)
+        {
+            foreach (var pdfPage in doc.Pages)
+            {
+                var annotsArr = pdfPage.Elements.GetArray("/Annots");
+                if (annotsArr is null) continue;
+                for (int i = 0; i < annotsArr.Elements.Count; i++)
+                {
+                    PdfItem? elem = annotsArr.Elements[i];
+                    PdfDictionary? ann = elem as PdfDictionary ?? DerefItem(elem) as PdfDictionary;
+                    if (ann is null) continue;
+                    var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
+                    if (!subtype.Contains("Link")) continue;
+                    // Remove appearance stream and color; set /Border [0 0 0] for invisible border.
+                    ann.Elements.Remove("/AP");
+                    ann.Elements.Remove("/C");
+                    ann.Elements.Remove("/BS");
+                    var borderArr = new PdfArray();
+                    borderArr.Elements.Add(new PdfInteger(0));
+                    borderArr.Elements.Add(new PdfInteger(0));
+                    borderArr.Elements.Add(new PdfInteger(0));
+                    ann.Elements["/Border"] = borderArr;
+                }
+            }
         }
 
         /// <summary>
@@ -1840,6 +2321,754 @@ namespace TDPdf
             }
 
             return null;
+        }
+
+        // ============================================================
+        // PDF Form Field Overlays (interactive AcroForm filling)
+        // ============================================================
+        // Ported from upstream KillerPDF v1.4.2 form filling, adapted to TDPdf's
+        // multi-tab DocumentContext: pending values live on the active context
+        // (_formTextValues/_formCheckValues/_formRadioValues) so they survive tab
+        // switches, and the overlay controls reuse the same PDF-point → canvas
+        // coordinate conversion as the link overlays (GetPageLinks/RenderPageLinks).
+        // Supported field types: text (/Tx), checkbox & radio (/Btn), dropdown (/Ch).
+        // On save the values are baked into the PDF field dictionaries with
+        // regenerated /AP /N appearance streams (and /NeedAppearances as a fallback)
+        // so other viewers display them. All parsing is wrapped in try/catch so a
+        // malformed AcroForm can never crash open or save.
+
+        private readonly record struct FormFieldInfo(
+            int    ObjNum,        // widget annotation object number (used as key)
+            string FieldType,     // /Tx, /Btn, /Ch
+            bool   IsCheckBox,
+            bool   IsRadio,
+            bool   IsMultiLine,   // /Tx with Multiline flag (bit 12)
+            string FieldName,
+            string CurrentValue,
+            string OnValue,       // radio/checkbox on-state value (e.g. "/Yes")
+            bool   IsReadOnly,
+            double Cx, double Cy, double Cw, double Ch,
+            List<string> Options);
+
+        /// <summary>
+        /// Scans the current page's /Annots for Widget subtypes and overlays interactive
+        /// WPF controls on the annotation canvas so the user can fill in form fields.
+        /// Removes any stale form overlays first (tagged <see cref="FormOverlayTag"/>)
+        /// without wiping non-form children, so it is safe to call repeatedly.
+        /// </summary>
+        private void RenderFormFields(int pageIndex, int canvasW, int canvasH)
+        {
+            if (_doc is null || _currentFile is null) return;
+            if (pageIndex < 0 || pageIndex >= _doc.PageCount) return;
+            if (canvasW <= 0 || canvasH <= 0) return;
+
+            // Remove stale overlays without wiping the entire canvas.
+            for (int i = _annotationCanvas.Children.Count - 1; i >= 0; i--)
+                if (_annotationCanvas.Children[i] is FrameworkElement fe && fe.Tag as string == FormOverlayTag)
+                    _annotationCanvas.Children.RemoveAt(i);
+
+            List<FormFieldInfo> fields;
+            try { fields = GetPageFormFields(pageIndex, canvasW, canvasH); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RenderFormFields: {ex}"); return; }
+            if (fields.Count == 0) return;
+
+            var greenBrush = BrushResource("AccentGreen");
+            var darkBrush  = new SolidColorBrush(Color.FromRgb(0x22, 0x22, 0x22));
+            // Fixed light field appearance: these controls overlay the (white) rendered
+            // PDF page and represent document content, so they stay light regardless of
+            // the app theme rather than using chrome brushes.
+            var fieldBg    = new SolidColorBrush(Color.FromArgb(200, 255, 253, 231));
+            var focusBrush = new SolidColorBrush(Color.FromRgb(0x22, 0xc5, 0x5e));
+
+            // Collect radio buttons per group so we can wire mutual exclusion after the loop.
+            var radioGroups = new Dictionary<string, List<(Ellipse dot, string onVal)>>();
+
+            bool anyField = false;
+            foreach (var f in fields)
+            {
+                UIElement? ctrl = null;
+
+                // -- Text field ----------------------------------------------------
+                if (!f.IsCheckBox && !f.IsRadio && f.FieldType != "/Ch")
+                {
+                    string cur = _formTextValues.TryGetValue(f.ObjNum, out var tv) ? tv : f.CurrentValue;
+                    // Use the shorter canvas dimension as the font size reference so that
+                    // rotated fields (where Cw and Ch are swapped vs. portrait) don't blow up.
+                    double fieldShort = Math.Min(f.Cw, f.Ch);
+                    double fontSize = f.IsMultiLine ? fieldShort * 0.18 : fieldShort * 0.65;
+                    fontSize = Math.Max(10, fontSize);
+                    var tb = new TextBox
+                    {
+                        Tag             = FormOverlayTag,
+                        Width           = f.Cw,
+                        Height          = f.Ch,
+                        Text            = cur,
+                        IsReadOnly      = f.IsReadOnly,
+                        AcceptsReturn   = f.IsMultiLine,
+                        TextWrapping    = f.IsMultiLine ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                        VerticalScrollBarVisibility = f.IsMultiLine ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden,
+                        Background      = fieldBg,
+                        Foreground      = Brushes.Black,
+                        CaretBrush      = Brushes.Black,
+                        BorderBrush     = greenBrush,
+                        BorderThickness = new Thickness(1),
+                        FontSize        = fontSize,
+                        Padding         = new Thickness(3, 0, 3, 0),
+                        VerticalContentAlignment = f.IsMultiLine ? VerticalAlignment.Top : VerticalAlignment.Center,
+                        ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+                    };
+                    tb.GotFocus  += (_, _) => tb.BorderBrush = focusBrush;
+                    tb.LostFocus += (_, _) => tb.BorderBrush = greenBrush;
+                    int capturedKey = f.ObjNum;
+                    tb.TextChanged += (_, _) => { _formTextValues[capturedKey] = tb.Text; MarkDirty(); };
+                    ctrl = tb;
+                }
+                // -- Dropdown / choice --------------------------------------------
+                else if (f.FieldType == "/Ch" && f.Options.Count > 0)
+                {
+                    string cur = _formTextValues.TryGetValue(f.ObjNum, out var tv) ? tv : f.CurrentValue;
+                    var combo = new ComboBox
+                    {
+                        Tag        = FormOverlayTag,
+                        Width      = f.Cw,
+                        Height     = f.Ch,
+                        IsEnabled  = !f.IsReadOnly,
+                        Foreground = Brushes.Black,
+                        FontSize   = Math.Max(10, Math.Min(f.Cw, f.Ch) * 0.65),
+                        ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+                    };
+                    foreach (var opt in f.Options) combo.Items.Add(opt);
+                    combo.SelectedItem = cur;
+                    int capturedKey = f.ObjNum;
+                    combo.SelectionChanged += (_, _) =>
+                    {
+                        if (combo.SelectedItem is string s) { _formTextValues[capturedKey] = s; MarkDirty(); }
+                    };
+                    ctrl = combo;
+                }
+                // -- Checkbox ------------------------------------------------------
+                else if (f.IsCheckBox)
+                {
+                    bool isChecked = _formCheckValues.TryGetValue(f.ObjNum, out var cv) ? cv
+                        : !string.IsNullOrEmpty(f.CurrentValue)
+                          && f.CurrentValue != "/Off" && f.CurrentValue != "Off";
+
+                    // Custom border-based checkbox — WPF's built-in CheckBox indicator
+                    // doesn't scale with Width/Height, so we draw it ourselves.
+                    double checkFs = Math.Min(f.Cw, f.Ch) * 0.72;
+                    var checkMark = new TextBlock
+                    {
+                        Text       = "✓",
+                        FontSize   = checkFs,
+                        FontWeight = FontWeights.Bold,
+                        Foreground = darkBrush,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment   = VerticalAlignment.Center,
+                        Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed,
+                    };
+                    var box = new Border
+                    {
+                        Tag             = FormOverlayTag,
+                        Width           = f.Cw,
+                        Height          = f.Ch,
+                        Background      = fieldBg,
+                        BorderBrush     = greenBrush,
+                        BorderThickness = new Thickness(1.5),
+                        CornerRadius    = new CornerRadius(2),
+                        Cursor          = f.IsReadOnly ? Cursors.Arrow : Cursors.Hand,
+                        Child           = checkMark,
+                        ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+                    };
+                    if (!f.IsReadOnly)
+                    {
+                        int capturedKey = f.ObjNum;
+                        box.MouseLeftButtonDown += (_, e) =>
+                        {
+                            bool now = !(_formCheckValues.TryGetValue(capturedKey, out var v) ? v : isChecked);
+                            _formCheckValues[capturedKey] = now;
+                            checkMark.Visibility = now ? Visibility.Visible : Visibility.Collapsed;
+                            MarkDirty();
+                            e.Handled = true;
+                        };
+                    }
+                    ctrl = box;
+                }
+                // -- Radio button --------------------------------------------------
+                else if (f.IsRadio)
+                {
+                    string groupSelected = _formRadioValues.TryGetValue(f.FieldName, out var rv) ? rv
+                        : f.CurrentValue; // CurrentValue = parent /V = currently selected on-value
+                    bool isSelected = groupSelected == f.OnValue;
+
+                    double size  = Math.Min(f.Cw, f.Ch) * 0.88;
+                    double inner = size * 0.52;
+
+                    var dot = new Ellipse
+                    {
+                        Width  = inner,
+                        Height = inner,
+                        Fill   = darkBrush,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment   = VerticalAlignment.Center,
+                        Visibility = isSelected ? Visibility.Visible : Visibility.Collapsed,
+                    };
+                    var ring = new Ellipse
+                    {
+                        Width           = size,
+                        Height          = size,
+                        Stroke          = greenBrush,
+                        StrokeThickness = 1.5,
+                        Fill            = fieldBg,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment   = VerticalAlignment.Center,
+                    };
+                    var grid = new Grid { Width = f.Cw, Height = f.Ch };
+                    grid.Children.Add(ring);
+                    grid.Children.Add(dot);
+
+                    var radioBorder = new Border
+                    {
+                        Tag        = FormOverlayTag,
+                        Width      = f.Cw,
+                        Height     = f.Ch,
+                        Background = Brushes.Transparent,
+                        Cursor     = f.IsReadOnly ? Cursors.Arrow : Cursors.Hand,
+                        Child      = grid,
+                        ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+                    };
+
+                    if (!radioGroups.TryGetValue(f.FieldName, out var groupList))
+                        radioGroups[f.FieldName] = groupList = new();
+                    groupList.Add((dot, f.OnValue));
+
+                    if (!f.IsReadOnly)
+                    {
+                        string capturedGroup = f.FieldName;
+                        string capturedOn    = f.OnValue;
+                        radioBorder.MouseLeftButtonDown += (_, e) =>
+                        {
+                            _formRadioValues[capturedGroup] = capturedOn;
+                            if (radioGroups.TryGetValue(capturedGroup, out var gl))
+                                foreach (var (d, ov) in gl)
+                                    d.Visibility = ov == capturedOn ? Visibility.Visible : Visibility.Collapsed;
+                            MarkDirty();
+                            e.Handled = true;
+                        };
+                    }
+                    ctrl = radioBorder;
+                }
+
+                if (ctrl is null) continue;
+                Canvas.SetLeft(ctrl, f.Cx);
+                Canvas.SetTop(ctrl, f.Cy);
+                _annotationCanvas.Children.Add(ctrl);
+                anyField = true;
+            }
+
+            if (anyField)
+                SetStatus($"Page {pageIndex + 1} of {_doc.PageCount} - contains fillable form fields");
+        }
+
+        /// <summary>
+        /// Parses Widget annotations from the given page into field descriptors with canvas
+        /// coordinates. Walks the parent chain for each widget to resolve inherited
+        /// /FT, /T, /V, /Ff, and /Opt, and maps the widget /Rect (PDF point space,
+        /// bottom-left origin, unrotated) to canvas space accounting for page /Rotate —
+        /// the same coordinate model as the link overlays.
+        /// </summary>
+        private List<FormFieldInfo> GetPageFormFields(int pageIndex, int canvasW, int canvasH)
+        {
+            var result = new List<FormFieldInfo>();
+            if (_doc is null || pageIndex < 0 || pageIndex >= _doc.PageCount) return result;
+
+            var page = _doc.Pages[pageIndex];
+            // Use the MediaBox directly — PdfSharpCore swaps page.Width/Height for 90/270
+            // rotated pages to return visual dimensions, but field /Rect coords are always
+            // in the unrotated MediaBox coordinate space.
+            var mediaBox = page.MediaBox;
+            double pageW = mediaBox.Width  > 0 ? mediaBox.Width  : 595.28;
+            double pageH = mediaBox.Height > 0 ? mediaBox.Height : 841.89;
+            int rotation = ((page.Rotate % 360) + 360) % 360;
+
+            try
+            {
+                var annotsArr = page.Elements.GetArray("/Annots");
+                if (annotsArr is null || annotsArr.Elements.Count == 0) return result;
+
+                for (int i = 0; i < annotsArr.Elements.Count; i++)
+                {
+                    PdfItem? elem = annotsArr.Elements[i];
+                    PdfDictionary? ann = elem as PdfDictionary ?? DerefItem(elem) as PdfDictionary;
+                    if (ann is null) continue;
+
+                    var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
+                    if (!subtype.Contains("Widget")) continue;
+
+                    var rectArr = ann.Elements.GetArray("/Rect");
+                    if (rectArr is null || rectArr.Elements.Count < 4) continue;
+                    double rx1 = rectArr.Elements.GetReal(0);
+                    double ry1 = rectArr.Elements.GetReal(1);
+                    double rx2 = rectArr.Elements.GetReal(2);
+                    double ry2 = rectArr.Elements.GetReal(3);
+                    if (rx1 > rx2) (rx1, rx2) = (rx2, rx1);
+                    if (ry1 > ry2) (ry1, ry2) = (ry2, ry1);
+
+                    // Map PDF rect (bottom-left origin, unrotated) to canvas coords. The
+                    // canvas matches the Docnet-rendered bitmap, which already applied the
+                    // page rotation, so we transform accordingly.
+                    double cx, cy, cw, ch;
+                    switch (rotation)
+                    {
+                        case 90:  // 90 CW: canvas is pageH-wide x pageW-tall
+                            cx = ry1         / pageH * canvasW;
+                            cy = rx1         / pageW * canvasH;
+                            cw = (ry2 - ry1) / pageH * canvasW;
+                            ch = (rx2 - rx1) / pageW * canvasH;
+                            break;
+                        case 180:
+                            cx = (pageW - rx2) / pageW * canvasW;
+                            cy = ry1           / pageH * canvasH;
+                            cw = (rx2 - rx1)   / pageW * canvasW;
+                            ch = (ry2 - ry1)   / pageH * canvasH;
+                            break;
+                        case 270: // 270 CW: canvas is pageH-wide x pageW-tall
+                            cx = (pageH - ry2) / pageH * canvasW;
+                            cy = (pageW - rx2) / pageW * canvasH;
+                            cw = (ry2 - ry1)   / pageH * canvasW;
+                            ch = (rx2 - rx1)   / pageW * canvasH;
+                            break;
+                        default:  // 0 — standard bottom-left PDF -> top-left canvas
+                            cx = rx1           / pageW * canvasW;
+                            cy = (pageH - ry2) / pageH * canvasH;
+                            cw = (rx2 - rx1)   / pageW * canvasW;
+                            ch = (ry2 - ry1)   / pageH * canvasH;
+                            break;
+                    }
+                    if (cw < 2 || ch < 2) continue;
+
+                    // Walk the parent chain to resolve inherited attributes.
+                    string ft = "", name = "", curVal = "";
+                    int flags = 0;
+                    var options = new List<string>();
+
+                    PdfDictionary? node = ann;
+                    while (node is not null)
+                    {
+                        if (string.IsNullOrEmpty(ft) && node.Elements["/FT"] is not null)
+                            ft = node.Elements["/FT"]?.ToString() ?? "";
+                        if (string.IsNullOrEmpty(name) && node.Elements["/T"] is PdfString ts)
+                            name = ts.Value;
+                        if (string.IsNullOrEmpty(curVal) && node.Elements["/V"] is not null)
+                        {
+                            var vElem = node.Elements["/V"];
+                            curVal = vElem is PdfString vs ? vs.Value : vElem?.ToString() ?? "";
+                        }
+                        if (flags == 0 && node.Elements["/Ff"] is PdfInteger fi)
+                            flags = fi.Value;
+                        if (options.Count == 0 && node.Elements.GetArray("/Opt") is PdfArray optArr)
+                        {
+                            for (int j = 0; j < optArr.Elements.Count; j++)
+                            {
+                                var o = optArr.Elements[j];
+                                if (o is PdfString ps2) options.Add(ps2.Value);
+                                else if (o is PdfArray pa2 && pa2.Elements.Count >= 2)
+                                    options.Add((pa2.Elements[1] as PdfString)?.Value ?? "");
+                            }
+                        }
+
+                        var parentItem = node.Elements["/Parent"];
+                        if (parentItem is null) break;
+                        node = parentItem as PdfDictionary ?? DerefItem(parentItem) as PdfDictionary;
+                    }
+
+                    if (string.IsNullOrEmpty(ft)) ft = "/Tx";
+
+                    bool isReadOnly  = (flags & 1) != 0;
+                    bool isMultiLine = ft.Contains("Tx") && (flags & 4096) != 0;
+                    bool isPushBtn   = ft.Contains("Btn") && (flags & (1 << 16)) != 0;
+                    bool isRadio     = ft.Contains("Btn") && !isPushBtn && (flags & (1 << 15)) != 0;
+                    bool isCheckBox  = ft.Contains("Btn") && !isPushBtn && !isRadio;
+
+                    // The "on" value for this widget (radio/checkbox selected state) is the
+                    // /AP /N key that is not /Off.
+                    string onValue = "/Yes";
+                    try
+                    {
+                        var apDict = ann.Elements.GetDictionary("/AP");
+                        var nDict  = apDict?.Elements.GetDictionary("/N");
+                        if (nDict is not null)
+                            foreach (var k in nDict.Elements.Keys)
+                                if (k != "/Off") { onValue = k; break; }
+                    }
+                    catch { }
+
+                    int objNum = GetObjectNumber(elem);
+                    if (objNum < 0)
+                        objNum = -(pageIndex * 10000 + i); // synthetic key for inline dicts
+
+                    result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
+                        name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options));
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Writes all pending form values back into the PDF document's AcroForm field
+        /// dictionaries. Called from <see cref="DrawAnnotationsOnDocument"/> just before
+        /// saving so values are persisted. Sets /V (and /AS for buttons) and regenerates
+        /// /AP /N appearance streams; also sets /NeedAppearances as a fallback.
+        /// </summary>
+        private void WriteFormValuesToDocument()
+        {
+            if (_doc is null) return;
+            if (_formTextValues.Count == 0 && _formCheckValues.Count == 0 && _formRadioValues.Count == 0) return;
+
+            try
+            {
+                for (int p = 0; p < _doc.PageCount; p++)
+                {
+                    var page = _doc.Pages[p];
+                    var annotsArr = page.Elements.GetArray("/Annots");
+                    if (annotsArr is null) continue;
+
+                    for (int i = 0; i < annotsArr.Elements.Count; i++)
+                    {
+                        PdfItem? elem = annotsArr.Elements[i];
+                        PdfDictionary? ann = elem as PdfDictionary ?? DerefItem(elem) as PdfDictionary;
+                        if (ann is null) continue;
+
+                        var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
+                        if (!subtype.Contains("Widget")) continue;
+
+                        int objNum = GetObjectNumber(elem);
+                        if (objNum < 0) objNum = -(p * 10000 + i);
+
+                        // Walk parent chain to find the canonical field dict (owns /FT).
+                        PdfDictionary? fieldDict = ann;
+                        PdfDictionary? node = ann;
+                        while (node is not null)
+                        {
+                            if (node.Elements["/FT"] is not null) { fieldDict = node; break; }
+                            var pi = node.Elements["/Parent"];
+                            if (pi is null) break;
+                            node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
+                        }
+
+                        // Field rect for AP stream sizing.
+                        var rectArr = ann.Elements.GetArray("/Rect");
+                        double fieldW = 100, fieldH = 20;
+                        if (rectArr?.Elements.Count >= 4)
+                        {
+                            double rx1 = rectArr.Elements.GetReal(0), ry1 = rectArr.Elements.GetReal(1);
+                            double rx2 = rectArr.Elements.GetReal(2), ry2 = rectArr.Elements.GetReal(3);
+                            fieldW = Math.Abs(rx2 - rx1);
+                            fieldH = Math.Abs(ry2 - ry1);
+                        }
+
+                        // Resolve /DA for font name/size (walk parent chain).
+                        string? daStr = null;
+                        node = ann;
+                        while (node is not null && daStr is null)
+                        {
+                            if (node.Elements["/DA"] is PdfString ds) daStr = ds.Value;
+                            var pi = node.Elements["/Parent"];
+                            if (pi is null) break;
+                            node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
+                        }
+
+                        if (_formTextValues.TryGetValue(objNum, out var textVal) && fieldDict is not null)
+                        {
+                            fieldDict.Elements["/V"] = new PdfString(textVal);
+                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH);
+                        }
+                        else if (_formCheckValues.TryGetValue(objNum, out var checkVal) && fieldDict is not null)
+                        {
+                            string onVal = WidgetOnValue(ann);
+                            fieldDict.Elements["/V"]  = new PdfName(checkVal ? onVal : "/Off");
+                            fieldDict.Elements["/AS"] = new PdfName(checkVal ? onVal : "/Off");
+                            ann.Elements["/AS"]       = new PdfName(checkVal ? onVal : "/Off");
+                            GenerateCheckBoxAppearance(ann, checkVal, onVal, fieldW, fieldH);
+                        }
+                        else if (_formRadioValues.Count > 0 && fieldDict is not null)
+                        {
+                            string ft2 = fieldDict.Elements["/FT"]?.ToString() ?? "";
+                            if (ft2.Contains("Btn"))
+                            {
+                                // Find /T on the parent field node.
+                                string fieldName2 = "";
+                                var n2 = fieldDict;
+                                while (n2 is not null && string.IsNullOrEmpty(fieldName2))
+                                {
+                                    if (n2.Elements["/T"] is PdfString ts2) fieldName2 = ts2.Value;
+                                    var pi2 = n2.Elements["/Parent"];
+                                    if (pi2 is null) break;
+                                    n2 = pi2 as PdfDictionary ?? DerefItem(pi2) as PdfDictionary;
+                                }
+                                if (_formRadioValues.TryGetValue(fieldName2, out var radioSel))
+                                {
+                                    fieldDict.Elements["/V"] = new PdfName(radioSel);
+                                    string onVal2 = WidgetOnValue(ann);
+                                    ann.Elements["/AS"] = new PdfName(onVal2 == radioSel ? onVal2 : "/Off");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Belt-and-suspenders: also set NeedAppearances in case any AP generation failed.
+                try
+                {
+                    var acroForm = _doc.Internals.Catalog.Elements.GetDictionary("/AcroForm");
+                    if (acroForm is not null)
+                        acroForm.Elements["/NeedAppearances"] = new PdfBoolean(true);
+                }
+                catch { }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"WriteFormValuesToDocument: {ex}"); }
+        }
+
+        /// <summary>Returns the on-state value (/AP /N key that is not /Off) for a button widget.</summary>
+        private static string WidgetOnValue(PdfDictionary widgetAnn)
+        {
+            try
+            {
+                var apDict = widgetAnn.Elements.GetDictionary("/AP");
+                var nDict  = apDict?.Elements.GetDictionary("/N");
+                if (nDict is not null)
+                    foreach (var k in nDict.Elements.Keys)
+                        if (k != "/Off") return k;
+            }
+            catch { }
+            return "/Yes";
+        }
+
+        /// <summary>
+        /// Generates a /AP /N form XObject appearance stream for a text field and sets it
+        /// on the widget annotation, so the typed value shows in other viewers.
+        /// </summary>
+        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH)
+        {
+            try
+            {
+                var (fontName, fontSize) = ParseDaString(da);
+                if (fontSize <= 0) fontSize = Math.Max(6, Math.Min(fieldH * 0.65, 12));
+                fontSize = Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
+
+                // PDF baseline is measured from the bottom of the field rect.
+                double textY = (fieldH - fontSize) / 2 + fontSize * 0.2;
+                if (textY < 1) textY = 1;
+
+                string escaped = EscapePdfString(text);
+                string content =
+                    $"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n" +
+                    $"BT\n{fontName} {fontSize:F2} Tf\n0 g\n2 {textY:F2} Td\n({escaped}) Tj\nET\nQ\nEMC";
+
+                var xobj = BuildFormXObject(fontName, fieldW, fieldH, content);
+                if (xobj is null) return;
+                AttachAppearance(widgetAnn, xobj);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GenerateTextFieldAppearance: {ex}"); }
+        }
+
+        /// <summary>
+        /// Generates /AP /N (checked) and /Off (unchecked) appearance streams for a
+        /// checkbox/radio widget and sets them on the annotation. Both states are always
+        /// generated; /AS selects the active one.
+        /// </summary>
+        private void GenerateCheckBoxAppearance(PdfDictionary widgetAnn, bool isChecked, string onVal, double fieldW, double fieldH)
+        {
+            _ = isChecked; // both AP states always generated; /AS selects the active one
+            try
+            {
+                double m  = Math.Min(fieldW, fieldH) * 0.1;
+                double iw = fieldW - m * 2;
+                double ih = fieldH - m * 2;
+
+                // Checked: ZapfDingbats "4" = check mark, centred in the field.
+                double fs = Math.Min(iw, ih) * 0.85;
+                double tx = (fieldW - fs * 0.6) / 2;
+                double ty = (fieldH - fs) / 2 + fs * 0.15;
+
+                string checkedContent = $"q\nBT\n/ZaDb {fs:F2} Tf\n0 g\n{tx:F2} {ty:F2} Td\n(4) Tj\nET\nQ";
+                string offContent     = "q\nQ"; // empty — just clears
+
+                var checkedXobj = BuildFormXObject("/ZaDb", fieldW, fieldH, checkedContent, isZaDb: true);
+                var offXobj     = BuildFormXObject("/ZaDb", fieldW, fieldH, offContent,     isZaDb: true);
+                if (checkedXobj is null || offXobj is null) return;
+
+                var nDict = new PdfDictionary(_doc);
+                nDict.Elements[onVal]  = checkedXobj.Reference;
+                nDict.Elements["/Off"] = offXobj.Reference;
+
+                var apDict = new PdfDictionary(_doc);
+                apDict.Elements["/N"] = nDict;
+                widgetAnn.Elements["/AP"] = apDict;
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GenerateCheckBoxAppearance: {ex}"); }
+        }
+
+        /// <summary>
+        /// Creates an indirect PdfDictionary stream object representing a Form XObject,
+        /// suitable for use as an /AP /N appearance stream.
+        /// </summary>
+        private PdfDictionary? BuildFormXObject(string fontName, double w, double h, string content, bool isZaDb = false)
+        {
+            if (_doc is null) return null;
+
+            byte[] bytes = System.Text.Encoding.GetEncoding("iso-8859-1").GetBytes(content);
+
+            var xobj = new PdfDictionary(_doc);
+            xobj.Elements["/Type"]     = new PdfName("/XObject");
+            xobj.Elements["/Subtype"]  = new PdfName("/Form");
+            xobj.Elements["/FormType"] = new PdfInteger(1);
+
+            var bbox = new PdfArray(_doc);
+            bbox.Elements.Add(new PdfReal(0));
+            bbox.Elements.Add(new PdfReal(0));
+            bbox.Elements.Add(new PdfReal(w));
+            bbox.Elements.Add(new PdfReal(h));
+            xobj.Elements["/BBox"] = bbox;
+
+            // Inline font resource — avoids adding top-level objects for every field.
+            var fontEntry = new PdfDictionary(_doc);
+            fontEntry.Elements["/Type"]     = new PdfName("/Font");
+            fontEntry.Elements["/Subtype"]  = new PdfName("/Type1");
+            fontEntry.Elements["/BaseFont"] = isZaDb ? new PdfName("/ZapfDingbats") : new PdfName("/Helvetica");
+            if (!isZaDb)
+                fontEntry.Elements["/Encoding"] = new PdfName("/WinAnsiEncoding");
+
+            var fontDict = new PdfDictionary(_doc);
+            fontDict.Elements[fontName] = fontEntry;
+
+            var res = new PdfDictionary(_doc);
+            res.Elements["/Font"] = fontDict;
+            xobj.Elements["/Resources"] = res;
+
+            if (!TryAttachStreamBytes(xobj, bytes)) return null;
+
+            _doc.Internals.AddObject(xobj);
+            return xobj;
+        }
+
+        /// <summary>Sets /AP /N on a widget annotation to the given form XObject (indirect ref).</summary>
+        private static void AttachAppearance(PdfDictionary widgetAnn, PdfDictionary xobj)
+        {
+            var apDict = new PdfDictionary();
+            apDict.Elements["/N"] = xobj.Reference;
+            widgetAnn.Elements["/AP"] = apDict;
+        }
+
+        /// <summary>
+        /// Attaches raw content bytes to a PdfDictionary as a stream. Accesses
+        /// PdfDictionary.PdfStream via reflection because its constructor is internal.
+        /// </summary>
+        private static bool TryAttachStreamBytes(PdfDictionary dict, byte[] bytes)
+        {
+            try
+            {
+                var dictType   = typeof(PdfDictionary);
+                var streamType = dictType.GetNestedType("PdfStream",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (streamType is null) return false;
+
+                System.Reflection.ConstructorInfo? ctor =
+                    streamType.GetConstructor(
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
+                        null, new[] { typeof(byte[]), typeof(PdfDictionary) }, null) ??
+                    streamType.GetConstructor(
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
+                        null, new[] { typeof(byte[]) }, null);
+                if (ctor is null) return false;
+
+                object streamObj = ctor.GetParameters().Length == 2
+                    ? ctor.Invoke(new object[] { bytes, dict })
+                    : ctor.Invoke(new object[] { bytes });
+
+                var prop = dictType.GetProperty("Stream",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (prop?.CanWrite == true)
+                {
+                    prop.SetValue(dict, streamObj);
+                    return true;
+                }
+
+                var field = dictType.GetField("_stream",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (field is not null)
+                {
+                    field.SetValue(dict, streamObj);
+                    return true;
+                }
+
+                return false;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Parses a PDF Default Appearance string ("/Helv 12 Tf 0 g") to extract the font
+        /// resource name and point size.
+        /// </summary>
+        private static (string fontName, double fontSize) ParseDaString(string? da)
+        {
+            string fontName = "/Helv";
+            double fontSize = 0;
+            if (string.IsNullOrWhiteSpace(da)) return (fontName, fontSize);
+
+            var tokens = da.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i + 2 < tokens.Length; i++)
+            {
+                if (tokens[i + 2] == "Tf" &&
+                    double.TryParse(tokens[i + 1], System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out double fs))
+                {
+                    fontName = tokens[i];
+                    fontSize = fs;
+                    break;
+                }
+            }
+            return (fontName, fontSize);
+        }
+
+        /// <summary>Escapes a string for use in a PDF literal string (parentheses syntax).</summary>
+        private static string EscapePdfString(string s)
+        {
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '(':  sb.Append("\\(");  break;
+                    case ')':  sb.Append("\\)");  break;
+                    case '\r': sb.Append("\\r");  break;
+                    case '\n': sb.Append("\\n");  break;
+                    default:
+                        sb.Append(c < 256 ? c : '?'); // keep Latin-1 range
+                        break;
+                }
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Returns true if <paramref name="element"/> is inside a form-field overlay control
+        /// (tagged <see cref="FormOverlayTag"/>). Used to let WPF handle mouse events for the
+        /// TextBox / checkbox / radio / ComboBox controls natively instead of the canvas tools.
+        /// </summary>
+        private static bool IsFormFieldElement(DependencyObject? element)
+        {
+            var current = element;
+            while (current != null)
+            {
+                if (current is FrameworkElement fe && fe.Tag as string == FormOverlayTag)
+                    return true;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return false;
         }
 
         // ============================================================
@@ -3726,6 +4955,10 @@ namespace TDPdf
         private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
             if (_doc is null) return;
+            // Don't intercept clicks on form-field overlay controls (TextBox, checkbox, etc.)
+            // — WPF must handle those natively so focus, toggling, and text entry work.
+            if (e.OriginalSource is DependencyObject formSrc && IsFormFieldElement(formSrc))
+                return;
             // If a middle-mouse pan started before WPF routed the left-button event, swallow it.
             if (_isPanning) { e.Handled = true; return; }
             // Don't intercept clicks on an active text editing box
@@ -3750,9 +4983,10 @@ namespace TDPdf
                     if (clickPos.X >= lx && clickPos.X <= lx + lo.Width &&
                         clickPos.Y >= ly && clickPos.Y <= ly + lo.Height)
                     {
-                        if (lo.Tag is int tp)
+                        var lTarget = lo.Tag is LinkAnnotInfo lai ? lai.Target : lo.Tag;
+                        if (lTarget is int tp)
                             PageList.SelectedIndex = tp;
-                        else if (lo.Tag is string u)
+                        else if (lTarget is string u)
                             try { Process.Start(new ProcessStartInfo(u) { UseShellExecute = true }); } catch { }
                         e.Handled = true;
                         return;
@@ -4196,6 +5430,9 @@ namespace TDPdf
 
         private void Canvas_MouseMove(object sender, MouseEventArgs e)
         {
+            // Don't interfere with mouse interaction inside form-field overlays.
+            if (e.OriginalSource is DependencyObject moveSrc && IsFormFieldElement(moveSrc))
+                return;
             // Pan first — uses viewer coords so deltas don't scale with the page transform.
             if (_isPanning)
             {
@@ -6156,7 +7393,9 @@ namespace TDPdf
         private void RenderAllAnnotations(int pageIndex)
         {
             _annotationCanvas.Children.Clear();
-            if (!_annotations.ContainsKey(pageIndex)) return;
+            // Clearing the canvas also drops form-field overlays — restore them so they
+            // survive every annotation re-render (edits, undo, selection, …).
+            if (!_annotations.ContainsKey(pageIndex)) { RestoreFormOverlays(pageIndex); return; }
 
             foreach (var annot in _annotations[pageIndex])
             {
@@ -6327,6 +7566,19 @@ namespace TDPdf
                         break;
                 }
             }
+
+            // The canvas was cleared above, so restore any form-field overlays.
+            RestoreFormOverlays(pageIndex);
+        }
+
+        /// <summary>
+        /// Re-adds the interactive form-field overlays for a page after the annotation
+        /// canvas has been cleared. Uses the page's last render dimensions.
+        /// </summary>
+        private void RestoreFormOverlays(int pageIndex)
+        {
+            if (_renderDims.TryGetValue(pageIndex, out var dims))
+                RenderFormFields(pageIndex, dims.w, dims.h);
         }
 
         private void RenderShapeAnnotation(ShapeAnnotation shp)
@@ -6507,6 +7759,7 @@ namespace TDPdf
                 ClearPageSnapshotsOnly(source);
                 ClearPageSnapshotsExceptLast(target);
                 _annotations.Clear();
+                ClearFormState();
                 _renderDims.Clear();
                 ClearSelection();
                 MarkDirty();
@@ -6704,6 +7957,13 @@ namespace TDPdf
             {
                 DropZone.Visibility = Visibility.Collapsed;
                 PagePreviewPanel.Visibility = Visibility.Visible;
+                // View mode is app-wide; make sure the correct layout host is visible for this tab.
+                bool isContinuous = _viewMode == ViewMode.Continuous;
+                _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
+                if (PageImage.Parent is FrameworkElement pgChild
+                    && pgChild.Parent is FrameworkElement primBorder)
+                    primBorder.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
+                _continuousPanel.Visibility = isContinuous ? Visibility.Visible : Visibility.Collapsed;
                 FileNameLabel.Text = _ctx.DisplayName;
                 if (_closeFileBtnRef != null) _closeFileBtnRef.IsEnabled = true;
                 _gridViewToggle.IsEnabled = true;
@@ -6717,9 +7977,20 @@ namespace TDPdf
                     idx = PageList.Items.Count > 0 ? 0 : -1;
                 if (idx >= 0)
                 {
+                    if (_viewMode == ViewMode.Continuous)
+                    {
+                        // View mode is app-wide but the continuous strip is per-document; rebuild
+                        // it for the newly-activated tab. Set the index without firing a stale
+                        // scroll, then SetupContinuousView scrolls to the right page.
+                        _suppressContinuousScrollSync = true;
+                        PageList.SelectedIndex = idx;
+                        _suppressContinuousScrollSync = false;
+                        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                            (Action)(() => SetupContinuousView(idx)));
+                    }
                     // Setting SelectedIndex fires PageList_SelectionChanged (→ render).
                     // If the index is unchanged, render explicitly.
-                    if (PageList.SelectedIndex == idx) RerenderCurrentPage();
+                    else if (PageList.SelectedIndex == idx) RerenderCurrentPage();
                     else PageList.SelectedIndex = idx;
                 }
             }
@@ -7420,7 +8691,7 @@ namespace TDPdf
                 SetFileOperationBusy(true, "Saving...");
                 var doc = _doc;
                 string targetFile = _currentFile;
-                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0);
+                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
                 string status;
 
                 if (hasAnnotations)
@@ -7480,7 +8751,7 @@ namespace TDPdf
             {
                 SetFileOperationBusy(true, "Saving...");
                 var doc = _doc;
-                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0);
+                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
                 string targetFile = dlg.FileName;
                 string status;
 
@@ -7543,7 +8814,7 @@ namespace TDPdf
                 var doc = _doc;
                 var pageSizes = GetPageSizes(doc);
                 string sourcePath;
-                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0);
+                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
                 if (hasAnnotations)
                 {
                     var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
@@ -7614,10 +8885,42 @@ namespace TDPdf
             Telemetry.TrackEvent("File.Print");
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             CommitActiveTextBox();
+
+            // Burn any pending annotations into a temp printable copy (mirroring the
+            // old PrintService flow), preview/print from that, then reload the clean
+            // document afterward so the on-screen editing state is preserved.
+            string? restorePath = null;
+            string? printablePath = null;
             try
             {
+                var pageSizes = new List<Size>(_doc.PageCount);
+                for (int i = 0; i < _doc.PageCount; i++)
+                    pageSizes.Add(new Size(_doc.Pages[i].Width.Point, _doc.Pages[i].Height.Point));
+
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0);
-                new PrintService().Print(this, _doc, _currentFile, hasAnnotations, DrawAnnotationsOnDocument, ReloadPrintedDocument, SetStatus);
+
+                if (hasAnnotations)
+                {
+                    string cleanPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                    _doc.Save(cleanPath);
+                    restorePath = cleanPath;
+
+                    DrawAnnotationsOnDocument();
+                    printablePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
+                    _doc.Save(printablePath);
+                }
+                else
+                {
+                    // No annotations: save a throwaway printable copy so the preview
+                    // window never reads the live file out from under us.
+                    string tempPrint = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
+                    try { _doc.Save(tempPrint); printablePath = tempPrint; }
+                    catch { printablePath = _currentFile; }
+                }
+
+                var preview = new TDPdf.Services.PrintPreviewWindow(this, printablePath, pageSizes);
+                bool? printed = preview.ShowDialog();
+                SetStatus(printed == true ? $"Sent {preview.PrintedPageCount} page(s) to printer" : "Print canceled");
             }
             catch (Exception ex)
             {
@@ -7626,6 +8929,16 @@ namespace TDPdf
                     ["ExceptionType"] = ex.GetType().FullName ?? "Unknown",
                 });
                 TdpDialog.Show(this, $"Print failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                if (restorePath is not null)
+                    ReloadPrintedDocument(restorePath);
+
+                // Clean up the temp printable copy (the clean/reload copy is now the
+                // live document, so never delete that one).
+                if (printablePath is not null && printablePath != _currentFile && printablePath != restorePath)
+                    try { File.Delete(printablePath); } catch { /* best effort */ }
             }
         }
 
@@ -7650,9 +8963,34 @@ namespace TDPdf
         // Save annotations to PDF
         // ============================================================
 
+        /// <summary>
+        /// Drops all pending form-field values for the active document. Called when the
+        /// document object is swapped/reloaded in place (structural edit, undo/redo of a
+        /// document change, or open into the current context) because the values are keyed
+        /// by widget object number, which is invalidated by a reload.
+        /// </summary>
+        private void ClearFormState()
+        {
+            _formTextValues.Clear();
+            _formCheckValues.Clear();
+            _formRadioValues.Clear();
+        }
+
+        /// <summary>True if the user has entered any interactive form-field values pending save.</summary>
+        private bool HasPendingFormValues =>
+            _formTextValues.Count > 0 || _formCheckValues.Count > 0 || _formRadioValues.Count > 0;
+
         private void DrawAnnotationsOnDocument()
         {
             if (_doc is null) return;
+
+            // Persist interactive form-field values into the AcroForm before baking
+            // annotations, so filled fields are saved alongside drawn annotations.
+            WriteFormValuesToDocument();
+
+            // Strip link annotation borders so they don't render as colored rectangles
+            // (e.g. strikethrough-like lines) in other PDF viewers.
+            StripLinkAnnotationBorders(_doc);
 
             foreach (var kvp in _annotations)
             {
@@ -7861,6 +9199,7 @@ namespace TDPdf
         {
             if (_doc is null || _currentFile is null) return;
             _annotations.Clear();
+            ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();
             ClearSelection();
@@ -7871,13 +9210,40 @@ namespace TDPdf
                 $"tdpdf_temp_{Guid.NewGuid():N}.pdf");
             doc.Save(tempPath);
             doc.Close();
-            _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
+            // PdfSharpCore can silently produce a broken cross-reference entry when re-saving an
+            // encrypted (owner-restricted RC4) PDF after a modification such as a page rotation:
+            // the save succeeds but re-opening the result in Modify mode then throws "Unexpected
+            // token 'xref'". Catch that reopen failure and pipe the saved file (which already
+            // carries the new /Rotate values) through PDFium, which rebuilds a valid xref and
+            // strips encryption while preserving the rotation, then retry the open.
+            try
+            {
+                _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
+            }
+            catch (Exception openEx) when (TDPdf.Services.PdfDocumentService.IsXRefException(openEx))
+            {
+                var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                    $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                if (!TDPdf.Services.PdfDocumentService.TryPdfiumRepair(tempPath, fixedPath))
+                    throw; // PDFium also failed — re-throw the original reopen error
+                tempPath = fixedPath;
+                _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
+            }
             _currentFile = tempPath;
             RefreshPageList();
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
             else if (PageList.Items.Count > 0)
                 PageList.SelectedIndex = 0;
+
+            // Continuous view caches one slot per page; the page set may have changed (rotate,
+            // delete, reorder, crop) so rebuild the strip from the reloaded document.
+            if (_viewMode == ViewMode.Continuous)
+            {
+                int contIdx = Math.Max(0, PageList.SelectedIndex);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                    (Action)(() => SetupContinuousView(contIdx)));
+            }
         }
 
         // ============================================================
@@ -7913,6 +9279,10 @@ namespace TDPdf
                 e.Handled = true;
                 return;
             }
+
+            // Continuous view is a single document-long scroll; never hop pages at the
+            // boundary — just let the ScrollViewer scroll naturally.
+            if (_viewMode == ViewMode.Continuous) return;
 
             // Regular scroll: let the ScrollViewer handle it first.
             // At scroll boundaries, fall through to page navigation so the user
@@ -7983,6 +9353,17 @@ namespace TDPdf
             CommitActiveTextBox();
             SaveZoomSetting();
 
+            // Continuous view is scaled entirely by the shared ScaleTransform above; it must not
+            // re-render the (hidden) primary page. Re-anchor the scroll to the current page so the
+            // view doesn't jump when zooming.
+            if (_viewMode == ViewMode.Continuous)
+            {
+                int curIdx = PageList.SelectedIndex;
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                    (Action)(() => ScrollContinuousToPageSuppressed(curIdx)));
+                return;
+            }
+
             // Recalculate how many pages fit after zoom changes.
             // Use RefreshPageView so link overlays are re-added after RenderAdditionalPages
             // calls ClearSecondaryPages (which wipes them).
@@ -8020,9 +9401,20 @@ namespace TDPdf
 
         private void FitToWidth()
         {
-            if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
             double viewW = PagePreviewPanel.ActualWidth - 40;
             if (viewW <= 0) return;
+            // Continuous view fits against the strip's natural page width (zoom-independent), not
+            // the hidden primary PageImage.
+            if (_viewMode == ViewMode.Continuous)
+            {
+                if (_continuousPageW <= 0) return;
+                _zoomFitMode = ZoomFitMode.Width;
+                _applyingFitZoom = true;
+                try { Zoom.SetZoomLevel(viewW / _continuousPageW); }
+                finally { _applyingFitZoom = false; }
+                return;
+            }
+            if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
             _zoomFitMode = ZoomFitMode.Width;
             _applyingFitZoom = true;
             try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth); }
@@ -8157,9 +9549,20 @@ namespace TDPdf
                 ClearSelection();
                 ClearTextSelection();
                 ClearCropSelection();
+                _pageJumpBox.Text = (PageList.SelectedIndex + 1).ToString();
+
+                // Continuous view: the whole document is one scroll, so a sidebar selection
+                // scrolls the strip rather than re-rendering a single page. The scroll-sync
+                // suppression flag avoids a feedback loop with PagePreviewPanel_ScrollChanged.
+                if (_viewMode == ViewMode.Continuous)
+                {
+                    if (!_suppressContinuousScrollSync)
+                        ScrollContinuousToPageSuppressed(PageList.SelectedIndex);
+                    return;
+                }
+
                 PagePreviewPanel.ScrollToTop();
                 RenderPage(PageList.SelectedIndex);
-                _pageJumpBox.Text = (PageList.SelectedIndex + 1).ToString();
                 // Re-highlight search results on this page if a search is active
                 if (_searchBar is not null && _searchBar.Visibility == Visibility.Visible
                     && _allSearchRects.Count > 0)
