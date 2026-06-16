@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.9.0.0] - 2026-06-16
+
+Fork-sync release porting the curated set of upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.4.2–v1.5.1 features and fixes that TDPdf had not yet adopted, each adapted to TDPdf's multi-tab `DocumentContext` architecture.
+
+### Added
+
+- **Interactive PDF form filling** (upstream v1.4.2). Interactive AcroForm fields — text inputs, checkboxes, radio buttons, and dropdowns — now render as live themed controls overlaid on the page using the same PDF-point→canvas coordinate conversion as link overlays. Fill them in directly; values are written back into the PDF on save (`/V`, plus `/AS` for buttons) with regenerated `/AP /N` appearance streams so the values are visible in other viewers (falling back to `/NeedAppearances` where an appearance cannot be regenerated). Per-document field state lives on `DocumentContext` so it survives tab switches, and AcroForm parsing is fully guarded so a malformed form can never crash open or save. List boxes, push buttons, and digital-signature fields are not fillable (parsed and skipped), matching upstream.
+- **Built-in print preview** (upstream v1.5.0). Printing now opens a themed TDPdf preview dialog — page-by-page preview with printer selection, orientation, copy count, and page-range parsing (for example `1-3,5`) — instead of the OS print dialog (which reported "This app doesn't support print preview"). Pending annotations are burned into a temp printable copy before previewing and the editable document is restored afterward, preserving the prior print-with-annotations behavior.
+- **Continuous scroll view mode** (upstream v1.5.0). A view mode that stacks every page in one vertical strip with progressive background rendering (large documents fill in without freezing the UI); the page-number indicator and sidebar thumbnail track the scroll position, and selecting a page or zoom scrolls the strip. Opens fit-to-width. Continuous mode is view-and-navigate only — annotation editing remains in Single, Two-Page, and Grid modes.
+- **Two-page view mode** (upstream v1.5.0). Displays the current page and the next page side-by-side; the primary (selected) page remains fully editable (annotations, links, forms), the secondary page is view/click-to-navigate. Opens fit-to-page.
+- **View-mode selector** in the Settings dialog (Single / Continuous scroll / Two pages / Grid). The selection persists across sessions; the existing toolbar toggle remains a quick Grid↔Single switch.
+- **Right-click actions on PDF links** (upstream v1.4.3). Right-clicking a link overlay now offers "Remove Link from PDF" (removes the native link annotation, not just the overlay) and, depending on the link, "Copy Email Address" (for `mailto:` links) or "Copy URL".
+
+### Changed
+
+- **Save Flattened PDF now rasterizes across CPU cores** (upstream v1.5.1, Issue #68). PNG encoding runs in parallel while the PDFium render step stays serialized (pdfium.dll is not thread-safe); pages are sized per-page at 150 DPI to their own box and assembled in order. Large documents flatten faster.
+- **Minimum zoom lowered from 25% to 5%** (upstream v1.5.1) so single-page view can zoom out further and grid/continuous views can pack more pages; 5% and 10% presets added to the zoom dropdown.
+
+### Fixed
+
+- **Link annotations no longer render their borders as colored rectangles / strikethrough-like lines in saved PDFs** (upstream v1.4.3). On save, `/AP`, `/C`, and `/BS` are stripped from every link annotation and an invisible `/Border [0 0 0]` is set.
+- **The page view now fits-to-page after a rotation** (upstream v1.4.3) so the full rotated page is visible without manual rezoom.
+- **Rotating pages in an encrypted (owner-restricted RC4) PDF no longer fails with "Unexpected token 'xref'"** (upstream v1.4.3). PdfSharpCore can silently emit a broken cross-reference entry when re-saving an encrypted file after a modification; the save→reload path now detects the failed reopen, pipes the saved file through PDFium to rebuild a valid xref (preserving the new page rotation and stripping encryption), and retries the open.
+
 ## [1.8.3.0] - 2026-06-11
 
 ### Added
@@ -337,6 +361,8 @@ _Historical entries to be backfilled._
 [1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.2.0...v1.8.3.0
 [1.8.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.1.0...v1.8.2.0
 [1.8.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.0.0...v1.8.1.0
+[1.9.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.3.0...v1.9.0.0
+[1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.0.0...v1.8.3.0
 [1.8.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.3.1.0...v1.8.0.0
 [1.3.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.3.0.0...v1.3.1.0
 [1.3.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.2.0.0...v1.3.0.0

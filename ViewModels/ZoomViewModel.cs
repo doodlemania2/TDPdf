@@ -22,13 +22,15 @@ namespace TDPdf
 
     public partial class ZoomViewModel : ObservableObject
     {
-        public const double MinZoomLevel = 0.25;
+        public const double MinZoomLevel = 0.05;
         public const double MaxZoomLevel = 4.0;
 
         public ZoomViewModel()
         {
             AvailableLevels = new ObservableCollection<ZoomLevelOption>
             {
+                new("5%", 0.05),
+                new("10%", 0.10),
                 new("25%", 0.25),
                 new("50%", 0.50),
                 new("75%", 0.75),
@@ -41,7 +43,7 @@ namespace TDPdf
                 new("Fit Page", fitPage: true),
             };
 
-            selectedLevel = AvailableLevels[3];
+            selectedLevel = AvailableLevels[5];
         }
 
         public ObservableCollection<ZoomLevelOption> AvailableLevels { get; }
