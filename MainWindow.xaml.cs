@@ -4451,6 +4451,28 @@ namespace TDPdf
             };
             stack.Children.Add(createBtn);
 
+            // Type Signature button — renders typed text in a handwriting font.
+            var typeBtn = new Button
+            {
+                Content = "Type Signature",
+                Style = (Style)FindResource("DarkButton"),
+                Background = BrushResource("AccentGreenDim"),
+                Foreground = (SolidColorBrush)FindResource("AccentGreen"),
+                BorderBrush = (SolidColorBrush)FindResource("AccentGreenDim"),
+                BorderThickness = new Thickness(1),
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 12,
+                Padding = new Thickness(12, 6, 12, 6),
+                Margin = new Thickness(4, 2, 4, 0),
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
+            typeBtn.Click += (s, e) =>
+            {
+                HideSignaturePopup();
+                OpenTypedSignatureCreator();
+            };
+            stack.Children.Add(typeBtn);
+
             // Import image button
             var importBtn = new Button
             {
@@ -4760,6 +4782,370 @@ namespace TDPdf
             outerChrome.Child = rootStack;
             win.Content = outerChrome;
             win.ShowDialog();
+        }
+
+        // "Type a signature": the user types their name, picks a handwriting font and
+        // ink color, and we rasterize it to a transparent PNG. That PNG is stored as a
+        // SavedSignature.ImageData, so it flows through the exact same persistence,
+        // placement, on-canvas render, and PDF-bake paths as an imported-image signature.
+        private void OpenTypedSignatureCreator()
+        {
+            // Curated handwriting fonts that ship with Windows; keep only those installed.
+            var preferred = new[] { "Segoe Script", "Segoe Print", "Gabriola", "Ink Free", "Lucida Handwriting", "Brush Script MT", "Monotype Corsiva" };
+            var installed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var fam in Fonts.SystemFontFamilies)
+            {
+                if (!string.IsNullOrEmpty(fam.Source)) installed.Add(fam.Source);
+                foreach (var n in fam.FamilyNames.Values) installed.Add(n);
+            }
+            var available = preferred.Where(installed.Contains).ToList();
+            if (available.Count == 0) available.Add("Segoe Script"); // best-effort; WPF substitutes if absent
+
+            string selectedFont = available[0];
+            var blackInk = new SolidColorBrush(Color.FromRgb(0x14, 0x14, 0x14));
+            var blueInk = new SolidColorBrush(Color.FromRgb(0x12, 0x2A, 0x88));
+            blackInk.Freeze(); blueInk.Freeze();
+            SolidColorBrush inkBrush = blackInk;
+
+            var win = new Window
+            {
+                Title = "Type Signature",
+                Width = 480,
+                SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStyle = WindowStyle.None,
+                AllowsTransparency = true,
+                Background = Brushes.Transparent
+            };
+
+            var outerChrome = new Border
+            {
+                Background = BrushResource("BgDark"),
+                BorderBrush = BrushResource("AccentGreenDim"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6)
+            };
+            var rootStack = new StackPanel();
+
+            // Title bar (draggable)
+            var titleBar = new Border
+            {
+                Background = BrushResource("BgPanel"),
+                Padding = new Thickness(14, 8, 8, 8),
+                CornerRadius = new CornerRadius(5, 5, 0, 0)
+            };
+            titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
+            var titleGrid = new Grid();
+            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var titleText = new TextBlock
+            {
+                Text = "Type Signature",
+                Foreground = BrushResource("AccentGreen"),
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 13,
+                FontFamily = new FontFamily("Consolas"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(titleText, 0);
+            var closeWinBtn = new Button
+            {
+                Content = "",
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 10,
+                Width = 28, Height = 28,
+                Background = Brushes.Transparent,
+                Foreground = BrushResource("TextSecondary"),
+                BorderThickness = new Thickness(0),
+                Cursor = Cursors.Hand,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            closeWinBtn.MouseEnter += (_, _2) => closeWinBtn.Foreground = BrushResource("DangerRed");
+            closeWinBtn.MouseLeave += (_, _2) => closeWinBtn.Foreground = BrushResource("TextSecondary");
+            closeWinBtn.Click += (_, _2) => win.Close();
+            Grid.SetColumn(closeWinBtn, 1);
+            titleGrid.Children.Add(titleText);
+            titleGrid.Children.Add(closeWinBtn);
+            titleBar.Child = titleGrid;
+            rootStack.Children.Add(titleBar);
+
+            var contentArea = new StackPanel();
+
+            contentArea.Children.Add(new TextBlock
+            {
+                Text = "Type your name, then choose a style:",
+                Foreground = BrushResource("TextSecondary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 12,
+                Margin = new Thickness(12, 12, 12, 4)
+            });
+
+            var nameBox = new TextBox
+            {
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 16,
+                Background = BrushResource("BgPanel"),
+                Foreground = BrushResource("TextPrimary"),
+                CaretBrush = BrushResource("TextPrimary"),
+                BorderBrush = BrushResource("BorderDim"),
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(8, 6, 8, 6),
+                Margin = new Thickness(12, 0, 12, 8)
+            };
+            contentArea.Children.Add(nameBox);
+
+            // Live preview
+            var previewBorder = new Border
+            {
+                Background = Brushes.White,
+                CornerRadius = new CornerRadius(4),
+                Height = 110,
+                Margin = new Thickness(12, 0, 12, 8)
+            };
+            var previewBox = new Viewbox { Stretch = Stretch.Uniform, Margin = new Thickness(16, 8, 16, 8) };
+            var previewText = new TextBlock
+            {
+                Text = "Your name",
+                FontFamily = new FontFamily(selectedFont),
+                FontSize = 64,
+                Foreground = BrushResource("TextSecondary")
+            };
+            previewBox.Child = previewText;
+            previewBorder.Child = previewBox;
+            contentArea.Children.Add(previewBorder);
+
+            // Style (font) picker
+            contentArea.Children.Add(new TextBlock
+            {
+                Text = "Style",
+                Foreground = BrushResource("TextSecondary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                Margin = new Thickness(12, 0, 12, 2)
+            });
+            var fontPanel = new WrapPanel { Margin = new Thickness(8, 0, 8, 8) };
+            var fontButtons = new List<(Button btn, TextBlock label, string font)>();
+            foreach (var font in available)
+            {
+                var lbl = new TextBlock
+                {
+                    Text = "Abc",
+                    FontFamily = new FontFamily(font),
+                    FontSize = 22,
+                    Foreground = Brushes.Black
+                };
+                var b = new Button
+                {
+                    Content = lbl,
+                    Style = (Style)FindResource("DarkButton"),
+                    Background = Brushes.White,
+                    BorderThickness = new Thickness(1),
+                    Padding = new Thickness(10, 2, 10, 2),
+                    Margin = new Thickness(4),
+                    Cursor = Cursors.Hand,
+                    ToolTip = font
+                };
+                fontButtons.Add((b, lbl, font));
+                fontPanel.Children.Add(b);
+            }
+            contentArea.Children.Add(fontPanel);
+
+            // Ink color picker
+            var inkRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 0, 8, 8) };
+            inkRow.Children.Add(new TextBlock
+            {
+                Text = "Ink",
+                Foreground = BrushResource("TextSecondary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(4, 0, 6, 0)
+            });
+            var inkButtons = new List<(Button btn, SolidColorBrush brush)>();
+            Button MakeInkButton(string text, SolidColorBrush brush)
+            {
+                var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                sp.Children.Add(new Border
+                {
+                    Width = 14, Height = 14,
+                    CornerRadius = new CornerRadius(7),
+                    Background = brush,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                sp.Children.Add(new TextBlock
+                {
+                    Text = text,
+                    Foreground = BrushResource("TextPrimary"),
+                    FontFamily = new FontFamily("Segoe UI"),
+                    FontSize = 12,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                var b = new Button
+                {
+                    Content = sp,
+                    Style = (Style)FindResource("DarkButton"),
+                    Background = BrushResource("BgHover"),
+                    BorderThickness = new Thickness(1),
+                    Padding = new Thickness(10, 4, 10, 4),
+                    Margin = new Thickness(4, 0, 0, 0),
+                    Cursor = Cursors.Hand
+                };
+                return b;
+            }
+            var blackBtn = MakeInkButton("Black", blackInk);
+            var blueBtn = MakeInkButton("Blue", blueInk);
+            inkButtons.Add((blackBtn, blackInk));
+            inkButtons.Add((blueBtn, blueInk));
+            inkRow.Children.Add(blackBtn);
+            inkRow.Children.Add(blueBtn);
+            contentArea.Children.Add(inkRow);
+
+            // --- shared refresh helpers (closures capture selectedFont / inkBrush) ---
+            void RefreshPreview()
+            {
+                var name = nameBox.Text ?? "";
+                bool empty = string.IsNullOrWhiteSpace(name);
+                previewText.Text = empty ? "Your name" : name;
+                previewText.FontFamily = new FontFamily(selectedFont);
+                previewText.Foreground = empty ? BrushResource("TextSecondary") : inkBrush;
+                foreach (var (b, lbl, font) in fontButtons)
+                {
+                    lbl.Text = empty ? "Abc" : name;
+                    bool sel = font == selectedFont;
+                    b.BorderBrush = sel ? BrushResource("AccentGreen") : BrushResource("BorderDim");
+                    b.BorderThickness = new Thickness(sel ? 2 : 1);
+                }
+                foreach (var (b, brush) in inkButtons)
+                {
+                    bool sel = ReferenceEquals(brush, inkBrush);
+                    b.BorderBrush = sel ? BrushResource("AccentGreen") : BrushResource("BorderDim");
+                    b.BorderThickness = new Thickness(sel ? 2 : 1);
+                }
+            }
+
+            foreach (var (b, _, font) in fontButtons)
+                b.Click += (_, _2) => { selectedFont = font; RefreshPreview(); };
+            blackBtn.Click += (_, _2) => { inkBrush = blackInk; RefreshPreview(); };
+            blueBtn.Click += (_, _2) => { inkBrush = blueInk; RefreshPreview(); };
+            nameBox.TextChanged += (_, _2) => RefreshPreview();
+            RefreshPreview();
+
+            // Buttons
+            var btnPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(12, 4, 12, 12)
+            };
+            var cancelBtn = new Button
+            {
+                Content = "Cancel",
+                Style = (Style)FindResource("DarkButton"),
+                Padding = new Thickness(16, 6, 16, 6),
+                Margin = new Thickness(0, 0, 8, 0),
+                Background = BrushResource("BgHover"),
+                Foreground = BrushResource("TextPrimary"),
+                BorderBrush = BrushResource("BorderDim"),
+                BorderThickness = new Thickness(1),
+                FontFamily = new FontFamily("Consolas")
+            };
+            cancelBtn.Click += (_, _2) => win.Close();
+            var saveBtn = new Button
+            {
+                Content = "Save Signature",
+                Style = (Style)FindResource("DarkButton"),
+                Padding = new Thickness(16, 6, 16, 6),
+                Background = BrushResource("AccentGreenDim"),
+                Foreground = BrushResource("AccentGreen"),
+                BorderBrush = BrushResource("AccentGreen"),
+                BorderThickness = new Thickness(1),
+                FontFamily = new FontFamily("Consolas"),
+                FontWeight = FontWeights.SemiBold
+            };
+
+            void DoSave()
+            {
+                var text = (nameBox.Text ?? "").Trim();
+                if (text.Length == 0)
+                {
+                    TdpDialog.Show(this, "Type your name first.", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var (base64, w, h) = RenderTypedSignaturePng(text, new FontFamily(selectedFont), inkBrush);
+                var saved = new SavedSignature
+                {
+                    Name = text.Length > 40 ? text.Substring(0, 40) : text,
+                    CanvasWidth = w,
+                    CanvasHeight = h,
+                    ImageData = base64
+                };
+                _savedSignatures.Add(saved);
+                PersistSignatures();
+
+                _pendingSignature = saved;
+                _annotationCanvas.Cursor = Cursors.Cross;
+                SetStatus("Signature saved - click on the page to place it");
+                win.Close();
+            }
+            saveBtn.Click += (_, _2) => DoSave();
+            nameBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; DoSave(); } };
+
+            btnPanel.Children.Add(cancelBtn);
+            btnPanel.Children.Add(saveBtn);
+            contentArea.Children.Add(btnPanel);
+
+            rootStack.Children.Add(contentArea);
+            outerChrome.Child = rootStack;
+            win.Content = outerChrome;
+            win.Loaded += (_, _2) => nameBox.Focus();
+            win.ShowDialog();
+        }
+
+        /// <summary>
+        /// Rasterizes typed text in the given handwriting font and ink color to a
+        /// transparent PNG, rendered at 2× for crisp placement/print. Returns the base-64
+        /// PNG plus its logical width/height (used as the signature's source dimensions
+        /// so its aspect ratio is preserved when placed and resized).
+        /// </summary>
+        private static (string base64, double width, double height) RenderTypedSignaturePng(string text, FontFamily fontFamily, Brush inkBrush)
+        {
+            const double fontSize = 96;
+            const double pad = 24;
+            const double scale = 2.0;
+
+            var typeface = new Typeface(fontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+            var ft = new FormattedText(
+                text,
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                typeface,
+                fontSize,
+                inkBrush,
+                1.0);
+
+            double w = Math.Max(ft.WidthIncludingTrailingWhitespace, 1) + pad * 2;
+            double h = Math.Max(ft.Height, 1) + pad * 2;
+
+            var dv = new DrawingVisual();
+            using (var dc = dv.RenderOpen())
+                dc.DrawText(ft, new Point(pad, pad));
+
+            var rtb = new RenderTargetBitmap(
+                (int)Math.Ceiling(w * scale),
+                (int)Math.Ceiling(h * scale),
+                96 * scale, 96 * scale,
+                PixelFormats.Pbgra32);
+            rtb.Render(dv);
+
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(rtb));
+            using var ms = new MemoryStream();
+            encoder.Save(ms);
+            return (Convert.ToBase64String(ms.ToArray()), w, h);
         }
 
         private void ImportImageSignature()
@@ -8856,6 +9242,59 @@ namespace TDPdf
                 });
                 SetFileOperationBusy(false);
                 TdpDialog.Show(this, $"Flatten failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                SetFileOperationBusy(false);
+            }
+        }
+
+        // Export tabular text from every page to a single CSV (which Excel opens
+        // directly). Read-only: it never mutates the document, so the dirty flag is
+        // untouched. Table detection is heuristic — see TableExtractor.
+        private async void ExportTablesCsv_Click(object sender, RoutedEventArgs e)
+        {
+            if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            CommitActiveTextBox();
+
+            var baseName = System.IO.Path.GetFileNameWithoutExtension(_ctx.DisplayName);
+            if (string.IsNullOrWhiteSpace(baseName)) baseName = "tables";
+            var dlg = new SaveFileDialog
+            {
+                Filter = "CSV (Comma delimited)|*.csv",
+                Title = "Export Tables to CSV",
+                FileName = baseName + ".csv"
+            };
+            if (dlg.ShowDialog() != true) return;
+
+            using var op = Telemetry.StartOperation("ExportTablesCsv");
+            SetFileOperationBusy(true, "Exporting tables...");
+            try
+            {
+                string sourcePath = _currentFile;
+                var (csv, pages) = await Task.Run(() => TableExtractor.ExtractAllPagesCsv(sourcePath));
+                if (pages == 0)
+                {
+                    SetFileOperationBusy(false);
+                    TdpDialog.Show(this, "No extractable text was found to export.\n\nScanned/image-only PDFs have no selectable text to pull into a table.",
+                        "TDPdf", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // UTF-8 with BOM so Excel renders accented characters correctly.
+                await Task.Run(() => File.WriteAllText(dlg.FileName, csv, new System.Text.UTF8Encoding(true)));
+                SetStatus($"Exported {pages} page(s) of tables to {System.IO.Path.GetFileName(dlg.FileName)}");
+            }
+            catch (Exception ex)
+            {
+                op.Fail(ex);
+                Telemetry.TrackEvent("File.ExportFailed", new Dictionary<string, string>
+                {
+                    ["Operation"]     = "ExportTablesCsv",
+                    ["ExceptionType"] = ex.GetType().FullName ?? "Unknown",
+                });
+                SetFileOperationBusy(false);
+                TdpDialog.Show(this, $"Export failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
             {

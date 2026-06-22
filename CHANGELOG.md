@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.9.1.0] - 2026-06-22
+
+### Added
+
+- **Typed signatures.** The Signature tool's popup now offers **Type Signature** alongside Create (draw) and Import Image. Type your name, pick from the handwriting fonts installed on the system (Segoe Script, Segoe Print, Gabriola, Ink Free, Lucida Handwriting, …) and an ink color (black or blue), and a live preview shows the result. On save it is rasterized to a transparent PNG and stored as a normal saved signature, so it persists in `signatures.json` and places, resizes, and bakes into the PDF through the exact same path as an imported-image signature.
+- **Export Tables to CSV** (File menu). Pulls the tabular text out of a PDF into a CSV file that Excel opens directly — the lightweight equivalent of Adobe Reader's "export as spreadsheet." Every page is written to one `.csv`, each page as its own `Page N` block; pages with no extractable text are skipped. Detection is heuristic ("stream"-style): words are grouped into rows by vertical position and into columns by clustering their left edges, reusing the same PdfPig word/bounding-box extraction already used by search and drag-select-copy. It works best on clean, left-aligned grid tables and may merge or split columns on irregular, right-aligned, or merged-cell layouts; scanned/image-only PDFs (no selectable text) produce nothing to export.
+
 ## [1.9.0.0] - 2026-06-16
 
 Fork-sync release porting the curated set of upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.4.2–v1.5.1 features and fixes that TDPdf had not yet adopted, each adapted to TDPdf's multi-tab `DocumentContext` architecture.
@@ -357,7 +364,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.8.3.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.9.1.0...HEAD
+[1.9.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.0.0...v1.9.1.0
 [1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.2.0...v1.8.3.0
 [1.8.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.1.0...v1.8.2.0
 [1.8.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.0.0...v1.8.1.0
