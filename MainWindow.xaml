@@ -774,6 +774,7 @@
                 <MenuItem Header="_Save"            InputGestureText="Ctrl+S"       Click="SaveInPlace_Click"/>
                 <MenuItem Header="Save _As…"        InputGestureText="Ctrl+Shift+S" Click="SaveAs_Click"/>
                 <MenuItem Header="Save _Flattened…"                                  Click="SaveFlattened_Click"/>
+                <MenuItem Header="_Export Tables to CSV…"                            Click="ExportTablesCsv_Click"/>
                 <Separator/>
                 <MenuItem Header="_Merge…"                                          Click="Merge_Click"/>
                 <MenuItem Header="E_xtract Pages…"                                  Click="Split_Click"/>
