@@ -245,6 +245,17 @@ namespace TDPdf
         private double _continuousPageW;
         private bool _suppressContinuousScrollSync;
 
+        // Continuous-view zoom/high-DPI re-sharpen state (#85). The base pass renders every page at a
+        // fixed fit-width budget, so at deep zoom or on hi-DPI displays the upscaled bitmap goes soft.
+        // ResharpenContinuousVisible re-renders ONLY the pages near the viewport at a higher budget and
+        // swaps them into their slots; pages that scroll away are restored to their captured base bitmap
+        // so hi-res bitmaps never accumulate beyond the visible window. Debounced + cancellable.
+        private CancellationTokenSource? _continuousSharpenCts;
+        private System.Windows.Threading.DispatcherTimer? _continuousSharpenTimer;
+        private readonly HashSet<int> _continuousSharpPages = new();
+        private readonly Dictionary<int, BitmapSource> _continuousBaseBitmaps = new();
+        private int _continuousSharpW;   // hi-res pixel budget the sharpened slots were rendered at
+
         // Back-compat shim: the bulk of the grid layout code was written against a
         // boolean. Grid mode is now one of the ViewMode values; keep this read-only
         // alias so those code paths stay byte-for-byte identical for Single/Grid.
@@ -483,7 +494,9 @@ namespace TDPdf
             catch { return false; }
 
             if (PagePreviewPanel.ScrollableWidth <= 0) return false;
-            PagePreviewPanel.ScrollToHorizontalOffset(PagePreviewPanel.HorizontalOffset + delta / 3.0);
+            // Same boosted speed as the vertical wheel (WheelScrollFactor); delta is ±120 per notch.
+            PagePreviewPanel.ScrollToHorizontalOffset(
+                PagePreviewPanel.HorizontalOffset + delta * (48.0 / 120.0) * WheelScrollFactor);
             return true;
         }
 
@@ -1233,6 +1246,7 @@ namespace TDPdf
             var cancelBtn = new Button { Content = "Cancel", Width = 76 };
             okBtn.Click += (s, ev) => { result = pwBox.Password; win.DialogResult = true; };
             cancelBtn.Click += (s, ev) => { win.DialogResult = false; };
+            cancelBtn.IsCancel = true;   // Esc cancels the prompt (Enter is handled on pwBox below)
             pwBox.KeyDown += (s, ev) => { if (ev.Key == Key.Enter) { result = pwBox.Password; win.DialogResult = true; } };
             btnRow.Children.Add(okBtn);
             btnRow.Children.Add(cancelBtn);
@@ -1650,6 +1664,12 @@ namespace TDPdf
             if (!isContinuous)
             {
                 _continuousRenderCts?.Cancel();
+                // #85: stop any in-flight re-sharpen and drop its slot/bitmap bookkeeping.
+                _continuousSharpenTimer?.Stop();
+                _continuousSharpenCts?.Cancel();
+                _continuousSharpPages.Clear();
+                _continuousBaseBitmaps.Clear();
+                _continuousSharpW = 0;
                 _continuousPanel.Children.Clear();
                 _continuousTops.Clear();
             }
@@ -1791,6 +1811,13 @@ namespace TDPdf
             _continuousRenderCts = new CancellationTokenSource();
             var cts = _continuousRenderCts;
 
+            // A full base pass repaints every slot, so any hi-res re-sharpen state is now stale (#85):
+            // cancel in-flight sharpening and forget which slots were sharpened / their base bitmaps.
+            _continuousSharpenCts?.Cancel();
+            _continuousSharpPages.Clear();
+            _continuousBaseBitmaps.Clear();
+            _continuousSharpW = 0;
+
             string currentFile = _currentFile;
             int pageCount = _doc.PageCount;
             double targetW = _continuousPageW;
@@ -1873,6 +1900,162 @@ namespace TDPdf
             catch { /* render cancelled or doc closed */ }
         }
 
+        // ── Continuous zoom / high-DPI re-sharpen (#85) ───────────────────────────────────────────
+        // Debounced trigger: restart a 250 ms timer on every zoom change or scroll event so the
+        // re-sharpen runs once the view settles. Cheap when there's nothing to do (a restore-only
+        // pass over an almost-always-empty set below the hi-res threshold).
+        private void StartContinuousResharpen()
+        {
+            if (_viewMode != ViewMode.Continuous) return;
+            if (_continuousSharpenTimer is null)
+            {
+                _continuousSharpenTimer = new System.Windows.Threading.DispatcherTimer
+                    { Interval = TimeSpan.FromMilliseconds(250) };
+                _continuousSharpenTimer.Tick += (_, _) =>
+                {
+                    _continuousSharpenTimer!.Stop();
+                    if (_viewMode == ViewMode.Continuous) ResharpenContinuousVisible();
+                };
+            }
+            _continuousSharpenTimer.Stop();
+            _continuousSharpenTimer.Start();
+        }
+
+        // Re-renders ONLY the pages near the viewport at a DPI- and zoom-aware budget and swaps them
+        // into their slots; pages that scrolled away (or aren't worth sharpening at this zoom) are
+        // restored to their captured base bitmap so the hi-res bitmaps are released. The base render
+        // cache is deliberately NOT touched — hi-res bitmaps must never accumulate there. Fully guarded;
+        // re-checks _viewMode and cancellation after every await/dispatch.
+        private void ResharpenContinuousVisible()
+        {
+            if (_viewMode != ViewMode.Continuous || _doc is null || _currentFile is null) return;
+            if (_continuousTops.Count == 0 || _continuousPanel.Children.Count == 0) return;
+
+            double zoom = Zoom.ZoomLevel;
+            double targetW = _continuousPageW;
+            int baseW = Math.Max(800, Math.Min(2048, (int)(targetW * 2)));   // same budget as RenderContinuousPages
+            var dpiInfo = VisualTreeHelper.GetDpi(this);
+            double dpiScale = Math.Max(dpiInfo.DpiScaleX, dpiInfo.DpiScaleY);
+            int hiW = (int)Math.Min(4096, targetW * 2 * dpiScale * Math.Max(1.0, zoom));
+
+            // Visible slot range. Slot space is zoom-independent (the shared ScaleTransform supplies
+            // the zoom), so divide the scroll offsets back down — the same mapping ScrollChanged uses.
+            double viewTop = PagePreviewPanel.VerticalOffset / Math.Max(0.01, zoom);
+            double viewBot = (PagePreviewPanel.VerticalOffset + PagePreviewPanel.ViewportHeight) / Math.Max(0.01, zoom);
+            var visible = new List<int>();
+            for (int i = 0; i < _continuousTops.Count && i < _continuousPanel.Children.Count; i++)
+            {
+                double top = _continuousTops[i];
+                double h = ((FrameworkElement)_continuousPanel.Children[i]).Height;
+                if (double.IsNaN(h)) continue;
+                if (top + h >= viewTop && top <= viewBot) visible.Add(i);
+            }
+            if (visible.Count > 0)
+            {
+                // One page of margin either side so a small scroll stays sharp.
+                if (visible[0] > 0) visible.Insert(0, visible[0] - 1);
+                if (visible[^1] < _continuousTops.Count - 1) visible.Add(visible[^1] + 1);
+            }
+
+            // Below ~1.25× the base budget the re-raster isn't visibly sharper: restore-only pass.
+            bool wantHi = hiW >= (int)(baseW * 1.25);
+
+            _continuousSharpenCts?.Cancel();
+            _continuousSharpenCts = new CancellationTokenSource();
+            var cts = _continuousSharpenCts;
+
+            // Restore pages that were sharpened earlier but have scrolled away (or aren't wanted at
+            // this zoom) to their captured base bitmap, releasing their hi-res bitmaps.
+            foreach (int p in _continuousSharpPages.ToList())
+            {
+                if (wantHi && visible.Contains(p)) continue;
+                RestoreContinuousBase(p);
+                _continuousSharpPages.Remove(p);
+            }
+            if (!wantHi) return;
+
+            // Zoom changed since the last pass: every sharpened slot is at the wrong budget — redo them.
+            bool budgetChanged = hiW != _continuousSharpW;
+            _continuousSharpW = hiW;
+            var work = visible.Where(p => budgetChanged || !_continuousSharpPages.Contains(p)).ToList();
+            if (work.Count == 0) return;
+
+            string currentFile = _currentFile;
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                Docnet.Core.Readers.IDocReader? docReader = null;
+                try
+                {
+                    foreach (int p in work)
+                    {
+                        if (cts.IsCancellationRequested) return;
+                        docReader ??= DocLib.Instance.GetDocReader(currentFile, new PageDimensions(hiW, hiW * 2));
+                        using var pr = docReader.GetPageReader(p);
+                        int w = pr.GetPageWidth(), h = pr.GetPageHeight();
+                        var raw = pr.GetImage();
+                        if (w <= 0 || h <= 0 || raw is null) continue;
+
+                        int fp = p, fw = w, fh = h;
+                        byte[] bytes = raw;
+                        if (cts.IsCancellationRequested) return;
+                        Dispatcher.Invoke(() =>
+                        {
+                            if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
+                            SharpenContinuousSlot(fp, fw, fh, bytes);
+                        });
+                    }
+                }
+                catch { /* cancelled or doc closed */ }
+                finally { docReader?.Dispose(); }
+            }, cts.Token);
+        }
+
+        // Swaps a freshly-rendered hi-res bitmap into slot pageIndex, keeping the slot's on-screen size
+        // (the shared ScaleTransform still supplies the zoom). Captures the slot's current base bitmap
+        // once so RestoreContinuousBase can put it back when the page scrolls away. Only sharpens slots
+        // that already carry a base bitmap, so it never fights the streaming base pass.
+        private void SharpenContinuousSlot(int pageIndex, int pxW, int pxH, byte[] bgra)
+        {
+            if (pageIndex < 0 || pageIndex >= _continuousPanel.Children.Count) return;
+            if (_continuousPanel.Children[pageIndex] is not Border slot) return;
+            if (slot.Child is not Image img) return;
+            if (img.Source is not BitmapSource baseSrc) return;   // base not rendered yet — leave it
+
+            double dipW = img.Width;
+            if (double.IsNaN(dipW) || dipW <= 0) dipW = slot.Width;
+            if (double.IsNaN(dipW) || dipW <= 0) return;
+            double dipH = dipW * pxH / pxW;
+            double dpiX = 96.0 * pxW / dipW;
+            double dpiY = 96.0 * pxH / dipH;
+
+            if (!_continuousBaseBitmaps.ContainsKey(pageIndex))
+                _continuousBaseBitmaps[pageIndex] = baseSrc;
+
+            var bmp = new WriteableBitmap(pxW, pxH, dpiX, dpiY, PixelFormats.Bgra32, null);
+            bmp.WritePixels(new Int32Rect(0, 0, pxW, pxH), bgra, pxW * 4, 0);
+            bmp.Freeze();
+            img.Source = bmp;
+            img.Width = dipW;
+            img.Height = dipH;
+            _continuousSharpPages.Add(pageIndex);
+        }
+
+        // Restores a previously-sharpened slot to its captured base bitmap so the hi-res bitmap is
+        // released, then forgets the capture. No capture (page never sharpened) = no-op.
+        private void RestoreContinuousBase(int pageIndex)
+        {
+            if (!_continuousBaseBitmaps.TryGetValue(pageIndex, out var baseBmp)) return;
+            if (pageIndex >= 0 && pageIndex < _continuousPanel.Children.Count
+                && _continuousPanel.Children[pageIndex] is Border slot
+                && slot.Child is Image img)
+            {
+                img.Source = baseBmp;
+                img.Width = baseBmp.Width;
+                img.Height = baseBmp.Height;
+            }
+            _continuousBaseBitmaps.Remove(pageIndex);
+        }
+
         private void ScrollContinuousToPage(int pageIndex)
         {
             if (pageIndex < 0 || pageIndex >= _continuousTops.Count) return;
@@ -1900,6 +2083,10 @@ namespace TDPdf
         private void PagePreviewPanel_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
             if (_viewMode != ViewMode.Continuous || _continuousTops.Count == 0) return;
+            // #85: once scrolling settles, sharpen the pages now in view and release the ones that
+            // left. Debounced, so streaming base render / rapid scroll just keeps resetting the timer;
+            // programmatic scrolls count too (their offset change still moves the visible window).
+            StartContinuousResharpen();
             // Ignore scroll events caused by our own programmatic scrolls (sidebar selection,
             // zoom re-anchor, setup) so they don't bounce back into a selection change.
             if (_suppressContinuousScrollSync) return;
@@ -5053,6 +5240,7 @@ namespace TDPdf
                 FontFamily = new FontFamily("Consolas")
             };
             cancelBtn.Click += (_, _2) => win.Close();
+            cancelBtn.IsCancel = true;   // Esc cancels (Enter is handled on nameBox below)
             var saveBtn = new Button
             {
                 Content = "Save Signature",
@@ -9072,13 +9260,18 @@ namespace TDPdf
             using var op = Telemetry.StartOperation("SaveInPlace");
             if (_doc is null || _currentFile is null) return;
             CommitActiveTextBox();
-            try
+            // Capture the destination once: a #106 repair may repoint _currentFile at a temp copy,
+            // but the in-place save must always target the file the user actually opened.
+            string targetFile = _currentFile;
+            string status = "";
+
+            // The unit of work retried by RunSaveWithRecoveryAsync. Reads _doc fresh each call so a
+            // repair (which swaps _doc for a rebuilt copy) is picked up, and re-bakes annotations from
+            // _annotations every time, so a retried save keeps all of the user's edits.
+            async Task DoSaveAsync()
             {
-                SetFileOperationBusy(true, "Saving...");
-                var doc = _doc;
-                string targetFile = _currentFile;
+                var doc = _doc!;
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
-                string status;
 
                 if (hasAnnotations)
                 {
@@ -9105,7 +9298,12 @@ namespace TDPdf
                     await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
                     status = $"Saved — {System.IO.Path.GetFileName(targetFile)}";
                 }
+            }
 
+            try
+            {
+                SetFileOperationBusy(true, "Saving...");
+                await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
                 SetStatus(status);
             }
@@ -9131,15 +9329,29 @@ namespace TDPdf
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save PDF as" };
-            if (dlg.ShowDialog() != true) return;
-            using var op = Telemetry.StartOperation("SaveAs");
+            // #112: seed the dialog with the document's display name so Save As pre-fills the real
+            // filename (not the tdpdf_temp_… working path). Guard every path call: for a merged/
+            // imported doc the seed can be null/empty, and Path.GetFileName/GetFileNameWithoutExtension
+            // throw on some runtimes — a crash before the dialog opens. A bad seed just opens defaults.
             try
             {
-                SetFileOperationBusy(true, "Saving...");
-                var doc = _doc;
+                string? seed = _ctx.DisplayName;
+                if (string.IsNullOrWhiteSpace(seed)) seed = _currentFile;
+                if (!string.IsNullOrWhiteSpace(seed))
+                    dlg.FileName = System.IO.Path.GetFileName(seed);
+            }
+            catch { /* malformed seed path — just open the dialog with its defaults */ }
+            if (dlg.ShowDialog() != true) return;
+            using var op = Telemetry.StartOperation("SaveAs");
+            string targetFile = dlg.FileName;
+            string status = "";
+
+            // Retryable unit of work (see RunSaveWithRecoveryAsync / #106): reads _doc fresh and
+            // re-bakes annotations each call so a repaired retry keeps every edit.
+            async Task DoSaveAsync()
+            {
+                var doc = _doc!;
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
-                string targetFile = dlg.FileName;
-                string status;
 
                 if (hasAnnotations)
                 {
@@ -9166,7 +9378,12 @@ namespace TDPdf
                     await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
                     status = $"Saved to {System.IO.Path.GetFileName(targetFile)}";
                 }
+            }
 
+            try
+            {
+                SetFileOperationBusy(true, "Saving...");
+                await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
                 SetStatus(status);
             }
@@ -9195,9 +9412,14 @@ namespace TDPdf
             if (dlg.ShowDialog() != true) return;
             using var op = Telemetry.StartOperation("SaveFlattened");
             SetFileOperationBusy(true, "Flattening...");
-            try
+            string targetFile = dlg.FileName;
+
+            // Retryable unit of work (see RunSaveWithRecoveryAsync / #106): the fragile part is the
+            // PdfSharpCore doc.Save that produces the flatten source; the raster flatten itself runs
+            // through Docnet. Reads _doc fresh and re-bakes annotations each call.
+            async Task DoSaveAsync()
             {
-                var doc = _doc;
+                var doc = _doc!;
                 var pageSizes = GetPageSizes(doc);
                 string sourcePath;
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
@@ -9228,9 +9450,14 @@ namespace TDPdf
                     sourcePath = temp;
                 }
 
-                await _pdfDocumentService.SaveFlattenedAsync(sourcePath, dlg.FileName, pageSizes, CancellationToken.None);
+                await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, CancellationToken.None);
+            }
+
+            try
+            {
+                await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
-                SetStatus($"Flattened PDF saved to {System.IO.Path.GetFileName(dlg.FileName)}");
+                SetStatus($"Flattened PDF saved to {System.IO.Path.GetFileName(targetFile)}");
             }
             catch (Exception ex)
             {
@@ -9309,6 +9536,53 @@ namespace TDPdf
             _doc = restoredDoc;
             _currentFile = cleanPath;
             return restoredDoc;
+        }
+
+        // #106: Runs a save operation and, if it fails with a recoverable PdfSharpCore parse/serialize
+        // error ("Cannot retrieve stream length.", "File streams are not yet implemented", a broken
+        // xref, ...), repairs the current document through PDFium and retries the save exactly once.
+        // The caller's saveAction re-bakes the in-memory annotations/edits every time it runs (via
+        // DrawAnnotationsOnDocument, which reads _annotations — never cleared here), so the retried
+        // file preserves all of the user's work. If the repair fails or the retry throws, the (final)
+        // exception propagates to the caller's themed "Save failed" handler. Recovery is fully guarded
+        // and can never itself crash the save.
+        private async Task RunSaveWithRecoveryAsync(Func<Task> saveAction)
+        {
+            try
+            {
+                await saveAction();
+            }
+            catch (Exception ex) when (TDPdf.Services.PdfDocumentService.IsXRefException(ex))
+            {
+                Telemetry.TrackEvent("File.SaveRecoveryAttempt");
+                if (!await TryRepairCurrentDocumentForSaveAsync()) throw;   // PDFium couldn't help — surface original
+                await saveAction();                                        // retry once against the repaired source
+            }
+        }
+
+        // #106: Rebuilds the current document through PDFium (which emits clean stream/xref structures)
+        // and reopens it in place so a failed save can be retried against a repaired source. Reuses the
+        // shared TryPdfiumRepair helper (no second repair implementation). Fully guarded: returns false
+        // — never throws — when repair is not possible, leaving the original failure to surface.
+        private async Task<bool> TryRepairCurrentDocumentForSaveAsync()
+        {
+            var current = _currentFile;
+            if (_doc is null || string.IsNullOrEmpty(current)) return false;
+            try
+            {
+                var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                    $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                bool ok = await System.Threading.Tasks.Task.Run(
+                    () => TDPdf.Services.PdfDocumentService.TryPdfiumRepair(current!, fixedPath));
+                if (!ok) return false;
+                var repaired = await _pdfDocumentService.OpenPdfSharpAsync(
+                    fixedPath, PdfDocumentOpenMode.Modify, CancellationToken.None);
+                _doc?.Close();
+                _doc = repaired;
+                _currentFile = fixedPath;
+                return true;
+            }
+            catch { return false; }
         }
 
         private static IReadOnlyList<PdfPageSize> GetPageSizes(PdfDocument doc)
@@ -9707,25 +9981,26 @@ namespace TDPdf
                 return;
             }
 
-            // Shift+wheel scrolls horizontally (industry-standard).
+            // Shift+wheel scrolls horizontally (industry-standard), at the boosted speed.
             if (Keyboard.Modifiers == ModifierKeys.Shift)
             {
                 if (PagePreviewPanel.ScrollableWidth > 0)
-                {
-                    double newOffset = PagePreviewPanel.HorizontalOffset - e.Delta / 3.0;
-                    PagePreviewPanel.ScrollToHorizontalOffset(newOffset);
-                }
+                    PagePreviewPanel.ScrollToHorizontalOffset(
+                        PagePreviewPanel.HorizontalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
                 e.Handled = true;
                 return;
             }
 
-            // Continuous view is a single document-long scroll; never hop pages at the
-            // boundary — just let the ScrollViewer scroll naturally.
-            if (_viewMode == ViewMode.Continuous) return;
+            // Grid and Continuous are a single scroll over the WHOLE document, so the wheel must
+            // never be hijacked for page navigation there — it always just scrolls (boosted).
+            if (_viewMode == ViewMode.Grid || _viewMode == ViewMode.Continuous)
+            {
+                ScrollWheel(e);
+                return;
+            }
 
-            // Regular scroll: let the ScrollViewer handle it first.
-            // At scroll boundaries, fall through to page navigation so the user
-            // can reach adjacent pages without touching the sidebar.
+            // Single / Two-Page: a page often fits the viewport, so at the scroll boundary fall
+            // through to page navigation so the user can reach adjacent pages without the sidebar.
             if (PagePreviewPanel.ScrollableHeight <= 0)
             {
                 // No scrollable content — wheel navigates pages directly.
@@ -9740,8 +10015,22 @@ namespace TDPdf
             {
                 e.Handled = true;
                 NavigatePageByWheel(e.Delta);
+                return;
             }
-            // Otherwise let the ScrollViewer scroll naturally.
+            ScrollWheel(e);   // normal scroll, boosted
+        }
+
+        // The ScrollViewer default (3 lines = 48 DIP per wheel notch) feels slow on tall documents,
+        // so scroll WheelScrollFactor times that instead. e.Delta is ±120 per notch on a standard
+        // wheel (precision touchpads send smaller, more frequent deltas, which scale the same way).
+        // ScrollToVerticalOffset clamps to the valid range itself.
+        private const double WheelScrollFactor = 3.0;
+
+        private void ScrollWheel(MouseWheelEventArgs e)
+        {
+            e.Handled = true;
+            PagePreviewPanel.ScrollToVerticalOffset(
+                PagePreviewPanel.VerticalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
         }
 
         private void NavigatePageByWheel(int delta)
@@ -9800,6 +10089,9 @@ namespace TDPdf
                 int curIdx = PageList.SelectedIndex;
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => ScrollContinuousToPageSuppressed(curIdx)));
+                // #85: once the zoom settles, sharpen the visible pages (zoom-in) or restore their
+                // base bitmaps so hi-res memory is released (zoom-out). Debounced + cancellable.
+                StartContinuousResharpen();
                 return;
             }
 
@@ -9974,9 +10266,10 @@ namespace TDPdf
         private void PageList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
             // The ListBox's internal ScrollViewer is disabled, so wheel events don't
-            // scroll anything. Forward them to the outer SidebarScrollViewer manually.
+            // scroll anything. Forward them to the outer SidebarScrollViewer manually,
+            // at the same boosted speed as the document viewport (WheelScrollFactor).
             SidebarScrollViewer.ScrollToVerticalOffset(
-                SidebarScrollViewer.VerticalOffset - e.Delta / 3.0);
+                SidebarScrollViewer.VerticalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
             e.Handled = true;
         }
 
