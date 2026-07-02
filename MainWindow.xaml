@@ -816,6 +816,12 @@
                 <MenuItem Header="_Crop"                                            Click="ToolCrop_Click"/>
                 <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click"/>
                 <Separator/>
+                <!-- OCR submenu is rebuilt on open (OcrMenu_SubmenuOpened); the placeholder keeps the
+                     submenu arrow visible so the event fires. -->
+                <MenuItem Header="_OCR" SubmenuOpened="OcrMenu_SubmenuOpened">
+                    <MenuItem Header="…"/>
+                </MenuItem>
+                <Separator/>
                 <MenuItem Header="Se_ttings…"                                       Click="Settings_Click"/>
             </MenuItem>
             <MenuItem Header="_Help">

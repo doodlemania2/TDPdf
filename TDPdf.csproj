@@ -12,9 +12,9 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\tdpdf-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.14.0.0</Version>
-    <AssemblyVersion>1.14.0.0</AssemblyVersion>
-    <FileVersion>1.14.0.0</FileVersion>
+    <Version>1.15.0.0</Version>
+    <AssemblyVersion>1.15.0.0</AssemblyVersion>
+    <FileVersion>1.15.0.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
@@ -28,6 +28,11 @@
     <PackageReference Include="PdfPig" Version="0.1.14" />
     <!-- Docnet.Core supplies pdfium.dll as a win-x64 native runtime asset; the SDK bundles it for single-file publish. -->
     <PackageReference Include="Docnet.Core" Version="2.6.0" />
+    <!-- OCR engine. We embed the x64 natives as resources and self-extract them at runtime
+         (Services/OcrNativeBootstrap), so the package's loose x86/x64 native copies in the output are dead
+         weight. ExcludeAssets stops that copy while keeping the managed assembly (compile/runtime) and the
+         GeneratePathProperty path used by the EmbeddedResource entries below. -->
+    <PackageReference Include="Tesseract" Version="5.2.0" GeneratePathProperty="true" ExcludeAssets="build;buildTransitive;native;contentFiles" />
     <PackageReference Include="Microsoft.ApplicationInsights" Version="2.22.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="9.0.0" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
@@ -59,6 +64,20 @@
   -->
   <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)Diagnostics\EmbeddedTelemetry.Generated.cs')">
     <Compile Remove="Diagnostics\EmbeddedTelemetry.cs" />
+  </ItemGroup>
+
+  <!-- OCR: embed only the native Tesseract libs (x64) so the app still ships as a single exe. Language data
+       is NOT bundled - it is downloaded on demand on first OCR (see EnsureOcrModelsReadyAsync in Ocr.cs),
+       which keeps the exe small. OcrNativeBootstrap self-extracts the natives to a per-version cache under
+       %LOCALAPPDATA%\TDPdf on first use, the same self-extract pattern the single-file host uses for the
+       managed assemblies. PkgTesseract comes from GeneratePathProperty on the package reference above. -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgTesseract)\x64\tesseract50.dll" Condition="'$(PkgTesseract)' != ''">
+      <LogicalName>TDPdf.OcrNative.tesseract50.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgTesseract)\x64\leptonica-1.82.0.dll" Condition="'$(PkgTesseract)' != ''">
+      <LogicalName>TDPdf.OcrNative.leptonica-1.82.0.dll</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

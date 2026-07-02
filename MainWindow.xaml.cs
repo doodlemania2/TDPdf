@@ -469,6 +469,8 @@ namespace TDPdf
         private const int WM_GETMINMAXINFO = 0x0024;
         private const int WM_DPICHANGED = 0x02E0;
         private const int WM_MOUSEHWHEEL = 0x020E;
+        private const int WM_KEYDOWN = 0x0100;
+        private const int VK_ESCAPE = 0x1B;
         private const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
         private const uint SWP_NOZORDER = 0x0004;
         private const uint SWP_NOACTIVATE = 0x0010;
@@ -491,6 +493,15 @@ namespace TDPdf
             {
                 if (WmMouseHWheel(wParam, lParam))
                     handled = true;
+            }
+            else if (msg == WM_KEYDOWN && (int)wParam == VK_ESCAPE && _ocrCts is { IsCancellationRequested: false })
+            {
+                // SetFileOperationBusy disables the WPF content during OCR, so Esc never reaches
+                // OnPreviewKeyDown. The native HWND stays Win32-enabled, though, so we catch it here and
+                // cancel the in-flight OCR / language download cooperatively.
+                _ocrCts.Cancel();
+                SetStatus("Cancelling...");
+                handled = true;
             }
             return IntPtr.Zero;
         }
@@ -1126,6 +1137,8 @@ namespace TDPdf
             var menu = new ContextMenu();
 
             menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard"));
+            menu.Items.Add(MakeMenuItem("OCR Page to Clip_board", (s, e) => OcrPageToClipboard(Math.Max(0, PageList.SelectedIndex)),
+                "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard"));
             menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF"));
             menu.Items.Add(new Separator());
             menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), null, "Switch to the select tool"));
@@ -6716,6 +6729,10 @@ namespace TDPdf
                 double dragW = Math.Abs(pos.X - _selectStart.X);
                 double dragH = Math.Abs(pos.Y - _selectStart.Y);
 
+                // A pending "OCR Region" arm consumes this drag regardless of outcome.
+                bool ocrRegion = _ocrRegionMode;
+                _ocrRegionMode = false;
+
                 if (dragW < 5 && dragH < 5)
                 {
                     // Tiny drag = single click -> try annotation selection
@@ -6734,11 +6751,12 @@ namespace TDPdf
                 }
                 else
                 {
-                    // Real drag -> extract text from rectangle
+                    // Real drag -> extract text from the rectangle, or OCR it if the OCR-region tool is armed.
                     var selectBounds = new Rect(
                         Math.Min(pos.X, _selectStart.X), Math.Min(pos.Y, _selectStart.Y),
                         dragW, dragH);
-                    ExtractTextFromRegion(pageIdx, selectBounds);
+                    if (ocrRegion) OcrRegion(pageIdx, selectBounds);
+                    else ExtractTextFromRegion(pageIdx, selectBounds);
                 }
                 return;
             }
@@ -8416,7 +8434,12 @@ namespace TDPdf
                 return;
             }
 
-            if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+            if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
+            {
+                OcrPageToClipboard(Math.Max(0, PageList.SelectedIndex));
+                e.Handled = true;
+            }
+            else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 CopySelectedText();
                 e.Handled = true;

@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.15.0.0] - 2026-07-02
+
+Fork-sync release porting built-in OCR from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's single-file build and settings.
+
+### Added
+
+- **OCR (Tesseract), built into the single EXE** (upstream v1.6.0). TDPdf can now read the text off scanned/image PDFs:
+  - **OCR Page to Clipboard** — recognize the current page's text and copy it (Tools ▸ OCR, the page right-click menu, or **Ctrl+Shift+O**).
+  - **OCR Region to Clipboard** — drag a rectangle and OCR just that area.
+  - **Make Searchable PDF** — OCR every page and save a new PDF with an invisible text layer aligned over the scan, so the result is selectable and searchable.
+  - **Extract All Text** — OCR the whole document to a `.txt` or `.md` file.
+  - **Language selection with on-demand download** — a multi-select language menu; each language's data is downloaded from the Tesseract project on first use (nothing is bundled, keeping the EXE small), with a **high-quality model** toggle (`tessdata_best`) for more accuracy at a larger download.
+  - Long OCR operations show progress and can be cancelled with **Esc**.
+- The native Tesseract engine is embedded in `TDPdf.exe` as a resource and self-extracted to a per-version cache under `%LOCALAPPDATA%\TDPdf\` on first use — the same single-file self-extraction pattern already used for the app's other native code, so no external install and **no Costura/Fody**. Language data lives in a stable `%LOCALAPPDATA%\TDPdf\tessdata` folder so downloaded packs survive app updates.
+
+### Notes
+
+- OCR requires a one-time internet download of the chosen language's data on first use; TDPdf shows a themed message if the download fails (for example, offline) and never crashes. OCR itself runs entirely locally.
+
 ## [1.14.0.0] - 2026-07-02
 
 Fork-sync release porting the Transform tool from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's page-operation and undo model.
@@ -444,7 +463,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.14.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.15.0.0...HEAD
+[1.15.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.14.0.0...v1.15.0.0
 [1.14.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.13.0.0...v1.14.0.0
 [1.13.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.12.0.0...v1.13.0.0
 [1.12.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.11.0.0...v1.12.0.0
