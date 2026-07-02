@@ -1151,6 +1151,8 @@ namespace TDPdf
             menu.Items.Add(new Separator());
             menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90)));
             menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90)));
+            menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
+                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)"));
             menu.Items.Add(new Separator());
             menu.Items.Add(MakeMenuItem("Move Page Up",   (s, ev) => MoveUp_Click(s!, ev)));
             menu.Items.Add(MakeMenuItem("Move Page Down", (s, ev) => MoveDown_Click(s!, ev)));
