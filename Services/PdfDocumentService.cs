@@ -400,7 +400,13 @@ namespace TDPdf.Services
             ex.Message.IndexOf("trailer", StringComparison.OrdinalIgnoreCase) >= 0 ||
             ex.Message.IndexOf("startxref", StringComparison.OrdinalIgnoreCase) >= 0 ||
             ex.Message.IndexOf("Unexpected token", StringComparison.OrdinalIgnoreCase) >= 0 ||
-            ex.Message.IndexOf("Invalid PDF file", StringComparison.OrdinalIgnoreCase) >= 0;
+            ex.Message.IndexOf("Invalid PDF file", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            // #106: "Cannot retrieve stream length." — a stream whose /Length is indirect or broken;
+            // "File streams are not yet implemented" — an embedded file stream PdfSharpCore can't
+            // round-trip. Both are recoverable by piping the source through the PDFium repair path,
+            // which rebuilds clean stream structures. Used at save time as well as reopen time.
+            ex.Message.IndexOf("stream length", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            ex.Message.IndexOf("File streams are not yet implemented", StringComparison.OrdinalIgnoreCase) >= 0;
 
         // ── PDFium P/Invoke ──────────────────────────────────────────────────────────
         // pdfium.dll ships with Docnet. We use it here to losslessly re-serialize a PDF

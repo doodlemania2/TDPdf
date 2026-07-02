@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.9.2.0] - 2026-07-02
+
+Fork-sync release porting the curated set of reliability and polish fixes from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.1, each adapted to TDPdf's multi-tab `DocumentContext` architecture.
+
+### Added
+
+- **Continuous view stays sharp when zooming in and on high-DPI displays** (upstream v1.6.1, Issue #85). Continuous scroll previously rendered every page once at a fixed fit-width budget and then only scaled the bitmaps with the shared zoom transform, so zooming in — or viewing on a high-DPI monitor — left the pages soft. A debounced, cancellable pass now re-renders **only** the pages near the viewport at a DPI- and zoom-aware resolution and swaps them into place; pages that scroll away are restored to their base bitmap so the higher-resolution bitmaps are released and never accumulate beyond the visible window.
+
+### Changed
+
+- **Faster mouse-wheel scrolling in every view mode and the page sidebar** (upstream v1.6.1). Each wheel notch now scrolls roughly three times the previous distance (~120 px vs the default ~40 px), including Shift+wheel horizontal scrolling and the tilt-wheel; Grid and Continuous always scroll and are never hijacked into page navigation, while Single and Two-Page keep their scroll-boundary → page-navigation behavior.
+
+### Fixed
+
+- **A failed save no longer loses your edits** (upstream v1.6.1, Issue #106). Saving occasionally failed with "Cannot retrieve stream length." (a stream with a broken or indirect `/Length`) or "File streams are not yet implemented"; the save simply errored out. Save, Save As, and Save Flattened now detect these recoverable PdfSharpCore errors, repair the document once through the existing PDFium round-trip, and retry the save automatically — re-baking the in-memory annotations and edits so nothing is lost. Only if the repaired retry also fails is the themed error shown. The recoverable-error classifier (previously used only when reopening a saved file) was extended to cover both messages.
+- **Save As on a merged or imported document no longer risks crashing before the dialog opens** (upstream v1.6.1, Issue #112). Seeding the Save As filename from a document with no original path is now fully guarded, so a null or malformed seed just opens the dialog with its defaults. The dialog is seeded from the document's display name rather than the internal working-copy path.
+- **Esc now cancels the password prompt and the signature save-name dialog** (upstream v1.6.1, Issue #111), matching the Enter/Esc behavior already present in TDPdf's other dialogs.
+
 ## [1.9.1.0] - 2026-06-22
 
 ### Added
@@ -364,7 +382,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.9.1.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.9.2.0...HEAD
+[1.9.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.1.0...v1.9.2.0
 [1.9.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.0.0...v1.9.1.0
 [1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.2.0...v1.8.3.0
 [1.8.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.1.0...v1.8.2.0
