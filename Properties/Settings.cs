@@ -111,5 +111,37 @@ namespace TDPdf.Properties
             get => (string)this[nameof(CustomColors)];
             set => this[nameof(CustomColors)] = value;
         }
+
+        // --- OCR (Tesseract) ---
+
+        // Chosen OCR languages as a '+'-joined list of Tesseract codes (e.g. "eng" or "eng+spa").
+        // English is the floor; language data is downloaded on demand into the tessdata folder.
+        [UserScopedSetting]
+        [DefaultSettingValue("eng")]
+        public string OcrLanguages
+        {
+            get => (string)this[nameof(OcrLanguages)];
+            set => this[nameof(OcrLanguages)] = value;
+        }
+
+        // When true, OCR downloads pull the larger, more accurate tessdata_best models instead of the
+        // smaller tessdata_fast ones.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool OcrHighQuality
+        {
+            get => (bool)this[nameof(OcrHighQuality)];
+            set => this[nameof(OcrHighQuality)] = value;
+        }
+
+        // Tracks which installed languages currently hold the high-quality (best) model, as a '+'-joined
+        // list of codes, so toggling HQ off then on doesn't re-download ones that are already HQ.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string OcrHqLanguages
+        {
+            get => (string)this[nameof(OcrHqLanguages)];
+            set => this[nameof(OcrHqLanguages)] = value;
+        }
     }
 }
