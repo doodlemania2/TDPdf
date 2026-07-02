@@ -42,13 +42,36 @@ namespace TDPdf
         public byte ColorB { get; set; } = 0;
         public byte ColorA { get; set; } = 255;
 
+        /// <summary>
+        /// Fixed wrap width of the text box, in canvas pixels; text wraps to this width.
+        /// 0 = legacy auto-size (single-line / newline-split, no wrap) — backward compatible.
+        /// </summary>
+        public double Width { get; set; }
+
+        /// <summary>
+        /// Fixed box height, in canvas pixels. 0 = auto-grow to fit the wrapped text.
+        /// </summary>
+        public double Height { get; set; }
+
+        /// <summary>Paint an opaque "whiteout" rectangle behind the text when true.</summary>
+        public bool HasFill { get; set; }
+        public byte FillR { get; set; } = 255;
+        public byte FillG { get; set; } = 255;
+        public byte FillB { get; set; } = 255;
+        public byte FillA { get; set; } = 255;
+
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
+
+        public Color GetFillColor() => Color.FromArgb(FillA, FillR, FillG, FillB);
+        public void SetFillColor(Color c) { FillR = c.R; FillG = c.G; FillB = c.B; FillA = c.A; }
 
         public override PageAnnotation Clone() => new TextAnnotation
         {
             PageIndex = PageIndex, Position = Position, Content = Content, FontSize = FontSize,
-            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
+            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA,
+            Width = Width, Height = Height,
+            HasFill = HasFill, FillR = FillR, FillG = FillG, FillB = FillB, FillA = FillA
         };
     }
 
