@@ -267,6 +267,12 @@ namespace TDPdf
         private Border _customTitleBar = null!;
         private RowDefinition _titleBarRow = null!;
 
+        // Full-screen (F11) chrome refs — root grid + the two rows that are fixed-height
+        // (title, footer) so they can be zeroed when all chrome is hidden.
+        private Grid _rootGrid = null!;
+        private Border _toolbarBorder = null!;
+        private Border _statusBarBorder = null!;
+
         // Outline / bookmarks sidebar tab (manual refs — XAML codegen doesn't resolve these)
         private ListBox _outlineList = null!;
         private ScrollViewer _outlineScrollViewer = null!;
@@ -332,6 +338,9 @@ namespace TDPdf
             _pageControlsRow = (DockPanel)FindName("PageControlsRow")!;
             _tabStripBorder = (Border)FindName("TabStripBorder")!;
             _tabStrip = (StackPanel)FindName("TabStrip")!;
+            _rootGrid = (Grid)FindName("RootGrid")!;
+            _toolbarBorder = (Border)FindName("ToolbarBorder")!;
+            _statusBarBorder = (Border)FindName("StatusBarBorder")!;
             RebuildTabStrip();
             ApplyCustomChromeVisibility();
             ThemeManager.ThemeChanged += ThemeManager_ThemeChanged;
@@ -609,6 +618,117 @@ namespace TDPdf
             public RECT rcMonitor;
             public RECT rcWork;
             public uint dwFlags;
+        }
+
+        // ============================================================
+        // Full-screen mode (F11)
+        // ============================================================
+        // Distraction-free mode: hide every piece of chrome (title bar, menu, toolbar, tab strip,
+        // sidebar, status bar) and grow the window to cover the ENTIRE monitor — taskbar included —
+        // so only the document pane fills the screen. F11 toggles; Esc also exits (handled first in
+        // OnPreviewKeyDown, before search-bar / overlay Esc). We deliberately enter with Normal +
+        // Topmost + explicit monitor bounds rather than WindowState.Maximized: the WM_GETMINMAXINFO
+        // hook (MainWindow_SourceInitialized) clamps maximized windows to the work area so they never
+        // cover the taskbar — the opposite of what full screen needs. That hook is left untouched;
+        // full screen simply bypasses it by not maximizing.
+        private bool _fullScreen;
+        private GridLength _fsTitleRow, _fsFooterRow, _fsSidebarWidth;
+        private double _fsSidebarMin;
+        private Visibility _fsTitleVis, _fsMenuVis, _fsToolbarVis, _fsTabStripVis, _fsFooterVis, _fsSidebarVis, _fsSidebarToggleVis;
+        private WindowState _fsPrevState;
+        private bool _fsPrevTopmost;
+        private ResizeMode _fsPrevResize;
+        private double _fsPrevLeft, _fsPrevTop, _fsPrevW, _fsPrevH;
+
+        private void ToggleFullScreen()
+        {
+            bool entering = !_fullScreen;
+            _fullScreen = entering;
+
+            if (entering)
+            {
+                // Snapshot the current chrome visibility / sizing so exit restores the exact prior
+                // state (sidebar collapsed-or-expanded, tab strip shown-or-hidden, window placement).
+                _fsTitleVis         = _customTitleBar.Visibility;
+                _fsMenuVis          = MainMenu.Visibility;
+                _fsToolbarVis       = _toolbarBorder.Visibility;
+                _fsTabStripVis      = _tabStripBorder.Visibility;
+                _fsFooterVis        = _statusBarBorder.Visibility;
+                _fsSidebarVis       = _sidebarBorder.Visibility;
+                _fsSidebarToggleVis = _sidebarToggleBtn.Visibility;
+                _fsTitleRow         = _rootGrid.RowDefinitions[0].Height;
+                _fsFooterRow        = _rootGrid.RowDefinitions[5].Height;
+                _fsSidebarWidth     = _sidebarCol.Width;
+                _fsSidebarMin       = _sidebarCol.MinWidth;
+
+                _customTitleBar.Visibility   = Visibility.Collapsed;
+                MainMenu.Visibility          = Visibility.Collapsed;
+                _toolbarBorder.Visibility    = Visibility.Collapsed;
+                _tabStripBorder.Visibility   = Visibility.Collapsed;
+                _statusBarBorder.Visibility  = Visibility.Collapsed;
+                _sidebarBorder.Visibility    = Visibility.Collapsed;
+                _sidebarToggleBtn.Visibility = Visibility.Collapsed;
+                // Rows 0 (title) and 5 (footer) are fixed-height; zero them. Rows 1-3 (menu/toolbar/
+                // tab strip) are Auto and collapse to 0 on their own once their content is hidden.
+                _rootGrid.RowDefinitions[0].Height = new GridLength(0);
+                _rootGrid.RowDefinitions[5].Height = new GridLength(0);
+                // MinWidth floors the sidebar column at 24 otherwise, leaving a strip beside the page.
+                _sidebarCol.MinWidth = 0;
+                _sidebarCol.Width = new GridLength(0);
+
+                // Cover the whole monitor with explicit bounds. Capture placement first so exit can
+                // restore it, then go Normal + Topmost + full-monitor rect. Setting the bounds both
+                // before and after the (possible) Maximized->Normal switch keeps the window from
+                // momentarily restoring to its old normal rect on another screen.
+                _fsPrevState   = WindowState;
+                _fsPrevTopmost = Topmost;
+                _fsPrevResize  = ResizeMode;
+                _fsPrevLeft = Left; _fsPrevTop = Top; _fsPrevW = Width; _fsPrevH = Height;
+
+                var b = CurrentMonitorBoundsDip();
+                Topmost = true;
+                ResizeMode = ResizeMode.NoResize;
+                Left = b.Left; Top = b.Top; Width = b.Width; Height = b.Height;
+                if (WindowState == WindowState.Maximized) WindowState = WindowState.Normal;
+                Left = b.Left; Top = b.Top; Width = b.Width; Height = b.Height;
+            }
+            else
+            {
+                _customTitleBar.Visibility   = _fsTitleVis;
+                MainMenu.Visibility          = _fsMenuVis;
+                _toolbarBorder.Visibility    = _fsToolbarVis;
+                _tabStripBorder.Visibility   = _fsTabStripVis;
+                _statusBarBorder.Visibility  = _fsFooterVis;
+                _sidebarBorder.Visibility    = _fsSidebarVis;
+                _sidebarToggleBtn.Visibility = _fsSidebarToggleVis;
+                _rootGrid.RowDefinitions[0].Height = _fsTitleRow;
+                _rootGrid.RowDefinitions[5].Height = _fsFooterRow;
+                _sidebarCol.MinWidth = _fsSidebarMin;
+                _sidebarCol.Width = _fsSidebarWidth;
+
+                // Drop topmost and restore the pre-full-screen placement. Restore the normal bounds
+                // first, then re-maximize if the window was maximized before entering.
+                Topmost = _fsPrevTopmost;
+                ResizeMode = _fsPrevResize;
+                WindowState = WindowState.Normal;
+                Left = _fsPrevLeft; Top = _fsPrevTop; Width = _fsPrevW; Height = _fsPrevH;
+                if (_fsPrevState == WindowState.Maximized) WindowState = WindowState.Maximized;
+            }
+        }
+
+        // Full bounds (taskbar included) of the monitor the window is currently on, in WPF
+        // device-independent units. MonitorFromWindow / GetMonitorInfo / MONITORINFO / RECT are
+        // declared above alongside the window-chrome P/Invokes.
+        private Rect CurrentMonitorBoundsDip()
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
+            GetMonitorInfo(mon, ref info);
+            var r = info.rcMonitor;
+            var dpi = VisualTreeHelper.GetDpi(this);
+            return new Rect(r.left / dpi.DpiScaleX, r.top / dpi.DpiScaleY,
+                            (r.right - r.left) / dpi.DpiScaleX, (r.bottom - r.top) / dpi.DpiScaleY);
         }
 
         // All state belonging to one open PDF (one tab). The shared UI controls
@@ -7831,6 +7951,28 @@ namespace TDPdf
             // are routed via CommandBindings and the Menu's access keys — no need to intercept
             // them here. We still handle the genuinely context-sensitive keys below.
 
+            // Full-screen (F11) and Document Info (F12) toggles. Esc leaves full-screen first,
+            // before any other Esc behaviour (search bar / shortcut overlay), so the very first
+            // Esc always drops the user back to the normal windowed layout.
+            if (e.Key == Key.F11)
+            {
+                ToggleFullScreen();
+                e.Handled = true;
+                return;
+            }
+            if (e.Key == Key.Escape && _fullScreen)
+            {
+                ToggleFullScreen();
+                e.Handled = true;
+                return;
+            }
+            if (e.Key == Key.F12)
+            {
+                ShowDocumentInfoDialog();
+                e.Handled = true;
+                return;
+            }
+
             if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 CopySelectedText();
@@ -9223,6 +9365,158 @@ namespace TDPdf
             if (rbLandscape.IsChecked == true && h > w) (w, h) = (h, w);
             if (rbPortrait.IsChecked == true && w > h) (w, h) = (h, w);
             return (w, h);
+        }
+
+        private void DocumentInfo_Click(object sender, RoutedEventArgs e) => ShowDocumentInfoDialog();
+
+        // F12 / File ▸ Document Info… — view and edit the PDF's Document Information dictionary
+        // (Title, Author, Subject, Keywords, Creator) plus a read-only structure summary. Edits are
+        // applied to the live PdfSharpCore _doc.Info and the document is marked dirty, so they are
+        // written by the normal save pipeline (doc.Save) the next time the user saves.
+        private void ShowDocumentInfoDialog()
+        {
+            var doc = _doc;
+            if (doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+
+            var bgDark        = BrushResource("BgDark");
+            var bgPanel       = BrushResource("BgPanel");
+            var borderDim     = BrushResource("BorderDim");
+            var textPrimary   = BrushResource("TextPrimary");
+            var textSecondary = BrushResource("TextSecondary");
+            var accent        = BrushResource("AccentGreen");
+
+            var win = new Window
+            {
+                Title = "Document Info",
+                Width = 460, SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize,
+                Background = bgDark,
+                Foreground = textPrimary,
+                ShowInTaskbar = false,
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 12
+            };
+
+            var root = new StackPanel { Margin = new Thickness(16) };
+
+            // Editable metadata field. Every value is a single-line metadata string (Enter is not a
+            // newline), but it wraps and grows up to a cap, then scrolls — so long titles / keyword
+            // lists aren't cramped. `tall` gives the keyword field more room.
+            TextBox AddField(string label, string? value, bool tall = false)
+            {
+                root.Children.Add(new TextBlock
+                {
+                    Text = label,
+                    Foreground = textSecondary,
+                    FontWeight = FontWeights.SemiBold,
+                    Margin = new Thickness(0, 0, 0, 4)
+                });
+                var box = new TextBox
+                {
+                    Text = value ?? "",
+                    Foreground = textPrimary,
+                    Background = bgPanel,
+                    BorderBrush = borderDim,
+                    BorderThickness = new Thickness(1),
+                    CaretBrush = accent,
+                    Padding = new Thickness(6, 4, 6, 4),
+                    TextWrapping = TextWrapping.Wrap,
+                    AcceptsReturn = false,
+                    VerticalContentAlignment = VerticalAlignment.Top,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    MaxHeight = tall ? 110 : 72,
+                    Margin = new Thickness(0, 0, 0, 12)
+                };
+                root.Children.Add(box);
+                return box;
+            }
+
+            var titleBox    = AddField("Title",    doc.Info.Title);
+            var authorBox   = AddField("Author",   doc.Info.Author);
+            var subjectBox  = AddField("Subject",  doc.Info.Subject);
+            var keywordsBox = AddField("Keywords", doc.Info.Keywords, tall: true);
+            var creatorBox  = AddField("Creator",  doc.Info.Creator);
+
+            root.Children.Add(new TextBlock
+            {
+                Text = BuildDocumentInfoSummary(doc, _currentFile),
+                Foreground = textSecondary,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 4)
+            });
+
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 16, 0, 0)
+            };
+            var cancelBtn = new Button
+            {
+                Content = "Cancel",
+                Width = 96, Height = 30,
+                Margin = new Thickness(0, 0, 8, 0),
+                Background = bgPanel,
+                Foreground = textPrimary,
+                BorderBrush = borderDim,
+                Cursor = Cursors.Hand,
+                IsCancel = true
+            };
+            var saveBtn = new Button
+            {
+                Content = "Save",
+                Width = 96, Height = 30,
+                Background = accent,
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.SemiBold,
+                BorderBrush = accent,
+                Cursor = Cursors.Hand,
+                IsDefault = true
+            };
+            buttons.Children.Add(cancelBtn);
+            buttons.Children.Add(saveBtn);
+            root.Children.Add(buttons);
+
+            win.Content = new Border
+            {
+                Background = bgPanel,
+                BorderBrush = borderDim,
+                BorderThickness = new Thickness(1),
+                Child = root
+            };
+
+            cancelBtn.Click += (_, _) => { win.DialogResult = false; };
+            saveBtn.Click += (_, _) =>
+            {
+                doc.Info.Title    = titleBox.Text;
+                doc.Info.Author   = authorBox.Text;
+                doc.Info.Subject  = subjectBox.Text;
+                doc.Info.Keywords = keywordsBox.Text;
+                doc.Info.Creator  = creatorBox.Text;
+                MarkDirty(true);
+                win.DialogResult = true;
+            };
+
+            win.Loaded += (_, _) => titleBox.Focus();
+            win.ShowDialog();
+        }
+
+        // Read-only structure summary for the Document Info dialog: Producer (may throw — guarded),
+        // page count, PDF version, creation date (if present — guarded), and file size in KB.
+        private static string BuildDocumentInfoSummary(PdfDocument doc, string? filePath)
+        {
+            var parts = new List<string>();
+            string producer = ""; try { producer = doc.Info.Producer ?? ""; } catch { }
+            if (producer.Length > 0) parts.Add($"Producer: {producer}");
+            parts.Add($"{doc.PageCount} pages");
+            parts.Add($"PDF {doc.Version / 10}.{doc.Version % 10}");
+            try { var d = doc.Info.CreationDate; if (d != default) parts.Add($"created {d:yyyy-MM-dd HH:mm}"); } catch { }
+            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) parts.Add($"{new FileInfo(filePath).Length / 1024.0:N0} KB"); } catch { }
+            return string.Join("\n", parts);
         }
 
         private void MoveUp_Click(object sender, RoutedEventArgs e)
