@@ -101,5 +101,15 @@ namespace TDPdf.Properties
             get => (bool)this[nameof(PrintDuplex)];
             set => this[nameof(PrintDuplex)] = value;
         }
+
+        // Recently picked custom annotation colors (most-recent first, capped in code).
+        // Comma-separated #RRGGBB hex values; surfaced as the "Recent" row in the color picker.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string CustomColors
+        {
+            get => (string)this[nameof(CustomColors)];
+            set => this[nameof(CustomColors)] = value;
+        }
     }
 }

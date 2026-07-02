@@ -114,7 +114,13 @@ namespace TDPdf
         // Text (typewriter) tool settings
         private double _textFontSize = 14;
         private Color _textColor = Colors.Black;
+        private bool _textWhiteout;
+        private Color _textFillColor = Colors.White;
         private Border? _textSettingsBar;
+
+        // When a settings bar is opened bound to a selected annotation (restyle-in-place),
+        // this points at that annotation; null means the bar edits the tool defaults only.
+        private PageAnnotation? _styleTarget;
 
         // Signature / image resize
         private bool _isResizingSig;
@@ -3544,6 +3550,8 @@ namespace TDPdf
             ClearTextSelection();
             CancelActivePointerOperation(removePreview: true);
             _currentTool = tool;
+            // Tool bars edit tool defaults, not a selected annotation.
+            _styleTarget = null;
 
             var map = new (Button btn, EditTool t)[]
             {
@@ -4016,6 +4024,94 @@ namespace TDPdf
             Colors.DeepPink, Colors.White, Colors.Black
         ];
 
+        // ── Custom color picker plumbing (shared by every annotation swatch row) ──
+
+        private const int MaxRecentColors = 8;
+
+        // The recently picked custom colors, most-recent first, parsed from the persisted setting.
+        private static List<Color> LoadCustomColors()
+        {
+            var raw = TDPdf.Properties.Settings.Default.CustomColors;
+            var list = new List<Color>();
+            if (string.IsNullOrWhiteSpace(raw)) return list;
+            foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                if (TdpColorPicker.TryParseHex(part.Trim(), out Color c))
+                    list.Add(c);
+            return list;
+        }
+
+        // Record a freshly chosen color at the head of the recent list (RGB-deduped, capped) and persist.
+        private static void RememberCustomColor(Color c)
+        {
+            var opaque = Color.FromRgb(c.R, c.G, c.B);
+            var list = LoadCustomColors();
+            list.RemoveAll(x => x.R == opaque.R && x.G == opaque.G && x.B == opaque.B);
+            list.Insert(0, opaque);
+            if (list.Count > MaxRecentColors) list.RemoveRange(MaxRecentColors, list.Count - MaxRecentColors);
+            TDPdf.Properties.Settings.Default.CustomColors =
+                string.Join(",", list.Select(x => $"#{x.R:X2}{x.G:X2}{x.B:X2}"));
+            try { TDPdf.Properties.Settings.Default.Save(); } catch { /* persistence is best-effort */ }
+        }
+
+        // Open the themed RGB picker seeded with <paramref name="initial"/>. On OK the opaque pick is
+        // returned and pushed onto the recent-colors palette; on Cancel returns false.
+        private bool TryPickCustomColor(Color initial, out Color picked)
+        {
+            if (TdpColorPicker.TryPickColor(this, initial, LoadCustomColors(), out picked))
+            {
+                RememberCustomColor(picked);
+                return true;
+            }
+            return false;
+        }
+
+        // A trailing "custom color" swatch for an annotation settings bar: a rainbow "+" tile that opens
+        // the picker (seeded with <paramref name="current"/>) and hands the pick to <paramref name="apply"/>
+        // exactly as clicking a fixed swatch would set the row's active color.
+        private Border MakeCustomColorSwatch(Color current, Action<Color> apply)
+        {
+            var rainbow = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+            Color[] stops =
+            [
+                Color.FromRgb(0xFF, 0x00, 0x00), Color.FromRgb(0xFF, 0x7F, 0x00), Color.FromRgb(0xFF, 0xFF, 0x00),
+                Color.FromRgb(0x00, 0xC8, 0x00), Color.FromRgb(0x00, 0xC8, 0xFF), Color.FromRgb(0x00, 0x40, 0xFF),
+                Color.FromRgb(0x9C, 0x00, 0xFF)
+            ];
+            for (int i = 0; i < stops.Length; i++)
+                rainbow.GradientStops.Add(new GradientStop(stops[i], i / (double)(stops.Length - 1)));
+
+            var plus = new TextBlock
+            {
+                Text = "", // Segoe MDL2 "Add"
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 9,
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect
+                { Color = Colors.Black, BlurRadius = 2, ShadowDepth = 0, Opacity = 0.9 }
+            };
+
+            var swatch = new Border
+            {
+                Width = 18, Height = 18,
+                Background = rainbow,
+                BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Margin = new Thickness(1),
+                Cursor = Cursors.Hand,
+                ToolTip = "Custom color…",
+                Child = plus
+            };
+            swatch.MouseLeftButtonDown += (_, _) =>
+            {
+                if (TryPickCustomColor(current, out var pickedColor))
+                    apply(pickedColor);
+            };
+            return swatch;
+        }
+
         private void ShowDrawSettings(EditTool tool)
         {
             if (_drawSettingsBar is not null)
@@ -4023,6 +4119,31 @@ namespace TDPdf
                 var previewGrid = PagePreviewPanel.Parent as Grid;
                 previewGrid?.Children.Remove(_drawSettingsBar);
                 _drawSettingsBar = null;
+            }
+
+            // Restyle a selected ink/highlight, or edit tool defaults when nothing is selected.
+            var inkTarget = _styleTarget as InkAnnotation;
+            var hlTarget = _styleTarget as HighlightAnnotation;
+
+            void ApplyColor(Color c)
+            {
+                if (inkTarget is not null) { inkTarget.SetColor(Color.FromArgb(inkTarget.ColorA, c.R, c.G, c.B)); RestyleReselect(inkTarget); return; }
+                if (hlTarget is not null) { hlTarget.SetColor(Color.FromArgb(hlTarget.ColorA, c.R, c.G, c.B)); RestyleReselect(hlTarget); return; }
+                if (tool == EditTool.Draw) _drawColor = Color.FromArgb(_drawOpacity, c.R, c.G, c.B);
+                else _highlightColor = Color.FromArgb(_highlightColor.A, c.R, c.G, c.B);
+                ShowDrawSettings(tool);
+            }
+            void ApplyOpacity(byte a)
+            {
+                if (inkTarget is not null) { inkTarget.ColorA = a; RestyleLive(inkTarget); return; }
+                if (hlTarget is not null) { hlTarget.ColorA = a; RestyleLive(hlTarget); return; }
+                if (tool == EditTool.Draw) { _drawOpacity = a; _drawColor = Color.FromArgb(a, _drawColor.R, _drawColor.G, _drawColor.B); }
+                else _highlightColor = Color.FromArgb(a, _highlightColor.R, _highlightColor.G, _highlightColor.B);
+            }
+            void ApplyDrawWidth(double w)
+            {
+                if (inkTarget is not null) { inkTarget.StrokeWidth = w; RestyleLive(inkTarget); return; }
+                _drawWidth = w;
             }
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 4) };
@@ -4037,7 +4158,10 @@ namespace TDPdf
             });
 
             // Color swatches
-            var activeColor = tool == EditTool.Draw ? _drawColor : Color.FromRgb(_highlightColor.R, _highlightColor.G, _highlightColor.B);
+            Color activeColor =
+                inkTarget is not null ? Color.FromRgb(inkTarget.ColorR, inkTarget.ColorG, inkTarget.ColorB) :
+                hlTarget is not null ? Color.FromRgb(hlTarget.ColorR, hlTarget.ColorG, hlTarget.ColorB) :
+                tool == EditTool.Draw ? _drawColor : Color.FromRgb(_highlightColor.R, _highlightColor.G, _highlightColor.B);
             foreach (var color in SwatchColors)
             {
                 var swatch = new Border
@@ -4053,17 +4177,12 @@ namespace TDPdf
                     Cursor = Cursors.Hand,
                     Tag = color
                 };
-                swatch.MouseLeftButtonDown += (s, e) =>
-                {
-                    var c = (Color)((Border)s!).Tag;
-                    if (tool == EditTool.Draw)
-                        _drawColor = Color.FromArgb(_drawOpacity, c.R, c.G, c.B);
-                    else
-                        _highlightColor = Color.FromArgb(_highlightColor.A, c.R, c.G, c.B);
-                    ShowDrawSettings(tool); // refresh selection
-                };
+                swatch.MouseLeftButtonDown += (s, e) => ApplyColor((Color)((Border)s!).Tag);
                 panel.Children.Add(swatch);
             }
+
+            // Custom color: opens the full RGB picker, applied like a fixed swatch (opacity preserved).
+            panel.Children.Add(MakeCustomColorSwatch(activeColor, ApplyColor));
 
             // Separator
             panel.Children.Add(new Rectangle
@@ -4082,23 +4201,22 @@ namespace TDPdf
                     FontFamily = new FontFamily("Segoe UI"), FontSize = 11,
                     VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0)
                 });
+                double curDrawWidth = inkTarget?.StrokeWidth ?? _drawWidth;
                 var sizeSlider = new Slider
                 {
-                    Minimum = 1, Maximum = 20, Value = _drawWidth,
+                    Minimum = 1, Maximum = 20, Value = curDrawWidth,
                     Width = 80, VerticalAlignment = VerticalAlignment.Center,
                     TickFrequency = 1, IsSnapToTickEnabled = true
                 };
-                sizeSlider.ValueChanged += (s, e) => _drawWidth = e.NewValue;
-                panel.Children.Add(sizeSlider);
-
                 var sizeLabel = new TextBlock
                 {
-                    Text = $"{_drawWidth:F0}px",
+                    Text = $"{curDrawWidth:F0}px",
                     Foreground = (SolidColorBrush)FindResource("TextSecondary"),
                     FontFamily = new FontFamily("Segoe UI"), FontSize = 11,
                     VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0)
                 };
-                sizeSlider.ValueChanged += (s, e) => sizeLabel.Text = $"{e.NewValue:F0}px";
+                sizeSlider.ValueChanged += (s, e) => { sizeLabel.Text = $"{e.NewValue:F0}px"; ApplyDrawWidth(e.NewValue); };
+                panel.Children.Add(sizeSlider);
                 panel.Children.Add(sizeLabel);
 
                 // Separator
@@ -4117,7 +4235,7 @@ namespace TDPdf
                 FontFamily = new FontFamily("Segoe UI"), FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0)
             });
-            byte currentOpacity = tool == EditTool.Draw ? _drawOpacity : _highlightColor.A;
+            byte currentOpacity = inkTarget?.ColorA ?? hlTarget?.ColorA ?? (tool == EditTool.Draw ? _drawOpacity : _highlightColor.A);
             var opacitySlider = new Slider
             {
                 Minimum = 10, Maximum = 255, Value = currentOpacity,
@@ -4134,15 +4252,7 @@ namespace TDPdf
             {
                 byte a = (byte)e.NewValue;
                 opacityLabel.Text = $"{(int)(a / 255.0 * 100)}%";
-                if (tool == EditTool.Draw)
-                {
-                    _drawOpacity = a;
-                    _drawColor = Color.FromArgb(a, _drawColor.R, _drawColor.G, _drawColor.B);
-                }
-                else
-                {
-                    _highlightColor = Color.FromArgb(a, _highlightColor.R, _highlightColor.G, _highlightColor.B);
-                }
+                ApplyOpacity(a);
             };
             panel.Children.Add(opacitySlider);
             panel.Children.Add(opacityLabel);
@@ -4276,6 +4386,42 @@ namespace TDPdf
         {
             HideTextSettings();
 
+            // When a text annotation is selected, the bar restyles THAT box; otherwise it sets tool defaults.
+            var target = _styleTarget as TextAnnotation;
+            double curSize = target?.FontSize ?? _textFontSize;
+            Color curColor = target?.GetColor() ?? _textColor;
+            bool curFill = target?.HasFill ?? _textWhiteout;
+            Color curFillColor = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
+
+            void ApplySize(double v)
+            {
+                _textFontSize = v;
+                if (target is not null) { target.FontSize = v; RestyleLive(target); }
+            }
+            void ApplyColor(Color c)
+            {
+                _textColor = c;
+                if (target is not null) { target.SetColor(c); RestyleReselect(target); }
+                else ShowTextSettings();
+            }
+            void ApplyFill(bool on)
+            {
+                _textWhiteout = on;
+                if (target is not null)
+                {
+                    target.HasFill = on;
+                    if (on) target.SetFillColor(_textFillColor);
+                    RestyleReselect(target);
+                }
+                else { UpdateActiveTextBoxFill(); ShowTextSettings(); }
+            }
+            void ApplyFillColor(Color c)
+            {
+                _textFillColor = c;
+                if (target is not null) { target.HasFill = true; target.SetFillColor(c); RestyleReselect(target); }
+                else { _textWhiteout = true; UpdateActiveTextBoxFill(); ShowTextSettings(); }
+            }
+
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 4) };
 
             // Font size label
@@ -4297,16 +4443,16 @@ namespace TDPdf
             };
             foreach (var size in TextFontSizes)
                 sizeBox.Items.Add(size.ToString("0"));
-            sizeBox.Text = _textFontSize.ToString("0");
+            sizeBox.Text = curSize.ToString("0");
             sizeBox.SelectionChanged += (_, _) =>
             {
                 if (sizeBox.SelectedItem is string s && double.TryParse(s, out double v) && v > 0)
-                    _textFontSize = v;
+                    ApplySize(v);
             };
             sizeBox.LostFocus += (_, _) =>
             {
                 if (double.TryParse(sizeBox.Text, out double v) && v > 0)
-                    _textFontSize = v;
+                    ApplySize(v);
             };
             panel.Children.Add(sizeBox);
 
@@ -4334,17 +4480,68 @@ namespace TDPdf
                 {
                     Width = 18, Height = 18,
                     Background = new SolidColorBrush(c),
-                    BorderBrush = (c.R == _textColor.R && c.G == _textColor.G && c.B == _textColor.B)
+                    BorderBrush = (c.R == curColor.R && c.G == curColor.G && c.B == curColor.B)
                         ? (SolidColorBrush)FindResource("AccentGreen")
                         : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
                     BorderThickness = new Thickness(
-                        (c.R == _textColor.R && c.G == _textColor.G && c.B == _textColor.B) ? 2 : 1),
+                        (c.R == curColor.R && c.G == curColor.G && c.B == curColor.B) ? 2 : 1),
                     CornerRadius = new CornerRadius(3),
                     Margin = new Thickness(1),
                     Cursor = Cursors.Hand
                 };
-                swatch.MouseLeftButtonDown += (_, _) => { _textColor = c; ShowTextSettings(); };
+                swatch.MouseLeftButtonDown += (_, _) => ApplyColor(c);
                 panel.Children.Add(swatch);
+            }
+
+            // Custom color: opens the full RGB picker, applied like a fixed text-color swatch.
+            panel.Children.Add(MakeCustomColorSwatch(
+                Color.FromRgb(curColor.R, curColor.G, curColor.B), ApplyColor));
+
+            // Separator
+            panel.Children.Add(new Rectangle
+            {
+                Width = 1, Fill = (SolidColorBrush)FindResource("BorderDim"),
+                Margin = new Thickness(8, 2, 8, 2)
+            });
+
+            // Whiteout fill toggle (+ fill color swatches when on).
+            panel.Children.Add(MakeLabel("Fill:"));
+            var fillToggle = new CheckBox
+            {
+                Content = "On",
+                IsChecked = curFill,
+                Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0),
+                ToolTip = "Paint an opaque background behind the text (whiteout)"
+            };
+            fillToggle.Checked += (_, _) => ApplyFill(true);
+            fillToggle.Unchecked += (_, _) => ApplyFill(false);
+            panel.Children.Add(fillToggle);
+
+            if (curFill)
+            {
+                foreach (var color in SwatchColors)
+                {
+                    var c = color;
+                    bool selected = c.R == curFillColor.R && c.G == curFillColor.G && c.B == curFillColor.B;
+                    var swatch = new Border
+                    {
+                        Width = 18, Height = 18,
+                        Background = new SolidColorBrush(c),
+                        BorderBrush = selected
+                            ? (SolidColorBrush)FindResource("AccentGreen")
+                            : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                        BorderThickness = new Thickness(selected ? 2 : 1),
+                        CornerRadius = new CornerRadius(3),
+                        Margin = new Thickness(1),
+                        Cursor = Cursors.Hand
+                    };
+                    swatch.MouseLeftButtonDown += (_, _) => ApplyFillColor(c);
+                    panel.Children.Add(swatch);
+                }
+                panel.Children.Add(MakeCustomColorSwatch(
+                    Color.FromRgb(curFillColor.R, curFillColor.G, curFillColor.B), ApplyFillColor));
             }
 
             _textSettingsBar = new Border
@@ -4397,6 +4594,44 @@ namespace TDPdf
         {
             HideShapeSettings();
 
+            // Restyle a selected shape, or edit tool defaults when nothing is selected.
+            var target = _styleTarget as ShapeAnnotation;
+            ShapeKind curKind = target?.Kind ?? _shapeKind;
+            Color curStroke = target?.GetStrokeColor() ?? _shapeStrokeColor;
+            bool curHasFill = target?.HasFill ?? _shapeHasFill;
+            Color curFillColor = target?.GetFillColor() ?? _shapeFillColor;
+            double curWidth = target?.StrokeWidth ?? _shapeStrokeWidth;
+
+            void ApplyKind(ShapeKind k)
+            {
+                _shapeKind = k;
+                if (target is not null) { target.Kind = k; RestyleReselect(target); }
+                else ShowShapeSettings();
+            }
+            void ApplyStroke(Color c)
+            {
+                _shapeStrokeColor = c;
+                if (target is not null) { target.SetStrokeColor(c); RestyleReselect(target); }
+                else ShowShapeSettings();
+            }
+            void ApplyFill(bool on)
+            {
+                _shapeHasFill = on;
+                if (target is not null) { target.HasFill = on; if (on) target.SetFillColor(_shapeFillColor); RestyleReselect(target); }
+                else ShowShapeSettings();
+            }
+            void ApplyFillColor(Color c)
+            {
+                _shapeFillColor = c;
+                if (target is not null) { target.HasFill = true; target.SetFillColor(c); RestyleReselect(target); }
+                else { _shapeHasFill = true; ShowShapeSettings(); }
+            }
+            void ApplyWidth(double w)
+            {
+                _shapeStrokeWidth = w;
+                if (target is not null) { target.StrokeWidth = w; RestyleLive(target); }
+            }
+
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 4) };
 
             // Shape kind toggle
@@ -4412,16 +4647,16 @@ namespace TDPdf
                     Margin = new Thickness(2, 0, 2, 0),
                     ToolTip = toolTip,
                     Cursor = Cursors.Hand,
-                    Background = _shapeKind == kind
+                    Background = curKind == kind
                         ? (SolidColorBrush)FindResource("AccentGreenDim")
                         : Brushes.Transparent,
-                    Foreground = _shapeKind == kind
+                    Foreground = curKind == kind
                         ? (SolidColorBrush)FindResource("AccentGreen")
                         : (SolidColorBrush)FindResource("TextPrimary"),
                     BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                     BorderThickness = new Thickness(1)
                 };
-                btn.Click += (_, _) => { _shapeKind = kind; ShowShapeSettings(); };
+                btn.Click += (_, _) => ApplyKind(kind);
                 panel.Children.Add(btn);
             }
             AddKindToggle("\uE91A", ShapeKind.Rectangle, "Rectangle");
@@ -4439,7 +4674,7 @@ namespace TDPdf
             foreach (var color in ShapeStrokeColors)
             {
                 var c = color;
-                bool selected = c.R == _shapeStrokeColor.R && c.G == _shapeStrokeColor.G && c.B == _shapeStrokeColor.B;
+                bool selected = c.R == curStroke.R && c.G == curStroke.G && c.B == curStroke.B;
                 var swatch = new Border
                 {
                     Width = 18, Height = 18,
@@ -4452,9 +4687,13 @@ namespace TDPdf
                     Margin = new Thickness(1),
                     Cursor = Cursors.Hand
                 };
-                swatch.MouseLeftButtonDown += (_, _) => { _shapeStrokeColor = c; ShowShapeSettings(); };
+                swatch.MouseLeftButtonDown += (_, _) => ApplyStroke(c);
                 panel.Children.Add(swatch);
             }
+
+            // Custom stroke color: opens the full RGB picker, applied like a fixed stroke swatch.
+            panel.Children.Add(MakeCustomColorSwatch(
+                Color.FromRgb(curStroke.R, curStroke.G, curStroke.B), ApplyStroke));
 
             panel.Children.Add(new Rectangle
             {
@@ -4467,21 +4706,21 @@ namespace TDPdf
             var fillToggle = new CheckBox
             {
                 Content = "On",
-                IsChecked = _shapeHasFill,
+                IsChecked = curHasFill,
                 Foreground = (SolidColorBrush)FindResource("TextPrimary"),
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 6, 0)
             };
-            fillToggle.Checked += (_, _) => { _shapeHasFill = true; ShowShapeSettings(); };
-            fillToggle.Unchecked += (_, _) => { _shapeHasFill = false; ShowShapeSettings(); };
+            fillToggle.Checked += (_, _) => ApplyFill(true);
+            fillToggle.Unchecked += (_, _) => ApplyFill(false);
             panel.Children.Add(fillToggle);
 
-            if (_shapeHasFill)
+            if (curHasFill)
             {
                 foreach (var color in ShapeStrokeColors)
                 {
                     var c = color;
-                    bool selected = c.R == _shapeFillColor.R && c.G == _shapeFillColor.G && c.B == _shapeFillColor.B;
+                    bool selected = c.R == curFillColor.R && c.G == curFillColor.G && c.B == curFillColor.B;
                     var swatch = new Border
                     {
                         Width = 18, Height = 18,
@@ -4494,9 +4733,13 @@ namespace TDPdf
                         Margin = new Thickness(1),
                         Cursor = Cursors.Hand
                     };
-                    swatch.MouseLeftButtonDown += (_, _) => { _shapeFillColor = c; ShowShapeSettings(); };
+                    swatch.MouseLeftButtonDown += (_, _) => ApplyFillColor(c);
                     panel.Children.Add(swatch);
                 }
+
+                // Custom fill color: opens the full RGB picker, applied like a fixed fill swatch.
+                panel.Children.Add(MakeCustomColorSwatch(
+                    Color.FromRgb(curFillColor.R, curFillColor.G, curFillColor.B), ApplyFillColor));
             }
 
             panel.Children.Add(new Rectangle
@@ -4510,13 +4753,13 @@ namespace TDPdf
             var widthSlider = new Slider
             {
                 Minimum = 1, Maximum = 12,
-                Value = _shapeStrokeWidth,
+                Value = curWidth,
                 Width = 90, VerticalAlignment = VerticalAlignment.Center,
                 TickFrequency = 1, IsSnapToTickEnabled = true
             };
             var widthLabel = new TextBlock
             {
-                Text = $"{_shapeStrokeWidth:0}px",
+                Text = $"{curWidth:0}px",
                 Foreground = (SolidColorBrush)FindResource("TextPrimary"),
                 FontFamily = new FontFamily("Segoe UI"), FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -4524,8 +4767,8 @@ namespace TDPdf
             };
             widthSlider.ValueChanged += (_, _) =>
             {
-                _shapeStrokeWidth = widthSlider.Value;
-                widthLabel.Text = $"{_shapeStrokeWidth:0}px";
+                widthLabel.Text = $"{widthSlider.Value:0}px";
+                ApplyWidth(widthSlider.Value);
             };
             panel.Children.Add(widthSlider);
             panel.Children.Add(widthLabel);
@@ -5776,7 +6019,10 @@ namespace TDPdf
                     {
                         ClearSelection();
                         ClearTextSelection();
-                        EditTextAtPosition(pos, pageIdx);
+                        // Prefer re-editing a placed text box under the cursor; otherwise fall through to
+                        // the existing-PDF-text white-out editor.
+                        if (!TryReeditPlacedText(pos, pageIdx))
+                            EditTextAtPosition(pos, pageIdx);
                         e.Handled = true;
                     }
                     else
@@ -6035,6 +6281,14 @@ namespace TDPdf
         private void BeginAnnotResize(PageAnnotation annot, Point pos)
         {
             PushPageSnapshot(annot.PageIndex);
+            // Seed a legacy (auto-sized) text box's fixed Width/Height from its current extent so the
+            // resize drag has a concrete basis to grow/shrink from.
+            if (annot is TextAnnotation t && (t.Width <= 0 || t.Height <= 0))
+            {
+                var sz = MeasureTextAnnotation(t);
+                if (t.Width <= 0) t.Width = sz.Width;
+                if (t.Height <= 0) t.Height = sz.Height;
+            }
             _isResizingAnnot = true;
             _resizingAnnot = annot;
             _resizeStartCanvas = pos;
@@ -6051,7 +6305,7 @@ namespace TDPdf
             ShapeAnnotation s => (Start: s.Start, End: s.End, StrokeWidth: s.StrokeWidth),
             HighlightAnnotation h => h.Bounds,
             InkAnnotation i => new List<Point>(i.Points),
-            TextAnnotation t => (Position: t.Position, FontSize: t.FontSize),
+            TextAnnotation t => (Position: t.Position, Width: t.Width, Height: t.Height),
             _ => 0
         };
 
@@ -6073,8 +6327,8 @@ namespace TDPdf
                     for (int i = 0; i < pts.Count; i++)
                         if (ink.Points[i] != pts[i]) return false;
                     return true;
-                case TextAnnotation t when original is ValueTuple<Point, double> tp:
-                    return t.Position == tp.Item1;
+                case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
+                    return t.Position == tp.Item1 && t.Width == tp.Item2 && t.Height == tp.Item3;
                 default:
                     return false;
             }
@@ -6097,7 +6351,7 @@ namespace TDPdf
                     ink.Points.Clear();
                     foreach (var p in pts) ink.Points.Add(new Point(p.X + dx, p.Y + dy));
                     break;
-                case TextAnnotation t when original is ValueTuple<Point, double> tp:
+                case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
                     t.Position = new Point(tp.Item1.X + dx, tp.Item1.Y + dy);
                     break;
             }
@@ -6135,6 +6389,13 @@ namespace TDPdf
                         ink.Points.Add(new Point(minX + (p.X - minX) * sx, minY + (p.Y - minY) * sy));
                     double uniform = (sx + sy) * 0.5;
                     ink.StrokeWidth = Math.Max(0.5, ink.StrokeWidth * uniform);
+                    break;
+                }
+                case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
+                {
+                    // Anchor top-left; drag bottom-right to set the wrap Width and box Height.
+                    t.Width = Math.Max(32, tp.Item2 + (cur.X - start.X));
+                    t.Height = Math.Max(t.FontSize + 6, tp.Item3 + (cur.Y - start.Y));
                     break;
                 }
             }
@@ -6758,12 +7019,8 @@ namespace TDPdf
                     return bounds.Contains(pos);
 
                 case TextAnnotation ta:
-                    var ft = new FormattedText(ta.Content,
-                        System.Globalization.CultureInfo.CurrentCulture,
-                        FlowDirection.LeftToRight,
-                        new Typeface("Segoe UI"), ta.FontSize, Brushes.Black,
-                        VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip);
-                    bounds = new Rect(ta.Position.X, ta.Position.Y, ft.Width + 8, ft.Height + 8);
+                    var taSize = MeasureTextAnnotation(ta);
+                    bounds = new Rect(ta.Position.X, ta.Position.Y, taSize.Width, taSize.Height);
                     return bounds.Contains(pos);
 
                 case InkAnnotation ia when ia.Points.Count > 0:
@@ -6877,7 +7134,7 @@ namespace TDPdf
                 string label = annot is SignatureAnnotation ? "Signature" : "Image";
                 SetStatus($"{label} selected — drag corner handle to resize, Delete to remove");
             }
-            else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation)
+            else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation)
             {
                 const double hSize = 10;
                 _annotResizeHandle = new Rectangle
@@ -6902,6 +7159,7 @@ namespace TDPdf
                     },
                     HighlightAnnotation => "highlight",
                     InkAnnotation => "drawing",
+                    TextAnnotation => "text box",
                     _ => "annotation"
                 };
                 SetStatus($"Selected {kind} — drag to move, corner handle to resize, Delete to remove");
@@ -6910,6 +7168,54 @@ namespace TDPdf
             {
                 SetStatus($"Selected {annot.GetType().Name.Replace("Annotation", "").ToLower()} annotation - drag to move, press Delete to remove");
             }
+
+            // Restyle-in-place: reopen the matching settings bar bound to this annotation.
+            _styleTarget = annot;
+            ShowStyleBarForSelection(annot);
+        }
+
+        /// <summary>
+        /// Shows the settings bar matching the selected annotation, bound to it (restyle-in-place).
+        /// Placed annotations (signature/image) have no style bar.
+        /// </summary>
+        private void ShowStyleBarForSelection(PageAnnotation annot)
+        {
+            switch (annot)
+            {
+                case TextAnnotation:
+                    HideShapeSettings(); HideDrawSettings(); ShowTextSettings();
+                    break;
+                case ShapeAnnotation:
+                    HideTextSettings(); HideDrawSettings(); ShowShapeSettings();
+                    break;
+                case InkAnnotation:
+                    HideTextSettings(); HideShapeSettings(); ShowDrawSettings(EditTool.Draw);
+                    break;
+                case HighlightAnnotation:
+                    HideTextSettings(); HideShapeSettings(); ShowDrawSettings(EditTool.Highlight);
+                    break;
+            }
+        }
+
+        /// <summary>Re-render a page after a restyle and re-establish the selection visuals + bound bar.</summary>
+        private void RestyleReselect(PageAnnotation annot)
+        {
+            MarkDirty();
+            RenderAllAnnotations(annot.PageIndex);
+            if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
+                SelectAnnotation(annot, b);
+        }
+
+        /// <summary>
+        /// Re-render a page after a restyle and refresh the selection visuals WITHOUT rebuilding the
+        /// settings bar. Used by continuous slider drags so the slider keeps its mouse capture.
+        /// </summary>
+        private void RestyleLive(PageAnnotation annot)
+        {
+            MarkDirty();
+            RenderAllAnnotations(annot.PageIndex);
+            if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
+                RefreshSelectionVisuals(b);
         }
 
         private static bool IsDescendantOf(DependencyObject child, DependencyObject parent)
@@ -6996,6 +7302,16 @@ namespace TDPdf
             _resizingAnnot = null;
             _resizeOriginalGeom = null;
             _selectedAnnotation = null;
+
+            // Tear down any restyle-in-place binding. In Select mode the bound bar exists only for the
+            // selection, so hide it; in other tools the visible bar belongs to the active tool — leave it.
+            _styleTarget = null;
+            if (_currentTool == EditTool.Select)
+            {
+                HideTextSettings();
+                HideShapeSettings();
+                HideDrawSettings();
+            }
         }
 
         private void DeleteSelected()
@@ -7860,22 +8176,77 @@ namespace TDPdf
         // Text box handling
         // ============================================================
 
-        private void PlaceTextBox(Point pos, int pageIdx)
+        /// <summary>
+        /// If a placed <see cref="TextAnnotation"/> lies under <paramref name="pos"/>, re-open it in the
+        /// in-place editor (topmost first) and return true; otherwise return false.
+        /// </summary>
+        private bool TryReeditPlacedText(Point pos, int pageIdx)
         {
+            if (pageIdx < 0 || !_annotations.TryGetValue(pageIdx, out var list)) return false;
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                if (list[i] is TextAnnotation ta && HitTestAnnotation(ta, pos, out _))
+                {
+                    PlaceTextBox(ta.Position, pageIdx, ta);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>Default wrap width (canvas px) for a newly placed text box.</summary>
+        private const double DefaultTextBoxWidth = 220;
+
+        /// <summary>Context attached to a placed-text editing TextBox via its Tag.</summary>
+        private sealed class PlacedTextContext
+        {
+            public int PageIndex { get; init; }
+            /// <summary>Non-null when re-editing an existing box: it was pulled from the list at edit-start and is restored on cancel.</summary>
+            public TextAnnotation? Existing { get; init; }
+        }
+
+        /// <summary>
+        /// Opens the in-place editing TextBox for a new text annotation, or (when <paramref name="existing"/>
+        /// is supplied) re-opens an already-placed one seeded with its content/size/colour/width/fill.
+        /// </summary>
+        private void PlaceTextBox(Point pos, int pageIdx, TextAnnotation? existing = null)
+        {
+            double width = DefaultTextBoxWidth;
+            if (existing is not null)
+            {
+                // Adopt the box's style so the box (and the Text-tool settings bar, if visible) reflect it.
+                _textColor = existing.GetColor();
+                _textFontSize = existing.FontSize;
+                _textWhiteout = existing.HasFill;
+                if (existing.HasFill) _textFillColor = existing.GetFillColor();
+                if (existing.Width > 0) width = existing.Width;
+
+                // Pull the original out of the model for the duration of the edit (restored on cancel).
+                // The snapshot captures the pre-edit state so undo restores it whichever way the edit ends.
+                PushPageSnapshot(pageIdx);
+                if (_annotations.TryGetValue(pageIdx, out var l0)) l0.Remove(existing);
+                RenderAllAnnotations(pageIdx);
+                if (_currentTool == EditTool.Text && _textSettingsBar is not null) ShowTextSettings();
+            }
+
             var tb = new TextBox
             {
-                Background = FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255)),
                 Foreground = new SolidColorBrush(_textColor),
                 BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                 BorderThickness = new Thickness(1),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = _textFontSize,
-                MinWidth = 120,
-                MinHeight = 24,
+                Width = width,
+                MinHeight = existing is not null && existing.Height > 24 ? existing.Height : 24,
                 Padding = new Thickness(2),
                 AcceptsReturn = true,
-                Tag = pageIdx
+                TextWrapping = TextWrapping.Wrap,
+                Text = existing?.Content ?? "",
+                Tag = new PlacedTextContext { PageIndex = pageIdx, Existing = existing }
             };
+            tb.Background = _textWhiteout
+                ? FrozenSolidColorBrush(_textFillColor)
+                : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
             AutomationProperties.SetName(tb, "Annotation text");
             AutomationProperties.SetHelpText(tb, "Type annotation text. Press Enter to save or Escape to cancel.");
             Canvas.SetLeft(tb, pos.X);
@@ -7888,19 +8259,25 @@ namespace TDPdf
             {
                 tb.Focus();
                 Keyboard.Focus(tb);
+                if (existing is not null) tb.SelectAll();
                 tb.LostFocus += TextBox_LostFocus;
             };
+        }
+
+        /// <summary>Reflects the current whiteout setting onto the live placed-text editing box, if any.</summary>
+        private void UpdateActiveTextBoxFill()
+        {
+            if (_activeTextBox is null || _activeTextBox.Tag is not PlacedTextContext) return;
+            _activeTextBox.Background = _textWhiteout
+                ? FrozenSolidColorBrush(_textFillColor)
+                : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
         }
 
         private void TextBox_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Escape)
             {
-                if (_activeTextBox is not null)
-                {
-                    _annotationCanvas.Children.Remove(_activeTextBox);
-                    _activeTextBox = null;
-                }
+                CancelActiveTextBox();
                 e.Handled = true;
             }
             else if (e.Key == Key.Enter && Keyboard.Modifiers != ModifierKeys.Shift)
@@ -7912,18 +8289,37 @@ namespace TDPdf
 
         private void TextBox_LostFocus(object sender, RoutedEventArgs e)
         {
-            // Only commit if the TextBox actually has content
-            if (_activeTextBox is not null && !string.IsNullOrWhiteSpace(_activeTextBox.Text))
+            if (_activeTextBox is null) return;
+            // Commit on blur when there's content, or always when re-editing (so clearing the box deletes it).
+            bool reediting = _activeTextBox.Tag is PlacedTextContext { Existing: not null };
+            if (reediting || !string.IsNullOrWhiteSpace(_activeTextBox.Text))
             {
                 Dispatcher.BeginInvoke(new Action(CommitActiveTextBox),
                     System.Windows.Threading.DispatcherPriority.Background);
             }
         }
 
+        /// <summary>Cancels the active placed-text edit, restoring the original annotation if re-editing.</summary>
+        private void CancelActiveTextBox()
+        {
+            if (_activeTextBox is null) return;
+            var tb = _activeTextBox;
+            _activeTextBox = null;
+            _annotationCanvas.Children.Remove(tb);
+            if (tb.Tag is PlacedTextContext { Existing: { } original } ctx)
+            {
+                if (!_annotations.TryGetValue(ctx.PageIndex, out var list))
+                    _annotations[ctx.PageIndex] = list = [];
+                list.Add(original);
+                DropTopSnapshotIfFor(ctx.PageIndex);   // no net change — discard the edit-start snapshot
+                RenderAllAnnotations(ctx.PageIndex);
+            }
+        }
+
         private void CommitActiveTextBox()
         {
             if (_activeTextBox is null) return;
-            // If it's an inline text edit, use the dedicated commit path
+            // If it's an inline (existing-PDF-text) edit, use the dedicated commit path
             if (_activeTextBox.Tag is TextEditContext)
             {
                 CommitTextEdit();
@@ -7932,10 +8328,15 @@ namespace TDPdf
             var tb = _activeTextBox;
             _activeTextBox = null;
 
+            var ctx = tb.Tag as PlacedTextContext;
+            int pageIdx = ctx?.PageIndex ?? (tb.Tag is int idx ? idx : PageList.SelectedIndex);
+            bool reediting = ctx?.Existing is not null;   // original already removed + snapshot taken
+
             string content = tb.Text.Trim();
-            int pageIdx = tb.Tag is int idx ? idx : PageList.SelectedIndex;
             double x = Canvas.GetLeft(tb);
             double y = Canvas.GetTop(tb);
+            double width = tb.Width;
+            double height = tb.ActualHeight;
 
             _annotationCanvas.Children.Remove(tb);
 
@@ -7946,11 +8347,33 @@ namespace TDPdf
                     PageIndex = pageIdx,
                     Position = new Point(x, y),
                     Content = content,
-                    FontSize = tb.FontSize
+                    FontSize = tb.FontSize,
+                    Width = double.IsNaN(width) || width <= 0 ? 0 : width,
+                    HasFill = _textWhiteout
                 };
+                ta.Height = ta.Width > 0 && height > 0 ? height : 0;
                 ta.SetColor(tb.Foreground is SolidColorBrush scb ? scb.Color : Colors.Black);
-                AddAnnotation(ta);
-                RenderTextAnnotation(ta);
+                if (_textWhiteout) ta.SetFillColor(_textFillColor);
+
+                if (reediting)
+                {
+                    if (!_annotations.TryGetValue(pageIdx, out var list))
+                        _annotations[pageIdx] = list = [];
+                    list.Add(ta);
+                    MarkDirty();
+                    RenderAllAnnotations(pageIdx);
+                }
+                else
+                {
+                    AddAnnotation(ta);        // pushes its own snapshot
+                    RenderTextAnnotation(ta);
+                }
+            }
+            else if (reediting)
+            {
+                // Box emptied while re-editing: original was already removed at edit-start → commit as a delete.
+                MarkDirty();
+                RenderAllAnnotations(pageIdx);
             }
         }
 
@@ -8119,9 +8542,94 @@ namespace TDPdf
                 FontSize = ta.FontSize,
                 Padding = new Thickness(2)
             };
+            // Width > 0: fixed-width, word-wrapping box. Width == 0: legacy auto-size (no wrap).
+            if (ta.Width > 0)
+            {
+                tb.Width = ta.Width;
+                tb.TextWrapping = TextWrapping.Wrap;
+                if (ta.Height > 0) tb.Height = ta.Height;
+            }
+            // Optional opaque whiteout painted behind the text.
+            if (ta.HasFill)
+                tb.Background = FrozenSolidColorBrush(ta.GetFillColor());
             Canvas.SetLeft(tb, ta.Position.X);
             Canvas.SetTop(tb, ta.Position.Y);
             _annotationCanvas.Children.Add(tb);
+        }
+
+        /// <summary>
+        /// Bounding size (canvas px, including padding) of a text annotation: the fixed Width/Height when
+        /// set, otherwise the measured extent of the (optionally wrapped) content.
+        /// </summary>
+        private Size MeasureTextAnnotation(TextAnnotation ta)
+        {
+            double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
+            var ft = new FormattedText(
+                string.IsNullOrEmpty(ta.Content) ? " " : ta.Content,
+                System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                new Typeface("Segoe UI"), ta.FontSize, Brushes.Black, dpi);
+            if (ta.Width > 0) ft.MaxTextWidth = Math.Max(1, ta.Width - 4);
+            double w = ta.Width > 0 ? ta.Width : ft.Width + 8;
+            double h = ta.Height > 0 ? ta.Height : ft.Height + 8;
+            return new Size(w, h);
+        }
+
+        /// <summary>
+        /// Greedy word-wrap of <paramref name="text"/> to <paramref name="maxWidth"/> canvas px at the
+        /// given font size, using the same WPF font metrics as the on-screen TextBlock so the baked PDF
+        /// breaks at the same points. Over-long single words are hard-broken by character.
+        /// </summary>
+        private List<string> WrapTextToWidth(string text, double fontSize, double maxWidth)
+        {
+            var lines = new List<string>();
+            if (maxWidth <= 0) { lines.Add(text); return lines; }
+            double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
+            var typeface = new Typeface("Segoe UI");
+            double W(string s) => new FormattedText(
+                string.IsNullOrEmpty(s) ? " " : s,
+                System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                typeface, fontSize, Brushes.Black, dpi).Width;
+
+            // Appends a word to the current line, hard-breaking it across lines if it alone overflows.
+            string HardBreakAppend(string cur, string word)
+            {
+                if (W(word) <= maxWidth || word.Length <= 1) return word;
+                string chunk = "";
+                foreach (char ch in word)
+                {
+                    string next = chunk + ch;
+                    if (chunk.Length > 0 && W(next) > maxWidth)
+                    {
+                        lines.Add(chunk);
+                        chunk = ch.ToString();
+                    }
+                    else chunk = next;
+                }
+                return chunk;
+            }
+
+            foreach (var para in text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n'))
+            {
+                string cur = "";
+                foreach (var word in para.Split(' '))
+                {
+                    if (cur.Length == 0)
+                    {
+                        cur = HardBreakAppend("", word);
+                    }
+                    else if (W(cur + " " + word) <= maxWidth)
+                    {
+                        cur += " " + word;
+                    }
+                    else
+                    {
+                        lines.Add(cur);
+                        cur = HardBreakAppend("", word);
+                    }
+                }
+                lines.Add(cur);
+            }
+            return lines;
         }
 
         private void RenderAllAnnotations(int pageIndex)
@@ -10040,19 +10548,58 @@ namespace TDPdf
                     switch (annot)
                     {
                         case TextAnnotation ta:
+                        {
+                            const double pad = 2;
                             var font = new XFont("Segoe UI", ta.FontSize * sy);
-                            var lines = ta.Content.Split('\n');
                             double lineH = ta.FontSize * sy * 1.2;
-                            double ty = ta.Position.Y * sy + ta.FontSize * sy;
                             var taColor = ta.GetColor();
                             var taBrush = new XSolidBrush(XColor.FromArgb(taColor.A, taColor.R, taColor.G, taColor.B));
-                            foreach (var line in lines)
+
+                            if (ta.Width > 0)
                             {
-                                if (!string.IsNullOrEmpty(line))
-                                    gfx.DrawString(line, font, taBrush, ta.Position.X * sx, ty);
-                                ty += lineH;
+                                // Fixed-width wrapping box: mirror the on-screen wrap (same font metrics)
+                                // and the whiteout fill so the saved PDF matches the screen.
+                                var wrapped = WrapTextToWidth(ta.Content, ta.FontSize, ta.Width - pad * 2);
+                                double boxH = ta.Height > 0 ? ta.Height : wrapped.Count * (ta.FontSize * 1.2) + pad * 2;
+                                if (ta.HasFill)
+                                {
+                                    var fc = ta.GetFillColor();
+                                    gfx.DrawRectangle(
+                                        new XSolidBrush(XColor.FromArgb(fc.A, fc.R, fc.G, fc.B)),
+                                        ta.Position.X * sx, ta.Position.Y * sy,
+                                        ta.Width * sx, boxH * sy);
+                                }
+                                double ty = ta.Position.Y * sy + pad * sy + ta.FontSize * sy;
+                                foreach (var line in wrapped)
+                                {
+                                    if (!string.IsNullOrEmpty(line))
+                                        gfx.DrawString(line, font, taBrush, (ta.Position.X + pad) * sx, ty);
+                                    ty += lineH;
+                                }
+                            }
+                            else
+                            {
+                                // Legacy auto-size: unchanged newline-split rendering (with optional fill).
+                                var lines = ta.Content.Split('\n');
+                                if (ta.HasFill)
+                                {
+                                    var sz = MeasureTextAnnotation(ta);
+                                    var fc = ta.GetFillColor();
+                                    gfx.DrawRectangle(
+                                        new XSolidBrush(XColor.FromArgb(fc.A, fc.R, fc.G, fc.B)),
+                                        ta.Position.X * sx, ta.Position.Y * sy,
+                                        sz.Width * sx, sz.Height * sy);
+                                }
+                                double ty = ta.Position.Y * sy + ta.FontSize * sy;
+                                foreach (var line in lines)
+                                {
+                                    if (!string.IsNullOrEmpty(line))
+                                        gfx.DrawString(line, font, taBrush, ta.Position.X * sx, ty);
+                                    ty += lineH;
+                                }
                             }
                             break;
+                        }
 
                         case HighlightAnnotation ha:
                             var hc = ha.GetColor();

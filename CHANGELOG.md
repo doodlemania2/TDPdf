@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.13.0.0] - 2026-07-02
+
+Fork-sync release porting the annotation-editing improvements from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's annotation model and settings bars.
+
+### Added
+
+- **Full RGB color picker with a screen eyedropper** (upstream v1.6.0). Every annotation color row (Text, Draw, Highlight, and Shape stroke/fill) now ends with a **custom-color** swatch that opens a themed picker: a saturation/value square and hue strip, live-synced RGB and hex inputs, a preview swatch, and an **eyedropper** that samples any pixel on screen. Recently picked colors are remembered across sessions (new `CustomColors` setting) and shown as a Recent row. The fixed swatches are unchanged.
+- **Resizable, word-wrapping text boxes with an optional whiteout fill** (upstream v1.6.0). Placed text boxes now wrap at a fixed width, can be **resized** with a corner handle (the wrap width/height follow), and can carry an opaque **whiteout background** (toggle + pickable fill color in the Text bar) to cover what's underneath. **Double-clicking a placed text box re-opens it for editing** (content, size, color, width, and fill), distinct from the existing edit-PDF-text tool. The saved PDF reproduces the on-screen wrapping (same font metrics) and the whiteout fill. Existing single-line text annotations render and save exactly as before.
+- **Restyle a selected annotation in place** (upstream v1.6.0). Selecting an annotation with the Select tool now reopens its style bar bound to that annotation, so changing size, color, stroke width, or fill restyles the selected item live instead of only affecting new annotations.
+
+### Notes
+
+- **Shift-click multi-select and cross-page marquee selection were intentionally not ported in this release.** In TDPdf the Select-tool drag-marquee drives text drag-select-to-copy, and the move/resize/delete/selection subsystem is built around a single selected annotation; a faithful multi-selection would risk regressing text selection and single-selection editing. It was deferred rather than shipped in a half-working state, and remains a candidate for a future, dedicated change. Single-annotation select/move/resize/restyle and all text-selection behavior are unaffected.
+
 ## [1.12.0.0] - 2026-07-02
 
 Fork-sync release overhauling the print dialog with the layout, quality, and persistence options from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0 (Issue #83), adapted to TDPdf's existing themed print-preview window.
@@ -418,7 +432,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.12.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.13.0.0...HEAD
+[1.13.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.12.0.0...v1.13.0.0
 [1.12.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.11.0.0...v1.12.0.0
 [1.11.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.10.0.0...v1.11.0.0
 [1.10.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.2.0...v1.10.0.0
