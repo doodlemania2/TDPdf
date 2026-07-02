@@ -63,5 +63,43 @@ namespace TDPdf.Properties
             get => (string)this[nameof(RecentFiles)];
             set => this[nameof(RecentFiles)] = value;
         }
+
+        // --- Print dialog: remember the last device-level choices across sessions. ---
+
+        // Full name of the last-used print queue; empty falls back to the OS default printer.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string PrintPrinter
+        {
+            get => (string)this[nameof(PrintPrinter)];
+            set => this[nameof(PrintPrinter)] = value;
+        }
+
+        // Last print orientation: "Portrait" or "Landscape".
+        [UserScopedSetting]
+        [DefaultSettingValue("Portrait")]
+        public string PrintOrientation
+        {
+            get => (string)this[nameof(PrintOrientation)];
+            set => this[nameof(PrintOrientation)] = value;
+        }
+
+        // Last color mode: "Color" or "Grayscale".
+        [UserScopedSetting]
+        [DefaultSettingValue("Color")]
+        public string PrintColor
+        {
+            get => (string)this[nameof(PrintColor)];
+            set => this[nameof(PrintColor)] = value;
+        }
+
+        // Last two-sided (duplex) choice; only applied when the printer supports it.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool PrintDuplex
+        {
+            get => (bool)this[nameof(PrintDuplex)];
+            set => this[nameof(PrintDuplex)] = value;
+        }
     }
 }
