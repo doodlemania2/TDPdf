@@ -19,9 +19,14 @@ namespace TDPdf.Services
     /// <summary>
     /// TDPdf's own print dialog with a working preview. WPF's built-in PrintDialog
     /// reports "This app doesn't support print preview", so we rasterize the pages
-    /// ourselves (via Docnet/PDFium), expose printer / orientation / copies /
-    /// page-range settings, and drive the spooler via a non-UI PrintDialog when the
-    /// user clicks Print.
+    /// ourselves (via Docnet/PDFium), expose printer / orientation / color / two-sided /
+    /// scale / position / margins / pages-per-sheet / copies / page-range settings, and
+    /// drive the spooler via a non-UI PrintDialog when the user clicks Print.
+    ///
+    /// The on-screen preview rasterizes at <see cref="RenderDpi"/> (kept light so large
+    /// files stay responsive); the spooled output is re-rasterized fresh at
+    /// <see cref="PrintDpi"/> (300 DPI) at print time, one page at a time and only for the
+    /// pages actually printed, so memory stays bounded even on large documents.
     ///
     /// The caller is expected to hand us a flattened/printable PDF path (annotations
     /// already burned in) plus each page's size in points; we never touch the live
@@ -30,18 +35,30 @@ namespace TDPdf.Services
     public sealed class PrintPreviewWindow : Window
     {
         private const double PointPerInch = 72.0;
-        private const double RenderDpi = 200.0;
+        private const double DipPerInch   = 96.0;
+        private const double RenderDpi    = 200.0;   // on-screen preview resolution
+        private const double PrintDpi     = 300.0;   // spooled output resolution (rendered at print time)
 
         private readonly string _pdfPath;
         private readonly IReadOnlyList<Size> _pageSizes;   // in points
         private readonly int _pageCount;
-        private readonly BitmapSource?[] _cache;           // lazily rasterized previews
+        private readonly BitmapSource?[] _cache;           // lazily rasterized previews (RenderDpi)
 
         private readonly List<PrintQueue> _queues = [];
         private PrintQueue? _queue;
         private LocalPrintServer? _server;   // kept alive: queues reference their server
         private bool _landscape;
-        private int _previewIndex;
+        private int _previewIndex;           // index of the sheet currently shown in the preview
+
+        // Layout options shared by the preview and the print path (what you see is what prints).
+        private bool _grayscale;             // send the job as grayscale/B&W rather than color
+        private bool _duplex;                // two-sided printing (when the printer supports it)
+        private int _scaleMode;              // 0 = fit to page, 1 = custom percentage
+        private double _customPct = 100;     // custom scale % (clamped 25-400)
+        private int _alignH = 1;             // horizontal page position: 0 = left, 1 = center, 2 = right
+        private int _alignV = 1;             // vertical page position:   0 = top,  1 = center, 2 = bottom
+        private double _marginPx;            // extra inset inside the printable area (DIPs)
+        private int _nUp = 1;                // pages per sheet (1, 2, 4, 6, 9)
 
         // Printable area in DIPs for the currently selected printer + orientation.
         private double _areaW = 816;   // Letter portrait fallback (8.5in * 96)
@@ -50,11 +67,14 @@ namespace TDPdf.Services
         private readonly Grid _previewHost = new();
         private readonly TextBlock _pageLabel = new();
         private ComboBox _printerCombo = null!;
+        private ComboBox _duplexCombo  = null!;
         private TextBox _copiesBox = null!;
-        private TextBox _pagesBox = null!;
+        private TextBox _scaleBox  = null!;
+        private TextBox _pagesBox  = null!;
+        private Func<int> _copiesGet = () => 1;   // reads the copies stepper (clamped, min 1)
 
         // Segoe MDL2 Assets close glyph, matching the main window chrome close button.
-        private const string CloseGlyph = "";
+        private const string CloseGlyph = "";
 
         /// <summary>Number of pages sent to the printer (set when the user prints).</summary>
         public int PrintedPageCount { get; private set; }
@@ -67,7 +87,7 @@ namespace TDPdf.Services
             _cache      = new BitmapSource?[_pageCount];
 
             Title  = "TDPdf - Print";
-            Width  = 920;
+            Width  = 940;
             Height = 700;
             MinWidth  = 720;
             MinHeight = 480;
@@ -91,8 +111,13 @@ namespace TDPdf.Services
                 UseAeroCaptionButtons = false
             });
 
+            // Reuse the main window's themed scrollbar for the settings scroller when present.
+            if (owner?.TryFindResource(typeof(System.Windows.Controls.Primitives.ScrollBar)) is Style sbStyle)
+                Resources[typeof(System.Windows.Controls.Primitives.ScrollBar)] = sbStyle;
+
             BuildUi();
             LoadPrinters();
+            UpdateDuplexAvailability();
             RefreshArea();
             UpdatePreview();
         }
@@ -143,6 +168,66 @@ namespace TDPdf.Services
                 combo.BorderBrush  = R("BorderDim");
                 combo.Background   = R("BgPanel");
             }
+        }
+
+        // ---- Numeric field + up/down stepper (reusable, used for Copies and Custom scale %) ----
+
+        // Wires a TextBox as a positive-integer field: digits only, clamped to [min,max], steppable with
+        // the Up/Down arrow keys and the mouse wheel. Returns get/set so a spinner can drive the same value.
+        private static (Func<int> Get, Action<int> Set) NumericField(TextBox box, int min, int max)
+        {
+            int Get() => int.TryParse(box.Text?.Trim(), out int n) ? Math.Min(Math.Max(n, min), max) : min;
+            void Set(int n)
+            {
+                n = Math.Min(Math.Max(n, min), max);
+                box.Text = n.ToString();
+                box.CaretIndex = box.Text.Length;
+            }
+            box.PreviewTextInput += (_, ev) => ev.Handled = !ev.Text.All(char.IsDigit);
+            DataObject.AddPastingHandler(box, (_, ev) =>
+            {
+                if (ev.DataObject.GetData(typeof(string)) is string s && !s.All(char.IsDigit))
+                    ev.CancelCommand();
+            });
+            box.PreviewKeyDown += (_, ev) =>
+            {
+                if (ev.Key == Key.Up)   { Set(Get() + 1); ev.Handled = true; }
+                if (ev.Key == Key.Down) { Set(Get() - 1); ev.Handled = true; }
+            };
+            box.PreviewMouseWheel += (_, ev) => { Set(Get() + (ev.Delta > 0 ? 1 : -1)); ev.Handled = true; };
+            box.LostFocus += (_, _) => Set(Get());
+            return (Get, Set);
+        }
+
+        // Two stacked up/down stepper buttons (each half the field height) bound to the given get/set,
+        // sized to sit flush against the right edge of a field inside a DockPanel row.
+        private static Grid BuildStepper(Func<int> get, Action<int> set)
+        {
+            var g = new Grid { Width = 20, Margin = new Thickness(-1, 0, 0, 0) };
+            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            System.Windows.Controls.Primitives.RepeatButton Step(string glyph, int delta, int row)
+            {
+                var b = new System.Windows.Controls.Primitives.RepeatButton
+                {
+                    Content         = glyph,
+                    Padding         = new Thickness(0),
+                    FontSize        = 7,
+                    Foreground      = R("TextPrimary"),
+                    Background      = R("BgPanel"),
+                    BorderBrush     = R("BorderDim"),
+                    BorderThickness = new Thickness(1),
+                    Cursor          = Cursors.Hand,
+                    Focusable       = false,
+                    Template        = FlatTemplate(typeof(System.Windows.Controls.Primitives.RepeatButton))
+                };
+                b.Click += (_, _) => set(get() + delta);
+                Grid.SetRow(b, row);
+                return b;
+            }
+            g.Children.Add(Step("▲", +1, 0));
+            g.Children.Add(Step("▼", -1, 1));
+            return g;
         }
 
         // ---- UI construction -------------------------------------------------
@@ -219,7 +304,7 @@ namespace TDPdf.Services
 
             // Body: settings | preview
             var body = new Grid();
-            body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
+            body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(268) });
             body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             root.Children.Add(body);
 
@@ -229,16 +314,24 @@ namespace TDPdf.Services
 
         private UIElement BuildSettingsColumn()
         {
-            var panel = new StackPanel { Margin = new Thickness(16, 14, 12, 14) };
-            Grid.SetColumn(panel, 0);
+            // Options live in a scroller (buttons are pinned below), so the growing list of
+            // controls never pushes Print/Cancel off the bottom on a short window.
+            var panel = new StackPanel { Margin = new Thickness(16, 12, 12, 6) };
 
+            // --- Device ---------------------------------------------------------
             panel.Children.Add(Label("Printer"));
             var printerCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
             ApplyComboStyle(printerCombo);
             printerCombo.SelectionChanged += (s, _) =>
             {
                 int i = ((ComboBox)s).SelectedIndex;
-                if (i >= 0 && i < _queues.Count) { _queue = _queues[i]; RefreshArea(); UpdatePreview(); }
+                if (i >= 0 && i < _queues.Count)
+                {
+                    _queue = _queues[i];
+                    RefreshArea();
+                    UpdateDuplexAvailability();
+                    UpdatePreview();
+                }
             };
             _printerCombo = printerCombo;
             panel.Children.Add(printerCombo);
@@ -248,7 +341,8 @@ namespace TDPdf.Services
             ApplyComboStyle(orient);
             orient.Items.Add("Portrait");
             orient.Items.Add("Landscape");
-            orient.SelectedIndex = 0;
+            _landscape = TDPdf.Properties.Settings.Default.PrintOrientation == "Landscape";
+            orient.SelectedIndex = _landscape ? 1 : 0;
             orient.SelectionChanged += (s, _) =>
             {
                 _landscape = ((ComboBox)s).SelectedIndex == 1;
@@ -257,9 +351,150 @@ namespace TDPdf.Services
             };
             panel.Children.Add(orient);
 
+            // Color vs black & white. Sent on the print ticket so color-restricted print policies
+            // see the job correctly instead of treating a B&W job as color.
+            panel.Children.Add(Label("Color"));
+            var colorMode = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(colorMode);
+            colorMode.Items.Add("Color");
+            colorMode.Items.Add("Black and white");
+            _grayscale = TDPdf.Properties.Settings.Default.PrintColor == "Grayscale";
+            colorMode.SelectedIndex = _grayscale ? 1 : 0;
+            colorMode.SelectionChanged += (s, _) => _grayscale = ((ComboBox)s).SelectedIndex == 1;
+            panel.Children.Add(colorMode);
+
+            // Two-sided: the printer does the flipping; we just set the ticket when it's supported.
+            panel.Children.Add(Label("Two-sided"));
+            var duplex = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(duplex);
+            duplex.Items.Add("One-sided");
+            duplex.Items.Add("Two-sided (long edge)");
+            _duplex = TDPdf.Properties.Settings.Default.PrintDuplex;
+            duplex.SelectedIndex = _duplex ? 1 : 0;
+            duplex.SelectionChanged += (s, _) => _duplex = ((ComboBox)s).SelectedIndex == 1;
+            _duplexCombo = duplex;
+            panel.Children.Add(duplex);
+
+            // --- Layout ---------------------------------------------------------
+            panel.Children.Add(Label("Scale"));
+            var scale = new ComboBox { Margin = new Thickness(0, 4, 0, 6), Height = 26 };
+            ApplyComboStyle(scale);
+            scale.Items.Add("Fit to page");
+            scale.Items.Add("Custom %");
+            scale.SelectedIndex = 0;
+            panel.Children.Add(scale);
+
+            // Custom percentage: a compact box with a "%" suffix and a stepper, revealed only when
+            // "Custom" is chosen so it doesn't take space in the default (fit) layout.
+            _scaleBox = MakeTextBox("100");
+            _scaleBox.Margin = new Thickness(0);
+            _scaleBox.VerticalContentAlignment = VerticalAlignment.Center;
+            var (getScale, setScale) = NumericField(_scaleBox, 25, 400);   // same numeric treatment as Copies
+            _scaleBox.TextChanged += (s, _) =>
+            {
+                if (int.TryParse(((TextBox)s).Text?.Trim(), out int p) && p > 0)
+                {
+                    _customPct = p;
+                    if (_scaleMode == 1) UpdatePreview();
+                }
+            };
+            var scaleSpin = BuildStepper(getScale, setScale);
+            var scalePct  = new TextBlock
+            {
+                Text = "%", Foreground = R("TextSecondary"),
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0)
+            };
+            var scaleRow = new DockPanel
+            {
+                Margin        = new Thickness(0, 0, 0, 12),
+                LastChildFill = true,
+                Visibility    = Visibility.Collapsed
+            };
+            DockPanel.SetDock(scalePct, Dock.Right);
+            DockPanel.SetDock(scaleSpin, Dock.Right);
+            scaleRow.Children.Add(scalePct);    // rightmost
+            scaleRow.Children.Add(scaleSpin);   // left of %
+            scaleRow.Children.Add(_scaleBox);   // fills the rest of the column width
+            scale.SelectionChanged += (s, _) =>
+            {
+                _scaleMode = ((ComboBox)s).SelectedIndex;   // 0 = fit, 1 = custom
+                scaleRow.Visibility = _scaleMode == 1 ? Visibility.Visible : Visibility.Collapsed;
+                UpdatePreview();
+            };
+            panel.Children.Add(scaleRow);
+
+            // Position of the page within the printable area (1-up only).
+            panel.Children.Add(Label("Position"));
+            var position = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(position);
+            var positions = new (string name, int h, int v)[]
+            {
+                ("Center", 1, 1), ("Top", 1, 0), ("Bottom", 1, 2),
+                ("Left", 0, 1), ("Right", 2, 1),
+                ("Top-left", 0, 0), ("Top-right", 2, 0),
+                ("Bottom-left", 0, 2), ("Bottom-right", 2, 2)
+            };
+            foreach (var (name, _, _) in positions) position.Items.Add(name);
+            position.SelectedIndex = 0;
+            position.SelectionChanged += (s, _) =>
+            {
+                int i = ((ComboBox)s).SelectedIndex;
+                if (i >= 0 && i < positions.Length)
+                {
+                    _alignH = positions[i].h;
+                    _alignV = positions[i].v;
+                    UpdatePreview();
+                }
+            };
+            panel.Children.Add(position);
+
+            // Margins: an extra inset applied inside the printable area.
+            panel.Children.Add(Label("Margins"));
+            var margins = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(margins);
+            var marginOpts = new (string name, double inches)[]
+            {
+                ("None", 0),
+                ("Narrow (0.25\")", 0.25),
+                ("Normal (0.5\")", 0.5),
+                ("Wide (1\")", 1.0)
+            };
+            foreach (var (name, _) in marginOpts) margins.Items.Add(name);
+            margins.SelectedIndex = 0;
+            margins.SelectionChanged += (s, _) =>
+            {
+                int i = ((ComboBox)s).SelectedIndex;
+                if (i >= 0 && i < marginOpts.Length) { _marginPx = marginOpts[i].inches * DipPerInch; UpdatePreview(); }
+            };
+            panel.Children.Add(margins);
+
+            // Pages per sheet (N-up): we compose the tiled sheet ourselves.
+            panel.Children.Add(Label("Pages per sheet"));
+            var nup = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(nup);
+            foreach (var n in new[] { "1", "2", "4", "6", "9" }) nup.Items.Add(n);
+            nup.SelectedIndex = 0;
+            nup.SelectionChanged += (s, _) =>
+            {
+                _nUp = int.TryParse((string)((ComboBox)s).SelectedItem, out int n) && n > 0 ? n : 1;
+                _previewIndex = 0;
+                UpdatePreview();
+            };
+            panel.Children.Add(nup);
+
+            // --- Quantity -------------------------------------------------------
             panel.Children.Add(Label("Copies"));
             _copiesBox = MakeTextBox("1");
-            panel.Children.Add(_copiesBox);
+            _copiesBox.Margin = new Thickness(0);
+            _copiesBox.VerticalContentAlignment = VerticalAlignment.Center;
+            var (getCopies, setCopies) = NumericField(_copiesBox, 1, 9999);
+            _copiesGet = getCopies;
+            var copiesSpin = BuildStepper(getCopies, setCopies);
+            var copiesRow  = new DockPanel { Margin = new Thickness(0, 4, 0, 12), LastChildFill = true };
+            DockPanel.SetDock(copiesSpin, Dock.Right);
+            copiesRow.Children.Add(copiesSpin);   // docked right, full field height
+            copiesRow.Children.Add(_copiesBox);   // fills the rest of the column width
+            panel.Children.Add(copiesRow);
 
             panel.Children.Add(Label("Pages"));
             _pagesBox = MakeTextBox("");
@@ -270,21 +505,40 @@ namespace TDPdf.Services
                 Text         = "e.g. 1-3,5  (blank = all)",
                 Foreground   = R("TextSecondary"),
                 FontSize     = 11,
-                Margin       = new Thickness(0, 0, 0, 16),
+                Margin       = new Thickness(0, 0, 0, 8),
                 TextWrapping = TextWrapping.Wrap
             });
 
+            // Buttons pinned below the scroller so they stay visible on a short window.
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
             var cancel = MakeButton("Cancel", false);
             cancel.Click += (_, _) => { DialogResult = false; Close(); };
+            cancel.IsCancel = true;
             var print = MakeButton("Print", true);
             print.Margin = new Thickness(8, 0, 0, 0);
             print.Click += (_, _) => DoPrint();
+            print.IsDefault = true;
             btnRow.Children.Add(cancel);
             btnRow.Children.Add(print);
-            panel.Children.Add(btnRow);
 
-            return panel;
+            var optionsScroller = new ScrollViewer
+            {
+                Content                       = panel,
+                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            };
+            Grid.SetRow(optionsScroller, 0);
+
+            var btnHost = new Border { Child = btnRow, Padding = new Thickness(16, 8, 12, 12) };
+            Grid.SetRow(btnHost, 1);
+
+            var column = new Grid();
+            column.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            column.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            column.Children.Add(optionsScroller);
+            column.Children.Add(btnHost);
+            Grid.SetColumn(column, 0);
+            return column;
         }
 
         private TextBox MakeTextBox(string text) => new()
@@ -324,7 +578,7 @@ namespace TDPdf.Services
             var prev = MakeButton("◀", false);   // left triangle
             prev.Click += (_, _) => { if (_previewIndex > 0) { _previewIndex--; UpdatePreview(); } };
             var next = MakeButton("▶", false);   // right triangle
-            next.Click += (_, _) => { if (_previewIndex < _pageCount - 1) { _previewIndex++; UpdatePreview(); } };
+            next.Click += (_, _) => { if (_previewIndex < SheetCount() - 1) { _previewIndex++; UpdatePreview(); } };
             _pageLabel.Foreground = R("TextPrimary");
             _pageLabel.VerticalAlignment = VerticalAlignment.Center;
             _pageLabel.Margin = new Thickness(12, 0, 12, 0);
@@ -370,12 +624,33 @@ namespace TDPdf.Services
 
             foreach (var q in _queues) _printerCombo.Items.Add(q.FullName);
 
-            int sel = def != null ? _queues.FindIndex(q => q.FullName == def.FullName) : 0;
+            // Restore the last-used printer; fall back to the OS default if it's gone.
+            string savedPrinter = TDPdf.Properties.Settings.Default.PrintPrinter;
+            int sel = !string.IsNullOrEmpty(savedPrinter) ? _queues.FindIndex(q => q.FullName == savedPrinter) : -1;
+            if (sel < 0) sel = def != null ? _queues.FindIndex(q => q.FullName == def.FullName) : 0;
             if (_queues.Count > 0)
             {
                 _printerCombo.SelectedIndex = sel >= 0 ? sel : 0;
                 _queue = _queues[_printerCombo.SelectedIndex];
             }
+        }
+
+        // Enables the two-sided dropdown only when the selected printer reports duplex support.
+        private void UpdateDuplexAvailability()
+        {
+            if (_duplexCombo is null) return;
+            bool ok = false;
+            try
+            {
+                var caps = _queue?.GetPrintCapabilities();
+                ok = caps?.DuplexingCapability?.Contains(Duplexing.TwoSidedLongEdge) == true;
+            }
+            catch { /* capability query not supported: leave disabled */ }
+
+            _duplexCombo.IsEnabled = ok;
+            _duplexCombo.Opacity   = ok ? 1.0 : 0.5;
+            _duplexCombo.ToolTip   = ok ? null : "The selected printer doesn't report two-sided support.";
+            if (!ok) { _duplexCombo.SelectedIndex = 0; _duplex = false; }
         }
 
         private void RefreshArea()
@@ -431,35 +706,144 @@ namespace TDPdf.Services
             }
         }
 
+        // ---- Sheet composition (shared by the preview and the print path) ----
+
+        // Raster-pixels -> DIP scale factor for a page under the current scale mode.
+        // Fit shrinks the page into the available area; Custom uses the true physical size * percent.
+        private double ScaleFor(BitmapSource bmp, int idx, double availW, double availH)
+        {
+            if (_scaleMode == 1)
+            {
+                double physDipW = _pageSizes[idx].Width / PointPerInch * DipPerInch;
+                double actual   = physDipW / Math.Max(1, bmp.PixelWidth);
+                return actual * (Math.Clamp(_customPct, 25, 400) / 100.0);
+            }
+            return Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
+        }
+
+        // Page offset within the available area for the current position selection.
+        private double OffsetH(double availW, double imgW)
+            => _alignH == 0 ? 0 : _alignH == 2 ? availW - imgW : (availW - imgW) / 2;
+        private double OffsetV(double availH, double imgH)
+            => _alignV == 0 ? 0 : _alignV == 2 ? availH - imgH : (availH - imgH) / 2;
+
+        // Column/row grid for the current pages-per-sheet count, oriented to the sheet.
+        private (int cols, int rows) NupGrid() => _nUp switch
+        {
+            2 => _landscape ? (2, 1) : (1, 2),
+            4 => (2, 2),
+            6 => _landscape ? (3, 2) : (2, 3),
+            9 => (3, 3),
+            _ => (1, 1)
+        };
+
+        private int SheetCount() => _pageCount == 0 ? 0 : (_pageCount + _nUp - 1) / _nUp;
+
+        // Builds one sheet (aw x ah DIPs, white) holding the given source pages. 1-up honours the
+        // scale mode + position + margin; N-up fits each page into its grid cell. Returns null when
+        // none of the requested pages could be fetched. Shared by the preview and the print path so
+        // what you see is what prints. The `fetch` delegate supplies the page bitmap (preview cache
+        // for the preview; a fresh 300 DPI render for print).
+        private Grid? ComposeSheet(List<int> idxs, double aw, double ah, Func<int, BitmapSource?> fetch)
+        {
+            var sheet = new Grid
+            {
+                Width = aw, Height = ah, Background = Brushes.White, ClipToBounds = true,
+                UseLayoutRounding = true, SnapsToDevicePixels = true
+            };
+            var canvas = new Canvas();
+            double m = _marginPx;
+            bool any = false;
+
+            if (_nUp <= 1)
+            {
+                if (idxs.Count > 0 && fetch(idxs[0]) is BitmapSource bmp)
+                {
+                    int idx = idxs[0];
+                    double availW = aw - 2 * m, availH = ah - 2 * m;
+                    double s  = ScaleFor(bmp, idx, availW, availH);
+                    double iw = bmp.PixelWidth * s, ih = bmp.PixelHeight * s;
+                    // In fit mode, snap to the printable area when within a pixel of filling it so the
+                    // white sheet doesn't peek through as a 1px hairline at the page edge.
+                    if (_scaleMode == 0)
+                    {
+                        if (iw >= availW - 1.5) iw = availW + 1;
+                        if (ih >= availH - 1.5) ih = availH + 1;
+                    }
+                    var img = new Image { Source = bmp, Width = iw, Height = ih };
+                    RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+                    Canvas.SetLeft(img, m + OffsetH(availW, iw));
+                    Canvas.SetTop(img, m + OffsetV(availH, ih));
+                    canvas.Children.Add(img);
+                    any = true;
+                }
+            }
+            else
+            {
+                var (cols, rows) = NupGrid();
+                const double gap = 6;
+                double cellW = (aw - 2 * m) / cols, cellH = (ah - 2 * m) / rows;
+                for (int i = 0; i < idxs.Count && i < cols * rows; i++)
+                {
+                    int idx = idxs[i];
+                    if (fetch(idx) is not BitmapSource bmp) continue;
+                    int row = i / cols, col = i % cols;
+                    double availW = Math.Max(1, cellW - gap), availH = Math.Max(1, cellH - gap);
+                    double s  = Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
+                    double iw = bmp.PixelWidth * s, ih = bmp.PixelHeight * s;
+                    var img = new Image { Source = bmp, Width = iw, Height = ih };
+                    RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+                    Canvas.SetLeft(img, m + col * cellW + (cellW - iw) / 2);
+                    Canvas.SetTop(img, m + row * cellH + (cellH - ih) / 2);
+                    canvas.Children.Add(img);
+                    any = true;
+                }
+            }
+
+            if (!any) return null;
+            sheet.Children.Add(canvas);
+            return sheet;
+        }
+
         private void UpdatePreview()
         {
             _previewHost.Children.Clear();
             if (_pageCount == 0) { _pageLabel.Text = "No pages"; return; }
 
-            int idx = Math.Max(0, Math.Min(_previewIndex, _pageCount - 1));
-            _previewIndex = idx;
+            int sheets = SheetCount();
+            int sheet  = Math.Max(0, Math.Min(_previewIndex, sheets - 1));
+            _previewIndex = sheet;
 
-            var bmp = GetPageBitmap(idx);
-            var paper = new Grid { Width = _areaW, Height = _areaH, Background = Brushes.White };
-            if (bmp != null)
+            // Source pages on this sheet (one for 1-up, up to _nUp for N-up).
+            var idxs = new List<int>();
+            for (int i = sheet * _nUp; i < Math.Min(_pageCount, sheet * _nUp + _nUp); i++)
+                idxs.Add(i);
+
+            var paper = ComposeSheet(idxs, _areaW, _areaH, GetPageBitmap);
+            if (paper != null)
             {
-                double scale = Math.Min(_areaW / bmp.PixelWidth, _areaH / bmp.PixelHeight);
-                var img = new Image
-                {
-                    Source              = bmp,
-                    Width               = bmp.PixelWidth * scale,
-                    Height              = bmp.PixelHeight * scale,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment   = VerticalAlignment.Center
-                };
-                RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-                paper.Children.Add(img);
+                var vb = new Viewbox { Child = paper, Stretch = Stretch.Uniform, Margin = new Thickness(20) };
+                _previewHost.Children.Add(vb);
             }
 
-            var vb = new Viewbox { Child = paper, Stretch = Stretch.Uniform, Margin = new Thickness(20) };
-            _previewHost.Children.Add(vb);
+            _pageLabel.Text = _nUp > 1
+                ? $"Sheet {sheet + 1} of {sheets}"
+                : $"Page {sheet + 1} of {_pageCount}";
+        }
 
-            _pageLabel.Text = $"Page {idx + 1} of {_pageCount}";
+        // Persists the device-level print choices so the dialog reopens with the user's last setup.
+        private void SavePrintPrefs()
+        {
+            try
+            {
+                var s = TDPdf.Properties.Settings.Default;
+                if (_queue != null) s.PrintPrinter = _queue.FullName;
+                s.PrintOrientation = _landscape ? "Landscape" : "Portrait";
+                s.PrintColor       = _grayscale ? "Grayscale" : "Color";
+                s.PrintDuplex      = _duplex;
+                s.Save();
+            }
+            catch { /* settings are best-effort */ }
         }
 
         private void DoPrint()
@@ -479,15 +863,21 @@ namespace TDPdf.Services
                 return;
             }
 
-            int.TryParse(_copiesBox.Text?.Trim(), out int copies);
+            int copies = _copiesGet();
             if (copies < 1) copies = 1;
+
+            SavePrintPrefs();   // remember printer / orientation / color / two-sided for next time
 
             try
             {
                 var pd = new PrintDialog { PrintQueue = _queue };
                 var ticket = pd.PrintTicket;
+                // Copies are handled at the driver level via the single ticket count (no manual copy
+                // loop, which double-printed on some drivers); color and duplex ride the ticket too.
                 ticket.CopyCount       = copies;
                 ticket.PageOrientation = _landscape ? PageOrientation.Landscape : PageOrientation.Portrait;
+                ticket.OutputColor     = _grayscale ? OutputColor.Grayscale : OutputColor.Color;
+                ticket.Duplexing       = _duplex ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
                 pd.PrintTicket = ticket;
 
                 double aw = pd.PrintableAreaWidth, ah = pd.PrintableAreaHeight;
@@ -495,22 +885,41 @@ namespace TDPdf.Services
                 else            { if (aw > ah) (aw, ah) = (ah, aw); }
                 if (aw <= 0 || ah <= 0) { aw = _areaW; ah = _areaH; }
 
-                var fixedDoc = new FixedDocument();
-                foreach (int idx in indices)
+                // Re-rasterize the pages being printed fresh at a true 300 DPI (never the lighter
+                // preview cache). A single DocReader renders each page on demand as ComposeSheet asks
+                // for it, so only the pages actually printed are ever rendered - memory stays bounded
+                // on large documents.
+                using var dr = DocLib.Instance.GetDocReader(_pdfPath, new PageDimensions(PrintDpi / PointPerInch));
+                BitmapSource? RenderHi(int idx)
                 {
-                    var bmp = GetPageBitmap(idx);
-                    if (bmp == null) continue;
+                    if (idx < 0 || idx >= _pageCount) return null;
+                    try
+                    {
+                        using var pr = dr.GetPageReader(idx);
+                        int w = pr.GetPageWidth(), h = pr.GetPageHeight();
+                        var raw = pr.GetImage();
+                        if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) return null;
+                        var bmp = new WriteableBitmap(w, h, PrintDpi, PrintDpi, PixelFormats.Bgra32, null);
+                        bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);
+                        bmp.Freeze();
+                        return bmp;
+                    }
+                    catch { return null; }
+                }
 
-                    double scale = Math.Min(aw / bmp.PixelWidth, ah / bmp.PixelHeight);
-                    double iw = bmp.PixelWidth * scale;
-                    double ih = bmp.PixelHeight * scale;
+                var fixedDoc = new FixedDocument();
+                // Group the selected pages into sheets of _nUp and compose each sheet (margins +
+                // position + scale + tiling all handled inside ComposeSheet, shared with the preview).
+                for (int start = 0; start < indices.Count; start += _nUp)
+                {
+                    var chunk = indices.Skip(start).Take(_nUp).ToList();
+                    var sheet = ComposeSheet(chunk, aw, ah, RenderHi);
+                    if (sheet == null) continue;
 
-                    var fp  = new FixedPage { Width = aw, Height = ah };
-                    var img = new Image { Source = bmp, Width = iw, Height = ih };
-                    RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-                    FixedPage.SetLeft(img, (aw - iw) / 2);
-                    FixedPage.SetTop(img, (ah - ih) / 2);
-                    fp.Children.Add(img);
+                    var fp = new FixedPage { Width = aw, Height = ah };
+                    FixedPage.SetLeft(sheet, 0);
+                    FixedPage.SetTop(sheet, 0);
+                    fp.Children.Add(sheet);
                     fp.Measure(new Size(aw, ah));
                     fp.Arrange(new Rect(new Point(), new Size(aw, ah)));
 
@@ -527,7 +936,7 @@ namespace TDPdf.Services
                 }
 
                 pd.PrintDocument(fixedDoc.DocumentPaginator, "TDPdf");
-                PrintedPageCount = fixedDoc.Pages.Count;
+                PrintedPageCount = indices.Count;
                 DialogResult = true;
                 Close();
             }
@@ -569,9 +978,11 @@ namespace TDPdf.Services
             return set.Count == 0 ? [.. Enumerable.Range(0, count)] : [.. set];
         }
 
-        // ---- Button factory (matches our themed dialog buttons, no blue hover chrome) ----
+        // ---- Button / control factory (matches our themed dialog buttons, no blue hover chrome) ----
 
-        private static ControlTemplate MakeBtnTemplate()
+        // Flat border-only template usable for Button and RepeatButton, so the OS default gradient
+        // chrome (which ignores Background) doesn't show over our dark theme.
+        private static ControlTemplate FlatTemplate(Type targetType)
         {
             var bf = new FrameworkElementFactory(typeof(Border));
             bf.SetBinding(Border.BackgroundProperty,
@@ -587,7 +998,7 @@ namespace TDPdf.Services
             cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
             cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
             bf.AppendChild(cp);
-            return new ControlTemplate(typeof(Button)) { VisualTree = bf };
+            return new ControlTemplate(targetType) { VisualTree = bf };
         }
 
         private static Button MakeButton(string label, bool accent)
@@ -604,7 +1015,7 @@ namespace TDPdf.Services
                 BorderThickness = new Thickness(1),
                 FontSize        = 12,
                 Cursor          = Cursors.Hand,
-                Template        = MakeBtnTemplate()
+                Template        = FlatTemplate(typeof(Button))
             };
             btn.MouseEnter += (_, _) => btn.Background = bgHov;
             btn.MouseLeave += (_, _) => btn.Background = bgNorm;

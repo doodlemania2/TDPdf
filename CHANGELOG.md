@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.12.0.0] - 2026-07-02
+
+Fork-sync release overhauling the print dialog with the layout, quality, and persistence options from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0 (Issue #83), adapted to TDPdf's existing themed print-preview window.
+
+### Added
+
+- **True 300 DPI print output** (upstream v1.6.0, Issue #83). Printed pages are now re-rasterized at a true 300 DPI at print time, so output is sharp instead of carrying the lighter on-screen preview resolution. The preview itself stays at ~200 DPI, and the 300 DPI render happens on demand one page at a time and only for the pages actually being printed, so it does not blow up memory the way rendering every page up front would.
+- **Color / black-and-white and two-sided (duplex)** print options, applied at the driver level through the print ticket. The two-sided option is disabled automatically when the selected printer reports no duplex support.
+- **Scale** (Fit to page or a custom percentage from 25–400%), **position** (nine-way — center, edges, corners), and **margins** (None / Narrow / Normal / Wide), replacing the previous always-centered, always-fit placement.
+- **Pages per sheet (N-up)** — print 1, 2, 4, 6, or 9 pages tiled onto each sheet in reading order. The preview navigates by composed sheet and shows exactly what will print (the same sheet-composition code drives both preview and print).
+- **Numeric steppers** for the copy count and the custom scale percentage — up/down buttons with arrow-key and mouse-wheel stepping, clamped to valid ranges.
+- **Remembered print settings** — the last printer, orientation, color, and two-sided choices persist across sessions (falling back to the OS default printer if the remembered one is gone).
+
+### Changed
+
+- Copies continue to be handled by a single driver-level copy count (no manual copy loop), avoiding the duplicate-copy behavior some drivers exhibit.
+
 ## [1.11.0.0] - 2026-07-02
 
 Fork-sync release porting the recent-files and folder/archive-drop features from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's multi-tab `DocumentContext` architecture.
@@ -401,7 +418,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.11.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.12.0.0...HEAD
+[1.12.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.11.0.0...v1.12.0.0
 [1.11.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.10.0.0...v1.11.0.0
 [1.10.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.2.0...v1.10.0.0
 [1.9.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.1.0...v1.9.2.0
