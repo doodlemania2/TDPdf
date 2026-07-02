@@ -846,7 +846,7 @@
                 <!-- File operations -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                     <Button Content="&#xE7C3;" Style="{StaticResource ToolbarButton}" Click="New_Click" ToolTip="New Blank Document (Ctrl+N)" KeyboardNavigation.TabIndex="3" AutomationProperties.Name="New blank document" AutomationProperties.HelpText="Create a single blank A4 page as a new document. Shortcut Ctrl+N." AutomationProperties.AccessKey="N"/>
-                    <Button Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" ToolTip="Open (Ctrl+O, Alt+O)" KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
+                    <Button x:Name="OpenBtn" Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O) — right-click for recent files" KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
                     <Button x:Name="CloseFileBtn" Content="&#xE711;" Style="{StaticResource ToolbarButton}" Click="CloseFile_Click" ToolTip="Close File (Ctrl+W, Alt+W)" IsEnabled="False" KeyboardNavigation.TabIndex="5" AutomationProperties.Name="Close file" AutomationProperties.HelpText="Close the current PDF and return to the start view. Shortcut Ctrl+W. Access key Alt+W." AutomationProperties.AccessKey="W" AutomationProperties.LabeledBy="{Binding ElementName=CloseFileButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE710;" Style="{StaticResource ToolbarButton}" Click="Merge_Click" ToolTip="Merge PDFs (Alt+M)" KeyboardNavigation.TabIndex="6" AutomationProperties.Name="Merge PDFs" AutomationProperties.HelpText="Combine additional PDFs into this document. Access key Alt+M." AutomationProperties.AccessKey="M" AutomationProperties.LabeledBy="{Binding ElementName=MergeButtonLabel}"/>
@@ -1045,13 +1045,47 @@
                     <TextBlock x:Name="PagePreviewLabel" Text="PDF page preview" Width="0" Height="0" Opacity="0" IsHitTestVisible="False" Focusable="False"/>
                     <TextBlock x:Name="AnnotationCanvasLabel" Text="PDF annotation canvas" Width="0" Height="0" Opacity="0" IsHitTestVisible="False" Focusable="False"/>
                     <!-- Drop zone -->
-                    <Border x:Name="DropZone" Background="Transparent" Focusable="True" KeyboardNavigation.TabIndex="40" AutomationProperties.Name="Open PDF drop zone" AutomationProperties.HelpText="Drop a PDF file here, or press Enter or Space to browse for a PDF." AutomationProperties.LabeledBy="{Binding ElementName=DropZoneLabel}" AllowDrop="True" Drop="DropZone_Drop" DragOver="DropZone_DragOver" KeyDown="DropZone_KeyDown" MouseLeftButtonDown="DropZone_Click">
-                        <Border BorderBrush="{DynamicResource BorderDim}" BorderThickness="2" CornerRadius="8" Margin="40" Padding="40" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent" Style="{x:Null}">
-                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <TextBlock Text="Drop PDF here" FontFamily="Segoe UI" FontSize="20" Foreground="{DynamicResource TextSecondary}" HorizontalAlignment="Center"/>
-                                <TextBlock Text="or click to browse" FontFamily="Segoe UI" FontSize="13" Foreground="{DynamicResource BorderDim}" HorizontalAlignment="Center" Margin="0,8,0,0"/>
-                            </StackPanel>
-                        </Border>
+                    <Border x:Name="DropZone" Background="Transparent" Focusable="True" KeyboardNavigation.TabIndex="40" AutomationProperties.Name="Open PDF drop zone" AutomationProperties.HelpText="Drop PDFs, images, folders, or .zip archives here, or press Enter or Space to browse for a PDF." AutomationProperties.LabeledBy="{Binding ElementName=DropZoneLabel}" AllowDrop="True" Drop="DropZone_Drop" DragOver="DropZone_DragOver" KeyDown="DropZone_KeyDown" MouseLeftButtonDown="DropZone_Click">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Border BorderBrush="{DynamicResource BorderDim}" BorderThickness="2" CornerRadius="8" Margin="40,40,40,12" Padding="40" HorizontalAlignment="Center" Background="Transparent" Style="{x:Null}">
+                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock Text="Drop PDF here" FontFamily="Segoe UI" FontSize="20" Foreground="{DynamicResource TextSecondary}" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="or click to browse" FontFamily="Segoe UI" FontSize="13" Foreground="{DynamicResource BorderDim}" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                                    <TextBlock Text="PDFs, images, folders, and .zip archives" FontFamily="Segoe UI" FontSize="11" Foreground="{DynamicResource BorderDim}" HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                                </StackPanel>
+                            </Border>
+                            <!-- Recent files (hidden when there are none) -->
+                            <Border x:Name="RecentFilesBox" Visibility="Collapsed" Width="440" Margin="40,0,40,40"
+                                    Background="{DynamicResource BgPanel}" BorderBrush="{DynamicResource BorderDim}"
+                                    BorderThickness="1" CornerRadius="8" Padding="12,10">
+                                <StackPanel>
+                                    <Grid Margin="4,0,4,6">
+                                        <TextBlock Text="Recent files" FontFamily="Segoe UI" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center"/>
+                                        <Button x:Name="ClearRecentBtn" Content="Clear recent files" Click="ClearRecent_Click"
+                                                HorizontalAlignment="Right" Cursor="Hand" FontFamily="Segoe UI" FontSize="11"
+                                                Foreground="{DynamicResource TextSecondary}" Background="Transparent"
+                                                BorderThickness="0" Padding="4,1"
+                                                AutomationProperties.Name="Clear recent files"
+                                                AutomationProperties.HelpText="Remove every entry from the recent-files list.">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" CornerRadius="3">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Foreground" Value="{DynamicResource DangerRed}"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
+                                    </Grid>
+                                    <StackPanel x:Name="RecentFilesList"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
                     </Border>
 
                     <!-- PDF page with annotation overlay -->

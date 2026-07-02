@@ -53,5 +53,15 @@ namespace TDPdf.Properties
             get => (string)this[nameof(ViewMode)];
             set => this[nameof(ViewMode)] = value;
         }
+
+        // Recent-files list (most-recent first, capped at 10). Full paths joined by '|',
+        // which is illegal in Windows paths so it can never collide with a real path.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string RecentFiles
+        {
+            get => (string)this[nameof(RecentFiles)];
+            set => this[nameof(RecentFiles)] = value;
+        }
     }
 }

@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.11.0.0] - 2026-07-02
+
+Fork-sync release porting the recent-files and folder/archive-drop features from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's multi-tab `DocumentContext` architecture.
+
+### Added
+
+- **Recent files** (upstream v1.6.0). TDPdf now remembers the last 10 PDFs you opened. The start screen lists them (document icon, file name, and dimmed full path) so you can reopen one with a click, and **right-clicking the Open toolbar button** drops down the same list plus a **Clear List** item. The list persists across sessions in a new `RecentFiles` user setting, automatically drops entries whose file no longer exists, and deliberately excludes working copies that have no real on-disk home (newly merged/imported documents, decrypted temp copies of password-protected files, and rasterizer-recovered documents).
+- **Drop a folder or .zip archive onto the window** (upstream v1.6.0). Dropping a folder (searched recursively), a `.zip` archive (extracted to a temp folder), or several files at once now gathers all the PDFs and images inside and, when there is more than one, asks whether to **merge them into a single PDF** or **open each in its own tab**. The merge runs on a background thread so the window stays responsive. Dropping a single PDF still opens it directly as before. A 50-file cap (with a confirmation prompt) guards against dropping an enormous folder.
+- **Open images as a PDF** (upstream v1.6.0). Images found in a dropped folder/archive — or a dropped image file — are converted to PDF pages (one page per image, sized to the image; multi-frame TIFF/GIF expand to one page per frame) and opened as an unsaved document. Because these merged/imported documents and image imports have no saved location yet, **Ctrl+S routes them to Save As** so they are never silently written into the temp folder.
+
 ## [1.10.0.0] - 2026-07-02
 
 Fork-sync release porting two self-contained features from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, each adapted to TDPdf's custom window chrome and multi-tab architecture.
@@ -391,7 +401,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.10.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.11.0.0...HEAD
+[1.11.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.10.0.0...v1.11.0.0
 [1.10.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.2.0...v1.10.0.0
 [1.9.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.1.0...v1.9.2.0
 [1.9.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.0.0...v1.9.1.0
