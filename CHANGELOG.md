@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.14.0.0] - 2026-07-02
+
+Fork-sync release porting the Transform tool from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's page-operation and undo model.
+
+### Added
+
+- **Transform tool** (upstream v1.6.0). A new **Transform…** command on the page right-click menu and the Tools menu opens a themed dialog with a live preview for reshaping a page: **fine-angle rotation** (a −45°…+45° slider plus 90° quarter-turns and a numeric field), **scale** (10–400% with a live output-size readout), **flip** horizontal/vertical, and **straighten** — drag a line along anything that should be level and the page rotates to level it. A fixed-page-size vs. expand-canvas mode controls whether the result is clipped/padded to the original page box or grown to the rotated bounding box. The page's annotations are baked in first so they follow the transform, and the change is a single undo (Ctrl+Z), matching Rotate/Crop.
+
+### Notes
+
+- Applying a transform **rasterizes** the affected page to an image, so its text is no longer selectable and its annotations become part of the raster (they follow the transform). This matches how the Crop tool already works and how upstream implements Transform. TDPdf warns once per session before the first transform and notes it in the status bar afterward. As with the existing Crop and Rotate page operations, applying a transform commits the page change and clears the in-app (not-yet-saved) annotation overlay.
+
 ## [1.13.0.0] - 2026-07-02
 
 Fork-sync release porting the annotation-editing improvements from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's annotation model and settings bars.
@@ -432,7 +444,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.13.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.14.0.0...HEAD
+[1.14.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.13.0.0...v1.14.0.0
 [1.13.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.12.0.0...v1.13.0.0
 [1.12.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.11.0.0...v1.12.0.0
 [1.11.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.10.0.0...v1.11.0.0

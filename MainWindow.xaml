@@ -814,6 +814,7 @@
                 <MenuItem Header="_Eraser"                                          Click="ToolErase_Click"/>
                 <MenuItem Header="Si_gnature"                                       Click="ToolSignature_Click"/>
                 <MenuItem Header="_Crop"                                            Click="ToolCrop_Click"/>
+                <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click"/>
                 <Separator/>
                 <MenuItem Header="Se_ttings…"                                       Click="Settings_Click"/>
             </MenuItem>
