@@ -714,7 +714,7 @@
         </Style>
     </Window.Resources>
 
-    <Grid KeyboardNavigation.TabNavigation="Continue">
+    <Grid x:Name="RootGrid" KeyboardNavigation.TabNavigation="Continue">
         <Grid.RowDefinitions>
             <RowDefinition x:Name="TitleBarRow" Height="36"/>
             <RowDefinition Height="Auto"/>
@@ -781,6 +781,8 @@
                 <Separator/>
                 <MenuItem Header="_Print…"          InputGestureText="Ctrl+P"       Click="Print_Click"/>
                 <Separator/>
+                <MenuItem Header="Document _Info…"   InputGestureText="F12"          Click="DocumentInfo_Click"/>
+                <Separator/>
                 <MenuItem Header="E_xit"            InputGestureText="Alt+F4"       Click="Exit_Click"/>
             </MenuItem>
             <MenuItem Header="_Edit">
@@ -825,7 +827,7 @@
         </Menu>
 
         <!-- Toolbar -->
-        <Border Grid.Row="2" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,0,1" Padding="4,2"
+        <Border x:Name="ToolbarBorder" Grid.Row="2" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,0,1" Padding="4,2"
                 KeyboardNavigation.TabNavigation="Continue">
             <Grid>
                 <Grid x:Name="ToolbarA11yLabels" Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
@@ -1081,7 +1083,7 @@
         </Grid>
 
         <!-- Status bar -->
-        <Border Grid.Row="5" Background="{DynamicResource StatusBarBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,1,0,0">
+        <Border x:Name="StatusBarBorder" Grid.Row="5" Background="{DynamicResource StatusBarBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,1,0,0">
             <Grid Margin="16,0" KeyboardNavigation.TabNavigation="Continue">
                 <TextBlock x:Name="StatusText" Text="Ready" Foreground="{DynamicResource TextSecondary}" FontFamily="Segoe UI" FontSize="11" VerticalAlignment="Center" AutomationProperties.Name="Status" AutomationProperties.HelpText="Current application status" AutomationProperties.LiveSetting="Polite"/>
                 <!-- Portable mode indicator (hidden when installed) -->

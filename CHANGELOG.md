@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.10.0.0] - 2026-07-02
+
+Fork-sync release porting two self-contained features from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, each adapted to TDPdf's custom window chrome and multi-tab architecture.
+
+### Added
+
+- **Document Info dialog (F12)** (upstream v1.6.0). View and edit the active PDF's metadata — Title, Author, Subject, Keywords, and Creator — in a themed dialog reachable from **File ▸ Document Info…** or **F12**. A read-only summary line shows the Producer, page count, PDF version, creation date, and file size. Saving writes the values into the document's Info dictionary and marks the tab dirty, so they are baked in on the next save. Editing metadata on a document with no PDF open is guarded.
+- **Full-screen mode (F11)** (upstream v1.6.0). Press **F11** to hide all chrome — title bar, menu, toolbar, tab strip, sidebar, and status bar — so only the document pane fills the monitor; **F11** or **Esc** exits. Full-screen deliberately covers the taskbar (window goes borderless-normal + topmost over the full monitor rectangle rather than maximized, so the `WM_GETMINMAXINFO` taskbar-preserving maximize behavior is left intact for normal maximize), and the exact pre-full-screen window placement and chrome state (including a collapsed sidebar or hidden tab strip) are restored on exit.
+
 ## [1.9.2.0] - 2026-07-02
 
 Fork-sync release porting the curated set of reliability and polish fixes from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.1, each adapted to TDPdf's multi-tab `DocumentContext` architecture.
@@ -382,7 +391,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.9.2.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.10.0.0...HEAD
+[1.10.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.2.0...v1.10.0.0
 [1.9.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.1.0...v1.9.2.0
 [1.9.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.0.0...v1.9.1.0
 [1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.2.0...v1.8.3.0
