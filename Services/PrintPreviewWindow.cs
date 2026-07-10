@@ -72,6 +72,8 @@ namespace TDPdf.Services
         private TextBox _scaleBox  = null!;
         private TextBox _pagesBox  = null!;
         private Func<int> _copiesGet = () => 1;   // reads the copies stepper (clamped, min 1)
+        private Grid _rootGrid = null!;           // wraps the card content so the print scrim can overlay it
+        private Button _printBtn = null!;         // disabled while a print job rasterizes + spools
 
         // Segoe MDL2 Assets close glyph, matching the main window chrome close button.
         private const string CloseGlyph = "";
@@ -251,7 +253,11 @@ namespace TDPdf.Services
                 }
             };
             var root = new DockPanel();
-            outer.Child = root;
+            // Host the card content in a single-cell Grid so the print progress scrim can be layered on
+            // top of everything (a DockPanel can't overlap its children).
+            _rootGrid = new Grid();
+            _rootGrid.Children.Add(root);
+            outer.Child = _rootGrid;
             Content = outer;
 
             // Title bar
@@ -499,6 +505,9 @@ namespace TDPdf.Services
             panel.Children.Add(Label("Pages"));
             _pagesBox = MakeTextBox("");
             _pagesBox.Margin = new Thickness(0, 4, 0, 2);
+            // Typing a range re-filters the preview to just those pages (jump back to the first one), so the
+            // preview always shows exactly what the Print button will send (type "6" → preview shows page 6).
+            _pagesBox.TextChanged += (_, _) => { _previewIndex = 0; UpdatePreview(); };
             panel.Children.Add(_pagesBox);
             panel.Children.Add(new TextBlock
             {
@@ -514,12 +523,12 @@ namespace TDPdf.Services
             var cancel = MakeButton("Cancel", false);
             cancel.Click += (_, _) => { DialogResult = false; Close(); };
             cancel.IsCancel = true;
-            var print = MakeButton("Print", true);
-            print.Margin = new Thickness(8, 0, 0, 0);
-            print.Click += (_, _) => DoPrint();
-            print.IsDefault = true;
+            _printBtn = MakeButton("Print", true);
+            _printBtn.Margin = new Thickness(8, 0, 0, 0);
+            _printBtn.Click += (_, _) => DoPrint();
+            _printBtn.IsDefault = true;
             btnRow.Children.Add(cancel);
-            btnRow.Children.Add(print);
+            btnRow.Children.Add(_printBtn);
 
             var optionsScroller = new ScrollViewer
             {
@@ -737,7 +746,16 @@ namespace TDPdf.Services
             _ => (1, 1)
         };
 
-        private int SheetCount() => _pageCount == 0 ? 0 : (_pageCount + _nUp - 1) / _nUp;
+        // The page indices the preview walks AND the Print button sends — whatever range is typed in the
+        // Pages box (blank or unparseable falls back to every page, matching ParseRange). Driving the
+        // preview off this keeps it showing exactly the pages that will print.
+        private List<int> SelectedIndices() => ParseRange(_pagesBox.Text, _pageCount);
+
+        private int SheetCount()
+        {
+            int sel = SelectedIndices().Count;
+            return sel == 0 ? 0 : (sel + _nUp - 1) / _nUp;
+        }
 
         // Builds one sheet (aw x ah DIPs, white) holding the given source pages. 1-up honours the
         // scale mode + position + margin; N-up fits each page into its grid cell. Returns null when
@@ -810,14 +828,15 @@ namespace TDPdf.Services
             _previewHost.Children.Clear();
             if (_pageCount == 0) { _pageLabel.Text = "No pages"; return; }
 
-            int sheets = SheetCount();
+            var selected = SelectedIndices();
+            int sheets = Math.Max(1, (selected.Count + _nUp - 1) / _nUp);
             int sheet  = Math.Max(0, Math.Min(_previewIndex, sheets - 1));
             _previewIndex = sheet;
 
-            // Source pages on this sheet (one for 1-up, up to _nUp for N-up).
+            // Source pages on this sheet, taken from the SELECTED set (one for 1-up, up to _nUp for N-up).
             var idxs = new List<int>();
-            for (int i = sheet * _nUp; i < Math.Min(_pageCount, sheet * _nUp + _nUp); i++)
-                idxs.Add(i);
+            for (int i = sheet * _nUp; i < Math.Min(selected.Count, sheet * _nUp + _nUp); i++)
+                idxs.Add(selected[i]);
 
             var paper = ComposeSheet(idxs, _areaW, _areaH, GetPageBitmap);
             if (paper != null)
@@ -826,9 +845,11 @@ namespace TDPdf.Services
                 _previewHost.Children.Add(vb);
             }
 
+            // 1-up shows the real page number (so a filtered preview reads "Page 6 of 108"); N-up shows the
+            // sheet position within the selected set.
             _pageLabel.Text = _nUp > 1
                 ? $"Sheet {sheet + 1} of {sheets}"
-                : $"Page {sheet + 1} of {_pageCount}";
+                : $"Page {(idxs.Count > 0 ? idxs[0] + 1 : 1)} of {_pageCount}";
         }
 
         // Persists the device-level print choices so the dialog reopens with the user's last setup.
@@ -846,7 +867,7 @@ namespace TDPdf.Services
             catch { /* settings are best-effort */ }
         }
 
-        private void DoPrint()
+        private async void DoPrint()
         {
             if (_queue == null)
             {
@@ -866,10 +887,23 @@ namespace TDPdf.Services
             int copies = _copiesGet();
             if (copies < 1) copies = 1;
 
-            SavePrintPrefs();   // remember printer / orientation / color / two-sided for next time
+            // The 300 DPI re-rasterize below runs long enough on real documents that the window used to
+            // freeze with no feedback - it read as a crash ("click Print and nothing happens"). Cover the
+            // card with a progress scrim, push the heavy rasterization onto a background thread, and only
+            // return to the PDF once the job is handed to the spooler. The Print button is disabled and the
+            // scrim swallows clicks so the job can't be double-triggered mid-print.
+            var overlay = ShowPrintOverlay(out TextBlock statusText);
+            _printBtn.IsEnabled = false;
 
             try
             {
+                // Give the dispatcher one pass to actually paint the scrim BEFORE the work below. Building
+                // the PrintDialog and reading PrintableAreaWidth queries the printer driver and can stall
+                // for a beat; resuming at Background priority guarantees the scrim's render pass ran first.
+                await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+
+                SavePrintPrefs();   // remember printer / orientation / color / two-sided for next time
+
                 var pd = new PrintDialog { PrintQueue = _queue };
                 var ticket = pd.PrintTicket;
                 // Copies are handled at the driver level via the single ticket count (no manual copy
@@ -885,35 +919,51 @@ namespace TDPdf.Services
                 else            { if (aw > ah) (aw, ah) = (ah, aw); }
                 if (aw <= 0 || ah <= 0) { aw = _areaW; ah = _areaH; }
 
-                // Re-rasterize the pages being printed fresh at a true 300 DPI (never the lighter
-                // preview cache). A single DocReader renders each page on demand as ComposeSheet asks
-                // for it, so only the pages actually printed are ever rendered - memory stays bounded
-                // on large documents.
-                using var dr = DocLib.Instance.GetDocReader(_pdfPath, new PageDimensions(PrintDpi / PointPerInch));
-                BitmapSource? RenderHi(int idx)
+                // Re-rasterize ONLY the selected pages fresh at a true 300 DPI (never the lighter preview
+                // cache), off the UI thread. Frozen bitmaps cross threads freely, so the whole loop runs in
+                // Task.Run and reports "Preparing page X of N" back to the scrim, keeping the window painting
+                // throughout. Only the pages actually printed are rendered, so memory stays bounded.
+                var hi = new BitmapSource?[_pageCount];
+                int total = indices.Count;
+                await System.Threading.Tasks.Task.Run(() =>
                 {
-                    if (idx < 0 || idx >= _pageCount) return null;
-                    try
+                    using var dr = DocLib.Instance.GetDocReader(_pdfPath, new PageDimensions(PrintDpi / PointPerInch));
+                    int done = 0;
+                    foreach (int idx in indices)
                     {
-                        using var pr = dr.GetPageReader(idx);
-                        int w = pr.GetPageWidth(), h = pr.GetPageHeight();
-                        var raw = pr.GetImage();
-                        if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) return null;
-                        var bmp = new WriteableBitmap(w, h, PrintDpi, PrintDpi, PixelFormats.Bgra32, null);
-                        bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);
-                        bmp.Freeze();
-                        return bmp;
+                        done++;
+                        if (idx < 0 || idx >= _pageCount) continue;
+                        try
+                        {
+                            using var pr = dr.GetPageReader(idx);
+                            int w = pr.GetPageWidth(), h = pr.GetPageHeight();
+                            var raw = pr.GetImage();
+                            if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) continue;
+                            var bmp = new WriteableBitmap(w, h, PrintDpi, PrintDpi, PixelFormats.Bgra32, null);
+                            bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);
+                            bmp.Freeze();
+                            hi[idx] = bmp;
+                        }
+                        catch { /* skip an unrenderable page rather than fail the whole job */ }
+                        int shown = done;
+                        try { statusText.Dispatcher.Invoke(() => statusText.Text = $"Preparing page {shown} of {total}…"); }
+                        catch { /* window closing */ }
                     }
-                    catch { return null; }
-                }
+                });
+
+                statusText.Text = "Sending to printer…";
+                // Let the scrim repaint the new message before the UI-thread compose + spool below runs.
+                await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
 
                 var fixedDoc = new FixedDocument();
-                // Group the selected pages into sheets of _nUp and compose each sheet (margins +
-                // position + scale + tiling all handled inside ComposeSheet, shared with the preview).
+                // Group the selected pages into sheets of _nUp and compose each sheet from the pre-rendered
+                // bitmaps (margins + position + scale + tiling all handled inside ComposeSheet, shared with
+                // the preview). Yield every dozen sheets so the scrim's spinner keeps turning on big jobs.
+                int composed = 0;
                 for (int start = 0; start < indices.Count; start += _nUp)
                 {
                     var chunk = indices.Skip(start).Take(_nUp).ToList();
-                    var sheet = ComposeSheet(chunk, aw, ah, RenderHi);
+                    var sheet = ComposeSheet(chunk, aw, ah, i => i >= 0 && i < _pageCount ? hi[i] : null);
                     if (sheet == null) continue;
 
                     var fp = new FixedPage { Width = aw, Height = ah };
@@ -926,10 +976,15 @@ namespace TDPdf.Services
                     var pc = new PageContent();
                     ((IAddChild)pc).AddChild(fp);
                     fixedDoc.Pages.Add(pc);
+
+                    if (++composed % 12 == 0)
+                        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
                 }
 
                 if (fixedDoc.Pages.Count == 0)
                 {
+                    RemoveOverlay(overlay);
+                    _printBtn.IsEnabled = true;
                     TdpDialog.Show(this, "No pages could be rendered for printing.", "TDPdf",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
@@ -942,10 +997,60 @@ namespace TDPdf.Services
             }
             catch (Exception ex)
             {
+                RemoveOverlay(overlay);   // drop the scrim so the error dialog isn't stuck behind it
+                _printBtn.IsEnabled = true;
                 TdpDialog.Show(this, $"Print failed:\n{ex.GetType().Name}: {ex.Message}",
                     "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
+        // Full-card scrim with a spinner + live status line, shown while a print job rasterizes and spools
+        // so the window shows progress instead of freezing silently. Added over _rootGrid and painted last,
+        // so it sits on top and its Background swallows clicks - the buttons underneath can't be re-triggered
+        // mid-print. Returns the scrim; `status` is its message line, updated as the job progresses.
+        private Border ShowPrintOverlay(out TextBlock status)
+        {
+            var ring = new System.Windows.Shapes.Ellipse
+            {
+                Width = 40, Height = 40, StrokeThickness = 3,
+                Stroke = R("TextSecondary"),
+                StrokeDashArray = [24, 200],
+                StrokeDashCap = PenLineCap.Round,
+                RenderTransformOrigin = new Point(0.5, 0.5)
+            };
+            var rot = new RotateTransform();
+            ring.RenderTransform = rot;
+            rot.BeginAnimation(RotateTransform.AngleProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(0, 360, new Duration(TimeSpan.FromSeconds(0.9)))
+                { RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever });
+
+            status = new TextBlock
+            {
+                Text                = "Preparing to print…",
+                Foreground          = R("TextPrimary"),
+                FontSize            = 13,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin              = new Thickness(0, 14, 0, 0)
+            };
+
+            var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            stack.Children.Add(ring);
+            stack.Children.Add(status);
+
+            // Veil in the card's own panel colour at high opacity, so the scrim reads on either theme.
+            var veil = R("BgPanel").Color;
+            var overlay = new Border
+            {
+                Background   = new SolidColorBrush(Color.FromArgb(232, veil.R, veil.G, veil.B)),
+                CornerRadius = new CornerRadius(6),
+                Child        = stack
+            };
+            Panel.SetZIndex(overlay, 99);
+            _rootGrid.Children.Add(overlay);
+            return overlay;
+        }
+
+        private void RemoveOverlay(Border overlay) => _rootGrid.Children.Remove(overlay);
 
         // Parses "1-3,5" style ranges into sorted 0-based indices. Blank/invalid = all pages.
         private static List<int> ParseRange(string? text, int count)

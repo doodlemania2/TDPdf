@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.16.0.0] - 2026-07-10
+
+Fork-sync release porting the link-safety, print-responsiveness, and page-navigation improvements from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.2, adapted to TDPdf's existing link overlays and themed print dialog.
+
+### Added
+
+- **Page Up / Page Down navigate pages** (upstream v1.6.2). PgUp/PgDn now go to the previous / next page, consistently regardless of what has focus — a focused sidebar thumbnail no longer pages its own selection instead. They never reorder pages (that stays on the toolbar Move Up / Move Down buttons). Folds into TDPdf's existing arrow-key page navigation.
+- **Link target shown in the status bar on hover** (upstream v1.6.2). Hovering a PDF link now shows its destination — the URL, or "Go to page N" for an internal jump — in the status bar, restoring the previous status when the pointer leaves.
+- **Confirmation before opening an external link** (upstream v1.6.2). Clicking a URL link asks before launching it outside TDPdf, showing the target, with a "Don't ask again" option (persisted in a new `SkipLinkConfirm` setting). Internal go-to-page links jump immediately without a prompt.
+- **Scheme-less links open** (upstream v1.6.2). A bare domain-shaped target such as `www.example.com` is opened as `https://…` instead of being ignored.
+
+### Changed
+
+- **Print no longer freezes the window** (upstream v1.6.2). Clicking Print now covers the print card with a progress scrim (spinner + "Preparing page X of N" → "Sending to printer…") and moves the 300 DPI page re-rasterization onto a background thread, so the window keeps painting instead of going grey / "Not Responding" and looking like a crash on large jobs. The Print button is disabled and the scrim swallows clicks so a job can't be double-triggered mid-print.
+- **Print preview follows the typed page range** (upstream v1.6.2). Typing a range in the Pages box (e.g. `6` or `2-4`) now filters the preview to exactly those pages, so the preview always shows what will actually print; the 1-up page label reads the real page number (e.g. "Page 6 of 108").
+
+### Fixed
+
+- **Hardened link opening against malicious PDFs** (upstream v1.6.2). A PDF can embed any URI, and the previous click handler passed it straight to the OS shell — a crafted `file://`, UNC path, `javascript:`, or protocol-handler link (e.g. `ms-msdt:` / `search-ms:`) could have been launched. Link clicks are now restricted to an `http` / `https` / `mailto` allow-list; anything else is refused and reported in the status bar. Both the single-page and grid-tile click paths route through one checked choke point, and a failed open is reported instead of being silently swallowed.
+
+### Notes
+
+- Upstream's switch to reading links via PDFium and its asynchronous XPS spool were **not** adopted: TDPdf's existing PdfSharpCore-based link overlays already work across single, continuous, and grid views, and TDPdf keeps its proven synchronous spool with driver-level copy handling (the earlier #83/#107 copy fix). The heavy 300 DPI rasterization — the part that actually blocked the UI — is now off-thread, so the freeze fix is preserved without changing the print-submission path. Upstream's Japanese localization, the KillerFind cross-promotion, and the in-app self-updater checksum change do not apply to TDPdf (English-only strings, no cross-promo, no in-app updater) and were skipped.
+
 ## [1.15.0.0] - 2026-07-02
 
 Fork-sync release porting built-in OCR from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.0, adapted to TDPdf's single-file build and settings.
@@ -463,7 +487,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.15.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.16.0.0...HEAD
+[1.16.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.15.0.0...v1.16.0.0
 [1.15.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.14.0.0...v1.15.0.0
 [1.14.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.13.0.0...v1.14.0.0
 [1.13.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.12.0.0...v1.13.0.0

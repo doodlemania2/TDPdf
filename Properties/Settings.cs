@@ -112,6 +112,17 @@ namespace TDPdf.Properties
             set => this[nameof(CustomColors)] = value;
         }
 
+        // When true, clicking a URL link in a PDF opens it in the browser without the
+        // safety confirmation prompt. Set when the user ticks "Don't ask again" in that
+        // prompt; the scheme allow-list (http/https/mailto only) still applies regardless.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool SkipLinkConfirm
+        {
+            get => (bool)this[nameof(SkipLinkConfirm)];
+            set => this[nameof(SkipLinkConfirm)] = value;
+        }
+
         // --- OCR (Tesseract) ---
 
         // Chosen OCR languages as a '+'-joined list of Tesseract codes (e.g. "eng" or "eng+spa").

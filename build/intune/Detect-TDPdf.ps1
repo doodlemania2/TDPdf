@@ -15,7 +15,7 @@
 # you are deploying. Set it to $null to accept any installed version.
 
 $ErrorActionPreference = 'Stop'
-$MinVersion = [Version]'1.15.0.0'
+$MinVersion = [Version]'1.16.0.0'
 
 try {
     $key = 'HKLM:\Software\TDPdf'
