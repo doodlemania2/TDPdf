@@ -374,7 +374,9 @@ namespace TDPdf
 
                 var args = Environment.GetCommandLineArgs();
                 if (args.Length > 1 && System.IO.File.Exists(args[1]))
-                    await OpenInTabAsync(args[1]);
+                    await OpenInTabAsync(args[1]);   // an explicitly-requested file wins over the saved session
+                else
+                    await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 
                 if (App.IsPortable())
                     _portableBadge.Visibility = Visibility.Visible;
@@ -761,6 +763,7 @@ namespace TDPdf
         {
             public PdfDocument? Doc;
             public string? CurrentFile;          // working path (may be a temp copy after edits)
+            public string? OriginalPath;         // real on-disk file the user opened; null for untitled/temp/recovered docs. Used for session restore.
             public string DisplayName = "";      // shown in the tab header and title bar
             public bool IsDirty;
 
@@ -924,11 +927,105 @@ namespace TDPdf
                     return;
                 }
             }
+            // Closing is now committed (any dirty prompt was accepted). Decide whether to remember the
+            // open documents for next launch, then persist or clear the saved session accordingly.
+            HandleSessionOnClose();
             ThemeManager.ThemeChanged -= ThemeManager_ThemeChanged;
             _hwndSource?.RemoveHook(WndProc);
             base.OnClosing(e);
         }
 
+        // The real, on-disk documents currently open, in tab order (temp / untitled / merged / imported /
+        // recovered docs have a null OriginalPath and are excluded — they have no lasting home to reopen).
+        private List<string> OpenSessionFiles() => _tabs
+            .Where(t => t.Doc is not null && !string.IsNullOrEmpty(t.OriginalPath) && System.IO.File.Exists(t.OriginalPath))
+            .Select(t => t.OriginalPath!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // On close, remember (or forget) the open documents so the next launch can restore them.
+        // Preference "Yes" always remembers, "No" never does, "Ask" prompts once (with an optional
+        // "remember my choice" that locks the answer). Forgetting clears the saved paths for privacy.
+        private void HandleSessionOnClose()
+        {
+            var openFiles = OpenSessionFiles();
+            if (openFiles.Count == 0) { ClearSavedSession(); return; }
+
+            bool reopen;
+            switch (TDPdf.Properties.Settings.Default.ReopenSession)
+            {
+                case "Yes": reopen = true;  break;
+                case "No":  reopen = false; break;
+                default:
+                    string msg = openFiles.Count == 1
+                        ? "Reopen this document next time you open TDPdf?"
+                        : $"Reopen these {openFiles.Count} documents next time you open TDPdf?";
+                    var (res, remember) = TdpDialog.ShowWithCheckbox(
+                        this, msg, "Remember my choice", "TDPdf",
+                        MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    reopen = res == MessageBoxResult.Yes;
+                    if (remember)
+                    {
+                        TDPdf.Properties.Settings.Default.ReopenSession = reopen ? "Yes" : "No";
+                        TDPdf.Properties.Settings.Default.Save();
+                    }
+                    break;
+            }
+
+            if (reopen) SaveSession(openFiles);
+            else        ClearSavedSession();
+        }
+
+        private void SaveSession(List<string> openFiles)
+        {
+            var s = TDPdf.Properties.Settings.Default;
+            s.SessionFiles = string.Join("|", openFiles);
+            string? active = _ctx.OriginalPath;
+            s.SessionActiveFile = !string.IsNullOrEmpty(active)
+                && openFiles.Contains(active, StringComparer.OrdinalIgnoreCase) ? active : "";
+            s.Save();
+        }
+
+        private static void ClearSavedSession()
+        {
+            var s = TDPdf.Properties.Settings.Default;
+            if (s.SessionFiles.Length == 0 && s.SessionActiveFile.Length == 0) return;   // nothing to clear
+            s.SessionFiles = "";
+            s.SessionActiveFile = "";
+            s.Save();
+        }
+
+        /// <summary>
+        /// Reopens the documents saved from the previous session as tabs, then re-selects the tab that was
+        /// active last time. Skipped when the user opted out ("No"), when nothing was saved, or (by the
+        /// caller) when a file was passed on the command line — that file takes precedence over the session.
+        /// </summary>
+        private async Task RestoreSessionAsync()
+        {
+            if (TDPdf.Properties.Settings.Default.ReopenSession == "No") return;
+
+            var files = TDPdf.Properties.Settings.Default.SessionFiles
+                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(System.IO.File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (files.Count == 0) return;
+
+            foreach (var f in files)
+                await OpenInTabAsync(f);
+
+            string active = TDPdf.Properties.Settings.Default.SessionActiveFile;
+            if (!string.IsNullOrEmpty(active))
+            {
+                var target = _tabs.FirstOrDefault(t =>
+                    string.Equals(t.OriginalPath, active, StringComparison.OrdinalIgnoreCase));
+                if (target is not null)
+                {
+                    ActivateContext(target);
+                    RebuildTabStrip();
+                }
+            }
+        }
 
         // ============================================================
         // Settings
@@ -1361,9 +1458,14 @@ namespace TDPdf
 
                 // Record real, on-disk user files in the recent list. Skip recovered docs (rasterized
                 // rebuilds) and temp working files (New / merged-on-drop / imported images), whose
-                // DisplayPath lives under the temp dir and has no lasting saved location.
+                // DisplayPath lives under the temp dir and has no lasting saved location. The same
+                // eligibility gate marks this tab's OriginalPath so the whole session can restore on
+                // next launch; temp/recovered docs stay null and are excluded from the saved session.
                 if (!result.RecoveredFromRaster && IsRecentEligiblePath(result.DisplayPath))
+                {
                     AddRecentFile(result.DisplayPath);
+                    _ctx.OriginalPath = result.DisplayPath;
+                }
             }
             catch
             {
