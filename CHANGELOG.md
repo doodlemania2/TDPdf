@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.17.0.0] - 2026-07-10
+
+Fork-sync release porting the reopen-documents-on-launch feature from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.1 (Issue #105), built on TDPdf's multi-tab `DocumentContext` model (which previously had no session persistence).
+
+### Added
+
+- **Reopen your documents on next launch** (upstream v1.6.1, Issue #105). TDPdf now remembers the set of open documents when you quit and restores them as tabs the next time you open the app, re-selecting the tab that was active. On quit with documents open it asks once whether to reopen them next time, with a **"Remember my choice"** option that stops the prompt (choose Yes to always reopen, or No to never). A document opened directly (double-clicking a PDF, or a file passed on the command line) takes precedence and opens on its own without also restoring the previous session. Only real, saved files are remembered — untitled, merged-on-drop, imported-image, and recovered documents (which have no lasting on-disk home) are never persisted, and a manually-closed tab does not come back. When you choose not to reopen, the remembered file list is cleared so no paths linger on disk.
+
+### Notes
+
+- The reopen preference is stored in a new `ReopenSession` setting (`Ask` by default; `Yes`/`No` once you tick "Remember my choice"); the file list lives in `SessionFiles` / `SessionActiveFile`. There is no separate Settings-panel toggle yet — the quit-time prompt is the control surface, matching upstream.
+
 ## [1.16.0.0] - 2026-07-10
 
 Fork-sync release porting the link-safety, print-responsiveness, and page-navigation improvements from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.2, adapted to TDPdf's existing link overlays and themed print dialog.
@@ -487,7 +499,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.16.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.17.0.0...HEAD
+[1.17.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.16.0.0...v1.17.0.0
 [1.16.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.15.0.0...v1.16.0.0
 [1.15.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.14.0.0...v1.15.0.0
 [1.14.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.13.0.0...v1.14.0.0

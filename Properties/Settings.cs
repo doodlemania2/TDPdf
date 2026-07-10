@@ -123,6 +123,39 @@ namespace TDPdf.Properties
             set => this[nameof(SkipLinkConfirm)] = value;
         }
 
+        // --- Reopen documents on next launch (session restore) ---
+
+        // Whether to reopen the last session's documents on the next launch. One of:
+        // "Ask" (default) prompts on quit when documents are open; "Yes" always reopens
+        // silently; "No" never reopens and never persists the file list (privacy).
+        [UserScopedSetting]
+        [DefaultSettingValue("Ask")]
+        public string ReopenSession
+        {
+            get => (string)this[nameof(ReopenSession)];
+            set => this[nameof(ReopenSession)] = value;
+        }
+
+        // Full paths of the documents open at last exit, in tab order, joined by '|' (illegal in
+        // Windows paths, so it can't collide with a real path). Restored on launch. Untitled /
+        // merged / imported / recovered docs (no lasting on-disk home) are excluded.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string SessionFiles
+        {
+            get => (string)this[nameof(SessionFiles)];
+            set => this[nameof(SessionFiles)] = value;
+        }
+
+        // Full path of the tab that was active at last exit, so it is re-selected after restore.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string SessionActiveFile
+        {
+            get => (string)this[nameof(SessionActiveFile)];
+            set => this[nameof(SessionActiveFile)] = value;
+        }
+
         // --- OCR (Tesseract) ---
 
         // Chosen OCR languages as a '+'-joined list of Tesseract codes (e.g. "eng" or "eng+spa").
