@@ -2290,6 +2290,110 @@ namespace TDPdf
             public int    AnnotIndex { get; } = annotIndex;   // index inside page /Annots array
         }
 
+        // Schemes we will hand to the OS shell when a PDF link is clicked. A PDF can embed ANY URI, and
+        // Process.Start(UseShellExecute = true) would happily launch file:// paths, UNC shares, javascript:,
+        // or registered protocol handlers (ms-msdt:/search-ms: — real malware vectors). Anything outside
+        // this allow-list is refused. http/https = web links; mailto = email links.
+        private static readonly HashSet<string> AllowedLinkSchemes =
+            new(StringComparer.OrdinalIgnoreCase) { "http", "https", "mailto" };
+
+        // True only for an absolute URI in an allowed scheme. Rejects scheme-less / relative URIs (a bare
+        // "www.example.com" is normalised first, below), plus file:, javascript:, and custom protocols.
+        private static bool IsAllowedLinkUri(string url) =>
+            Uri.TryCreate(url, UriKind.Absolute, out var uri) && AllowedLinkSchemes.Contains(uri.Scheme);
+
+        // A PDF can store a scheme-less link like "www.example.com" or "example.com/page". Treat a domain-
+        // shaped target as https so it still opens; anything with an explicit scheme, a backslash (UNC/path),
+        // or whitespace is left untouched (and thus refused by IsAllowedLinkUri unless it's http/https/mailto).
+        private static string NormalizeLinkUri(string raw)
+        {
+            raw = raw.Trim();
+            if (raw.Length == 0) return raw;
+            if (raw.Contains('\\') || raw.Contains(' ')) return raw;    // Windows path / UNC / junk — don't touch
+            if (raw.Contains("://")) return raw;                        // already scheme://...
+            int colon = raw.IndexOf(':');
+            int slash = raw.IndexOf('/');
+            if (colon >= 0 && (slash < 0 || colon < slash)) return raw; // "scheme:" (mailto:, file:, C:) — don't touch
+            string host = slash >= 0 ? raw[..slash] : raw;              // host part before any path
+            return host.Contains('.') ? "https://" + raw : raw;         // dotted host => assume https
+        }
+
+        // Confirms before opening an external link in the browser, unless the user opted out via the
+        // "Don't ask again" checkbox (persisted in SkipLinkConfirm). Returns true to proceed. Internal
+        // go-to-page links never call this.
+        private bool ConfirmOpenLink(string url)
+        {
+            if (TDPdf.Properties.Settings.Default.SkipLinkConfirm) return true;
+            var (result, dontAsk) = TdpDialog.ShowWithCheckbox(
+                this,
+                $"Open this link outside TDPdf?\n\n{url}",
+                "Don't ask again",
+                "Open Link",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question);
+            if (result != MessageBoxResult.OK) return false;
+            if (dontAsk)
+            {
+                TDPdf.Properties.Settings.Default.SkipLinkConfirm = true;
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Follows a resolved link target: an int page index navigates within the document; a string URI is
+        /// scheme-checked, confirmed, then opened via the shell. Single choke point for both the single-page
+        /// (<see cref="_linkOverlays"/>) and grid-tile click paths, so the safety checks can't be bypassed by
+        /// one route and a failed open is always reported instead of silent.
+        /// </summary>
+        private void FollowLinkTarget(object? target)
+        {
+            if (target is int pageIndex)
+            {
+                if (_doc != null && pageIndex >= 0 && pageIndex < _doc.PageCount)
+                    PageList.SelectedIndex = pageIndex;
+                return;
+            }
+
+            if (target is not string raw || string.IsNullOrWhiteSpace(raw)) return;
+
+            // Scheme-less but domain-shaped targets (e.g. "www.example.com") become https:// here.
+            string url = NormalizeLinkUri(raw);
+            if (!IsAllowedLinkUri(url))
+            {
+                SetStatus($"Blocked an unsafe link: {raw}");
+                return;
+            }
+
+            if (!ConfirmOpenLink(url)) return;
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Open link failed: {ex}");
+                SetStatus("Could not open the link.");
+            }
+        }
+
+        // Status-bar hover feedback: shows the hovered link's target, restoring the prior status on exit.
+        private string? _preHoverStatus;
+        private void ShowLinkHoverStatus(string? target)
+        {
+            if (target != null)
+            {
+                _preHoverStatus ??= StatusText.Text;
+                StatusText.Text = target;
+            }
+            else if (_preHoverStatus != null)
+            {
+                StatusText.Text = _preHoverStatus;
+                _preHoverStatus = null;
+            }
+        }
+
         /// <summary>
         /// Parses all link annotations from a PDF page and converts them to canvas-space
         /// rectangles. Works for both primary and secondary page renders.
@@ -2446,10 +2550,7 @@ namespace TDPdf
                 var capturedTag = lnk.Tag;
                 lo.PreviewMouseLeftButtonDown += (_, args) =>
                 {
-                    if (capturedTag is int tp)
-                        PageList.SelectedIndex = tp;
-                    else if (capturedTag is string u)
-                        try { Process.Start(new ProcessStartInfo(u) { UseShellExecute = true }); } catch { }
+                    FollowLinkTarget(capturedTag);
                     args.Handled = true;
                 };
 
@@ -5954,10 +6055,7 @@ namespace TDPdf
                         clickPos.Y >= ly && clickPos.Y <= ly + lo.Height)
                     {
                         var lTarget = lo.Tag is LinkAnnotInfo lai ? lai.Target : lo.Tag;
-                        if (lTarget is int tp)
-                            PageList.SelectedIndex = tp;
-                        else if (lTarget is string u)
-                            try { Process.Start(new ProcessStartInfo(u) { UseShellExecute = true }); } catch { }
+                        FollowLinkTarget(lTarget);
                         e.Handled = true;
                         return;
                     }
@@ -6421,6 +6519,27 @@ namespace TDPdf
             // Don't interfere with mouse interaction inside form-field overlays.
             if (e.OriginalSource is DependencyObject moveSrc && IsFormFieldElement(moveSrc))
                 return;
+
+            // Link hover: surface the hovered link's target in the status bar. Only on button-up moves so it
+            // never fights an in-progress drag (move/resize/pan all hold the left button). Bounds-tested like
+            // the click path because transparent overlay canvases aren't reliable WPF hit-test targets.
+            if (_linkOverlays.Count > 0 && e.LeftButton == MouseButtonState.Released)
+            {
+                var hp = e.GetPosition(_annotationCanvas);
+                string? hoverTarget = null;
+                foreach (var lo in _linkOverlays)
+                {
+                    double lx = Canvas.GetLeft(lo), ly = Canvas.GetTop(lo);
+                    if (hp.X >= lx && hp.X <= lx + lo.Width && hp.Y >= ly && hp.Y <= ly + lo.Height)
+                    {
+                        object? t = lo.Tag is LinkAnnotInfo lai ? lai.Target : lo.Tag;
+                        hoverTarget = t is int gp ? $"Go to page {gp + 1}" : t as string;
+                        break;
+                    }
+                }
+                ShowLinkHoverStatus(hoverTarget);
+            }
+
             // Pan first — uses viewer coords so deltas don't scale with the page transform.
             if (_isPanning)
             {
@@ -8470,12 +8589,17 @@ namespace TDPdf
                 DeleteSelected();
                 e.Handled = true;
             }
+            // Arrow keys and PgUp/PgDn navigate to the previous / next page. Handled here at the window
+            // (Preview) level with e.Handled so paging works the same whether the page canvas or a sidebar
+            // thumbnail has focus — otherwise a focused PageList would page its own selection instead. PgUp/
+            // PgDn never reorder pages (that stays on the toolbar Move Up / Down buttons).
             else if (Keyboard.Modifiers == ModifierKeys.None && _doc is not null && PageList.Items.Count > 1
-                     && (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.Right || e.Key == Key.Down))
+                     && (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.Right || e.Key == Key.Down
+                         || e.Key == Key.PageUp || e.Key == Key.PageDown))
             {
                 int cur = PageList.SelectedIndex;
                 if (cur < 0) cur = 0;
-                int next = (e.Key == Key.Left || e.Key == Key.Up) ? cur - 1 : cur + 1;
+                int next = (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.PageUp) ? cur - 1 : cur + 1;
                 if (next >= 0 && next < PageList.Items.Count)
                 {
                     PageList.SelectedIndex = next;
@@ -11741,8 +11865,29 @@ namespace TDPdf
             string title = "TDPdf",
             MessageBoxButton buttons = MessageBoxButton.OK,
             MessageBoxImage image = MessageBoxImage.None)
+            => ShowCore(owner, message, title, buttons, image, null).result;
+
+        // Same themed dialog as Show, plus a single opt-out checkbox below the message (e.g. "Don't ask
+        // again"). Returns the button result together with whether the checkbox was ticked.
+        public static (MessageBoxResult result, bool ticked) ShowWithCheckbox(
+            Window? owner,
+            string message,
+            string checkboxLabel,
+            string title = "TDPdf",
+            MessageBoxButton buttons = MessageBoxButton.OKCancel,
+            MessageBoxImage image = MessageBoxImage.None)
+            => ShowCore(owner, message, title, buttons, image, checkboxLabel);
+
+        private static (MessageBoxResult result, bool ticked) ShowCore(
+            Window? owner,
+            string message,
+            string title,
+            MessageBoxButton buttons,
+            MessageBoxImage image,
+            string? checkboxLabel)
         {
             var result = MessageBoxResult.OK;
+            bool ticked = false;
             var green = Brush("AccentGreen");
             var dark = Brush("BgDark");
             var panel = Brush("BgPanel");
@@ -11828,6 +11973,21 @@ namespace TDPdf
             Grid.SetColumn(msgText, 1);
             msgGrid.Children.Add(msgText);
             root.Children.Add(msgGrid);
+
+            // Optional opt-out checkbox, aligned under the message text (past the icon column).
+            if (checkboxLabel != null)
+            {
+                var check = new CheckBox
+                {
+                    Content    = checkboxLabel,
+                    Foreground = text,
+                    FontSize   = 12,
+                    Margin     = new Thickness(20, 4, 20, 4)
+                };
+                check.Checked   += (_, _2) => ticked = true;
+                check.Unchecked += (_, _2) => ticked = false;
+                root.Children.Add(check);
+            }
 
             var btnPanel = new StackPanel
             {
@@ -11922,7 +12082,7 @@ namespace TDPdf
                 win.Loaded += (_, _2) => toFocus.Focus();
             }
             win.ShowDialog();
-            return result;
+            return (result, ticked);
         }
 
         private static bool TryGetMessageBoxGlyph(
