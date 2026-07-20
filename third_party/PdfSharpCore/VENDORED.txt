@@ -1,0 +1,1 @@
+PdfSharpCore 1.3.67, vendored from https://github.com/ststeiger/PdfSharpCore commit d6ac8b092129a4f797365bbbf3eea2723d6c3ebd on 2026-07-17. Local patches are marked with: KillerPDF patch

@@ -1,0 +1,73 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- KillerPDF patch: vendored copy builds ONLY the netstandard2.0 target the app consumes,
+         and never auto-packs a NuGet. -->
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <!-- TDPdf: the consuming app builds x64. Declare matching platforms so MSBuild's dynamic
+         platform resolution picks x64 cleanly instead of falling back (which silently dropped
+         Configuration to Debug for this ProjectReference). -->
+    <Platforms>AnyCPU;x64</Platforms>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <GeneratePackageOnBuild>False</GeneratePackageOnBuild>
+    <Authors>Stefan Steiger and Contributors</Authors>
+    <Description>PdfSharp for .NET Core
+
+PdfSharpCore is a partial port of PdfSharp.Xamarin for .NET Core Additionally MigraDoc has been ported as well (from version 1.32). Images have been implemented with ImageSharp from https://www.nuget.org/packages/SixLabors.ImageSharp</Description>
+    <Copyright>Copyright (c) 2005-2007 empira Software GmbH, Cologne (Germany)</Copyright>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+    <PackageProjectUrl>https://github.com/ststeiger/PdfSharpCore</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ststeiger/PdfSharpCore</RepositoryUrl>
+    <PackageReleaseNotes>PdfSharpCore is a partial port of PdfSharp.Xamarin for .NET Core Additionally MigraDoc has been ported as well (from version 1.32)</PackageReleaseNotes>
+    <PackageTags>NuggetV1.0.0 (8ea343d5898342a563b9d4df2d67e27aaea9ac01)</PackageTags>
+    <summary>PdfSharp for .NET Core</summary>
+    <!-- KillerPDF patch: trimming props removed - not supported on netstandard2.0 (NETSDK1212 noise). -->
+    <Version>1.0.1</Version>
+  </PropertyGroup>
+
+  <!-- TDPdf: key DefineConstants off Configuration only (not Platform), so they apply for both
+       AnyCPU and x64 builds of this ProjectReference. -->
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <DefineConstants>TRACE;DEBUG;</DefineConstants>
+  </PropertyGroup>
+
+	<PropertyGroup>
+        <!-- NU5104: skip warning due to SixLabors.Fonts being beta.
+             CS0169/0168/0219/0649/0618/0067: benign warnings from the vendored PdfSharpCore
+             source (unused/obsolete fields etc.). Suppressed at the vendored-project level so
+             they do not pollute TDPdf's own build-warning signal (see CLAUDE.md). -->
+		<NoWarn>NU5104;CS0169;CS0168;CS0219;CS0649;CS0618;CS0067</NoWarn>
+	</PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <DefineConstants>TRACE;RELEASE;</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Resources\Messages.de.restext" />
+    <None Remove="Resources\Messages.restext" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\Messages.de.restext" />
+    <EmbeddedResource Include="Resources\Messages.restext" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Resources\images\" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+    <!-- KillerPDF patch: 1.0.4 -> 2.1.13, clearing all published security advisories
+         (crafted-image DoS / OOB class). 2.1.x is the last line supporting netstandard2.0. -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="2.1.13" />
+    <PackageReference Include="SixLabors.Fonts" Version="1.0.0-beta17" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\LICENSE.md" Pack="true" PackagePath="" />
+    <None Include="..\README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>
