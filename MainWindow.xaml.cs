@@ -264,6 +264,15 @@ namespace TDPdf
         private readonly Dictionary<int, BitmapSource> _continuousBaseBitmaps = new();
         private int _continuousSharpW;   // hi-res pixel budget the sharpened slots were rendered at
 
+        // #122 (upstream v1.6.3): continuous view used to keep a rendered bitmap for EVERY page for the
+        // life of the document — a 243-page image PDF pinned gigabytes. Now only a window of pages
+        // around the viewport holds real bitmaps: the initial pass fills the window around the opening
+        // page, and MaintainContinuousWindow (on scroll-settle) renders pages coming into range and
+        // releases those leaving it. Slot HEIGHTS never change on release/re-render, so releasing a
+        // page never reflows the document (no scroll jump); the white scaffold shows until re-rendered.
+        private const int ContinuousBaseWindow = 8;   // pages each side of the viewport kept as bitmaps
+        private CancellationTokenSource? _continuousWindowCts;
+
         // Back-compat shim: the bulk of the grid layout code was written against a
         // boolean. Grid mode is now one of the ViewMode values; keep this read-only
         // alias so those code paths stay byte-for-byte identical for Single/Grid.
@@ -1594,6 +1603,24 @@ namespace TDPdf
             _renderDims.Clear();
         }
 
+        // #122 (upstream v1.6.3): the per-tab rendered-page cache used to grow without bound — a page
+        // was added on every visit and never evicted, so paging through a long document pinned a
+        // bitmap per page. Cap it and, when over, drop the entries whose page is FARTHEST from the one
+        // just rendered: renders cluster around the viewport, so the farthest are least likely next.
+        private const int RenderCachePageCap = 48;
+        private void CapRenderCache(int aroundPage)
+        {
+            if (_renderCache.Count <= RenderCachePageCap) return;
+            var keys = _renderCache.Keys.ToList();
+            // Farthest page first.
+            keys.Sort((a, b) => Math.Abs(b.pageIndex - aroundPage).CompareTo(Math.Abs(a.pageIndex - aroundPage)));
+            foreach (var k in keys)
+            {
+                if (_renderCache.Count <= RenderCachePageCap) break;
+                _renderCache.Remove(k);
+            }
+        }
+
         private void RerenderCurrentPage()
         {
             int pageIndex = PageList.SelectedIndex;
@@ -1634,6 +1661,7 @@ namespace TDPdf
 
                     renderedPage = new RenderedPage(result.Bitmap, result.DipWidth, result.DipHeight, result.Width, result.Height);
                     _renderCache[(pageIndex, dpiX)] = renderedPage;
+                    CapRenderCache(pageIndex);
                 }
 
                 if (_doc is null) return;
@@ -1930,6 +1958,7 @@ namespace TDPdf
                 // #85: stop any in-flight re-sharpen and drop its slot/bitmap bookkeeping.
                 _continuousSharpenTimer?.Stop();
                 _continuousSharpenCts?.Cancel();
+                _continuousWindowCts?.Cancel();   // #122: stop in-flight window-maintenance render
                 _continuousSharpPages.Clear();
                 _continuousBaseBitmaps.Clear();
                 _continuousSharpW = 0;
@@ -2088,6 +2117,7 @@ namespace TDPdf
             // A full base pass repaints every slot, so any hi-res re-sharpen state is now stale (#85):
             // cancel in-flight sharpening and forget which slots were sharpened / their base bitmaps.
             _continuousSharpenCts?.Cancel();
+            _continuousWindowCts?.Cancel();   // #122: also stop any in-flight window-maintenance render
             _continuousSharpPages.Clear();
             _continuousBaseBitmaps.Clear();
             _continuousSharpW = 0;
@@ -2097,6 +2127,13 @@ namespace TDPdf
             double targetW = _continuousPageW;
             int renderW = Math.Max(800, Math.Min(2048, (int)(targetW * 2)));
 
+            // #122: render only the window of pages around the page we're opening at; the rest stay as
+            // white scaffold and are filled by MaintainContinuousWindow as they scroll into range. This
+            // is what keeps a long image-heavy document from materializing every page bitmap at once.
+            int center = _continuousScrollTarget >= 0 ? Math.Min(_continuousScrollTarget, pageCount - 1) : 0;
+            int winLo = Math.Max(0, center - ContinuousBaseWindow);
+            int winHi = Math.Min(pageCount - 1, center + ContinuousBaseWindow);
+
             try
             {
                 await System.Threading.Tasks.Task.Run(() =>
@@ -2104,7 +2141,7 @@ namespace TDPdf
                     using var docReader = DocLib.Instance.GetDocReader(
                         currentFile, new PageDimensions(renderW, renderW * 2));
 
-                    for (int i = 0; i < pageCount; i++)
+                    for (int i = winLo; i <= winHi; i++)
                     {
                         if (cts.IsCancellationRequested) return;
                         using var pr = docReader.GetPageReader(i);
@@ -2188,7 +2225,9 @@ namespace TDPdf
                 _continuousSharpenTimer.Tick += (_, _) =>
                 {
                     _continuousSharpenTimer!.Stop();
-                    if (_viewMode == ViewMode.Continuous) ResharpenContinuousVisible();
+                    if (_viewMode != ViewMode.Continuous) return;
+                    MaintainContinuousWindow();   // #122: render pages entering the window, release those leaving
+                    ResharpenContinuousVisible();
                 };
             }
             _continuousSharpenTimer.Stop();
@@ -2328,6 +2367,107 @@ namespace TDPdf
                 img.Height = baseBmp.Height;
             }
             _continuousBaseBitmaps.Remove(pageIndex);
+        }
+
+        // #122 (upstream v1.6.3): scroll-settle maintenance for the virtualized Continuous view. Keeps
+        // a window of base bitmaps around the viewport: releases slots that have left the window
+        // (Image.Source = null; the slot keeps its height, so nothing reflows) and renders base bitmaps
+        // for slots that have entered it and are still bare. The generous ±ContinuousBaseWindow margin
+        // means ordinary scrolling always finds a rendered page; only sustained scrolling through a
+        // long document trims the far pages. Runs on the UI thread; the render itself is off-thread.
+        private void MaintainContinuousWindow()
+        {
+            if (_viewMode != ViewMode.Continuous || _doc is null || _currentFile is null) return;
+            int slotCount = _continuousPanel.Children.Count;
+            if (slotCount == 0 || _continuousTops.Count == 0) return;
+
+            double zoom = Math.Max(0.01, Zoom.ZoomLevel);
+            double viewTop = PagePreviewPanel.VerticalOffset / zoom;
+            double viewBot = (PagePreviewPanel.VerticalOffset + PagePreviewPanel.ViewportHeight) / zoom;
+            int firstVis = -1, lastVis = -1;
+            for (int i = 0; i < _continuousTops.Count && i < slotCount; i++)
+            {
+                double top = _continuousTops[i];
+                double h = ((FrameworkElement)_continuousPanel.Children[i]).Height;
+                if (double.IsNaN(h)) h = 0;
+                if (top + h >= viewTop && top <= viewBot) { if (firstVis < 0) firstVis = i; lastVis = i; }
+            }
+            if (firstVis < 0) { firstVis = 0; lastVis = 0; }   // before first layout: treat the top as visible
+            int lo = Math.Max(0, firstVis - ContinuousBaseWindow);
+            int hi = Math.Min(slotCount - 1, lastVis + ContinuousBaseWindow);
+
+            // Release every rendered slot outside the window (heights stay, so no reflow / scroll jump).
+            for (int i = 0; i < slotCount; i++)
+            {
+                if (i >= lo && i <= hi) continue;
+                if (_continuousPanel.Children[i] is not Border slot || slot.Child is not Image img) continue;
+                if (img.Source is null) continue;
+                img.Source = null;
+                slot.Background = BrushResource("BgPanel");
+                _continuousSharpPages.Remove(i);
+                _continuousBaseBitmaps.Remove(i);
+            }
+
+            // Collect in-window slots that still need a base bitmap.
+            var need = new List<int>();
+            for (int i = lo; i <= hi; i++)
+                if (_continuousPanel.Children[i] is Border slot && slot.Child is Image img && img.Source is null)
+                    need.Add(i);
+            if (need.Count == 0) return;
+
+            _continuousWindowCts?.Cancel();
+            _continuousWindowCts = new CancellationTokenSource();
+            var ct = _continuousWindowCts.Token;
+            string currentFile = _currentFile;
+            int renderW = Math.Max(800, Math.Min(2048, (int)(_continuousPageW * 2)));   // same budget as the base pass
+
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                Docnet.Core.Readers.IDocReader? docReader = null;
+                try
+                {
+                    foreach (int i in need)
+                    {
+                        if (ct.IsCancellationRequested) return;
+                        docReader ??= DocLib.Instance.GetDocReader(currentFile, new PageDimensions(renderW, renderW * 2));
+                        using var pr = docReader.GetPageReader(i);
+                        int w = pr.GetPageWidth(), h = pr.GetPageHeight();
+                        var raw = pr.GetImage();
+                        if (w <= 0 || h <= 0 || raw is null) continue;
+                        int fi = i, fw = w, fh = h; byte[] bytes = raw;
+                        if (ct.IsCancellationRequested) return;
+                        Dispatcher.Invoke(() =>
+                        {
+                            if (ct.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
+                            ApplyContinuousBaseStable(fi, fw, fh, bytes);
+                        });
+                    }
+                }
+                catch { /* cancelled or doc closed */ }
+                finally { docReader?.Dispose(); }
+            }, ct);
+        }
+
+        // Applies a base bitmap into a continuous slot WITHOUT changing the slot's height, so pages
+        // below it never move (no scroll jump). Used only by window maintenance; the placeholder height
+        // set at layout already matches the page aspect, so the natural-size bitmap fills the slot.
+        private void ApplyContinuousBaseStable(int fi, int fw, int fh, byte[] bytes)
+        {
+            if (fi < 0 || fi >= _continuousPanel.Children.Count) return;
+            if (_continuousPanel.Children[fi] is not Border slot || slot.Child is not Image img) return;
+            if (img.Source is not null) return;   // already rendered (or sharpened) — don't clobber
+            double dipW = slot.Width;
+            if (double.IsNaN(dipW) || dipW <= 0) return;
+            double dipH = dipW * fh / fw;
+            double dpiX = 96.0 * fw / dipW;
+            double dpiY = 96.0 * fh / dipH;
+            var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
+            bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
+            bmp.Freeze();
+            img.Source = bmp;
+            img.Width = dipW;
+            img.Height = dipH;
+            slot.Background = Brushes.White;
         }
 
         private void ScrollContinuousToPage(int pageIndex)
@@ -9682,6 +9822,12 @@ namespace TDPdf
             ctx.SearchResultPages.Clear();
             ctx.Thumbnails = null;
             _tabs.Remove(ctx);
+
+            // #122 (upstream v1.6.3): the page-bitmap caches just dropped are the bulk of a large
+            // document's RAM. Without a compaction the process holds its peak working set (the classic
+            // "closed the big file but memory stayed high"). Force a collection so the freed bitmaps
+            // are actually returned after closing a heavy document.
+            GC.Collect();
 
             if (_tabs.Count == 0)
             {
