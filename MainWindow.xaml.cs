@@ -10566,7 +10566,7 @@ namespace TDPdf
         /// Builds a map of named destination string → 0-based page index from a source document's
         /// /Dests dictionary and /Names /Dests name tree.
         /// </summary>
-        private Dictionary<string, int> BuildNamedDestMap(PdfDocument src)
+        private static Dictionary<string, int> BuildNamedDestMap(PdfDocument src)
         {
             var map = new Dictionary<string, int>(StringComparer.Ordinal);
             try
@@ -10595,7 +10595,7 @@ namespace TDPdf
             return map;
         }
 
-        private void WalkNameTree(PdfDocument src, PdfDictionary node, Dictionary<string, int> map)
+        private static void WalkNameTree(PdfDocument src, PdfDictionary node, Dictionary<string, int> map)
         {
             var namesArr = node.Elements.GetArray("/Names");
             if (namesArr != null)

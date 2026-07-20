@@ -228,6 +228,18 @@ namespace TDPdf
                 }
             }
 
+            // Headless CLI commands (see Cli.cs; --batch-resave in BatchMode.cs). Checked
+            // AFTER the install/telemetry flags above but BEFORE the single-instance mutex
+            // and any window, so a --command runs headless, works while a GUI instance is
+            // open, never forwards to it, and returns a process exit code. A launch with no
+            // recognized --command (including the file-association "TDPdf.exe file.pdf"
+            // open) falls through to the normal GUI below.
+            if (TDPdf.MainWindow.TryRunCli(e.Args, out int cliExit))
+            {
+                Shutdown(cliExit);
+                return;
+            }
+
             // Interactive launch. Heal a corrupt user.config BEFORE any
             // Settings.Default access (the single-instance check, theme
             // load, and MainWindow field initializers all read settings).
