@@ -89,6 +89,8 @@ namespace TDPdf
         private const int MaxUndoEntries = 100;
         private LinkedList<UndoEntry> _undoStack => _ctx.UndoStack;
         private LinkedList<UndoEntry> _redoStack => _ctx.RedoStack;
+        private Stack<int> _navBack => _ctx.NavBack;         // jump history back stack (per tab)
+        private Stack<int> _navForward => _ctx.NavForward;   // jump history forward stack (per tab)
         private bool _isDrawing;
         private Point _drawStart;
         private UIElement? _activePreview;
@@ -344,6 +346,7 @@ namespace TDPdf
                 _viewMode = savedVm;
             _gridViewToggle.IsChecked = _viewMode == ViewMode.Grid;
             PagePreviewPanel.ScrollChanged += PagePreviewPanel_ScrollChanged;
+            PreviewMouseDown += NavHistory_PreviewMouseDown;   // mouse back/forward buttons = jump history
             _zoomBox = (ComboBox)FindName("ZoomBox")!;
             _portableBadge = (StackPanel)FindName("PortableBadge")!;
             _pageJumpBox = (TextBox)FindName("PageJumpBox")!;
@@ -793,6 +796,8 @@ namespace TDPdf
             public readonly Dictionary<(int pageIndex, int dpiX), RenderedPage> RenderCache = new();
             public readonly LinkedList<UndoEntry> UndoStack = new();
             public readonly LinkedList<UndoEntry> RedoStack = new();
+            public readonly Stack<int> NavBack = new();      // jump history (#122-adjacent, upstream v1.6.4)
+            public readonly Stack<int> NavForward = new();
             public readonly PdfContentEditor ContentEditor = new();
 
             public readonly Dictionary<int, List<(double left, double bottom, double right, double top)>> AllSearchRects = new();
@@ -2640,7 +2645,10 @@ namespace TDPdf
             if (target is int pageIndex)
             {
                 if (_doc != null && pageIndex >= 0 && pageIndex < _doc.PageCount)
+                {
+                    RecordNavJump();   // internal link jump — retraceable via Alt+Left
                     PageList.SelectedIndex = pageIndex;
+                }
                 return;
             }
 
@@ -3946,6 +3954,7 @@ namespace TDPdf
                 && page >= 0 && _doc is not null && page < _doc.PageCount
                 && PageList.SelectedIndex != page)
             {
+                RecordNavJump();   // bookmark jump — retraceable via Alt+Left
                 PageList.SelectedIndex = page;
             }
         }
@@ -8901,6 +8910,59 @@ namespace TDPdf
                 DeleteSelected();
                 e.Handled = true;
             }
+            // Home / End jump to the first / last page (the Acrobat / Sumatra convention). Recorded on
+            // the jump history so Alt+Left retraces the hop. (Upstream v1.6.4)
+            else if (e.Key == Key.Home && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
+            {
+                RecordNavJump();
+                PageList.SelectedIndex = 0;
+                e.Handled = true;
+            }
+            else if (e.Key == Key.End && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
+            {
+                RecordNavJump();
+                PageList.SelectedIndex = _doc.PageCount - 1;
+                e.Handled = true;
+            }
+            // Ctrl+1 / Ctrl+2 / Ctrl+3 = actual size / fit width / fit page (Acrobat/Foxit). Ctrl+0
+            // stays the existing 100% reset. (Upstream v1.6.4)
+            else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            {
+                _zoomFitMode = ZoomFitMode.None;
+                Zoom.SetZoomLevel(1.0);   // actual size
+                e.Handled = true;
+            }
+            else if (e.Key == Key.D2 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            {
+                FitToWidth();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.D3 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            {
+                FitToPage();
+                e.Handled = true;
+            }
+            // Jump history: Alt+Left / Alt+Right retrace bookmark / link / jump-box / Home-End hops,
+            // browser-style. Alt makes the key arrive as Key.System with the real key in SystemKey.
+            else if (e.Key == Key.System && e.SystemKey == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                NavHistoryGo(back: true);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.System && e.SystemKey == Key.Right && Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                NavHistoryGo(back: false);
+                e.Handled = true;
+            }
+            // Menu key / Shift+F10 opens the right-click menu at the current selection (Windows
+            // keyboard-accessibility convention). (Upstream v1.6.4)
+            else if ((e.Key == Key.Apps
+                      || (e.Key == Key.System && e.SystemKey == Key.F10 && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
+                     && _doc is not null)
+            {
+                OpenContextMenuAtSelection();
+                e.Handled = true;
+            }
             // Arrow keys and PgUp/PgDn navigate to the previous / next page. Handled here at the window
             // (Preview) level with e.Handled so paging works the same whether the page canvas or a sidebar
             // thumbnail has focus — otherwise a focused PageList would page its own selection instead. PgUp/
@@ -11500,6 +11562,55 @@ namespace TDPdf
             return true;
         }
 
+        // ── Jump history (Alt+Left / Alt+Right / mouse back-forward buttons) — upstream v1.6.4 ──────
+        // Page-granular: recorded at the long-jump sites (bookmark click, internal link, the page jump
+        // box, Home/End) so a reader thrown 30 pages by a bookmark can retrace the hop. Per tab.
+
+        /// <summary>Records the CURRENT page onto the back stack. Call BEFORE performing a jump.</summary>
+        private void RecordNavJump()
+        {
+            if (_doc is null) return;
+            int cur = Math.Max(0, PageList.SelectedIndex);
+            if (_navBack.Count > 0 && _navBack.Peek() == cur) { _navForward.Clear(); return; }
+            _navBack.Push(cur);
+            _navForward.Clear();   // a fresh jump invalidates the forward chain, like a browser
+        }
+
+        private void NavHistoryGo(bool back)
+        {
+            if (_doc is null) return;
+            var from = back ? _navBack : _navForward;
+            var to   = back ? _navForward : _navBack;
+            if (from.Count == 0) return;
+            int cur = Math.Max(0, PageList.SelectedIndex);
+            int target = from.Pop();
+            to.Push(cur);
+            if (target >= 0 && target < _doc.PageCount)
+                PageList.SelectedIndex = target;
+        }
+
+        // Mouse back / forward buttons (XButton1 / XButton2) retrace the same history, like a browser.
+        // Registered on the window in the constructor.
+        private void NavHistory_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.XButton1)      { NavHistoryGo(back: true);  e.Handled = true; }
+            else if (e.ChangedButton == MouseButton.XButton2) { NavHistoryGo(back: false); e.Handled = true; }
+        }
+
+        // Keyboard access to the right-click menu (Menu key / Shift+F10): opens the annotation canvas
+        // context menu centered on the page rather than at the mouse. Placement is set to Center just
+        // for this open and restored on close, so the mouse path keeps its open-at-cursor behavior.
+        private void OpenContextMenuAtSelection()
+        {
+            if (_doc is null || _annotationCanvas.ContextMenu is not ContextMenu cm) return;
+            cm.PlacementTarget = _annotationCanvas;
+            var prevPlacement = cm.Placement;
+            cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Center;
+            void Restore(object? s, RoutedEventArgs a) { cm.Placement = prevPlacement; cm.Closed -= Restore; }
+            cm.Closed += Restore;
+            cm.IsOpen = true;
+        }
+
         private void Zoom_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
             if (e.PropertyName == nameof(ZoomViewModel.ZoomLevel))
@@ -12230,6 +12341,7 @@ namespace TDPdf
             if (int.TryParse(_pageJumpBox.Text, out int pg))
             {
                 int idx = Math.Clamp(pg - 1, 0, _doc.PageCount - 1);
+                if (idx != PageList.SelectedIndex) RecordNavJump();   // jump-box hop — retraceable via Alt+Left
                 PageList.SelectedIndex = idx;
             }
             else
