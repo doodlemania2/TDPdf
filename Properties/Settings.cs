@@ -156,6 +156,17 @@ namespace TDPdf.Properties
             set => this[nameof(SessionActiveFile)] = value;
         }
 
+        // Which face of the keyboard-shortcuts overlay to show: "list" (the static two-column
+        // reference, default) or "keyboard" (the rendered visual keyboard). Remembered across
+        // sessions so the overlay reopens in the view the user last chose.
+        [UserScopedSetting]
+        [DefaultSettingValue("list")]
+        public string ShortcutView
+        {
+            get => (string)this[nameof(ShortcutView)];
+            set => this[nameof(ShortcutView)] = value;
+        }
+
         // --- OCR (Tesseract) ---
 
         // Chosen OCR languages as a '+'-joined list of Tesseract codes (e.g. "eng" or "eng+spa").

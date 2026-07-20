@@ -1,6 +1,12 @@
 # Default: detect text vs binary, normalize text to LF in the repo
 * text=auto eol=lf
 
+# Vendored PdfSharpCore source (third_party/) is stored verbatim: treat as binary so
+# git never applies eol/encoding normalization to it. Upstream ships some files as UTF-16,
+# which the *.cs eol=crlf rule below would corrupt on checkout. Keep the tree byte-identical
+# to its vendored origin (see third_party/PdfSharpCore/VENDORED.txt).
+third_party/** -text
+
 # .NET project / IDE files (Visual Studio expects CRLF)
 *.sln       text eol=crlf
 *.csproj    text eol=crlf

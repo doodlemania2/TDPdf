@@ -25,4 +25,16 @@
     <SolidColorBrush x:Key="ToolButtonCheckedBackground" Color="{x:Static SystemColors.HighlightColor}"/>
     <SolidColorBrush x:Key="ToolButtonCheckedForeground" Color="{x:Static SystemColors.HighlightTextColor}"/>
     <SolidColorBrush x:Key="ToolButtonDisabledForeground" Color="{x:Static SystemColors.GrayTextColor}"/>
+
+    <!-- Shortcut-overlay keyboard: per-category key colors (upstream KillerPDF v1.6.4 "KsCat*").
+         High-contrast mode forgoes hue coding in favor of the system hot-track accent so lit keys
+         stay legible; category differences are still carried by the hover caption text. -->
+    <SolidColorBrush x:Key="KsCatFile"   Color="{x:Static SystemColors.HotTrackColor}"/>
+    <SolidColorBrush x:Key="KsCatTools"  Color="{x:Static SystemColors.HotTrackColor}"/>
+    <SolidColorBrush x:Key="KsCatEdit"   Color="{x:Static SystemColors.HotTrackColor}"/>
+    <SolidColorBrush x:Key="KsCatNav"    Color="{x:Static SystemColors.HotTrackColor}"/>
+    <SolidColorBrush x:Key="KsCatView"   Color="{x:Static SystemColors.HotTrackColor}"/>
+    <SolidColorBrush x:Key="KsCatSearch" Color="{x:Static SystemColors.HotTrackColor}"/>
+    <SolidColorBrush x:Key="KsCatHelp"   Color="{x:Static SystemColors.HotTrackColor}"/>
+    <SolidColorBrush x:Key="KsCatOcr"    Color="{x:Static SystemColors.HotTrackColor}"/>
 </ResourceDictionary>

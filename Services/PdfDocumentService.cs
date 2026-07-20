@@ -414,17 +414,35 @@ namespace TDPdf.Services
         // after modifying an encrypted document. PDFium is already initialised by Docnet,
         // which we force via DocLib.Instance before any direct P/Invoke.
 
-        [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr FPDF_LoadDocument(
+        // THREADING (upstream KillerPDF v1.6.4): PDFium is single-threaded. Docnet serializes every
+        // native call it makes on an internal static lock (Docnet.Core.DocLib.Lock). Our DIRECT
+        // pdfium.dll calls below (the encryption-strip repair path) must hold that SAME lock, or a
+        // background Docnet render and a direct call can be inside PDFium at once — native heap
+        // corruption (exit code 0xc0000374). Reflected once; the `?? new object()` fallback keeps us
+        // safe (self-serialized) even if Docnet ever renames the field. The raw externs are suffixed
+        // Raw; only the lock-holding wrappers may be called.
+        private static readonly object PdfiumLock =
+            typeof(DocLib).GetField("Lock",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+                ?.GetValue(null) ?? new object();
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDF_LoadDocument", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr FPDF_LoadDocumentRaw(
             [MarshalAs(UnmanagedType.LPStr)] string filePath,
             [MarshalAs(UnmanagedType.LPStr)] string? password);
+        private static IntPtr FPDF_LoadDocument(string filePath, string? password)
+        { lock (PdfiumLock) return FPDF_LoadDocumentRaw(filePath, password); }
 
-        [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern void FPDF_CloseDocument(IntPtr document);
+        [DllImport("pdfium.dll", EntryPoint = "FPDF_CloseDocument", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void FPDF_CloseDocumentRaw(IntPtr document);
+        private static void FPDF_CloseDocument(IntPtr document)
+        { lock (PdfiumLock) FPDF_CloseDocumentRaw(document); }
 
-        [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern bool FPDF_SaveWithVersion(
+        [DllImport("pdfium.dll", EntryPoint = "FPDF_SaveWithVersion", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDF_SaveWithVersionRaw(
             IntPtr document, ref FPDF_FILEWRITE fileWrite, uint flags, int fileVersion);
+        private static bool FPDF_SaveWithVersion(IntPtr document, ref FPDF_FILEWRITE fileWrite, uint flags, int fileVersion)
+        { lock (PdfiumLock) return FPDF_SaveWithVersionRaw(document, ref fileWrite, flags, fileVersion); }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct FPDF_FILEWRITE

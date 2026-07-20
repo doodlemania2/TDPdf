@@ -89,6 +89,8 @@ namespace TDPdf
         private const int MaxUndoEntries = 100;
         private LinkedList<UndoEntry> _undoStack => _ctx.UndoStack;
         private LinkedList<UndoEntry> _redoStack => _ctx.RedoStack;
+        private Stack<int> _navBack => _ctx.NavBack;         // jump history back stack (per tab)
+        private Stack<int> _navForward => _ctx.NavForward;   // jump history forward stack (per tab)
         private bool _isDrawing;
         private Point _drawStart;
         private UIElement? _activePreview;
@@ -264,6 +266,15 @@ namespace TDPdf
         private readonly Dictionary<int, BitmapSource> _continuousBaseBitmaps = new();
         private int _continuousSharpW;   // hi-res pixel budget the sharpened slots were rendered at
 
+        // #122 (upstream v1.6.3): continuous view used to keep a rendered bitmap for EVERY page for the
+        // life of the document — a 243-page image PDF pinned gigabytes. Now only a window of pages
+        // around the viewport holds real bitmaps: the initial pass fills the window around the opening
+        // page, and MaintainContinuousWindow (on scroll-settle) renders pages coming into range and
+        // releases those leaving it. Slot HEIGHTS never change on release/re-render, so releasing a
+        // page never reflows the document (no scroll jump); the white scaffold shows until re-rendered.
+        private const int ContinuousBaseWindow = 8;   // pages each side of the viewport kept as bitmaps
+        private CancellationTokenSource? _continuousWindowCts;
+
         // Back-compat shim: the bulk of the grid layout code was written against a
         // boolean. Grid mode is now one of the ViewMode values; keep this read-only
         // alias so those code paths stay byte-for-byte identical for Single/Grid.
@@ -282,7 +293,7 @@ namespace TDPdf
         private Border _statusBarBorder = null!;
 
         // Outline / bookmarks sidebar tab (manual refs — XAML codegen doesn't resolve these)
-        private ListBox _outlineList = null!;
+        private TreeView _outlineTree = null!;
         private ScrollViewer _outlineScrollViewer = null!;
         private RadioButton _sidebarPagesTab = null!;
         private RadioButton _sidebarOutlinesTab = null!;
@@ -335,13 +346,14 @@ namespace TDPdf
                 _viewMode = savedVm;
             _gridViewToggle.IsChecked = _viewMode == ViewMode.Grid;
             PagePreviewPanel.ScrollChanged += PagePreviewPanel_ScrollChanged;
+            PreviewMouseDown += NavHistory_PreviewMouseDown;   // mouse back/forward buttons = jump history
             _zoomBox = (ComboBox)FindName("ZoomBox")!;
             _portableBadge = (StackPanel)FindName("PortableBadge")!;
             _pageJumpBox = (TextBox)FindName("PageJumpBox")!;
             _pageTotalLabel = (TextBlock)FindName("PageTotalLabel")!;
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
             _titleBarRow = (RowDefinition)FindName("TitleBarRow")!;
-            _outlineList = (ListBox)FindName("OutlineList")!;
+            _outlineTree = (TreeView)FindName("OutlineTree")!;
             _outlineScrollViewer = (ScrollViewer)FindName("OutlineScrollViewer")!;
             _sidebarPagesTab = (RadioButton)FindName("SidebarPagesTab")!;
             _sidebarOutlinesTab = (RadioButton)FindName("SidebarOutlinesTab")!;
@@ -784,15 +796,13 @@ namespace TDPdf
             public readonly Dictionary<(int pageIndex, int dpiX), RenderedPage> RenderCache = new();
             public readonly LinkedList<UndoEntry> UndoStack = new();
             public readonly LinkedList<UndoEntry> RedoStack = new();
+            public readonly Stack<int> NavBack = new();      // jump history (#122-adjacent, upstream v1.6.4)
+            public readonly Stack<int> NavForward = new();
             public readonly PdfContentEditor ContentEditor = new();
 
             public readonly Dictionary<int, List<(double left, double bottom, double right, double top)>> AllSearchRects = new();
             public readonly List<int> SearchResultPages = new();
             public int SearchPageCursor = -1;
-
-            // Document outline / bookmarks (null = not yet loaded, empty = none).
-            public List<OutlineEntry>? Outline;
-
 
             // View state restored when this tab is re-activated.
             public IReadOnlyList<BitmapSource?>? Thumbnails;
@@ -801,10 +811,6 @@ namespace TDPdf
             // The clickable tab-header chip (built lazily by RebuildTabStrip).
             public Border? Chip;
         }
-
-        /// <summary>A single flattened bookmark/outline entry: title, nesting depth, 0-based target page.</summary>
-        private sealed record OutlineEntry(string Title, int Depth, int Page);
-
 
         private sealed class RenderedPage
         {
@@ -1594,6 +1600,24 @@ namespace TDPdf
             _renderDims.Clear();
         }
 
+        // #122 (upstream v1.6.3): the per-tab rendered-page cache used to grow without bound — a page
+        // was added on every visit and never evicted, so paging through a long document pinned a
+        // bitmap per page. Cap it and, when over, drop the entries whose page is FARTHEST from the one
+        // just rendered: renders cluster around the viewport, so the farthest are least likely next.
+        private const int RenderCachePageCap = 48;
+        private void CapRenderCache(int aroundPage)
+        {
+            if (_renderCache.Count <= RenderCachePageCap) return;
+            var keys = _renderCache.Keys.ToList();
+            // Farthest page first.
+            keys.Sort((a, b) => Math.Abs(b.pageIndex - aroundPage).CompareTo(Math.Abs(a.pageIndex - aroundPage)));
+            foreach (var k in keys)
+            {
+                if (_renderCache.Count <= RenderCachePageCap) break;
+                _renderCache.Remove(k);
+            }
+        }
+
         private void RerenderCurrentPage()
         {
             int pageIndex = PageList.SelectedIndex;
@@ -1634,11 +1658,13 @@ namespace TDPdf
 
                     renderedPage = new RenderedPage(result.Bitmap, result.DipWidth, result.DipHeight, result.Width, result.Height);
                     _renderCache[(pageIndex, dpiX)] = renderedPage;
+                    CapRenderCache(pageIndex);
                 }
 
                 if (_doc is null) return;
 
                 _renderDims[pageIndex] = ((int)Math.Round(renderedPage.DisplayWidth), (int)Math.Round(renderedPage.DisplayHeight));
+                PageImage.Tag = pageIndex;   // page identity for Grid scroll tracking (nearest-tile counter)
                 PageImage.Source = renderedPage.Bitmap;
                 PageImage.Width = renderedPage.DisplayWidth;
                 PageImage.Height = renderedPage.DisplayHeight;
@@ -1821,7 +1847,8 @@ namespace TDPdf
                 {
                     Background = Brushes.White,
                     Margin = new Thickness(0, 0, 12, 12),
-                    Child = pageGrid
+                    Child = pageGrid,
+                    Tag = pi   // page identity for Grid scroll tracking (nearest-tile counter)
                 });
             }
         }
@@ -1928,6 +1955,7 @@ namespace TDPdf
                 // #85: stop any in-flight re-sharpen and drop its slot/bitmap bookkeeping.
                 _continuousSharpenTimer?.Stop();
                 _continuousSharpenCts?.Cancel();
+                _continuousWindowCts?.Cancel();   // #122: stop in-flight window-maintenance render
                 _continuousSharpPages.Clear();
                 _continuousBaseBitmaps.Clear();
                 _continuousSharpW = 0;
@@ -2003,6 +2031,17 @@ namespace TDPdf
             _continuousRenderCts?.Cancel();
             _continuousPanel.Children.Clear();
             _continuousTops.Clear();
+            // #130 (upstream v1.6.4): a PDF whose page tree parses to zero pages must not reach the
+            // Pages[0] deref below — Continuous view crashed with an out-of-range index. Nothing to
+            // lay out, so bail after clearing any stale tiles.
+            if (_doc.PageCount == 0) return;
+
+            // Upstream v1.6.3: entering Continuous must restore its own scrollbar setup. Grid disables
+            // the horizontal scrollbar (RefreshPageView), and because RefreshPageView early-returns for
+            // Continuous that override would otherwise leak in and clip zoomed pages with no way to
+            // scroll sideways. Reset to Auto.
+            PagePreviewPanel.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+            PagePreviewPanel.VerticalScrollBarVisibility   = ScrollBarVisibility.Auto;
 
             // PDF natural page width in WPF DIPs (96 DIP/in, 72 pt/in). Zoom-independent so
             // FitToWidth (= viewportW / _continuousPageW) doesn't cancel against the zoom level.
@@ -2075,6 +2114,7 @@ namespace TDPdf
             // A full base pass repaints every slot, so any hi-res re-sharpen state is now stale (#85):
             // cancel in-flight sharpening and forget which slots were sharpened / their base bitmaps.
             _continuousSharpenCts?.Cancel();
+            _continuousWindowCts?.Cancel();   // #122: also stop any in-flight window-maintenance render
             _continuousSharpPages.Clear();
             _continuousBaseBitmaps.Clear();
             _continuousSharpW = 0;
@@ -2084,6 +2124,13 @@ namespace TDPdf
             double targetW = _continuousPageW;
             int renderW = Math.Max(800, Math.Min(2048, (int)(targetW * 2)));
 
+            // #122: render only the window of pages around the page we're opening at; the rest stay as
+            // white scaffold and are filled by MaintainContinuousWindow as they scroll into range. This
+            // is what keeps a long image-heavy document from materializing every page bitmap at once.
+            int center = _continuousScrollTarget >= 0 ? Math.Min(_continuousScrollTarget, pageCount - 1) : 0;
+            int winLo = Math.Max(0, center - ContinuousBaseWindow);
+            int winHi = Math.Min(pageCount - 1, center + ContinuousBaseWindow);
+
             try
             {
                 await System.Threading.Tasks.Task.Run(() =>
@@ -2091,7 +2138,7 @@ namespace TDPdf
                     using var docReader = DocLib.Instance.GetDocReader(
                         currentFile, new PageDimensions(renderW, renderW * 2));
 
-                    for (int i = 0; i < pageCount; i++)
+                    for (int i = winLo; i <= winHi; i++)
                     {
                         if (cts.IsCancellationRequested) return;
                         using var pr = docReader.GetPageReader(i);
@@ -2175,7 +2222,9 @@ namespace TDPdf
                 _continuousSharpenTimer.Tick += (_, _) =>
                 {
                     _continuousSharpenTimer!.Stop();
-                    if (_viewMode == ViewMode.Continuous) ResharpenContinuousVisible();
+                    if (_viewMode != ViewMode.Continuous) return;
+                    MaintainContinuousWindow();   // #122: render pages entering the window, release those leaving
+                    ResharpenContinuousVisible();
                 };
             }
             _continuousSharpenTimer.Stop();
@@ -2317,6 +2366,107 @@ namespace TDPdf
             _continuousBaseBitmaps.Remove(pageIndex);
         }
 
+        // #122 (upstream v1.6.3): scroll-settle maintenance for the virtualized Continuous view. Keeps
+        // a window of base bitmaps around the viewport: releases slots that have left the window
+        // (Image.Source = null; the slot keeps its height, so nothing reflows) and renders base bitmaps
+        // for slots that have entered it and are still bare. The generous ±ContinuousBaseWindow margin
+        // means ordinary scrolling always finds a rendered page; only sustained scrolling through a
+        // long document trims the far pages. Runs on the UI thread; the render itself is off-thread.
+        private void MaintainContinuousWindow()
+        {
+            if (_viewMode != ViewMode.Continuous || _doc is null || _currentFile is null) return;
+            int slotCount = _continuousPanel.Children.Count;
+            if (slotCount == 0 || _continuousTops.Count == 0) return;
+
+            double zoom = Math.Max(0.01, Zoom.ZoomLevel);
+            double viewTop = PagePreviewPanel.VerticalOffset / zoom;
+            double viewBot = (PagePreviewPanel.VerticalOffset + PagePreviewPanel.ViewportHeight) / zoom;
+            int firstVis = -1, lastVis = -1;
+            for (int i = 0; i < _continuousTops.Count && i < slotCount; i++)
+            {
+                double top = _continuousTops[i];
+                double h = ((FrameworkElement)_continuousPanel.Children[i]).Height;
+                if (double.IsNaN(h)) h = 0;
+                if (top + h >= viewTop && top <= viewBot) { if (firstVis < 0) firstVis = i; lastVis = i; }
+            }
+            if (firstVis < 0) { firstVis = 0; lastVis = 0; }   // before first layout: treat the top as visible
+            int lo = Math.Max(0, firstVis - ContinuousBaseWindow);
+            int hi = Math.Min(slotCount - 1, lastVis + ContinuousBaseWindow);
+
+            // Release every rendered slot outside the window (heights stay, so no reflow / scroll jump).
+            for (int i = 0; i < slotCount; i++)
+            {
+                if (i >= lo && i <= hi) continue;
+                if (_continuousPanel.Children[i] is not Border slot || slot.Child is not Image img) continue;
+                if (img.Source is null) continue;
+                img.Source = null;
+                slot.Background = BrushResource("BgPanel");
+                _continuousSharpPages.Remove(i);
+                _continuousBaseBitmaps.Remove(i);
+            }
+
+            // Collect in-window slots that still need a base bitmap.
+            var need = new List<int>();
+            for (int i = lo; i <= hi; i++)
+                if (_continuousPanel.Children[i] is Border slot && slot.Child is Image img && img.Source is null)
+                    need.Add(i);
+            if (need.Count == 0) return;
+
+            _continuousWindowCts?.Cancel();
+            _continuousWindowCts = new CancellationTokenSource();
+            var ct = _continuousWindowCts.Token;
+            string currentFile = _currentFile;
+            int renderW = Math.Max(800, Math.Min(2048, (int)(_continuousPageW * 2)));   // same budget as the base pass
+
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                Docnet.Core.Readers.IDocReader? docReader = null;
+                try
+                {
+                    foreach (int i in need)
+                    {
+                        if (ct.IsCancellationRequested) return;
+                        docReader ??= DocLib.Instance.GetDocReader(currentFile, new PageDimensions(renderW, renderW * 2));
+                        using var pr = docReader.GetPageReader(i);
+                        int w = pr.GetPageWidth(), h = pr.GetPageHeight();
+                        var raw = pr.GetImage();
+                        if (w <= 0 || h <= 0 || raw is null) continue;
+                        int fi = i, fw = w, fh = h; byte[] bytes = raw;
+                        if (ct.IsCancellationRequested) return;
+                        Dispatcher.Invoke(() =>
+                        {
+                            if (ct.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
+                            ApplyContinuousBaseStable(fi, fw, fh, bytes);
+                        });
+                    }
+                }
+                catch { /* cancelled or doc closed */ }
+                finally { docReader?.Dispose(); }
+            }, ct);
+        }
+
+        // Applies a base bitmap into a continuous slot WITHOUT changing the slot's height, so pages
+        // below it never move (no scroll jump). Used only by window maintenance; the placeholder height
+        // set at layout already matches the page aspect, so the natural-size bitmap fills the slot.
+        private void ApplyContinuousBaseStable(int fi, int fw, int fh, byte[] bytes)
+        {
+            if (fi < 0 || fi >= _continuousPanel.Children.Count) return;
+            if (_continuousPanel.Children[fi] is not Border slot || slot.Child is not Image img) return;
+            if (img.Source is not null) return;   // already rendered (or sharpened) — don't clobber
+            double dipW = slot.Width;
+            if (double.IsNaN(dipW) || dipW <= 0) return;
+            double dipH = dipW * fh / fw;
+            double dpiX = 96.0 * fw / dipW;
+            double dpiY = 96.0 * fh / dipH;
+            var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
+            bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
+            bmp.Freeze();
+            img.Source = bmp;
+            img.Width = dipW;
+            img.Height = dipH;
+            slot.Background = Brushes.White;
+        }
+
         private void ScrollContinuousToPage(int pageIndex)
         {
             if (pageIndex < 0 || pageIndex >= _continuousTops.Count) return;
@@ -2343,6 +2493,12 @@ namespace TDPdf
         /// </summary>
         private void PagePreviewPanel_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
+            // Grid view (upstream v1.6.4): follow the tile nearest the viewport center so the
+            // statusbar page counter tracks scrolling instead of pointing at the last-clicked page.
+            // We update only the counter, NOT PageList.SelectedIndex — in Grid a selection change
+            // scroll-jumps and re-renders (PageList_SelectionChanged), which would fight the scroll.
+            if (_viewMode == ViewMode.Grid) { UpdateGridCurrentPageCounter(); return; }
+
             if (_viewMode != ViewMode.Continuous || _continuousTops.Count == 0) return;
             // #85: once scrolling settles, sharpen the pages now in view and release the ones that
             // left. Debounced, so streaming base render / rapid scroll just keeps resetting the timer;
@@ -2373,6 +2529,34 @@ namespace TDPdf
                 PageList.SelectedIndex = nearest;
                 _suppressContinuousScrollSync = false;
             }
+        }
+
+        // Grid scroll tracking (upstream v1.6.4): sets the statusbar page counter to the tile whose
+        // center is nearest the viewport center. Each tile carries its page index in its Tag (the
+        // primary PageImage tagged in RenderPage, secondaries when appended). Uses TranslatePoint on
+        // both tile edges so any grid zoom transform is accounted for. Deliberately leaves
+        // PageList.SelectedIndex untouched (a Grid selection change scroll-jumps and re-renders).
+        private void UpdateGridCurrentPageCounter()
+        {
+            if (_doc is null || _pageContentPanel.Children.Count == 0) return;
+            double viewportCenterY = PagePreviewPanel.ViewportHeight * 0.5;
+            int nearestPage = -1;
+            double minDist = double.MaxValue;
+            foreach (UIElement child in _pageContentPanel.Children)
+            {
+                if (child is not FrameworkElement fe || fe.Tag is not int pageIdx || fe.ActualHeight <= 0)
+                    continue;
+                try
+                {
+                    double topY    = fe.TranslatePoint(new Point(0, 0), PagePreviewPanel).Y;
+                    double bottomY = fe.TranslatePoint(new Point(0, fe.ActualHeight), PagePreviewPanel).Y;
+                    double dist = Math.Abs((topY + bottomY) * 0.5 - viewportCenterY);
+                    if (dist < minDist) { minDist = dist; nearestPage = pageIdx; }
+                }
+                catch { /* transform can fail mid-layout; skip this tile */ }
+            }
+            if (nearestPage >= 0)
+                _pageJumpBox.Text = (nearestPage + 1).ToString();
         }
 
         // ============================================================
@@ -2453,7 +2637,10 @@ namespace TDPdf
             if (target is int pageIndex)
             {
                 if (_doc != null && pageIndex >= 0 && pageIndex < _doc.PageCount)
+                {
+                    RecordNavJump();   // internal link jump — retraceable via Alt+Left
                     PageList.SelectedIndex = pageIndex;
+                }
                 return;
             }
 
@@ -3621,123 +3808,681 @@ namespace TDPdf
         }
 
         // ============================================================
-        // Document outline / bookmarks (sidebar OUTLINES tab)
+        // Document outline / bookmarks (sidebar OUTLINES tab)  —  #133
+        //
+        // Editable bookmark tree ported from upstream KillerPDF v1.6.4. TDPdf keeps its own
+        // multi-tab document model, TdpDialog dark dialogs, theme brushes, and (crucially) its
+        // full-document-snapshot undo (PushDocUndo), so this is an adaptation, not a copy:
+        //   • ListBox → themed TreeView (OutlineTreeStyle / OutlineItemStyle / OutlineExpander).
+        //   • Edits mutate the live PdfSharpCore outline object model (_doc.Outlines) so they are
+        //     written on save; page-index for display still resolves through TDPdf's ResolveDest so
+        //     named / GoTo destinations navigate exactly as before.
+        //   • Every mutation rides the existing document-snapshot undo (PushDocUndo) — one Ctrl+Z
+        //     restores the whole edit — rather than a bookmark-specific undo stack.
         // ============================================================
 
         /// <summary>
-        /// Walks the document catalog's /Outlines tree into a flat list of
-        /// (title, depth, target page) entries and refreshes the sidebar UI.
-        /// Destinations are resolved with the same helpers used for link annotations.
+        /// (Re)builds the OUTLINES tree from the active document's live PdfSharpCore outline
+        /// collection. Safe to call on a null / read-only / outline-less document.
         /// </summary>
         private void LoadOutlines()
         {
-            var entries = new List<OutlineEntry>();
+            _bmExtraSel.Clear();          // outlines may be gone after a rebuild / undo
+            _outlineTree.Items.Clear();
+            if (_doc is null)
+            {
+                _sidebarOutlinesTab.IsEnabled = false;
+                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+                return;
+            }
             try
             {
-                if (_doc is not null)
+                // #103: _doc.Outlines lazily CREATES an empty outlines object on documents that have
+                // none, and PdfSharpCore then emits a dangling /Outlines reference the reopen rejects.
+                // Peek at the catalog read-only and only touch .Outlines when one really exists.
+                bool hasOutlines = _doc.Internals.Catalog.Elements.ContainsKey("/Outlines");
+                var outlines = hasOutlines ? _doc.Outlines : null;
+                if (outlines is null || outlines.Count == 0)
                 {
-                    var root = _doc.Internals.Catalog.Elements.GetDictionary("/Outlines");
-                    var first = DerefItem(root?.Elements["/First"] ?? new PdfInteger(0)) as PdfDictionary;
-                    if (first is not null)
-                    {
-                        var visited = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
-                        AddOutlineNodes(first, 0, entries, visited);
-                    }
+                    // Stay enabled on an editable document so the user can open the panel and add a
+                    // first bookmark (the ghost add-row is then the only entry); read-only documents
+                    // keep the old "disabled when empty" gating.
+                    _sidebarOutlinesTab.IsEnabled = CanEditBookmarks;
+                    if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
+                    else if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+                    return;
                 }
+                _sidebarOutlinesTab.IsEnabled = true;
+                if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
+                AddOutlineItems(_outlineTree.Items, outlines);
             }
             catch
             {
                 // A malformed outline tree must never break opening a document.
-                entries.Clear();
+                _outlineTree.Items.Clear();
+                _sidebarOutlinesTab.IsEnabled = false;
+                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
             }
-            _ctx.Outline = entries;
-            RefreshOutlineUi();
         }
 
         /// <summary>
-        /// Recursively appends an outline node and its siblings (via /Next) and
-        /// children (via /First). Guarded against cycles and runaway trees.
+        /// #133 (upstream v1.6.4): PdfSharpCore's lexer decodes UTF-16 bookmark titles by their BOM,
+        /// but strings it decrypts AFTER parsing (owner-password protected files) never get that BOM
+        /// re-check, so the title arrives as raw bytes widened to chars: a U+00FE U+00FF prefix (the
+        /// BOM bytes) followed by one char per byte (mojibake, most visible on Chinese outlines).
+        /// Detect the widened BOM, re-pack the chars into bytes, and decode as UTF-16. Titles that
+        /// parsed correctly don't start with those two chars and pass through untouched.
         /// </summary>
-        private void AddOutlineNodes(PdfDictionary? node, int depth,
-            List<OutlineEntry> entries, HashSet<PdfDictionary> visited)
+        private static string FixRawUnicodeTitle(string s)
         {
-            int guard = 0;
-            while (node is not null && guard++ < 10000 && depth < 32)
+            if (s.Length < 2) return s;
+            bool be = s[0] == 'þ' && s[1] == 'ÿ';   // UTF-16BE BOM as raw chars
+            bool le = s[0] == 'ÿ' && s[1] == 'þ';   // UTF-16LE (Adobe tolerance)
+            if (!be && !le) return s;
+            foreach (char c in s)
+                if (c > 'ÿ') return s;   // not byte-widened data - a real (odd) title, leave it
+            var sb = new System.Text.StringBuilder((s.Length - 2) / 2);
+            for (int i = 2; i + 1 < s.Length; i += 2)   // a trailing odd byte is dropped rather than corrupting the pairs
+                sb.Append(be ? (char)((s[i] << 8) | s[i + 1])
+                             : (char)((s[i + 1] << 8) | s[i]));
+            return sb.ToString();
+        }
+
+        /// <summary>Builds a TreeViewItem per outline (recursing into children) tied to its live
+        /// PdfOutline via <see cref="OutlineNodeRef"/>.</summary>
+        private void AddOutlineItems(ItemCollection target, PdfSharpCore.Pdf.PdfOutlineCollection outlines)
+        {
+            foreach (PdfSharpCore.Pdf.PdfOutline outline in outlines)
             {
-                if (!visited.Add(node)) break;        // cycle protection
-                if (entries.Count >= 10000) break;    // sanity cap
-
-                string title = node.Elements.GetString("/Title") ?? string.Empty;
-
-                // Destination may be a direct /Dest or a /GoTo action's /D.
-                PdfItem? destItem = node.Elements["/Dest"];
-                if (destItem is null)
+                int pageIdx = GetOutlinePageIndex(outline);
+                string title = FixRawUnicodeTitle(outline.Title ?? string.Empty);
+                var item = new TreeViewItem
                 {
-                    var action = node.Elements.GetDictionary("/A");
-                    if (action is not null &&
-                        (action.Elements.GetName("/S") == "/GoTo" || action.Elements.ContainsKey("/D")))
-                    {
-                        destItem = action.Elements["/D"];
-                    }
-                }
-                int page = ResolveDest(destItem) ?? -1;
-                entries.Add(new OutlineEntry(title, depth, page));
-
-                // Descend into children, then continue with the next sibling.
-                var child = DerefItem(node.Elements["/First"] ?? new PdfInteger(0)) as PdfDictionary;
-                if (child is not null)
-                    AddOutlineNodes(child, depth + 1, entries, visited);
-
-                node = DerefItem(node.Elements["/Next"] ?? new PdfInteger(0)) as PdfDictionary;
+                    Header = string.IsNullOrEmpty(title) ? "(untitled)" : title,
+                    IsExpanded = true,
+                    Tag = new OutlineNodeRef(outline, outlines, pageIdx),
+                    ToolTip = pageIdx >= 0 ? $"Page {pageIdx + 1}" : null,
+                    // Items are added as ready-made containers, so ItemContainerStyle doesn't apply;
+                    // set the themed style explicitly.
+                    Style = (Style)FindResource("OutlineItemStyle"),
+                };
+                if (outline.Outlines is not null && outline.Outlines.Count > 0)
+                    AddOutlineItems(item.Items, outline.Outlines);
+                target.Add(item);
             }
         }
 
-        /// <summary>Rebuilds the OUTLINES list from the active document's cached outline.</summary>
-        private void RefreshOutlineUi()
+        /// <summary>Resolves an outline's 0-based target page. Prefers PdfSharpCore's parsed
+        /// destination page, then falls back to TDPdf's richer resolver (named destinations,
+        /// /GoTo actions) so navigation matches the pre-edit behaviour.</summary>
+        private int GetOutlinePageIndex(PdfSharpCore.Pdf.PdfOutline outline)
         {
-            _outlineList.Items.Clear();
-            var entries = _ctx.Outline;
-            bool has = entries is { Count: > 0 };
-            _sidebarOutlinesTab.IsEnabled = has;
-
-            if (!has)
+            if (_doc is null) return -1;
+            if (outline.DestinationPage is PdfSharpCore.Pdf.PdfPage destPage)
             {
-                // Don't leave the user stranded on an empty/disabled outline tab.
-                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+                for (int i = 0; i < _doc.PageCount; i++)
+                    if (ReferenceEquals(_doc.Pages[i], destPage)) return i;
+            }
+            // Fall back to TDPdf's resolver on the outline's own dictionary.
+            PdfItem? destItem = outline.Elements["/Dest"];
+            if (destItem is null)
+            {
+                var action = outline.Elements.GetDictionary("/A");
+                if (action is not null &&
+                    (action.Elements.GetName("/S") == "/GoTo" || action.Elements.ContainsKey("/D")))
+                {
+                    destItem = action.Elements["/D"];
+                }
+            }
+            return ResolveDest(destItem) ?? -1;
+        }
+
+        private void OutlineTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+        {
+            if (_suppressOutlineNav) return;   // programmatic re-select (e.g. after a move) must not jump the view
+            if (e.NewValue is TreeViewItem item && item.Tag is OutlineNodeRef nref
+                && nref.PageIndex >= 0 && _doc is not null && nref.PageIndex < _doc.PageCount
+                && PageList.SelectedIndex != nref.PageIndex)
+            {
+                RecordNavJump();   // bookmark jump — retraceable via Alt+Left
+                PageList.SelectedIndex = nref.PageIndex;
+            }
+        }
+
+        // The TreeView's own scroll viewer swallows the wheel before the outer one sees it, so the
+        // Outlines panel wouldn't scroll. Forward the wheel to the outer scroll viewer.
+        private void OutlineScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            _outlineScrollViewer.ScrollToVerticalOffset(_outlineScrollViewer.VerticalOffset - e.Delta);
+            e.Handled = true;
+        }
+
+        // ============================================================
+        // Bookmark editing (#133): add / rename / child / reorder / retarget / delete
+        // ============================================================
+
+        /// <summary>Ties a TreeViewItem to its live PdfOutline, the collection that contains it, and
+        /// the resolved target page (for click-to-navigate).</summary>
+        private sealed class OutlineNodeRef
+        {
+            public readonly PdfSharpCore.Pdf.PdfOutline Outline;
+            public readonly PdfSharpCore.Pdf.PdfOutlineCollection Parent;
+            public readonly int PageIndex;
+            public OutlineNodeRef(PdfSharpCore.Pdf.PdfOutline outline,
+                                  PdfSharpCore.Pdf.PdfOutlineCollection parent, int pageIndex)
+            { Outline = outline; Parent = parent; PageIndex = pageIndex; }
+        }
+
+        // PdfSharpCore cannot save a document opened read-only (owner-password / XRef-fallback opens),
+        // so bookmark editing is hidden there rather than failing at save time.
+        private bool CanEditBookmarks => _doc is not null && !_doc.IsReadOnly;
+
+        // Multi-select. WPF's TreeView is hard single-select, so its built-in selection stays the
+        // "primary" item and Ctrl/Shift clicks maintain this extra set on top. Keyed by PdfOutline so
+        // the selection survives tree rebuilds within one document.
+        private readonly HashSet<PdfSharpCore.Pdf.PdfOutline> _bmExtraSel = new();
+        private bool _suppressOutlineNav;
+        private bool _bmRenaming;   // an inline rename box owns the keyboard — window paging keys stand down
+
+        /// <summary>All bookmark rows in visual order (optionally only rows currently visible, i.e.
+        /// with every ancestor expanded). The ghost add-row is never included.</summary>
+        private static void FlattenBookmarkItems(ItemCollection items, bool visibleOnly,
+                                                 List<(TreeViewItem Item, OutlineNodeRef Ref)> into)
+        {
+            foreach (TreeViewItem it in items)
+            {
+                if (it.Tag is OutlineNodeRef r) into.Add((it, r));
+                if (!visibleOnly || it.IsExpanded)
+                    FlattenBookmarkItems(it.Items, visibleOnly, into);
+            }
+        }
+
+        /// <summary>Paints/clears the extra-selection look. The item template's IsSelected trigger
+        /// drives Bd.Background/BorderBrush + Foreground; extras set the same three locally (local
+        /// values outrank template triggers) and ClearValue restores normal styling.</summary>
+        private void ApplyExtraSelectionVisuals()
+        {
+            var all = new List<(TreeViewItem Item, OutlineNodeRef Ref)>();
+            FlattenBookmarkItems(_outlineTree.Items, visibleOnly: false, all);
+            foreach (var (it, r) in all)
+            {
+                it.ApplyTemplate();
+                var bd = it.Template?.FindName("Bd", it) as Border;
+                if (_bmExtraSel.Contains(r.Outline))
+                {
+                    if (bd is not null)
+                    {
+                        bd.Background = BrushResource("AccentGreenDim");
+                        bd.BorderBrush = BrushResource("AccentGreen");
+                    }
+                    it.Foreground = Brushes.White;   // matches the IsSelected trigger
+                }
+                else
+                {
+                    if (bd is not null)
+                    {
+                        bd.ClearValue(Border.BackgroundProperty);
+                        bd.ClearValue(Border.BorderBrushProperty);
+                    }
+                    it.ClearValue(ForegroundProperty);
+                }
+            }
+        }
+
+        private void ClearBookmarkMultiSelection()
+        {
+            if (_bmExtraSel.Count == 0) return;
+            _bmExtraSel.Clear();
+            ApplyExtraSelectionVisuals();
+        }
+
+        // True when the click landed on the expand/collapse toggle - those pass through untouched.
+        private static bool IsExpanderClick(DependencyObject? d)
+        {
+            while (d is not null && d is not TreeViewItem)
+            {
+                if (d is System.Windows.Controls.Primitives.ToggleButton) return true;
+                d = d is Visual or System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(d)
+                    : LogicalTreeHelper.GetParent(d);
+            }
+            return false;
+        }
+
+        private void OutlineTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (IsExpanderClick(e.OriginalSource as DependencyObject)) return;
+            var tvi = OutlineItemAt(e.OriginalSource as DependencyObject);
+            bool ctrl  = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+            bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+            if (tvi?.Tag is not OutlineNodeRef nref || !CanEditBookmarks || (!ctrl && !shift))
+            {
+                // Plain click, ghost row, or empty space: default single-selection behaviour.
+                ClearBookmarkMultiSelection();
                 return;
             }
-
-            foreach (var entry in entries!)
+            if (ctrl)
             {
-                string text = string.IsNullOrWhiteSpace(entry.Title) ? "(untitled)" : entry.Title;
-                var tb = new TextBlock
-                {
-                    Text = text,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Foreground = BrushResource(entry.Page >= 0 ? "TextPrimary" : "TextSecondary"),
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 12,
-                    Margin = new Thickness(8 + entry.Depth * 14, 0, 4, 0)
-                };
-                var item = new ListBoxItem
-                {
-                    Content = tb,
-                    Tag = entry.Page,
-                    ToolTip = text,
-                    IsEnabled = entry.Page >= 0
-                };
-                _outlineList.Items.Add(item);
+                // Fold the primary into the set so the whole selection lives in one place, then toggle.
+                if (_outlineTree.SelectedItem is TreeViewItem prim && prim.Tag is OutlineNodeRef pr)
+                    _bmExtraSel.Add(pr.Outline);
+                if (!_bmExtraSel.Add(nref.Outline)) _bmExtraSel.Remove(nref.Outline);
+            }
+            else
+            {
+                // Shift: range from the primary to the clicked row, in visible order.
+                _bmExtraSel.Clear();
+                var flat = new List<(TreeViewItem Item, OutlineNodeRef Ref)>();
+                FlattenBookmarkItems(_outlineTree.Items, visibleOnly: true, flat);
+                var primary = (_outlineTree.SelectedItem as TreeViewItem)?.Tag as OutlineNodeRef;
+                int ia = primary is null ? -1 : flat.FindIndex(t => ReferenceEquals(t.Ref, primary));
+                int ib = flat.FindIndex(t => ReferenceEquals(t.Item, tvi));
+                if (ib < 0) return;
+                if (ia < 0) ia = ib;
+                for (int k = Math.Min(ia, ib); k <= Math.Max(ia, ib); k++)
+                    _bmExtraSel.Add(flat[k].Ref.Outline);
+            }
+            ApplyExtraSelectionVisuals();
+            e.Handled = true;   // keep the built-in primary selection where it is
+        }
+
+        private void OutlineTree_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (!CanEditBookmarks) return;
+            if (e.OriginalSource is TextBox) return;   // inline rename in progress: keys edit text, not bookmarks
+            var primary = (_outlineTree.SelectedItem as TreeViewItem)?.Tag as OutlineNodeRef;
+            if (e.Key == Key.Delete && (primary is not null || _bmExtraSel.Count > 0))
+            {
+                e.Handled = true;
+                DeleteSelectedBookmarks(primary);
+            }
+            else if (e.Key == Key.F2 && primary is not null && _outlineTree.SelectedItem is TreeViewItem tvi)
+            {
+                e.Handled = true;
+                BeginInlineRename(tvi, primary);
             }
         }
 
-        private void OutlineList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        /// <summary>The add action lives as a dim first row inside the tree itself: a + glyph and
+        /// "Add bookmark", brightening on hover. Tag stays null so the selection handler, context
+        /// menu, and refresh walks all treat it as a non-bookmark row.</summary>
+        private TreeViewItem BuildAddBookmarkGhostRow()
         {
-            if (_outlineList.SelectedItem is ListBoxItem { Tag: int page }
-                && page >= 0 && _doc is not null && page < _doc.PageCount
-                && PageList.SelectedIndex != page)
+            var icon = new TextBlock
             {
-                PageList.SelectedIndex = page;
+                Text = "\uE710",   // Segoe MDL2 Add
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 5, 0)
+            };
+            var text = new TextBlock { Text = "Add bookmark", VerticalAlignment = VerticalAlignment.Center };
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Opacity = 0.55 };
+            panel.Children.Add(icon);
+            panel.Children.Add(text);
+            var item = new TreeViewItem
+            {
+                Header = panel,
+                ToolTip = "Add a bookmark pointing at the current page",
+                Style = (Style)FindResource("OutlineItemStyle"),
+            };
+            item.MouseEnter += (_, _2) => panel.Opacity = 1.0;
+            item.MouseLeave += (_, _2) => panel.Opacity = 0.55;
+            item.PreviewMouseLeftButtonUp += (_, ev) => { ev.Handled = true; AddBookmarkInto(null); };
+            return item;
+        }
+
+        /// <summary>Adds a bookmark pointing at the current page - to the root list, or as a child of
+        /// <paramref name="parent"/> - titled "Page N", then drops straight into an inline rename of
+        /// the new entry (no dialog). Esc keeps the default title.</summary>
+        private void AddBookmarkInto(OutlineNodeRef? parent)
+        {
+            if (!CanEditBookmarks || _doc is null) return;
+            if (parent is not null && !ReferenceEquals(parent.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            int page = Math.Max(0, PageList.SelectedIndex);
+            if (page >= _doc.PageCount) page = _doc.PageCount - 1;
+            if (page < 0) return;
+            PushDocUndo();   // bookmark ops ride the document-snapshot undo like crop / page ops do
+            var col = parent is null ? _doc.Outlines : parent.Outline.Outlines;
+            var added = col.Add($"Page {page + 1}", _doc.Pages[page], true);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();
+            if (FindOutlineItem(_outlineTree.Items, added) is { } tvi && tvi.Tag is OutlineNodeRef nref)
+            {
+                tvi.BringIntoView();
+                BeginInlineRename(tvi, nref);
             }
+        }
+
+        /// <summary>Swaps a tree item's header for an inline TextBox (rename-in-place; also used right
+        /// after adding). Enter or clicking elsewhere commits, Esc cancels.</summary>
+        private void BeginInlineRename(TreeViewItem tvi, OutlineNodeRef nref)
+        {
+            if (!CanEditBookmarks) return;
+            if (!ReferenceEquals(nref.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            string current = FixRawUnicodeTitle(nref.Outline.Title ?? string.Empty);
+            var box = new TextBox
+            {
+                Text = current,
+                MinWidth = 110,
+                FontSize = _outlineTree.FontSize,
+                FontFamily = new FontFamily("Segoe UI"),
+                Padding = new Thickness(3, 1, 3, 1),
+                Background = BrushResource("BgPanel"),
+                Foreground = BrushResource("TextPrimary"),
+                BorderBrush = BrushResource("AccentGreen"),   // accent border = active in-place edit
+                BorderThickness = new Thickness(1),
+                CaretBrush = BrushResource("AccentGreen"),
+                SelectionBrush = BrushResource("AccentGreenDim"),
+                FocusVisualStyle = null,
+            };
+            bool done = false;
+            void Commit()
+            {
+                if (done) return;
+                done = true;
+                _bmRenaming = false;
+                string t = box.Text.Trim();
+                if (t.Length > 0 && t != current)
+                {
+                    PushDocUndo();
+                    nref.Outline.Title = t;   // the setter writes a proper Unicode string, healing mojibake entries
+                    MarkDirty();
+                    RefreshOutlines();
+                }
+                else
+                    tvi.Header = string.IsNullOrEmpty(current) ? "(untitled)" : current;
+            }
+            void Cancel()
+            {
+                if (done) return;
+                done = true;
+                _bmRenaming = false;
+                tvi.Header = string.IsNullOrEmpty(current) ? "(untitled)" : current;
+            }
+            box.PreviewKeyDown += (_, ke) =>
+            {
+                if (ke.Key == Key.Enter)  { ke.Handled = true; Commit(); }
+                if (ke.Key == Key.Escape) { ke.Handled = true; Cancel(); }
+            };
+            box.LostFocus += (_, _2) => Commit();
+            _bmRenaming = true;
+            tvi.Header = box;
+            // The box can't take focus until it has been laid out - focus it after render.
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input,
+                (Action)(() => { box.Focus(); box.SelectAll(); }));
+        }
+
+        /// <summary>Finds the tree item for a PdfOutline, expanding collapsed ancestors on the way.</summary>
+        private static TreeViewItem? FindOutlineItem(ItemCollection items, object outline)
+        {
+            foreach (TreeViewItem it in items)
+            {
+                if (it.Tag is OutlineNodeRef r && ReferenceEquals(r.Outline, outline)) return it;
+                if (FindOutlineItem(it.Items, outline) is { } hit) { it.IsExpanded = true; return hit; }
+            }
+            return null;
+        }
+
+        /// <summary>Deletes the multi-selection if one exists, plus the clicked/primary item. One
+        /// confirm covers the whole set; one undo entry restores it.</summary>
+        private void DeleteSelectedBookmarks(OutlineNodeRef? clicked)
+        {
+            if (!CanEditBookmarks) return;
+            if (clicked is not null && !ReferenceEquals(clicked.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+
+            // Gather targets: the extra set, the primary, and the clicked item, deduplicated.
+            var all = new List<(TreeViewItem Item, OutlineNodeRef Ref)>();
+            FlattenBookmarkItems(_outlineTree.Items, visibleOnly: false, all);
+            var targets = new List<OutlineNodeRef>();
+            foreach (var (_, r) in all)
+                if (_bmExtraSel.Contains(r.Outline)) targets.Add(r);
+            void AddTarget(OutlineNodeRef? r)
+            {
+                if (r is not null && !targets.Any(t => ReferenceEquals(t.Outline, r.Outline))) targets.Add(r);
+            }
+            AddTarget((_outlineTree.SelectedItem as TreeViewItem)?.Tag as OutlineNodeRef);
+            AddTarget(clicked);
+            if (targets.Count == 0) return;
+
+            // A target with a selected ancestor is covered by deleting the ancestor - drop it so the
+            // remaining targets are independent (their parent collections stay valid during removal).
+            var chosen = new HashSet<object>(targets.Select(t => (object)t.Outline));
+            bool Covered(PdfSharpCore.Pdf.PdfOutline o)
+            {
+                for (var p = o.Parent; p is not null; p = p.Parent)
+                    if (chosen.Contains(p)) return true;
+                return false;
+            }
+            targets = targets.Where(t => !Covered(t.Outline)).ToList();
+
+            int total = targets.Sum(t => 1 + CountOutlines(t.Outline.Outlines));
+            if (total > 1)
+            {
+                string msg = targets.Count == 1
+                    ? $"Delete this bookmark and its {total - 1} child bookmark(s)?"
+                    : $"Delete {total} bookmarks?";
+                var r = TdpDialog.Show(this, msg, "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (r != MessageBoxResult.Yes) return;
+            }
+            PushDocUndo();   // one Ctrl+Z restores the whole set
+            foreach (var t in targets)
+                RemoveOutlineRecursive(t.Parent, t.Outline);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();   // also clears _bmExtraSel via LoadOutlines
+        }
+
+        /// <summary>Moves a bookmark one position up or down among its siblings.</summary>
+        private void MoveBookmark(OutlineNodeRef nref, int delta)
+        {
+            if (!CanEditBookmarks) return;
+            if (!ReferenceEquals(nref.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            int i = nref.Parent.IndexOf(nref.Outline);
+            int j = i + delta;
+            if (i < 0 || j < 0 || j >= nref.Parent.Count) return;
+            PushDocUndo();
+            // RemoveAt drops the object from the xref table; Insert/Add puts it straight back.
+            nref.Parent.RemoveAt(i);
+            if (j >= nref.Parent.Count) nref.Parent.Add(nref.Outline);
+            else nref.Parent.Insert(j, nref.Outline);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();
+            // Keep the moved item selected, without the page-jump side effect.
+            if (FindOutlineItem(_outlineTree.Items, nref.Outline) is { } moved)
+            {
+                _suppressOutlineNav = true;
+                try { moved.IsSelected = true; moved.BringIntoView(); }
+                finally { _suppressOutlineNav = false; }
+            }
+        }
+
+        /// <summary>Repoints a bookmark at the current page as a plain go-to-page destination.</summary>
+        private void SetBookmarkDestination(OutlineNodeRef nref)
+        {
+            if (!CanEditBookmarks || _doc is null) return;
+            if (!ReferenceEquals(nref.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            int page = Math.Max(0, PageList.SelectedIndex);
+            if (page >= _doc.PageCount) page = _doc.PageCount - 1;
+            if (page < 0) return;
+            PushDocUndo();
+            nref.Outline.DestinationPage = _doc.Pages[page];
+            // Plain jump: /XYZ null null null keeps the reader's current zoom / position behaviour.
+            nref.Outline.PageDestinationType = PdfSharpCore.Pdf.PdfPageDestinationType.Xyz;
+            nref.Outline.Left = double.NaN;
+            nref.Outline.Top = double.NaN;
+            nref.Outline.Zoom = double.NaN;
+            MarkDirty();
+            RefreshOutlines();
+        }
+
+        /// <summary>Removes every bookmark in the document (one confirm, one undo entry).</summary>
+        private void DeleteAllBookmarks()
+        {
+            if (!CanEditBookmarks || _doc is null) return;
+            if (!_doc.Internals.Catalog.Elements.ContainsKey("/Outlines")) return;   // nothing to do, and never plant one
+            if (_doc.Outlines.Count == 0) return;
+            var r = TdpDialog.Show(this, "Delete all bookmarks in this document?", "TDPdf",
+                                   MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (r != MessageBoxResult.Yes) return;
+            PushDocUndo();
+            while (_doc.Outlines.Count > 0)
+                RemoveOutlineRecursive(_doc.Outlines, _doc.Outlines[_doc.Outlines.Count - 1]);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();
+        }
+
+        private static int CountOutlines(PdfSharpCore.Pdf.PdfOutlineCollection col)
+        {
+            int n = 0;
+            foreach (PdfSharpCore.Pdf.PdfOutline o in col) n += 1 + CountOutlines(o.Outlines);
+            return n;
+        }
+
+        // Bottom-up: Collection.Remove() drops the removed object from the document's reference table,
+        // so deleting the whole branch leaf-first leaves no orphaned outline objects (with dangling
+        // /Parent refs) behind in the saved file.
+        private static void RemoveOutlineRecursive(PdfSharpCore.Pdf.PdfOutlineCollection parent,
+                                                   PdfSharpCore.Pdf.PdfOutline outline)
+        {
+            while (outline.Outlines.Count > 0)
+                RemoveOutlineRecursive(outline.Outlines, outline.Outlines[outline.Outlines.Count - 1]);
+            parent.Remove(outline);
+        }
+
+        // PdfSharpCore's PrepareForSave rebuilds outline linkage keys (/First /Last /Next /Prev
+        // /Parent /Count) from the in-memory collections on save, but never REMOVES entries that no
+        // longer apply (an item that became last keeps its old /Next, an emptied parent keeps
+        // /First /Last). After any bookmark edit, strip those keys on the CHILD nodes so the writer
+        // rebuilds them cleanly. (Deviation from upstream: we deliberately do NOT strip the root
+        // outline dict's /First — the save-time ScrubEmptyOutlines uses root /First to decide whether
+        // to drop a dangling /Outlines, and the writer rewrites the root's linkage anyway.) When the
+        // tree has been fully emptied we remove the catalog /Outlines entry outright, so the raw
+        // in-memory saves the snapshot-undo takes never serialize a dangling reference (#103).
+        private void ScrubStaleOutlineLinkKeys()
+        {
+            if (_doc is null) return;
+            try
+            {
+                if (!_doc.Internals.Catalog.Elements.ContainsKey("/Outlines")) return;
+                if (_doc.Outlines.Count == 0)
+                {
+                    _doc.Internals.Catalog.Elements.Remove("/Outlines");
+                    return;
+                }
+                ScrubOutlineLinkKeys(_doc.Outlines);
+            }
+            catch { /* malformed outline tree - the save-time scrubs are the backstop */ }
+        }
+
+        private static void ScrubOutlineLinkKeys(PdfSharpCore.Pdf.PdfOutlineCollection col)
+        {
+            foreach (PdfSharpCore.Pdf.PdfOutline o in col)
+            {
+                o.Elements.Remove("/First");
+                o.Elements.Remove("/Last");
+                o.Elements.Remove("/Next");
+                o.Elements.Remove("/Prev");
+                o.Elements.Remove("/Parent");
+                o.Elements.Remove("/Count");
+                ScrubOutlineLinkKeys(o.Outlines);
+            }
+        }
+
+        /// <summary>Rebuilds the outline panel after an edit, keeping collapsed branches collapsed
+        /// (the PdfOutline objects survive the rebuild, so they key the state).</summary>
+        private void RefreshOutlines()
+        {
+            var collapsed = new HashSet<object>();
+            void Capture(ItemCollection items)
+            {
+                foreach (TreeViewItem it in items)
+                {
+                    if (!it.IsExpanded && it.Tag is OutlineNodeRef r) collapsed.Add(r.Outline);
+                    Capture(it.Items);
+                }
+            }
+            Capture(_outlineTree.Items);
+            LoadOutlines();
+            if (collapsed.Count == 0) return;
+            void Restore(ItemCollection items)
+            {
+                foreach (TreeViewItem it in items)
+                {
+                    if (it.Tag is OutlineNodeRef r && collapsed.Contains(r.Outline)) it.IsExpanded = false;
+                    Restore(it.Items);
+                }
+            }
+            Restore(_outlineTree.Items);
+        }
+
+        /// <summary>Right-click on the outline panel: bookmark menu for the item under the cursor, or
+        /// the add-bookmark menu on empty space. Hidden entirely on read-only documents.</summary>
+        private void OutlineTree_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (!CanEditBookmarks) return;
+            var tvi = OutlineItemAt(e.OriginalSource as DependencyObject);
+            var menu = new ContextMenu();
+            TextOptions.SetTextFormattingMode(menu, TextFormattingMode.Display);
+            TextOptions.SetTextRenderingMode(menu, TextRenderingMode.Grayscale);
+            if (tvi?.Tag is OutlineNodeRef nref)
+            {
+                // Right-click outside the multi-selection collapses it to the clicked item (the
+                // file-explorer convention); inside it, the menu acts on the whole set.
+                bool inMulti = _bmExtraSel.Contains(nref.Outline);
+                if (!inMulti) ClearBookmarkMultiSelection();
+                _suppressOutlineNav = true;
+                try { tvi.IsSelected = true; }   // WPF doesn't select on right-click by itself
+                finally { _suppressOutlineNav = false; }
+
+                if (inMulti && _bmExtraSel.Count > 1)
+                {
+                    menu.Items.Add(MakeMenuItem($"Delete ({_bmExtraSel.Count})",
+                                                (_, _2) => DeleteSelectedBookmarks(nref), "Delete"));
+                }
+                else
+                {
+                    menu.Items.Add(MakeMenuItem("_Rename", (_, _2) => BeginInlineRename(tvi, nref), "F2"));
+                    menu.Items.Add(MakeMenuItem("Add _child bookmark", (_, _2) => AddBookmarkInto(nref)));
+                    menu.Items.Add(MakeMenuItem("Set destination to current page", (_, _2) => SetBookmarkDestination(nref)));
+                    menu.Items.Add(new Separator());
+                    int idx = nref.Parent.IndexOf(nref.Outline);
+                    var up = MakeMenuItem("Move _up", (_, _2) => MoveBookmark(nref, -1));
+                    up.IsEnabled = idx > 0;
+                    menu.Items.Add(up);
+                    var down = MakeMenuItem("Move _down", (_, _2) => MoveBookmark(nref, +1));
+                    down.IsEnabled = idx >= 0 && idx < nref.Parent.Count - 1;
+                    menu.Items.Add(down);
+                    menu.Items.Add(new Separator());
+                    menu.Items.Add(MakeMenuItem("_Delete", (_, _2) => DeleteSelectedBookmarks(nref), "Delete"));
+                }
+            }
+            else
+            {
+                menu.Items.Add(MakeMenuItem("_Add bookmark", (_, _2) => AddBookmarkInto(null)));
+                bool hasAny = _doc?.Internals.Catalog.Elements.ContainsKey("/Outlines") == true
+                              && _outlineTree.Items.Count > 1;   // ghost row + at least one real entry
+                if (hasAny)
+                {
+                    menu.Items.Add(new Separator());
+                    menu.Items.Add(MakeMenuItem("Delete all bookmarks", (_, _2) => DeleteAllBookmarks()));
+                }
+            }
+            menu.PlacementTarget = _outlineTree;
+            menu.IsOpen = true;
+            e.Handled = true;
+        }
+
+        private static TreeViewItem? OutlineItemAt(DependencyObject? d)
+        {
+            while (d is not null && d is not TreeViewItem)
+                d = d is Visual or System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(d)
+                    : LogicalTreeHelper.GetParent(d);   // e.g. a Run inside the header
+            return d as TreeViewItem;
         }
 
         private void SidebarPagesTab_Checked(object sender, RoutedEventArgs e)
@@ -8626,8 +9371,15 @@ namespace TDPdf
         {
             base.OnPreviewKeyDown(e);
 
+            // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
+            // modifier layer on the board. (upstream KillerPDF v1.6.4)
+            KbSyncLayerFromModifiers();
+
             // Don't intercept keys when typing in a TextBox
             if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
+            // An inline bookmark rename (#133) owns the keyboard - let arrows / Delete / Home / End
+            // edit the text rather than page the document or delete the bookmark.
+            if (_bmRenaming) return;
 
             // Standard shortcuts (Ctrl+N/O/S/W/Z, Ctrl+Shift+S, Ctrl+P, Ctrl+F, F1, Alt+F/E/V/T/H)
             // are routed via CommandBindings and the Menu's access keys — no need to intercept
@@ -8684,11 +9436,65 @@ namespace TDPdf
             {
                 ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                     ? Visibility.Collapsed : Visibility.Visible;
+                if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
                 e.Handled = true;
             }
             else if (e.Key == Key.Delete && _selectedAnnotation is not null)
             {
                 DeleteSelected();
+                e.Handled = true;
+            }
+            // Home / End jump to the first / last page (the Acrobat / Sumatra convention). Recorded on
+            // the jump history so Alt+Left retraces the hop. (Upstream v1.6.4)
+            else if (e.Key == Key.Home && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
+            {
+                RecordNavJump();
+                PageList.SelectedIndex = 0;
+                e.Handled = true;
+            }
+            else if (e.Key == Key.End && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
+            {
+                RecordNavJump();
+                PageList.SelectedIndex = _doc.PageCount - 1;
+                e.Handled = true;
+            }
+            // Ctrl+1 / Ctrl+2 / Ctrl+3 = actual size / fit width / fit page (Acrobat/Foxit). Ctrl+0
+            // stays the existing 100% reset. (Upstream v1.6.4)
+            else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            {
+                _zoomFitMode = ZoomFitMode.None;
+                Zoom.SetZoomLevel(1.0);   // actual size
+                e.Handled = true;
+            }
+            else if (e.Key == Key.D2 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            {
+                FitToWidth();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.D3 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            {
+                FitToPage();
+                e.Handled = true;
+            }
+            // Jump history: Alt+Left / Alt+Right retrace bookmark / link / jump-box / Home-End hops,
+            // browser-style. Alt makes the key arrive as Key.System with the real key in SystemKey.
+            else if (e.Key == Key.System && e.SystemKey == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                NavHistoryGo(back: true);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.System && e.SystemKey == Key.Right && Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                NavHistoryGo(back: false);
+                e.Handled = true;
+            }
+            // Menu key / Shift+F10 opens the right-click menu at the current selection (Windows
+            // keyboard-accessibility convention). (Upstream v1.6.4)
+            else if ((e.Key == Key.Apps
+                      || (e.Key == Key.System && e.SystemKey == Key.F10 && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
+                     && _doc is not null)
+            {
+                OpenContextMenuAtSelection();
                 e.Handled = true;
             }
             // Arrow keys and PgUp/PgDn navigate to the previous / next page. Handled here at the window
@@ -8699,14 +9505,9 @@ namespace TDPdf
                      && (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.Right || e.Key == Key.Down
                          || e.Key == Key.PageUp || e.Key == Key.PageDown))
             {
-                int cur = PageList.SelectedIndex;
-                if (cur < 0) cur = 0;
-                int next = (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.PageUp) ? cur - 1 : cur + 1;
-                if (next >= 0 && next < PageList.Items.Count)
-                {
-                    PageList.SelectedIndex = next;
+                int dir = (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.PageUp) ? -1 : 1;
+                if (NavigatePageStep(dir))   // one spread at a time in Two-Page mode (#120)
                     PageList.ScrollIntoView(PageList.SelectedItem);
-                }
                 e.Handled = true;
             }
         }
@@ -9257,6 +10058,7 @@ namespace TDPdf
                 ClearSelection();
                 MarkDirty();
                 RefreshPageList();
+                LoadOutlines();   // the reopened _doc has its own outline tree; rebuild the panel (#133)
                 if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                     PageList.SelectedIndex = selectedIdx;
                 else if (PageList.Items.Count > 0)
@@ -9443,8 +10245,7 @@ namespace TDPdf
                 _pageJumpBox.IsEnabled = false;
                 _pageJumpBox.Text = "";
                 _pageTotalLabel.Text = "/ –";
-                _ctx.Outline = null;
-                RefreshOutlineUi();
+                LoadOutlines();           // no document → clears the tree and disables the tab
                 RefreshRecentFilesUi();   // start screen is visible again; refresh the recent list
             }
             else
@@ -9464,7 +10265,7 @@ namespace TDPdf
                 _pageJumpBox.IsEnabled = true;
                 _pageTotalLabel.Text = $"/ {_ctx.Doc.PageCount}";
                 RefreshPageList(_ctx.Thumbnails);
-                if (_ctx.Outline is null) LoadOutlines(); else RefreshOutlineUi();
+                LoadOutlines();   // rebuild the bookmark tree from this tab's live document
 
                 int idx = _ctx.SelectedPageIndex;
                 if (idx < 0 || idx >= PageList.Items.Count)
@@ -9618,6 +10419,12 @@ namespace TDPdf
             ctx.Thumbnails = null;
             _tabs.Remove(ctx);
 
+            // #122 (upstream v1.6.3): the page-bitmap caches just dropped are the bulk of a large
+            // document's RAM. Without a compaction the process holds its peak working set (the classic
+            // "closed the big file but memory stayed high"). Force a collection so the freed bitmaps
+            // are actually returned after closing a heavy document.
+            GC.Collect();
+
             if (_tabs.Count == 0)
             {
                 var empty = new DocumentContext();
@@ -9759,7 +10566,7 @@ namespace TDPdf
         /// Builds a map of named destination string → 0-based page index from a source document's
         /// /Dests dictionary and /Names /Dests name tree.
         /// </summary>
-        private Dictionary<string, int> BuildNamedDestMap(PdfDocument src)
+        private static Dictionary<string, int> BuildNamedDestMap(PdfDocument src)
         {
             var map = new Dictionary<string, int>(StringComparer.Ordinal);
             try
@@ -9788,7 +10595,7 @@ namespace TDPdf
             return map;
         }
 
-        private void WalkNameTree(PdfDocument src, PdfDictionary node, Dictionary<string, int> map)
+        private static void WalkNameTree(PdfDocument src, PdfDictionary node, Dictionary<string, int> map)
         {
             var namesArr = node.Elements.GetArray("/Names");
             if (namesArr != null)
@@ -10330,6 +11137,117 @@ namespace TDPdf
             await SaveInPlaceAsync();
         }
 
+        // Pre-save document normalization (ports upstream KillerPDF v1.6.3/v1.6.4 conformance
+        // fixes). Every TDPdf save fully rewrites the file through PdfSharpCore, so we scrub three
+        // classes of structural corruption immediately before writing. All three are semantic
+        // no-ops on healthy documents and also HEAL files damaged by other tools/older builds when
+        // re-saved. Called on the UI thread before dispatching any doc.Save(...).
+        private static void NormalizeDocumentForSave(PdfDocument doc)
+        {
+            ScrubEmptyOutlines(doc);         // #103: never write a dangling /Outlines reference
+            ScrubDegenerateCropBoxes(doc);   // never write a zero-size /CropBox (Adobe out-of-range)
+            ScrubDeadSignatures(doc);        // a rewrite voids signatures; never ship a dead one (PDF/A 6.4.3)
+        }
+
+        private static double RectNum(PdfItem item) =>
+            item is PdfReal r ? r.Value : item is PdfInteger n ? n.Value : 0;
+
+        // #103 (upstream v1.6.3): PdfSharpCore's writer can emit the catalog's /Outlines reference
+        // without ever writing the (empty, lazily created) outlines object itself - a dangling xref
+        // entry that strict parsers, including PdfSharpCore on reopen, refuse. An outlines dictionary
+        // with no /First contains no bookmarks, so dropping the entry is a semantic no-op that keeps
+        // the file consistent. Real bookmark trees (/First present) are left untouched.
+        private static void ScrubEmptyOutlines(PdfDocument doc)
+        {
+            try
+            {
+                var cat = doc.Internals.Catalog;
+                var item = cat.Elements["/Outlines"];
+                if (item is null) return;
+                if (DerefItemStatic(item) is not PdfDictionary o || o.Elements["/First"] is null)
+                    cat.Elements.Remove("/Outlines");
+            }
+            catch { /* malformed catalog - leave the save as-is */ }
+        }
+
+        // Upstream v1.6.3: PdfSharpCore's PdfPage.MediaBox/CropBox property GETTERS have
+        // create-on-read semantics: touching page.CropBox on a page that has none plants an empty
+        // /CropBox [0 0 0 0] into the page dictionary. A zero-size page box saves to disk and Adobe
+        // then rejects the page as "dimensions out-of-range" even though the MediaBox is fine (Chrome
+        // falls back to the MediaBox, which is why such files still open there). Dropping a degenerate
+        // CropBox is a semantic no-op - the page falls back to its MediaBox - and it HEALS files
+        // written by affected versions when re-saved. Real crops are untouched.
+        private static void ScrubDegenerateCropBoxes(PdfDocument doc)
+        {
+            try
+            {
+                for (int i = 0; i < doc.PageCount; i++)
+                {
+                    var elements = doc.Pages[i].Elements;
+                    var item = elements["/CropBox"];
+                    if (item is null) continue;
+                    var resolved = DerefItemStatic(item);
+
+                    // The box can be a parsed PdfArray (loaded from disk) or a PdfRectangle
+                    // (planted in memory by the lazy getter) - handle both.
+                    double w = -1, h = -1;
+                    if (resolved is PdfRectangle rect)
+                    {
+                        w = Math.Abs(rect.X2 - rect.X1);
+                        h = Math.Abs(rect.Y2 - rect.Y1);
+                    }
+                    else if (resolved is PdfArray arr && arr.Elements.Count == 4 &&
+                             arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
+                             arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
+                    {
+                        w = Math.Abs(RectNum(arr.Elements[2]) - RectNum(arr.Elements[0]));
+                        h = Math.Abs(RectNum(arr.Elements[3]) - RectNum(arr.Elements[1]));
+                    }
+
+                    // Remove only when we could read the box AND it is degenerate; anything we
+                    // cannot interpret is left alone rather than destroyed.
+                    if (w >= 0 && (w < 1 || h < 1))
+                        elements.Remove("/CropBox");
+                }
+            }
+            catch { /* malformed page tree - leave the save as-is */ }
+        }
+
+        // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
+        // existing digital signature: its /ByteRange and digest describe the old bytes (ISO 19005-2,
+        // 6.4.3 requires the digest to cover the entire file). Carrying the dead signature forward
+        // misleads viewers and fails PDF/A validation, so strip signature VALUES (/V) from signature
+        // fields and the catalog's /Perms certification (DocMDP / usage rights) that references them.
+        // The empty fields stay and can be re-signed.
+        private static void ScrubDeadSignatures(PdfDocument doc)
+        {
+            try
+            {
+                var cat = doc.Internals.Catalog;
+                cat.Elements.Remove("/Perms");
+                var acroItem = cat.Elements["/AcroForm"];
+                if (acroItem is null || DerefItemStatic(acroItem) is not PdfDictionary acro) return;
+                var fieldsItem = acro.Elements["/Fields"];
+                if (fieldsItem is not null && DerefItemStatic(fieldsItem) is PdfArray fields)
+                    ScrubSigFieldValues(fields, 0);
+            }
+            catch { /* malformed catalog - leave the save as-is */ }
+        }
+
+        private static void ScrubSigFieldValues(PdfArray fields, int depth)
+        {
+            if (depth > 8) return;   // defensive: malformed circular /Kids
+            foreach (var item in fields.Elements)
+            {
+                if (item is null || DerefItemStatic(item) is not PdfDictionary field) continue;
+                if (field.Elements.GetName("/FT") == "/Sig" && field.Elements["/V"] is not null)
+                    field.Elements.Remove("/V");
+                var kidsItem = field.Elements["/Kids"];
+                if (kidsItem is not null && DerefItemStatic(kidsItem) is PdfArray kids)
+                    ScrubSigFieldValues(kids, depth + 1);
+            }
+        }
+
         private async Task SaveInPlaceAsync()
         {
             using var op = Telemetry.StartOperation("SaveInPlace");
@@ -10346,6 +11264,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
+                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 if (hasAnnotations)
@@ -10426,6 +11345,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
+                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 if (hasAnnotations)
@@ -10495,6 +11415,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
+                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 var pageSizes = GetPageSizes(doc);
                 string sourcePath;
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
@@ -11148,13 +12069,80 @@ namespace TDPdf
         }
 
         private void NavigatePageByWheel(int delta)
+            => NavigatePageStep(delta > 0 ? -1 : 1);
+
+        // Moves the page selection by one page — or one full SPREAD in Two-Page mode (#120, upstream
+        // v1.6.3) — landing on the spread's left page so a press always advances to the NEXT spread
+        // instead of re-showing the current one from its right page. direction: -1 = back, +1 =
+        // forward. Returns true when the selection actually moved. Shared by the wheel edge-flip and
+        // the keyboard page keys.
+        private bool NavigatePageStep(int direction)
+        {
+            if (_doc is null) return false;
+            int cur = PageList.SelectedIndex;
+            if (cur < 0) cur = 0;
+            int count = _doc.PageCount;
+            if (_viewMode == ViewMode.TwoPage)
+            {
+                int baseIdx = Math.Max(0, cur - cur % 2);   // left page of the current spread
+                int target = baseIdx + direction * 2;
+                if (target < 0 || target >= count) return false;
+                PageList.SelectedIndex = target;
+                return true;
+            }
+            int t = cur + direction;
+            if (t < 0 || t >= count) return false;
+            PageList.SelectedIndex = t;
+            return true;
+        }
+
+        // ── Jump history (Alt+Left / Alt+Right / mouse back-forward buttons) — upstream v1.6.4 ──────
+        // Page-granular: recorded at the long-jump sites (bookmark click, internal link, the page jump
+        // box, Home/End) so a reader thrown 30 pages by a bookmark can retrace the hop. Per tab.
+
+        /// <summary>Records the CURRENT page onto the back stack. Call BEFORE performing a jump.</summary>
+        private void RecordNavJump()
         {
             if (_doc is null) return;
-            int cur = PageList.SelectedIndex;
-            if (delta > 0 && cur > 0)
-                PageList.SelectedIndex = cur - 1;
-            else if (delta < 0 && cur < _doc.PageCount - 1)
-                PageList.SelectedIndex = cur + 1;
+            int cur = Math.Max(0, PageList.SelectedIndex);
+            if (_navBack.Count > 0 && _navBack.Peek() == cur) { _navForward.Clear(); return; }
+            _navBack.Push(cur);
+            _navForward.Clear();   // a fresh jump invalidates the forward chain, like a browser
+        }
+
+        private void NavHistoryGo(bool back)
+        {
+            if (_doc is null) return;
+            var from = back ? _navBack : _navForward;
+            var to   = back ? _navForward : _navBack;
+            if (from.Count == 0) return;
+            int cur = Math.Max(0, PageList.SelectedIndex);
+            int target = from.Pop();
+            to.Push(cur);
+            if (target >= 0 && target < _doc.PageCount)
+                PageList.SelectedIndex = target;
+        }
+
+        // Mouse back / forward buttons (XButton1 / XButton2) retrace the same history, like a browser.
+        // Registered on the window in the constructor.
+        private void NavHistory_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.XButton1)      { NavHistoryGo(back: true);  e.Handled = true; }
+            else if (e.ChangedButton == MouseButton.XButton2) { NavHistoryGo(back: false); e.Handled = true; }
+        }
+
+        // Keyboard access to the right-click menu (Menu key / Shift+F10): opens the annotation canvas
+        // context menu centered on the page rather than at the mouse. Placement is set to Center just
+        // for this open and restored on close, so the mouse path keeps its open-at-cursor behavior.
+        private void OpenContextMenuAtSelection()
+        {
+            if (_doc is null || _annotationCanvas.ContextMenu is not ContextMenu cm) return;
+            cm.PlacementTarget = _annotationCanvas;
+            var prevPlacement = cm.Placement;
+            cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Center;
+            void Restore(object? s, RoutedEventArgs a) { cm.Placement = prevPlacement; cm.Closed -= Restore; }
+            cm.Closed += Restore;
+            cm.IsOpen = true;
         }
 
         private void Zoom_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -11887,6 +12875,7 @@ namespace TDPdf
             if (int.TryParse(_pageJumpBox.Text, out int pg))
             {
                 int idx = Math.Clamp(pg - 1, 0, _doc.PageCount - 1);
+                if (idx != PageList.SelectedIndex) RecordNavJump();   // jump-box hop — retraceable via Alt+Left
                 PageList.SelectedIndex = idx;
             }
             else
@@ -11902,6 +12891,7 @@ namespace TDPdf
         {
             ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                 ? Visibility.Collapsed : Visibility.Visible;
+            if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
         }
 
         private void ShortcutOverlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

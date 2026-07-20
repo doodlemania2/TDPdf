@@ -12,19 +12,38 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\tdpdf-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.17.0.0</Version>
-    <AssemblyVersion>1.17.0.0</AssemblyVersion>
-    <FileVersion>1.17.0.0</FileVersion>
+    <Version>1.18.0.0</Version>
+    <AssemblyVersion>1.18.0.0</AssemblyVersion>
+    <FileVersion>1.18.0.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <!-- The vendored PdfSharpCore (netstandard2.0, AnyCPU) is referenced by this x64 app. By default
+         the SDK unsets the parent's Configuration/Platform when building the ProjectReference, so the
+         vendored lib fell back to its own default (Debug) even on a Release app build. Keep the parent
+         Configuration (Release) flowing to the vendored lib so it builds optimized. -->
+    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
+  <!-- The vendored PdfSharpCore builds as its own ProjectReference (netstandard2.0); keep the app's
+       implicit source globs OUT of third_party or every vendored file compiles twice. -->
+  <ItemGroup>
+    <Compile Remove="third_party\**" />
+    <EmbeddedResource Remove="third_party\**" />
+    <None Remove="third_party\**" />
+    <Content Remove="third_party\**" />
+    <Page Remove="third_party\**" />
+    <Resource Remove="third_party\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="PdfSharpCore" Version="1.3.67" />
+    <!-- PdfSharpCore is vendored (third_party/PdfSharpCore, MIT) so PDF/A conformance bugs can be
+         patched at the source - see third_party/PdfSharpCore/VENDORED.txt. Replaces the former
+         NuGet PackageReference PdfSharpCore 1.3.67. -->
+    <ProjectReference Include="third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <PackageReference Include="PdfPig" Version="0.1.14" />
     <!-- Docnet.Core supplies pdfium.dll as a win-x64 native runtime asset; the SDK bundles it for single-file publish. -->
     <PackageReference Include="Docnet.Core" Version="2.6.0" />

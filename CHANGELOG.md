@@ -6,6 +6,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.18.0.0] - 2026-07-20
+
+Fork-sync release porting the bug fixes and features from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) **v1.6.3** and **v1.6.4**, adapted to TDPdf's diverged multi-tab architecture. The headline items — a virtualized continuous view, an editable bookmark outline, a visual keyboard map, a headless command-line interface, and the vendored PdfSharpCore with PDF/A conformance patches — are all built on TDPdf's own pipelines.
+
+### Added
+
+- **Editable Outline (bookmark) panel** (upstream v1.6.4, #133). The sidebar outline is now a full bookmark editor: add a bookmark (a "+ Add bookmark" row named in place), inline rename (F2), add child, reorder up/down, retarget to the current page, delete, and delete-all, with Ctrl/Shift multi-select and a right-click menu. Every edit is one Ctrl+Z (rides TDPdf's document-snapshot undo). Read-only (owner-restricted) files show the tree without editing. Built on PdfSharpCore's live outline model so edits are written on save.
+- **Headless command-line interface** (upstream v1.6.4). `TDPdf.exe` now runs headlessly with meaningful exit codes while the GUI can be open: `--merge`, `--extract-pages`, `--split`, `--decrypt`, `--to-image`, `--flatten`, `--print`, `--ocr`, `--batch-resave`, `--version`, and `--help`. Each command reuses the pipeline its GUI equivalent runs (merge link rewriting, the pre-save scrubs, lossless PDFium decrypt, the rotation-safe rasterizer, the searchable-PDF OCR builder), so CLI output matches what the app produces. A launch with no recognized command still opens the file in the app as before.
+- **Visual keyboard map in the shortcuts overlay** (upstream v1.6.4). The F1 / Ctrl+? overlay gains a LIST / KEYBOARD toggle; in KEYBOARD mode a rendered keyboard lights every bound key, color-coded by category, previews the Ctrl/Shift/Alt layers, and shows each key's action on hover. The choice is remembered and follows the theme.
+- **Jump history** (upstream v1.6.4). Alt+Left / Alt+Right and the mouse back / forward buttons retrace bookmark, link, jump-box, and Home/End hops, browser-style, per tab.
+- **More keyboard conventions** (upstream v1.6.4): Home / End jump to the first / last page; Ctrl+1 / Ctrl+2 / Ctrl+3 set actual size / fit width / fit page (Ctrl+0 stays the 100% reset); the Menu key or Shift+F10 opens the right-click menu at the current selection.
+
+### Changed
+
+- **Continuous view is virtualized to bound memory** (upstream v1.6.3, #122). Continuous view previously kept a rendered bitmap for every page for the life of the document (a large image-heavy PDF could pin gigabytes). It now keeps bitmaps only for a window of pages around the viewport — rendering pages as they approach and releasing those that leave, with page slot heights held stable so nothing reflows. The per-tab rendered-page cache is also capped, and closing a tab compacts the heap so a big document's memory is actually returned.
+- **Two-Page mode navigates a full spread at a time** (upstream v1.6.3, #120). Arrow keys, PgUp/PgDn, and the wheel's edge page-flip now advance one two-page spread instead of one page.
+- **Grid view tracks the current page while scrolling** (upstream v1.6.4). The statusbar page counter follows the tile nearest the viewport center as you scroll the grid.
+
+### Fixed
+
+- **Saving no longer writes three classes of structural corruption** (upstream v1.6.3/v1.6.4). Every save now scrubs the document first, and re-saving heals files damaged by other tools: a dangling `/Outlines` reference with no bookmarks is dropped (#103); a zero-size `/CropBox` that Adobe rejects as "page dimensions out-of-range" is dropped (the page falls back to its MediaBox); and a stale digital-signature value plus its `/Perms` entry — which a full rewrite mathematically invalidates — is stripped so strict PDF/A validators accept the result.
+- **Intermittent hard crash while scrolling annotation-heavy pages** (upstream v1.6.4). TDPdf's direct `pdfium.dll` calls (the encryption-strip repair path) now hold the same lock Docnet uses, so a direct call can no longer run inside single-threaded PDFium at the same instant as a background page render (native heap corruption).
+- **Crash opening a PDF whose page tree parses to zero pages** (upstream v1.6.4, #130): Continuous view is now guarded against the out-of-range page index.
+- **Bookmark titles showed as mojibake in password-protected PDFs** (upstream v1.6.4, #133): UTF-16 outline titles that arrive byte-widened with a raw BOM prefix (most visible on Chinese outlines) are now re-decoded for display.
+- **Switching from Grid to Continuous clipped zoomed pages** (upstream v1.6.3): Continuous now restores its own scrollbar setup, so Grid's disabled horizontal scrollbar no longer leaks in.
+- **Re-saving a PDF no longer reduces its PDF/A conformance** (upstream v1.6.4). PdfSharpCore (MIT) is now vendored under `third_party/` at the same 1.3.67 version, carrying six conformance patches: no Producer/Creator stamping into an imported document's Info dictionary, no `/ModDate` rewrite at open, no transparency `/Group` injected into every page, stream `/Length` always matching the spec byte count (empty streams included), booleans written as lowercase `true`/`false`, and the debug-only verbose file layout removed.
+
+### Notes
+
+- Upstream's PDFium-based link reader was **not** adopted (TDPdf reads links via PdfSharpCore), so upstream's #129 "file in use" fix does not apply here — the underlying cached-handle bug is structurally absent. Upstream's shortcut remap (About→F12/Doc Info→F4), German/Japanese localization, the veraPDF validation harness, and Costura/Fody bundling were skipped (TDPdf keeps F12 = Document Info, is English-only, and uses SDK single-file publish). Deferred within otherwise-ported features: the outline panel's sidebar auto-fit width and in-tree arrow-key navigation.
+- **Needs Windows verification.** Several ported areas change or add runtime behavior that could not be exercised on the (macOS) build machine and should get a smoke test on Windows: the continuous-view virtualization (scroll a 200+ page image PDF — pages must fill on approach and never blank or jump), the editable outline TreeView, the visual keyboard map, the CLI commands (`--print`/`--ocr` against real printers/Tesseract in particular), and — because the vendored PdfSharpCore swaps the core PDF writer — a broad save/open regression pass plus a veraPDF conformance check.
+
 ## [1.17.0.0] - 2026-07-10
 
 Fork-sync release porting the reopen-documents-on-launch feature from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) v1.6.1 (Issue #105), built on TDPdf's multi-tab `DocumentContext` model (which previously had no session persistence).
@@ -499,7 +531,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.17.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.18.0.0...HEAD
+[1.18.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.17.0.0...v1.18.0.0
 [1.17.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.16.0.0...v1.17.0.0
 [1.16.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.15.0.0...v1.16.0.0
 [1.15.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.14.0.0...v1.15.0.0
