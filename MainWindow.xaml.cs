@@ -293,7 +293,7 @@ namespace TDPdf
         private Border _statusBarBorder = null!;
 
         // Outline / bookmarks sidebar tab (manual refs — XAML codegen doesn't resolve these)
-        private ListBox _outlineList = null!;
+        private TreeView _outlineTree = null!;
         private ScrollViewer _outlineScrollViewer = null!;
         private RadioButton _sidebarPagesTab = null!;
         private RadioButton _sidebarOutlinesTab = null!;
@@ -353,7 +353,7 @@ namespace TDPdf
             _pageTotalLabel = (TextBlock)FindName("PageTotalLabel")!;
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
             _titleBarRow = (RowDefinition)FindName("TitleBarRow")!;
-            _outlineList = (ListBox)FindName("OutlineList")!;
+            _outlineTree = (TreeView)FindName("OutlineTree")!;
             _outlineScrollViewer = (ScrollViewer)FindName("OutlineScrollViewer")!;
             _sidebarPagesTab = (RadioButton)FindName("SidebarPagesTab")!;
             _sidebarOutlinesTab = (RadioButton)FindName("SidebarOutlinesTab")!;
@@ -804,10 +804,6 @@ namespace TDPdf
             public readonly List<int> SearchResultPages = new();
             public int SearchPageCursor = -1;
 
-            // Document outline / bookmarks (null = not yet loaded, empty = none).
-            public List<OutlineEntry>? Outline;
-
-
             // View state restored when this tab is re-activated.
             public IReadOnlyList<BitmapSource?>? Thumbnails;
             public int SelectedPageIndex = -1;
@@ -815,10 +811,6 @@ namespace TDPdf
             // The clickable tab-header chip (built lazily by RebuildTabStrip).
             public Border? Chip;
         }
-
-        /// <summary>A single flattened bookmark/outline entry: title, nesting depth, 0-based target page.</summary>
-        private sealed record OutlineEntry(string Title, int Depth, int Page);
-
 
         private sealed class RenderedPage
         {
@@ -3816,37 +3808,61 @@ namespace TDPdf
         }
 
         // ============================================================
-        // Document outline / bookmarks (sidebar OUTLINES tab)
+        // Document outline / bookmarks (sidebar OUTLINES tab)  —  #133
+        //
+        // Editable bookmark tree ported from upstream KillerPDF v1.6.4. TDPdf keeps its own
+        // multi-tab document model, TdpDialog dark dialogs, theme brushes, and (crucially) its
+        // full-document-snapshot undo (PushDocUndo), so this is an adaptation, not a copy:
+        //   • ListBox → themed TreeView (OutlineTreeStyle / OutlineItemStyle / OutlineExpander).
+        //   • Edits mutate the live PdfSharpCore outline object model (_doc.Outlines) so they are
+        //     written on save; page-index for display still resolves through TDPdf's ResolveDest so
+        //     named / GoTo destinations navigate exactly as before.
+        //   • Every mutation rides the existing document-snapshot undo (PushDocUndo) — one Ctrl+Z
+        //     restores the whole edit — rather than a bookmark-specific undo stack.
         // ============================================================
 
         /// <summary>
-        /// Walks the document catalog's /Outlines tree into a flat list of
-        /// (title, depth, target page) entries and refreshes the sidebar UI.
-        /// Destinations are resolved with the same helpers used for link annotations.
+        /// (Re)builds the OUTLINES tree from the active document's live PdfSharpCore outline
+        /// collection. Safe to call on a null / read-only / outline-less document.
         /// </summary>
         private void LoadOutlines()
         {
-            var entries = new List<OutlineEntry>();
+            _bmExtraSel.Clear();          // outlines may be gone after a rebuild / undo
+            _outlineTree.Items.Clear();
+            if (_doc is null)
+            {
+                _sidebarOutlinesTab.IsEnabled = false;
+                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+                return;
+            }
             try
             {
-                if (_doc is not null)
+                // #103: _doc.Outlines lazily CREATES an empty outlines object on documents that have
+                // none, and PdfSharpCore then emits a dangling /Outlines reference the reopen rejects.
+                // Peek at the catalog read-only and only touch .Outlines when one really exists.
+                bool hasOutlines = _doc.Internals.Catalog.Elements.ContainsKey("/Outlines");
+                var outlines = hasOutlines ? _doc.Outlines : null;
+                if (outlines is null || outlines.Count == 0)
                 {
-                    var root = _doc.Internals.Catalog.Elements.GetDictionary("/Outlines");
-                    var first = DerefItem(root?.Elements["/First"] ?? new PdfInteger(0)) as PdfDictionary;
-                    if (first is not null)
-                    {
-                        var visited = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
-                        AddOutlineNodes(first, 0, entries, visited);
-                    }
+                    // Stay enabled on an editable document so the user can open the panel and add a
+                    // first bookmark (the ghost add-row is then the only entry); read-only documents
+                    // keep the old "disabled when empty" gating.
+                    _sidebarOutlinesTab.IsEnabled = CanEditBookmarks;
+                    if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
+                    else if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+                    return;
                 }
+                _sidebarOutlinesTab.IsEnabled = true;
+                if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
+                AddOutlineItems(_outlineTree.Items, outlines);
             }
             catch
             {
                 // A malformed outline tree must never break opening a document.
-                entries.Clear();
+                _outlineTree.Items.Clear();
+                _sidebarOutlinesTab.IsEnabled = false;
+                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
             }
-            _ctx.Outline = entries;
-            RefreshOutlineUi();
         }
 
         /// <summary>
@@ -3872,91 +3888,601 @@ namespace TDPdf
             return sb.ToString();
         }
 
-        /// <summary>
-        /// Recursively appends an outline node and its siblings (via /Next) and
-        /// children (via /First). Guarded against cycles and runaway trees.
-        /// </summary>
-        private void AddOutlineNodes(PdfDictionary? node, int depth,
-            List<OutlineEntry> entries, HashSet<PdfDictionary> visited)
+        /// <summary>Builds a TreeViewItem per outline (recursing into children) tied to its live
+        /// PdfOutline via <see cref="OutlineNodeRef"/>.</summary>
+        private void AddOutlineItems(ItemCollection target, PdfSharpCore.Pdf.PdfOutlineCollection outlines)
         {
-            int guard = 0;
-            while (node is not null && guard++ < 10000 && depth < 32)
+            foreach (PdfSharpCore.Pdf.PdfOutline outline in outlines)
             {
-                if (!visited.Add(node)) break;        // cycle protection
-                if (entries.Count >= 10000) break;    // sanity cap
-
-                string title = FixRawUnicodeTitle(node.Elements.GetString("/Title") ?? string.Empty);
-
-                // Destination may be a direct /Dest or a /GoTo action's /D.
-                PdfItem? destItem = node.Elements["/Dest"];
-                if (destItem is null)
+                int pageIdx = GetOutlinePageIndex(outline);
+                string title = FixRawUnicodeTitle(outline.Title ?? string.Empty);
+                var item = new TreeViewItem
                 {
-                    var action = node.Elements.GetDictionary("/A");
-                    if (action is not null &&
-                        (action.Elements.GetName("/S") == "/GoTo" || action.Elements.ContainsKey("/D")))
-                    {
-                        destItem = action.Elements["/D"];
-                    }
+                    Header = string.IsNullOrEmpty(title) ? "(untitled)" : title,
+                    IsExpanded = true,
+                    Tag = new OutlineNodeRef(outline, outlines, pageIdx),
+                    ToolTip = pageIdx >= 0 ? $"Page {pageIdx + 1}" : null,
+                    // Items are added as ready-made containers, so ItemContainerStyle doesn't apply;
+                    // set the themed style explicitly.
+                    Style = (Style)FindResource("OutlineItemStyle"),
+                };
+                if (outline.Outlines is not null && outline.Outlines.Count > 0)
+                    AddOutlineItems(item.Items, outline.Outlines);
+                target.Add(item);
+            }
+        }
+
+        /// <summary>Resolves an outline's 0-based target page. Prefers PdfSharpCore's parsed
+        /// destination page, then falls back to TDPdf's richer resolver (named destinations,
+        /// /GoTo actions) so navigation matches the pre-edit behaviour.</summary>
+        private int GetOutlinePageIndex(PdfSharpCore.Pdf.PdfOutline outline)
+        {
+            if (_doc is null) return -1;
+            if (outline.DestinationPage is PdfSharpCore.Pdf.PdfPage destPage)
+            {
+                for (int i = 0; i < _doc.PageCount; i++)
+                    if (ReferenceEquals(_doc.Pages[i], destPage)) return i;
+            }
+            // Fall back to TDPdf's resolver on the outline's own dictionary.
+            PdfItem? destItem = outline.Elements["/Dest"];
+            if (destItem is null)
+            {
+                var action = outline.Elements.GetDictionary("/A");
+                if (action is not null &&
+                    (action.Elements.GetName("/S") == "/GoTo" || action.Elements.ContainsKey("/D")))
+                {
+                    destItem = action.Elements["/D"];
                 }
-                int page = ResolveDest(destItem) ?? -1;
-                entries.Add(new OutlineEntry(title, depth, page));
-
-                // Descend into children, then continue with the next sibling.
-                var child = DerefItem(node.Elements["/First"] ?? new PdfInteger(0)) as PdfDictionary;
-                if (child is not null)
-                    AddOutlineNodes(child, depth + 1, entries, visited);
-
-                node = DerefItem(node.Elements["/Next"] ?? new PdfInteger(0)) as PdfDictionary;
             }
+            return ResolveDest(destItem) ?? -1;
         }
 
-        /// <summary>Rebuilds the OUTLINES list from the active document's cached outline.</summary>
-        private void RefreshOutlineUi()
+        private void OutlineTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
         {
-            _outlineList.Items.Clear();
-            var entries = _ctx.Outline;
-            bool has = entries is { Count: > 0 };
-            _sidebarOutlinesTab.IsEnabled = has;
-
-            if (!has)
-            {
-                // Don't leave the user stranded on an empty/disabled outline tab.
-                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
-                return;
-            }
-
-            foreach (var entry in entries!)
-            {
-                string text = string.IsNullOrWhiteSpace(entry.Title) ? "(untitled)" : entry.Title;
-                var tb = new TextBlock
-                {
-                    Text = text,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Foreground = BrushResource(entry.Page >= 0 ? "TextPrimary" : "TextSecondary"),
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 12,
-                    Margin = new Thickness(8 + entry.Depth * 14, 0, 4, 0)
-                };
-                var item = new ListBoxItem
-                {
-                    Content = tb,
-                    Tag = entry.Page,
-                    ToolTip = text,
-                    IsEnabled = entry.Page >= 0
-                };
-                _outlineList.Items.Add(item);
-            }
-        }
-
-        private void OutlineList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (_outlineList.SelectedItem is ListBoxItem { Tag: int page }
-                && page >= 0 && _doc is not null && page < _doc.PageCount
-                && PageList.SelectedIndex != page)
+            if (_suppressOutlineNav) return;   // programmatic re-select (e.g. after a move) must not jump the view
+            if (e.NewValue is TreeViewItem item && item.Tag is OutlineNodeRef nref
+                && nref.PageIndex >= 0 && _doc is not null && nref.PageIndex < _doc.PageCount
+                && PageList.SelectedIndex != nref.PageIndex)
             {
                 RecordNavJump();   // bookmark jump — retraceable via Alt+Left
-                PageList.SelectedIndex = page;
+                PageList.SelectedIndex = nref.PageIndex;
             }
+        }
+
+        // The TreeView's own scroll viewer swallows the wheel before the outer one sees it, so the
+        // Outlines panel wouldn't scroll. Forward the wheel to the outer scroll viewer.
+        private void OutlineScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            _outlineScrollViewer.ScrollToVerticalOffset(_outlineScrollViewer.VerticalOffset - e.Delta);
+            e.Handled = true;
+        }
+
+        // ============================================================
+        // Bookmark editing (#133): add / rename / child / reorder / retarget / delete
+        // ============================================================
+
+        /// <summary>Ties a TreeViewItem to its live PdfOutline, the collection that contains it, and
+        /// the resolved target page (for click-to-navigate).</summary>
+        private sealed class OutlineNodeRef
+        {
+            public readonly PdfSharpCore.Pdf.PdfOutline Outline;
+            public readonly PdfSharpCore.Pdf.PdfOutlineCollection Parent;
+            public readonly int PageIndex;
+            public OutlineNodeRef(PdfSharpCore.Pdf.PdfOutline outline,
+                                  PdfSharpCore.Pdf.PdfOutlineCollection parent, int pageIndex)
+            { Outline = outline; Parent = parent; PageIndex = pageIndex; }
+        }
+
+        // PdfSharpCore cannot save a document opened read-only (owner-password / XRef-fallback opens),
+        // so bookmark editing is hidden there rather than failing at save time.
+        private bool CanEditBookmarks => _doc is not null && !_doc.IsReadOnly;
+
+        // Multi-select. WPF's TreeView is hard single-select, so its built-in selection stays the
+        // "primary" item and Ctrl/Shift clicks maintain this extra set on top. Keyed by PdfOutline so
+        // the selection survives tree rebuilds within one document.
+        private readonly HashSet<PdfSharpCore.Pdf.PdfOutline> _bmExtraSel = new();
+        private bool _suppressOutlineNav;
+        private bool _bmRenaming;   // an inline rename box owns the keyboard — window paging keys stand down
+
+        /// <summary>All bookmark rows in visual order (optionally only rows currently visible, i.e.
+        /// with every ancestor expanded). The ghost add-row is never included.</summary>
+        private static void FlattenBookmarkItems(ItemCollection items, bool visibleOnly,
+                                                 List<(TreeViewItem Item, OutlineNodeRef Ref)> into)
+        {
+            foreach (TreeViewItem it in items)
+            {
+                if (it.Tag is OutlineNodeRef r) into.Add((it, r));
+                if (!visibleOnly || it.IsExpanded)
+                    FlattenBookmarkItems(it.Items, visibleOnly, into);
+            }
+        }
+
+        /// <summary>Paints/clears the extra-selection look. The item template's IsSelected trigger
+        /// drives Bd.Background/BorderBrush + Foreground; extras set the same three locally (local
+        /// values outrank template triggers) and ClearValue restores normal styling.</summary>
+        private void ApplyExtraSelectionVisuals()
+        {
+            var all = new List<(TreeViewItem Item, OutlineNodeRef Ref)>();
+            FlattenBookmarkItems(_outlineTree.Items, visibleOnly: false, all);
+            foreach (var (it, r) in all)
+            {
+                it.ApplyTemplate();
+                var bd = it.Template?.FindName("Bd", it) as Border;
+                if (_bmExtraSel.Contains(r.Outline))
+                {
+                    if (bd is not null)
+                    {
+                        bd.Background = BrushResource("AccentGreenDim");
+                        bd.BorderBrush = BrushResource("AccentGreen");
+                    }
+                    it.Foreground = Brushes.White;   // matches the IsSelected trigger
+                }
+                else
+                {
+                    if (bd is not null)
+                    {
+                        bd.ClearValue(Border.BackgroundProperty);
+                        bd.ClearValue(Border.BorderBrushProperty);
+                    }
+                    it.ClearValue(ForegroundProperty);
+                }
+            }
+        }
+
+        private void ClearBookmarkMultiSelection()
+        {
+            if (_bmExtraSel.Count == 0) return;
+            _bmExtraSel.Clear();
+            ApplyExtraSelectionVisuals();
+        }
+
+        // True when the click landed on the expand/collapse toggle - those pass through untouched.
+        private static bool IsExpanderClick(DependencyObject? d)
+        {
+            while (d is not null && d is not TreeViewItem)
+            {
+                if (d is System.Windows.Controls.Primitives.ToggleButton) return true;
+                d = d is Visual or System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(d)
+                    : LogicalTreeHelper.GetParent(d);
+            }
+            return false;
+        }
+
+        private void OutlineTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (IsExpanderClick(e.OriginalSource as DependencyObject)) return;
+            var tvi = OutlineItemAt(e.OriginalSource as DependencyObject);
+            bool ctrl  = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+            bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+            if (tvi?.Tag is not OutlineNodeRef nref || !CanEditBookmarks || (!ctrl && !shift))
+            {
+                // Plain click, ghost row, or empty space: default single-selection behaviour.
+                ClearBookmarkMultiSelection();
+                return;
+            }
+            if (ctrl)
+            {
+                // Fold the primary into the set so the whole selection lives in one place, then toggle.
+                if (_outlineTree.SelectedItem is TreeViewItem prim && prim.Tag is OutlineNodeRef pr)
+                    _bmExtraSel.Add(pr.Outline);
+                if (!_bmExtraSel.Add(nref.Outline)) _bmExtraSel.Remove(nref.Outline);
+            }
+            else
+            {
+                // Shift: range from the primary to the clicked row, in visible order.
+                _bmExtraSel.Clear();
+                var flat = new List<(TreeViewItem Item, OutlineNodeRef Ref)>();
+                FlattenBookmarkItems(_outlineTree.Items, visibleOnly: true, flat);
+                var primary = (_outlineTree.SelectedItem as TreeViewItem)?.Tag as OutlineNodeRef;
+                int ia = primary is null ? -1 : flat.FindIndex(t => ReferenceEquals(t.Ref, primary));
+                int ib = flat.FindIndex(t => ReferenceEquals(t.Item, tvi));
+                if (ib < 0) return;
+                if (ia < 0) ia = ib;
+                for (int k = Math.Min(ia, ib); k <= Math.Max(ia, ib); k++)
+                    _bmExtraSel.Add(flat[k].Ref.Outline);
+            }
+            ApplyExtraSelectionVisuals();
+            e.Handled = true;   // keep the built-in primary selection where it is
+        }
+
+        private void OutlineTree_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (!CanEditBookmarks) return;
+            if (e.OriginalSource is TextBox) return;   // inline rename in progress: keys edit text, not bookmarks
+            var primary = (_outlineTree.SelectedItem as TreeViewItem)?.Tag as OutlineNodeRef;
+            if (e.Key == Key.Delete && (primary is not null || _bmExtraSel.Count > 0))
+            {
+                e.Handled = true;
+                DeleteSelectedBookmarks(primary);
+            }
+            else if (e.Key == Key.F2 && primary is not null && _outlineTree.SelectedItem is TreeViewItem tvi)
+            {
+                e.Handled = true;
+                BeginInlineRename(tvi, primary);
+            }
+        }
+
+        /// <summary>The add action lives as a dim first row inside the tree itself: a + glyph and
+        /// "Add bookmark", brightening on hover. Tag stays null so the selection handler, context
+        /// menu, and refresh walks all treat it as a non-bookmark row.</summary>
+        private TreeViewItem BuildAddBookmarkGhostRow()
+        {
+            var icon = new TextBlock
+            {
+                Text = "\uE710",   // Segoe MDL2 Add
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 5, 0)
+            };
+            var text = new TextBlock { Text = "Add bookmark", VerticalAlignment = VerticalAlignment.Center };
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Opacity = 0.55 };
+            panel.Children.Add(icon);
+            panel.Children.Add(text);
+            var item = new TreeViewItem
+            {
+                Header = panel,
+                ToolTip = "Add a bookmark pointing at the current page",
+                Style = (Style)FindResource("OutlineItemStyle"),
+            };
+            item.MouseEnter += (_, _2) => panel.Opacity = 1.0;
+            item.MouseLeave += (_, _2) => panel.Opacity = 0.55;
+            item.PreviewMouseLeftButtonUp += (_, ev) => { ev.Handled = true; AddBookmarkInto(null); };
+            return item;
+        }
+
+        /// <summary>Adds a bookmark pointing at the current page - to the root list, or as a child of
+        /// <paramref name="parent"/> - titled "Page N", then drops straight into an inline rename of
+        /// the new entry (no dialog). Esc keeps the default title.</summary>
+        private void AddBookmarkInto(OutlineNodeRef? parent)
+        {
+            if (!CanEditBookmarks || _doc is null) return;
+            if (parent is not null && !ReferenceEquals(parent.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            int page = Math.Max(0, PageList.SelectedIndex);
+            if (page >= _doc.PageCount) page = _doc.PageCount - 1;
+            if (page < 0) return;
+            PushDocUndo();   // bookmark ops ride the document-snapshot undo like crop / page ops do
+            var col = parent is null ? _doc.Outlines : parent.Outline.Outlines;
+            var added = col.Add($"Page {page + 1}", _doc.Pages[page], true);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();
+            if (FindOutlineItem(_outlineTree.Items, added) is { } tvi && tvi.Tag is OutlineNodeRef nref)
+            {
+                tvi.BringIntoView();
+                BeginInlineRename(tvi, nref);
+            }
+        }
+
+        /// <summary>Swaps a tree item's header for an inline TextBox (rename-in-place; also used right
+        /// after adding). Enter or clicking elsewhere commits, Esc cancels.</summary>
+        private void BeginInlineRename(TreeViewItem tvi, OutlineNodeRef nref)
+        {
+            if (!CanEditBookmarks) return;
+            if (!ReferenceEquals(nref.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            string current = FixRawUnicodeTitle(nref.Outline.Title ?? string.Empty);
+            var box = new TextBox
+            {
+                Text = current,
+                MinWidth = 110,
+                FontSize = _outlineTree.FontSize,
+                FontFamily = new FontFamily("Segoe UI"),
+                Padding = new Thickness(3, 1, 3, 1),
+                Background = BrushResource("BgPanel"),
+                Foreground = BrushResource("TextPrimary"),
+                BorderBrush = BrushResource("AccentGreen"),   // accent border = active in-place edit
+                BorderThickness = new Thickness(1),
+                CaretBrush = BrushResource("AccentGreen"),
+                SelectionBrush = BrushResource("AccentGreenDim"),
+                FocusVisualStyle = null,
+            };
+            bool done = false;
+            void Commit()
+            {
+                if (done) return;
+                done = true;
+                _bmRenaming = false;
+                string t = box.Text.Trim();
+                if (t.Length > 0 && t != current)
+                {
+                    PushDocUndo();
+                    nref.Outline.Title = t;   // the setter writes a proper Unicode string, healing mojibake entries
+                    MarkDirty();
+                    RefreshOutlines();
+                }
+                else
+                    tvi.Header = string.IsNullOrEmpty(current) ? "(untitled)" : current;
+            }
+            void Cancel()
+            {
+                if (done) return;
+                done = true;
+                _bmRenaming = false;
+                tvi.Header = string.IsNullOrEmpty(current) ? "(untitled)" : current;
+            }
+            box.PreviewKeyDown += (_, ke) =>
+            {
+                if (ke.Key == Key.Enter)  { ke.Handled = true; Commit(); }
+                if (ke.Key == Key.Escape) { ke.Handled = true; Cancel(); }
+            };
+            box.LostFocus += (_, _2) => Commit();
+            _bmRenaming = true;
+            tvi.Header = box;
+            // The box can't take focus until it has been laid out - focus it after render.
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input,
+                (Action)(() => { box.Focus(); box.SelectAll(); }));
+        }
+
+        /// <summary>Finds the tree item for a PdfOutline, expanding collapsed ancestors on the way.</summary>
+        private static TreeViewItem? FindOutlineItem(ItemCollection items, object outline)
+        {
+            foreach (TreeViewItem it in items)
+            {
+                if (it.Tag is OutlineNodeRef r && ReferenceEquals(r.Outline, outline)) return it;
+                if (FindOutlineItem(it.Items, outline) is { } hit) { it.IsExpanded = true; return hit; }
+            }
+            return null;
+        }
+
+        /// <summary>Deletes the multi-selection if one exists, plus the clicked/primary item. One
+        /// confirm covers the whole set; one undo entry restores it.</summary>
+        private void DeleteSelectedBookmarks(OutlineNodeRef? clicked)
+        {
+            if (!CanEditBookmarks) return;
+            if (clicked is not null && !ReferenceEquals(clicked.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+
+            // Gather targets: the extra set, the primary, and the clicked item, deduplicated.
+            var all = new List<(TreeViewItem Item, OutlineNodeRef Ref)>();
+            FlattenBookmarkItems(_outlineTree.Items, visibleOnly: false, all);
+            var targets = new List<OutlineNodeRef>();
+            foreach (var (_, r) in all)
+                if (_bmExtraSel.Contains(r.Outline)) targets.Add(r);
+            void AddTarget(OutlineNodeRef? r)
+            {
+                if (r is not null && !targets.Any(t => ReferenceEquals(t.Outline, r.Outline))) targets.Add(r);
+            }
+            AddTarget((_outlineTree.SelectedItem as TreeViewItem)?.Tag as OutlineNodeRef);
+            AddTarget(clicked);
+            if (targets.Count == 0) return;
+
+            // A target with a selected ancestor is covered by deleting the ancestor - drop it so the
+            // remaining targets are independent (their parent collections stay valid during removal).
+            var chosen = new HashSet<object>(targets.Select(t => (object)t.Outline));
+            bool Covered(PdfSharpCore.Pdf.PdfOutline o)
+            {
+                for (var p = o.Parent; p is not null; p = p.Parent)
+                    if (chosen.Contains(p)) return true;
+                return false;
+            }
+            targets = targets.Where(t => !Covered(t.Outline)).ToList();
+
+            int total = targets.Sum(t => 1 + CountOutlines(t.Outline.Outlines));
+            if (total > 1)
+            {
+                string msg = targets.Count == 1
+                    ? $"Delete this bookmark and its {total - 1} child bookmark(s)?"
+                    : $"Delete {total} bookmarks?";
+                var r = TdpDialog.Show(this, msg, "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (r != MessageBoxResult.Yes) return;
+            }
+            PushDocUndo();   // one Ctrl+Z restores the whole set
+            foreach (var t in targets)
+                RemoveOutlineRecursive(t.Parent, t.Outline);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();   // also clears _bmExtraSel via LoadOutlines
+        }
+
+        /// <summary>Moves a bookmark one position up or down among its siblings.</summary>
+        private void MoveBookmark(OutlineNodeRef nref, int delta)
+        {
+            if (!CanEditBookmarks) return;
+            if (!ReferenceEquals(nref.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            int i = nref.Parent.IndexOf(nref.Outline);
+            int j = i + delta;
+            if (i < 0 || j < 0 || j >= nref.Parent.Count) return;
+            PushDocUndo();
+            // RemoveAt drops the object from the xref table; Insert/Add puts it straight back.
+            nref.Parent.RemoveAt(i);
+            if (j >= nref.Parent.Count) nref.Parent.Add(nref.Outline);
+            else nref.Parent.Insert(j, nref.Outline);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();
+            // Keep the moved item selected, without the page-jump side effect.
+            if (FindOutlineItem(_outlineTree.Items, nref.Outline) is { } moved)
+            {
+                _suppressOutlineNav = true;
+                try { moved.IsSelected = true; moved.BringIntoView(); }
+                finally { _suppressOutlineNav = false; }
+            }
+        }
+
+        /// <summary>Repoints a bookmark at the current page as a plain go-to-page destination.</summary>
+        private void SetBookmarkDestination(OutlineNodeRef nref)
+        {
+            if (!CanEditBookmarks || _doc is null) return;
+            if (!ReferenceEquals(nref.Outline.Owner, _doc)) { LoadOutlines(); return; }   // stale ref
+            int page = Math.Max(0, PageList.SelectedIndex);
+            if (page >= _doc.PageCount) page = _doc.PageCount - 1;
+            if (page < 0) return;
+            PushDocUndo();
+            nref.Outline.DestinationPage = _doc.Pages[page];
+            // Plain jump: /XYZ null null null keeps the reader's current zoom / position behaviour.
+            nref.Outline.PageDestinationType = PdfSharpCore.Pdf.PdfPageDestinationType.Xyz;
+            nref.Outline.Left = double.NaN;
+            nref.Outline.Top = double.NaN;
+            nref.Outline.Zoom = double.NaN;
+            MarkDirty();
+            RefreshOutlines();
+        }
+
+        /// <summary>Removes every bookmark in the document (one confirm, one undo entry).</summary>
+        private void DeleteAllBookmarks()
+        {
+            if (!CanEditBookmarks || _doc is null) return;
+            if (!_doc.Internals.Catalog.Elements.ContainsKey("/Outlines")) return;   // nothing to do, and never plant one
+            if (_doc.Outlines.Count == 0) return;
+            var r = TdpDialog.Show(this, "Delete all bookmarks in this document?", "TDPdf",
+                                   MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (r != MessageBoxResult.Yes) return;
+            PushDocUndo();
+            while (_doc.Outlines.Count > 0)
+                RemoveOutlineRecursive(_doc.Outlines, _doc.Outlines[_doc.Outlines.Count - 1]);
+            ScrubStaleOutlineLinkKeys();
+            MarkDirty();
+            RefreshOutlines();
+        }
+
+        private static int CountOutlines(PdfSharpCore.Pdf.PdfOutlineCollection col)
+        {
+            int n = 0;
+            foreach (PdfSharpCore.Pdf.PdfOutline o in col) n += 1 + CountOutlines(o.Outlines);
+            return n;
+        }
+
+        // Bottom-up: Collection.Remove() drops the removed object from the document's reference table,
+        // so deleting the whole branch leaf-first leaves no orphaned outline objects (with dangling
+        // /Parent refs) behind in the saved file.
+        private static void RemoveOutlineRecursive(PdfSharpCore.Pdf.PdfOutlineCollection parent,
+                                                   PdfSharpCore.Pdf.PdfOutline outline)
+        {
+            while (outline.Outlines.Count > 0)
+                RemoveOutlineRecursive(outline.Outlines, outline.Outlines[outline.Outlines.Count - 1]);
+            parent.Remove(outline);
+        }
+
+        // PdfSharpCore's PrepareForSave rebuilds outline linkage keys (/First /Last /Next /Prev
+        // /Parent /Count) from the in-memory collections on save, but never REMOVES entries that no
+        // longer apply (an item that became last keeps its old /Next, an emptied parent keeps
+        // /First /Last). After any bookmark edit, strip those keys on the CHILD nodes so the writer
+        // rebuilds them cleanly. (Deviation from upstream: we deliberately do NOT strip the root
+        // outline dict's /First — the save-time ScrubEmptyOutlines uses root /First to decide whether
+        // to drop a dangling /Outlines, and the writer rewrites the root's linkage anyway.) When the
+        // tree has been fully emptied we remove the catalog /Outlines entry outright, so the raw
+        // in-memory saves the snapshot-undo takes never serialize a dangling reference (#103).
+        private void ScrubStaleOutlineLinkKeys()
+        {
+            if (_doc is null) return;
+            try
+            {
+                if (!_doc.Internals.Catalog.Elements.ContainsKey("/Outlines")) return;
+                if (_doc.Outlines.Count == 0)
+                {
+                    _doc.Internals.Catalog.Elements.Remove("/Outlines");
+                    return;
+                }
+                ScrubOutlineLinkKeys(_doc.Outlines);
+            }
+            catch { /* malformed outline tree - the save-time scrubs are the backstop */ }
+        }
+
+        private static void ScrubOutlineLinkKeys(PdfSharpCore.Pdf.PdfOutlineCollection col)
+        {
+            foreach (PdfSharpCore.Pdf.PdfOutline o in col)
+            {
+                o.Elements.Remove("/First");
+                o.Elements.Remove("/Last");
+                o.Elements.Remove("/Next");
+                o.Elements.Remove("/Prev");
+                o.Elements.Remove("/Parent");
+                o.Elements.Remove("/Count");
+                ScrubOutlineLinkKeys(o.Outlines);
+            }
+        }
+
+        /// <summary>Rebuilds the outline panel after an edit, keeping collapsed branches collapsed
+        /// (the PdfOutline objects survive the rebuild, so they key the state).</summary>
+        private void RefreshOutlines()
+        {
+            var collapsed = new HashSet<object>();
+            void Capture(ItemCollection items)
+            {
+                foreach (TreeViewItem it in items)
+                {
+                    if (!it.IsExpanded && it.Tag is OutlineNodeRef r) collapsed.Add(r.Outline);
+                    Capture(it.Items);
+                }
+            }
+            Capture(_outlineTree.Items);
+            LoadOutlines();
+            if (collapsed.Count == 0) return;
+            void Restore(ItemCollection items)
+            {
+                foreach (TreeViewItem it in items)
+                {
+                    if (it.Tag is OutlineNodeRef r && collapsed.Contains(r.Outline)) it.IsExpanded = false;
+                    Restore(it.Items);
+                }
+            }
+            Restore(_outlineTree.Items);
+        }
+
+        /// <summary>Right-click on the outline panel: bookmark menu for the item under the cursor, or
+        /// the add-bookmark menu on empty space. Hidden entirely on read-only documents.</summary>
+        private void OutlineTree_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (!CanEditBookmarks) return;
+            var tvi = OutlineItemAt(e.OriginalSource as DependencyObject);
+            var menu = new ContextMenu();
+            TextOptions.SetTextFormattingMode(menu, TextFormattingMode.Display);
+            TextOptions.SetTextRenderingMode(menu, TextRenderingMode.Grayscale);
+            if (tvi?.Tag is OutlineNodeRef nref)
+            {
+                // Right-click outside the multi-selection collapses it to the clicked item (the
+                // file-explorer convention); inside it, the menu acts on the whole set.
+                bool inMulti = _bmExtraSel.Contains(nref.Outline);
+                if (!inMulti) ClearBookmarkMultiSelection();
+                _suppressOutlineNav = true;
+                try { tvi.IsSelected = true; }   // WPF doesn't select on right-click by itself
+                finally { _suppressOutlineNav = false; }
+
+                if (inMulti && _bmExtraSel.Count > 1)
+                {
+                    menu.Items.Add(MakeMenuItem($"Delete ({_bmExtraSel.Count})",
+                                                (_, _2) => DeleteSelectedBookmarks(nref), "Delete"));
+                }
+                else
+                {
+                    menu.Items.Add(MakeMenuItem("_Rename", (_, _2) => BeginInlineRename(tvi, nref), "F2"));
+                    menu.Items.Add(MakeMenuItem("Add _child bookmark", (_, _2) => AddBookmarkInto(nref)));
+                    menu.Items.Add(MakeMenuItem("Set destination to current page", (_, _2) => SetBookmarkDestination(nref)));
+                    menu.Items.Add(new Separator());
+                    int idx = nref.Parent.IndexOf(nref.Outline);
+                    var up = MakeMenuItem("Move _up", (_, _2) => MoveBookmark(nref, -1));
+                    up.IsEnabled = idx > 0;
+                    menu.Items.Add(up);
+                    var down = MakeMenuItem("Move _down", (_, _2) => MoveBookmark(nref, +1));
+                    down.IsEnabled = idx >= 0 && idx < nref.Parent.Count - 1;
+                    menu.Items.Add(down);
+                    menu.Items.Add(new Separator());
+                    menu.Items.Add(MakeMenuItem("_Delete", (_, _2) => DeleteSelectedBookmarks(nref), "Delete"));
+                }
+            }
+            else
+            {
+                menu.Items.Add(MakeMenuItem("_Add bookmark", (_, _2) => AddBookmarkInto(null)));
+                bool hasAny = _doc?.Internals.Catalog.Elements.ContainsKey("/Outlines") == true
+                              && _outlineTree.Items.Count > 1;   // ghost row + at least one real entry
+                if (hasAny)
+                {
+                    menu.Items.Add(new Separator());
+                    menu.Items.Add(MakeMenuItem("Delete all bookmarks", (_, _2) => DeleteAllBookmarks()));
+                }
+            }
+            menu.PlacementTarget = _outlineTree;
+            menu.IsOpen = true;
+            e.Handled = true;
+        }
+
+        private static TreeViewItem? OutlineItemAt(DependencyObject? d)
+        {
+            while (d is not null && d is not TreeViewItem)
+                d = d is Visual or System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(d)
+                    : LogicalTreeHelper.GetParent(d);   // e.g. a Run inside the header
+            return d as TreeViewItem;
         }
 
         private void SidebarPagesTab_Checked(object sender, RoutedEventArgs e)
@@ -8847,6 +9373,9 @@ namespace TDPdf
 
             // Don't intercept keys when typing in a TextBox
             if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
+            // An inline bookmark rename (#133) owns the keyboard - let arrows / Delete / Home / End
+            // edit the text rather than page the document or delete the bookmark.
+            if (_bmRenaming) return;
 
             // Standard shortcuts (Ctrl+N/O/S/W/Z, Ctrl+Shift+S, Ctrl+P, Ctrl+F, F1, Alt+F/E/V/T/H)
             // are routed via CommandBindings and the Menu's access keys — no need to intercept
@@ -9524,6 +10053,7 @@ namespace TDPdf
                 ClearSelection();
                 MarkDirty();
                 RefreshPageList();
+                LoadOutlines();   // the reopened _doc has its own outline tree; rebuild the panel (#133)
                 if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                     PageList.SelectedIndex = selectedIdx;
                 else if (PageList.Items.Count > 0)
@@ -9710,8 +10240,7 @@ namespace TDPdf
                 _pageJumpBox.IsEnabled = false;
                 _pageJumpBox.Text = "";
                 _pageTotalLabel.Text = "/ –";
-                _ctx.Outline = null;
-                RefreshOutlineUi();
+                LoadOutlines();           // no document → clears the tree and disables the tab
                 RefreshRecentFilesUi();   // start screen is visible again; refresh the recent list
             }
             else
@@ -9731,7 +10260,7 @@ namespace TDPdf
                 _pageJumpBox.IsEnabled = true;
                 _pageTotalLabel.Text = $"/ {_ctx.Doc.PageCount}";
                 RefreshPageList(_ctx.Thumbnails);
-                if (_ctx.Outline is null) LoadOutlines(); else RefreshOutlineUi();
+                LoadOutlines();   // rebuild the bookmark tree from this tab's live document
 
                 int idx = _ctx.SelectedPageIndex;
                 if (idx < 0 || idx >= PageList.Items.Count)
