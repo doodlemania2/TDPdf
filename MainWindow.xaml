@@ -1318,7 +1318,8 @@
               Visibility="Collapsed"
               Background="#BB000000"
               MouseLeftButtonDown="ShortcutOverlay_MouseLeftButtonDown">
-            <Border Background="{DynamicResource BgPanel}"
+            <Border x:Name="ShortcutCard"
+                    Background="{DynamicResource BgPanel}"
                     BorderBrush="{DynamicResource AccentGreen}"
                     BorderThickness="1"
                     CornerRadius="6"
@@ -1334,6 +1335,37 @@
                                    FontFamily="Segoe UI" FontSize="15" FontWeight="SemiBold"
                                    Foreground="{DynamicResource TextPrimary}"
                                    HorizontalAlignment="Left" VerticalAlignment="Center"/>
+
+                        <!-- LIST / KEYBOARD view toggle (upstream KillerPDF v1.6.4). -->
+                        <StackPanel Orientation="Horizontal"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Button x:Name="KsViewListBtn" Content="LIST" Click="KsViewList_Click"
+                                    Cursor="Hand" FocusVisualStyle="{x:Null}"
+                                    FontFamily="Consolas" FontSize="11" FontWeight="SemiBold"
+                                    Foreground="{DynamicResource AccentGreen}"
+                                    AutomationProperties.Name="Show shortcuts as a list">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <ContentPresenter Margin="6,2"/>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                            <TextBlock Text="/" VerticalAlignment="Center" Margin="2,0"
+                                       FontFamily="Consolas" FontSize="11"
+                                       Foreground="{DynamicResource TextMuted}"/>
+                            <Button x:Name="KsViewKeyboardBtn" Content="KEYBOARD" Click="KsViewKeyboard_Click"
+                                    Cursor="Hand" FocusVisualStyle="{x:Null}"
+                                    FontFamily="Consolas" FontSize="11" FontWeight="SemiBold"
+                                    Foreground="{DynamicResource TextSecondary}"
+                                    AutomationProperties.Name="Show shortcuts on a keyboard">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <ContentPresenter Margin="6,2"/>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
+
                         <Button Click="ShortcutOverlayClose_Click"
                                 HorizontalAlignment="Right" VerticalAlignment="Center"
                                 Cursor="Hand" FocusVisualStyle="{x:Null}"
@@ -1360,7 +1392,7 @@
                         </Button>
                     </Grid>
 
-                    <Grid>
+                    <Grid x:Name="ShortcutListHost">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="16"/>
@@ -1403,6 +1435,9 @@
                             <DockPanel Margin="0,0,0,0"><TextBlock Text="Ctrl+?" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="This shortcut list" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                         </StackPanel>
                     </Grid>
+
+                    <!-- Rendered visual keyboard; built lazily in KeyboardMapOverlay.cs. -->
+                    <StackPanel x:Name="ShortcutKeyboardHost" Visibility="Collapsed"/>
                 </StackPanel>
             </Border>
         </Grid>

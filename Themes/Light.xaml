@@ -25,4 +25,15 @@
     <SolidColorBrush x:Key="ToolButtonCheckedBackground" Color="#d1fae5"/>
     <SolidColorBrush x:Key="ToolButtonCheckedForeground" Color="#047857"/>
     <SolidColorBrush x:Key="ToolButtonDisabledForeground" Color="#9ca3af"/>
+
+    <!-- Shortcut-overlay keyboard: per-category key colors (upstream KillerPDF v1.6.4 "KsCat*").
+         Deeper, saturated variants that read against the light keycap faces. -->
+    <SolidColorBrush x:Key="KsCatFile"   Color="#2563eb"/>
+    <SolidColorBrush x:Key="KsCatTools"  Color="#b45309"/>
+    <SolidColorBrush x:Key="KsCatEdit"   Color="#db2777"/>
+    <SolidColorBrush x:Key="KsCatNav"    Color="#7c3aed"/>
+    <SolidColorBrush x:Key="KsCatView"   Color="#0891b2"/>
+    <SolidColorBrush x:Key="KsCatSearch" Color="#059669"/>
+    <SolidColorBrush x:Key="KsCatHelp"   Color="#ea580c"/>
+    <SolidColorBrush x:Key="KsCatOcr"    Color="#dc2626"/>
 </ResourceDictionary>

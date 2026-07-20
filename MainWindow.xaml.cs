@@ -9371,6 +9371,10 @@ namespace TDPdf
         {
             base.OnPreviewKeyDown(e);
 
+            // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
+            // modifier layer on the board. (upstream KillerPDF v1.6.4)
+            KbSyncLayerFromModifiers();
+
             // Don't intercept keys when typing in a TextBox
             if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
             // An inline bookmark rename (#133) owns the keyboard - let arrows / Delete / Home / End
@@ -9432,6 +9436,7 @@ namespace TDPdf
             {
                 ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                     ? Visibility.Collapsed : Visibility.Visible;
+                if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
                 e.Handled = true;
             }
             else if (e.Key == Key.Delete && _selectedAnnotation is not null)
@@ -12886,6 +12891,7 @@ namespace TDPdf
         {
             ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                 ? Visibility.Collapsed : Visibility.Visible;
+            if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
         }
 
         private void ShortcutOverlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
