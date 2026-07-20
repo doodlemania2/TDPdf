@@ -2003,6 +2003,10 @@ namespace TDPdf
             _continuousRenderCts?.Cancel();
             _continuousPanel.Children.Clear();
             _continuousTops.Clear();
+            // #130 (upstream v1.6.4): a PDF whose page tree parses to zero pages must not reach the
+            // Pages[0] deref below — Continuous view crashed with an out-of-range index. Nothing to
+            // lay out, so bail after clearing any stale tiles.
+            if (_doc.PageCount == 0) return;
 
             // PDF natural page width in WPF DIPs (96 DIP/in, 72 pt/in). Zoom-independent so
             // FitToWidth (= viewportW / _continuousPageW) doesn't cancel against the zoom level.
@@ -3655,6 +3659,29 @@ namespace TDPdf
         }
 
         /// <summary>
+        /// #133 (upstream v1.6.4): PdfSharpCore's lexer decodes UTF-16 bookmark titles by their BOM,
+        /// but strings it decrypts AFTER parsing (owner-password protected files) never get that BOM
+        /// re-check, so the title arrives as raw bytes widened to chars: a U+00FE U+00FF prefix (the
+        /// BOM bytes) followed by one char per byte (mojibake, most visible on Chinese outlines).
+        /// Detect the widened BOM, re-pack the chars into bytes, and decode as UTF-16. Titles that
+        /// parsed correctly don't start with those two chars and pass through untouched.
+        /// </summary>
+        private static string FixRawUnicodeTitle(string s)
+        {
+            if (s.Length < 2) return s;
+            bool be = s[0] == 'þ' && s[1] == 'ÿ';   // UTF-16BE BOM as raw chars
+            bool le = s[0] == 'ÿ' && s[1] == 'þ';   // UTF-16LE (Adobe tolerance)
+            if (!be && !le) return s;
+            foreach (char c in s)
+                if (c > 'ÿ') return s;   // not byte-widened data - a real (odd) title, leave it
+            var sb = new System.Text.StringBuilder((s.Length - 2) / 2);
+            for (int i = 2; i + 1 < s.Length; i += 2)   // a trailing odd byte is dropped rather than corrupting the pairs
+                sb.Append(be ? (char)((s[i] << 8) | s[i + 1])
+                             : (char)((s[i + 1] << 8) | s[i]));
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// Recursively appends an outline node and its siblings (via /Next) and
         /// children (via /First). Guarded against cycles and runaway trees.
         /// </summary>
@@ -3667,7 +3694,7 @@ namespace TDPdf
                 if (!visited.Add(node)) break;        // cycle protection
                 if (entries.Count >= 10000) break;    // sanity cap
 
-                string title = node.Elements.GetString("/Title") ?? string.Empty;
+                string title = FixRawUnicodeTitle(node.Elements.GetString("/Title") ?? string.Empty);
 
                 // Destination may be a direct /Dest or a /GoTo action's /D.
                 PdfItem? destItem = node.Elements["/Dest"];
