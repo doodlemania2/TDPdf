@@ -1639,6 +1639,7 @@ namespace TDPdf
                 if (_doc is null) return;
 
                 _renderDims[pageIndex] = ((int)Math.Round(renderedPage.DisplayWidth), (int)Math.Round(renderedPage.DisplayHeight));
+                PageImage.Tag = pageIndex;   // page identity for Grid scroll tracking (nearest-tile counter)
                 PageImage.Source = renderedPage.Bitmap;
                 PageImage.Width = renderedPage.DisplayWidth;
                 PageImage.Height = renderedPage.DisplayHeight;
@@ -1821,7 +1822,8 @@ namespace TDPdf
                 {
                     Background = Brushes.White,
                     Margin = new Thickness(0, 0, 12, 12),
-                    Child = pageGrid
+                    Child = pageGrid,
+                    Tag = pi   // page identity for Grid scroll tracking (nearest-tile counter)
                 });
             }
         }
@@ -2007,6 +2009,13 @@ namespace TDPdf
             // Pages[0] deref below — Continuous view crashed with an out-of-range index. Nothing to
             // lay out, so bail after clearing any stale tiles.
             if (_doc.PageCount == 0) return;
+
+            // Upstream v1.6.3: entering Continuous must restore its own scrollbar setup. Grid disables
+            // the horizontal scrollbar (RefreshPageView), and because RefreshPageView early-returns for
+            // Continuous that override would otherwise leak in and clip zoomed pages with no way to
+            // scroll sideways. Reset to Auto.
+            PagePreviewPanel.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+            PagePreviewPanel.VerticalScrollBarVisibility   = ScrollBarVisibility.Auto;
 
             // PDF natural page width in WPF DIPs (96 DIP/in, 72 pt/in). Zoom-independent so
             // FitToWidth (= viewportW / _continuousPageW) doesn't cancel against the zoom level.
@@ -2347,6 +2356,12 @@ namespace TDPdf
         /// </summary>
         private void PagePreviewPanel_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
+            // Grid view (upstream v1.6.4): follow the tile nearest the viewport center so the
+            // statusbar page counter tracks scrolling instead of pointing at the last-clicked page.
+            // We update only the counter, NOT PageList.SelectedIndex — in Grid a selection change
+            // scroll-jumps and re-renders (PageList_SelectionChanged), which would fight the scroll.
+            if (_viewMode == ViewMode.Grid) { UpdateGridCurrentPageCounter(); return; }
+
             if (_viewMode != ViewMode.Continuous || _continuousTops.Count == 0) return;
             // #85: once scrolling settles, sharpen the pages now in view and release the ones that
             // left. Debounced, so streaming base render / rapid scroll just keeps resetting the timer;
@@ -2377,6 +2392,34 @@ namespace TDPdf
                 PageList.SelectedIndex = nearest;
                 _suppressContinuousScrollSync = false;
             }
+        }
+
+        // Grid scroll tracking (upstream v1.6.4): sets the statusbar page counter to the tile whose
+        // center is nearest the viewport center. Each tile carries its page index in its Tag (the
+        // primary PageImage tagged in RenderPage, secondaries when appended). Uses TranslatePoint on
+        // both tile edges so any grid zoom transform is accounted for. Deliberately leaves
+        // PageList.SelectedIndex untouched (a Grid selection change scroll-jumps and re-renders).
+        private void UpdateGridCurrentPageCounter()
+        {
+            if (_doc is null || _pageContentPanel.Children.Count == 0) return;
+            double viewportCenterY = PagePreviewPanel.ViewportHeight * 0.5;
+            int nearestPage = -1;
+            double minDist = double.MaxValue;
+            foreach (UIElement child in _pageContentPanel.Children)
+            {
+                if (child is not FrameworkElement fe || fe.Tag is not int pageIdx || fe.ActualHeight <= 0)
+                    continue;
+                try
+                {
+                    double topY    = fe.TranslatePoint(new Point(0, 0), PagePreviewPanel).Y;
+                    double bottomY = fe.TranslatePoint(new Point(0, fe.ActualHeight), PagePreviewPanel).Y;
+                    double dist = Math.Abs((topY + bottomY) * 0.5 - viewportCenterY);
+                    if (dist < minDist) { minDist = dist; nearestPage = pageIdx; }
+                }
+                catch { /* transform can fail mid-layout; skip this tile */ }
+            }
+            if (nearestPage >= 0)
+                _pageJumpBox.Text = (nearestPage + 1).ToString();
         }
 
         // ============================================================
@@ -8726,14 +8769,9 @@ namespace TDPdf
                      && (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.Right || e.Key == Key.Down
                          || e.Key == Key.PageUp || e.Key == Key.PageDown))
             {
-                int cur = PageList.SelectedIndex;
-                if (cur < 0) cur = 0;
-                int next = (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.PageUp) ? cur - 1 : cur + 1;
-                if (next >= 0 && next < PageList.Items.Count)
-                {
-                    PageList.SelectedIndex = next;
+                int dir = (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.PageUp) ? -1 : 1;
+                if (NavigatePageStep(dir))   // one spread at a time in Two-Page mode (#120)
                     PageList.ScrollIntoView(PageList.SelectedItem);
-                }
                 e.Handled = true;
             }
         }
@@ -11289,13 +11327,31 @@ namespace TDPdf
         }
 
         private void NavigatePageByWheel(int delta)
+            => NavigatePageStep(delta > 0 ? -1 : 1);
+
+        // Moves the page selection by one page — or one full SPREAD in Two-Page mode (#120, upstream
+        // v1.6.3) — landing on the spread's left page so a press always advances to the NEXT spread
+        // instead of re-showing the current one from its right page. direction: -1 = back, +1 =
+        // forward. Returns true when the selection actually moved. Shared by the wheel edge-flip and
+        // the keyboard page keys.
+        private bool NavigatePageStep(int direction)
         {
-            if (_doc is null) return;
+            if (_doc is null) return false;
             int cur = PageList.SelectedIndex;
-            if (delta > 0 && cur > 0)
-                PageList.SelectedIndex = cur - 1;
-            else if (delta < 0 && cur < _doc.PageCount - 1)
-                PageList.SelectedIndex = cur + 1;
+            if (cur < 0) cur = 0;
+            int count = _doc.PageCount;
+            if (_viewMode == ViewMode.TwoPage)
+            {
+                int baseIdx = Math.Max(0, cur - cur % 2);   // left page of the current spread
+                int target = baseIdx + direction * 2;
+                if (target < 0 || target >= count) return false;
+                PageList.SelectedIndex = target;
+                return true;
+            }
+            int t = cur + direction;
+            if (t < 0 || t >= count) return false;
+            PageList.SelectedIndex = t;
+            return true;
         }
 
         private void Zoom_PropertyChanged(object? sender, PropertyChangedEventArgs e)
