@@ -10330,6 +10330,117 @@ namespace TDPdf
             await SaveInPlaceAsync();
         }
 
+        // Pre-save document normalization (ports upstream KillerPDF v1.6.3/v1.6.4 conformance
+        // fixes). Every TDPdf save fully rewrites the file through PdfSharpCore, so we scrub three
+        // classes of structural corruption immediately before writing. All three are semantic
+        // no-ops on healthy documents and also HEAL files damaged by other tools/older builds when
+        // re-saved. Called on the UI thread before dispatching any doc.Save(...).
+        private static void NormalizeDocumentForSave(PdfDocument doc)
+        {
+            ScrubEmptyOutlines(doc);         // #103: never write a dangling /Outlines reference
+            ScrubDegenerateCropBoxes(doc);   // never write a zero-size /CropBox (Adobe out-of-range)
+            ScrubDeadSignatures(doc);        // a rewrite voids signatures; never ship a dead one (PDF/A 6.4.3)
+        }
+
+        private static double RectNum(PdfItem item) =>
+            item is PdfReal r ? r.Value : item is PdfInteger n ? n.Value : 0;
+
+        // #103 (upstream v1.6.3): PdfSharpCore's writer can emit the catalog's /Outlines reference
+        // without ever writing the (empty, lazily created) outlines object itself - a dangling xref
+        // entry that strict parsers, including PdfSharpCore on reopen, refuse. An outlines dictionary
+        // with no /First contains no bookmarks, so dropping the entry is a semantic no-op that keeps
+        // the file consistent. Real bookmark trees (/First present) are left untouched.
+        private static void ScrubEmptyOutlines(PdfDocument doc)
+        {
+            try
+            {
+                var cat = doc.Internals.Catalog;
+                var item = cat.Elements["/Outlines"];
+                if (item is null) return;
+                if (DerefItemStatic(item) is not PdfDictionary o || o.Elements["/First"] is null)
+                    cat.Elements.Remove("/Outlines");
+            }
+            catch { /* malformed catalog - leave the save as-is */ }
+        }
+
+        // Upstream v1.6.3: PdfSharpCore's PdfPage.MediaBox/CropBox property GETTERS have
+        // create-on-read semantics: touching page.CropBox on a page that has none plants an empty
+        // /CropBox [0 0 0 0] into the page dictionary. A zero-size page box saves to disk and Adobe
+        // then rejects the page as "dimensions out-of-range" even though the MediaBox is fine (Chrome
+        // falls back to the MediaBox, which is why such files still open there). Dropping a degenerate
+        // CropBox is a semantic no-op - the page falls back to its MediaBox - and it HEALS files
+        // written by affected versions when re-saved. Real crops are untouched.
+        private static void ScrubDegenerateCropBoxes(PdfDocument doc)
+        {
+            try
+            {
+                for (int i = 0; i < doc.PageCount; i++)
+                {
+                    var elements = doc.Pages[i].Elements;
+                    var item = elements["/CropBox"];
+                    if (item is null) continue;
+                    var resolved = DerefItemStatic(item);
+
+                    // The box can be a parsed PdfArray (loaded from disk) or a PdfRectangle
+                    // (planted in memory by the lazy getter) - handle both.
+                    double w = -1, h = -1;
+                    if (resolved is PdfRectangle rect)
+                    {
+                        w = Math.Abs(rect.X2 - rect.X1);
+                        h = Math.Abs(rect.Y2 - rect.Y1);
+                    }
+                    else if (resolved is PdfArray arr && arr.Elements.Count == 4 &&
+                             arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
+                             arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
+                    {
+                        w = Math.Abs(RectNum(arr.Elements[2]) - RectNum(arr.Elements[0]));
+                        h = Math.Abs(RectNum(arr.Elements[3]) - RectNum(arr.Elements[1]));
+                    }
+
+                    // Remove only when we could read the box AND it is degenerate; anything we
+                    // cannot interpret is left alone rather than destroyed.
+                    if (w >= 0 && (w < 1 || h < 1))
+                        elements.Remove("/CropBox");
+                }
+            }
+            catch { /* malformed page tree - leave the save as-is */ }
+        }
+
+        // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
+        // existing digital signature: its /ByteRange and digest describe the old bytes (ISO 19005-2,
+        // 6.4.3 requires the digest to cover the entire file). Carrying the dead signature forward
+        // misleads viewers and fails PDF/A validation, so strip signature VALUES (/V) from signature
+        // fields and the catalog's /Perms certification (DocMDP / usage rights) that references them.
+        // The empty fields stay and can be re-signed.
+        private static void ScrubDeadSignatures(PdfDocument doc)
+        {
+            try
+            {
+                var cat = doc.Internals.Catalog;
+                cat.Elements.Remove("/Perms");
+                var acroItem = cat.Elements["/AcroForm"];
+                if (acroItem is null || DerefItemStatic(acroItem) is not PdfDictionary acro) return;
+                var fieldsItem = acro.Elements["/Fields"];
+                if (fieldsItem is not null && DerefItemStatic(fieldsItem) is PdfArray fields)
+                    ScrubSigFieldValues(fields, 0);
+            }
+            catch { /* malformed catalog - leave the save as-is */ }
+        }
+
+        private static void ScrubSigFieldValues(PdfArray fields, int depth)
+        {
+            if (depth > 8) return;   // defensive: malformed circular /Kids
+            foreach (var item in fields.Elements)
+            {
+                if (item is null || DerefItemStatic(item) is not PdfDictionary field) continue;
+                if (field.Elements.GetName("/FT") == "/Sig" && field.Elements["/V"] is not null)
+                    field.Elements.Remove("/V");
+                var kidsItem = field.Elements["/Kids"];
+                if (kidsItem is not null && DerefItemStatic(kidsItem) is PdfArray kids)
+                    ScrubSigFieldValues(kids, depth + 1);
+            }
+        }
+
         private async Task SaveInPlaceAsync()
         {
             using var op = Telemetry.StartOperation("SaveInPlace");
@@ -10346,6 +10457,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
+                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 if (hasAnnotations)
@@ -10426,6 +10538,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
+                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 if (hasAnnotations)
@@ -10495,6 +10608,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
+                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 var pageSizes = GetPageSizes(doc);
                 string sourcePath;
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
