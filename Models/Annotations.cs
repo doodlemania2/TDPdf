@@ -3,9 +3,18 @@ using System.Windows.Media;
 
 namespace TDPdf
 {
-    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape }
+    // Strikethrough / Underline are the text-markup siblings of Highlight (upstream KillerPDF
+    // v1.6.5, #127). Appended rather than inserted so the numeric values of the existing members
+    // never shift — the persisted view/tool settings round-trip through them.
+    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline }
 
-    public enum ShapeKind { Rectangle, Ellipse, Line }
+    public enum ShapeKind { Rectangle, Ellipse, Line, Polygon }
+
+    /// <summary>
+    /// How a <see cref="MarkupAnnotation"/> paints over each of the text lines it covers
+    /// (upstream KillerPDF v1.6.5, #127).
+    /// </summary>
+    public enum MarkupStyle { Highlight, Strikethrough, Underline }
 
     public enum ZoomFitMode { None, Width, Page }
 
@@ -115,6 +124,83 @@ namespace TDPdf
     }
 
     /// <summary>
+    /// Text markup that hugs the individual lines of text it was dragged across: highlight,
+    /// strikethrough, or underline (upstream KillerPDF v1.6.5, #127).
+    ///
+    /// One gesture produces exactly ONE of these per page, carrying a rect per covered line in
+    /// <see cref="LineRects"/>, so the whole run selects, moves, resizes, deletes, and undoes as a
+    /// single unit without needing any grouping machinery elsewhere.
+    ///
+    /// It subclasses <see cref="HighlightAnnotation"/> so it inherits every existing rect path for
+    /// free (selection, move, resize, style bar, hit-test fallback), and <see cref="Bounds"/> is
+    /// kept as the union of the line rects so those inherited paths stay correct. Plain
+    /// <see cref="HighlightAnnotation"/>s — every highlight created before this existed, plus the
+    /// eraser's rectangle — are a different runtime type and keep their exact old rendering, saving,
+    /// and behaviour: every switch that handles markup matches <c>MarkupAnnotation</c> BEFORE
+    /// <c>HighlightAnnotation</c> and leaves the latter's arm untouched.
+    /// </summary>
+    public class MarkupAnnotation : HighlightAnnotation
+    {
+        public MarkupStyle Style { get; set; } = MarkupStyle.Highlight;
+
+        /// <summary>
+        /// One rect per covered text line, in canvas pixels, in reading order. Each rect is the
+        /// FULL line box; <see cref="PaintRects"/> narrows it to a band for strikethrough/underline.
+        /// </summary>
+        public List<Rect> LineRects { get; set; } = new();
+
+        /// <summary>The union of <see cref="LineRects"/> — what <see cref="Bounds"/> is kept at.</summary>
+        public Rect UnionBounds()
+        {
+            if (LineRects.Count == 0) return Bounds;
+            Rect u = LineRects[0];
+            for (int i = 1; i < LineRects.Count; i++) u.Union(LineRects[i]);
+            return u;
+        }
+
+        /// <summary>Recomputes <see cref="Bounds"/> from the current line rects.</summary>
+        public void SyncBounds() => Bounds = UnionBounds();
+
+        /// <summary>
+        /// The rectangles actually painted (on canvas and into the saved PDF): the whole line box
+        /// for a highlight, a thin band at the vertical centre for strikethrough, and a thin band at
+        /// the foot of the line for underline. Falls back to <see cref="Bounds"/> for a degenerate
+        /// annotation with no line rects so it can never render as nothing.
+        /// </summary>
+        public IEnumerable<Rect> PaintRects()
+        {
+            var source = LineRects.Count > 0 ? LineRects : new List<Rect> { Bounds };
+            foreach (var line in source)
+            {
+                double t = Math.Max(1.5, line.Height * 0.09);
+                switch (Style)
+                {
+                    case MarkupStyle.Strikethrough:
+                        yield return new Rect(line.X, line.Y + line.Height / 2 - t / 2, line.Width, t);
+                        break;
+                    case MarkupStyle.Underline:
+                        yield return new Rect(line.X, line.Y + Math.Max(0, line.Height - t), line.Width, t);
+                        break;
+                    default:
+                        yield return line;
+                        break;
+                }
+            }
+        }
+
+        public override PageAnnotation Clone()
+        {
+            var copy = new MarkupAnnotation
+            {
+                PageIndex = PageIndex, Bounds = Bounds, Style = Style,
+                ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
+            };
+            copy.LineRects.AddRange(LineRects);
+            return copy;
+        }
+    }
+
+    /// <summary>
     /// Transient crop rectangle used only as an on-canvas UI overlay while applying a crop.
     /// </summary>
     public class CropAnnotation : PageAnnotation
@@ -185,16 +271,27 @@ namespace TDPdf
     }
 
     /// <summary>
-    /// A geometric shape annotation: rectangle, ellipse, or line.
-    /// Stores Start/End endpoints so a Line preserves direction (NW→SE vs NE→SW).
-    /// Bounds is the normalized rectangle spanning Start and End; used for hit-testing
-    /// and rendering rectangles/ellipses.
+    /// A geometric shape annotation: rectangle, ellipse, line, or free-form polygon.
+    /// Rectangle / Ellipse / Line use the two-point model: Start/End endpoints, so a Line
+    /// preserves direction (NW→SE vs NE→SW) and Bounds is the normalized rectangle spanning
+    /// them — used for hit-testing and rendering.
+    /// Polygon (upstream KillerPDF v1.6.5) instead carries its vertices in <see cref="Points"/>
+    /// and leaves Start/End at their defaults; the two models never mix, so every shape created
+    /// before polygons existed keeps exactly the geometry, rendering, and export it always had.
     /// </summary>
     public class ShapeAnnotation : PageAnnotation
     {
         public ShapeKind Kind { get; set; } = ShapeKind.Rectangle;
         public Point Start { get; set; }
         public Point End { get; set; }
+
+        /// <summary>
+        /// Vertices of a <see cref="ShapeKind.Polygon"/>, in canvas pixels, in placement order.
+        /// The closing edge (last vertex → first) is implicit and never stored, so the list holds
+        /// exactly the points the user clicked. Always empty for the three two-point kinds.
+        /// (Compare <see cref="InkAnnotation.Points"/>, which is an open polyline.)
+        /// </summary>
+        public List<Point> Points { get; set; } = new();
 
         public byte StrokeR { get; set; } = 255;
         public byte StrokeG { get; set; } = 0;
@@ -218,6 +315,22 @@ namespace TDPdf
         {
             get
             {
+                // Polygon: the bounding box of the placed vertices. Falls through to the
+                // Start/End box when the list is empty so a degenerate polygon is still Rect-safe.
+                if (Kind == ShapeKind.Polygon && Points.Count > 0)
+                {
+                    double minX = Points[0].X, minY = Points[0].Y;
+                    double maxX = minX, maxY = minY;
+                    for (int i = 1; i < Points.Count; i++)
+                    {
+                        var p = Points[i];
+                        if (p.X < minX) minX = p.X;
+                        if (p.Y < minY) minY = p.Y;
+                        if (p.X > maxX) maxX = p.X;
+                        if (p.Y > maxY) maxY = p.Y;
+                    }
+                    return new Rect(minX, minY, maxX - minX, maxY - minY);
+                }
                 double x = System.Math.Min(Start.X, End.X);
                 double y = System.Math.Min(Start.Y, End.Y);
                 double w = System.Math.Abs(End.X - Start.X);
@@ -226,13 +339,19 @@ namespace TDPdf
             }
         }
 
-        public override PageAnnotation Clone() => new ShapeAnnotation
+        public override PageAnnotation Clone()
         {
-            PageIndex = PageIndex, Kind = Kind, Start = Start, End = End,
-            StrokeR = StrokeR, StrokeG = StrokeG, StrokeB = StrokeB, StrokeA = StrokeA,
-            FillR = FillR, FillG = FillG, FillB = FillB, FillA = FillA,
-            HasFill = HasFill, StrokeWidth = StrokeWidth
-        };
+            var copy = new ShapeAnnotation
+            {
+                PageIndex = PageIndex, Kind = Kind, Start = Start, End = End,
+                StrokeR = StrokeR, StrokeG = StrokeG, StrokeB = StrokeB, StrokeA = StrokeA,
+                FillR = FillR, FillG = FillG, FillB = FillB, FillA = FillA,
+                HasFill = HasFill, StrokeWidth = StrokeWidth
+            };
+            // Deep-copy the vertex list so undo snapshots don't alias a later move/resize.
+            copy.Points.AddRange(Points);
+            return copy;
+        }
     }
 
     /// <summary>

@@ -12,6 +12,13 @@
     <SolidColorBrush x:Key="SeparatorBrush" Color="#333333"/>
     <SolidColorBrush x:Key="AccentGreen" Color="#4ade80"/>
     <SolidColorBrush x:Key="AccentGreenDim" Color="#22543d"/>
+    <!-- Flowing text-selection quads (upstream KillerPDF v1.6.5, #127). Painted at ~24% alpha over
+         the page, so it must be a mid-tone that reads on white paper without hiding the glyphs.
+         Upstream had to correct a stray royal blue here; TDPdf keeps it in the accent family. -->
+    <SolidColorBrush x:Key="SelectionAccent" Color="#1a8f48"/>
+    <!-- Select-tool box marquee, same accent at marquee alphas (was a hardcoded royal blue). -->
+    <SolidColorBrush x:Key="MarqueeFill"   Color="#1a8f48" Opacity="0.16"/>
+    <SolidColorBrush x:Key="MarqueeStroke" Color="#1a8f48" Opacity="0.47"/>
     <SolidColorBrush x:Key="TextPrimary" Color="#e0e0e0"/>
     <SolidColorBrush x:Key="TextSecondary" Color="#888888"/>
     <SolidColorBrush x:Key="TextMuted" Color="#444444"/>

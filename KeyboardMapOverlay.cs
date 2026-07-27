@@ -20,11 +20,11 @@ namespace TDPdf
     // shows its action. The chosen view is persisted in Settings.ShortcutView.
     //
     // Adapted from upstream: TDPdf has no localization layer, so labels/section names are plain
-    // English literals (not Str_* resource keys); the map reflects TDPdf's REAL bindings (no tool
-    // number-keys, no F5-F9 view shortcuts — TDPdf selects tools from the toolbar only); brushes
-    // are TDPdf's palette (AccentGreen / TextMuted / BgPanel / BorderDim / TextPrimary), wired with
-    // SetResourceReference so Dark / Light / HighContrast switches repaint the board live. Category
-    // colors ride the KsCat* theme brushes.
+    // English literals (not Str_* resource keys); the map reflects TDPdf's REAL bindings (as of
+    // 1.19 that includes the single-key tool shortcuts below — TDPdf's own map, not upstream's;
+    // still no F5-F9 view shortcuts); brushes are TDPdf's palette (AccentGreen / TextMuted /
+    // BgPanel / BorderDim / TextPrimary), wired with SetResourceReference so Dark / Light /
+    // HighContrast switches repaint the board live. Category colors ride the KsCat* theme brushes.
     // ============================================================
     public partial class MainWindow
     {
@@ -44,8 +44,8 @@ namespace TDPdf
         // key id -> (category, action caption). Category maps 1:1 to a KsCat* theme brush and to
         // the section name shown in the hover detail. Captions are plain English (no Loc()).
         // Every entry mirrors a REAL TDPdf binding (verified against MainWindow.xaml KeyBindings,
-        // OnPreviewKeyDown, and the outline-tree F2 rename). Ctrl+Scroll zoom and middle-drag pan
-        // have no single keycap, so they live only in the list view.
+        // OnPreviewKeyDown / TrySelectToolByKey, and the outline-tree F2 rename). Ctrl+Scroll zoom
+        // and middle-drag pan have no single keycap, so they live only in the list view.
         private static readonly Dictionary<KbLayer, Dictionary<string, (string Cat, string Label)>> KbMap = new()
         {
             [KbLayer.Base] = new()
@@ -60,8 +60,23 @@ namespace TDPdf
                 ["Up"] = ("Nav", "Previous page"),   ["Down"] = ("Nav", "Next page"),
                 ["Del"] = ("Edit", "Delete annotation"),
                 ["Enter"] = ("Edit", "Confirm"),
-                ["Esc"] = ("Edit", "Cancel / exit full screen"),
+                ["Esc"] = ("Edit", "Cancel / back to Select"),
                 ["Menu"] = ("Edit", "Context menu"),
+                // Tool keys (1.19). Digits mirror the toolbar left to right across the ten
+                // mark-making tools; Select / Pan / Signature / Crop are letter-only. Every id here
+                // must also exist in KbRows below or the keycap silently never lights.
+                ["V"] = ("Tools", "Select"),            ["P"] = ("Tools", "Pan / hand"),
+                ["D1"] = ("Tools", "Text"),             ["T"] = ("Tools", "Text"),
+                ["D2"] = ("Tools", "Edit existing text"), ["X"] = ("Tools", "Edit existing text"),
+                ["D3"] = ("Tools", "Edit existing image"),
+                ["D4"] = ("Tools", "Insert image"),      ["I"] = ("Tools", "Insert image"),
+                ["D5"] = ("Tools", "Highlight"),        ["H"] = ("Tools", "Highlight"),
+                ["D6"] = ("Tools", "Strikethrough"),    ["K"] = ("Tools", "Strikethrough"),
+                ["D7"] = ("Tools", "Underline"),        ["U"] = ("Tools", "Underline"),
+                ["D8"] = ("Tools", "Shape"),            ["S"] = ("Tools", "Shape"),
+                ["D9"] = ("Tools", "Draw"),             ["D"] = ("Tools", "Draw"),
+                ["D0"] = ("Tools", "Eraser"),           ["E"] = ("Tools", "Eraser"),
+                ["G"] = ("Tools", "Signature"),         ["C"] = ("Tools", "Crop"),
             },
             [KbLayer.Ctrl] = new()
             {
@@ -74,12 +89,16 @@ namespace TDPdf
                 ["D0"] = ("View", "Reset zoom"),    ["D1"] = ("View", "Actual size"),
                 ["D2"] = ("View", "Fit width"),     ["D3"] = ("View", "Fit page"),
                 ["Equals"] = ("View", "Zoom in"),   ["Minus"] = ("View", "Zoom out"),
+                ["I"] = ("View", "Invert colors"),
             },
             [KbLayer.CtrlShift] = new()
             {
                 ["S"] = ("File", "Save as"),
                 ["Z"] = ("Edit", "Redo"),
                 ["O"] = ("Ocr", "OCR page to clipboard"),
+                ["Equals"] = ("View", "App size larger"),
+                ["Minus"] = ("View", "App size smaller"),
+                ["D0"] = ("View", "Reset app size"),
             },
             [KbLayer.Shift] = new()
             {
@@ -93,7 +112,8 @@ namespace TDPdf
         };
 
         // ── Physical layout ────────────────────────────────────────────────────────────────────
-        // (id, cap text, width units). id "" = spacer. Numpad omitted (digits mirror the number row).
+        // (id, cap text, width units). id "" = spacer. Numpad omitted (the numpad digits are aliases
+        // for the number row, both for zoom and for the tool keys, so one row of caps says it all).
         private static readonly (string Id, string Cap, double W)[][] KbRows =
         [
             [("Esc","Esc",1), ("","",0.8), ("F1","F1",1),("F2","F2",1),("F3","F3",1),("F4","F4",1), ("","",0.6),

@@ -29,33 +29,9 @@ namespace TDPdf
         // spot for Tesseract: high enough for small body text, not so high it wastes time/memory.
         private const int OcrRenderMax = 2600;
 
-        // Non-null only while a cancellable OCR operation (recognize, or a language download) is in flight.
-        // The WM_KEYDOWN hook in WndProc cancels it on Esc even though SetFileOperationBusy disables the WPF
-        // content, because the native HWND stays Win32-enabled and still receives key messages.
-        private CancellationTokenSource? _ocrCts;
-
-        // Registers a cancellable OCR operation, shows the busy state, and returns the token.
-        private CancellationToken BeginOcrOp(string startStatus)
-        {
-            _ocrCts?.Dispose();
-            _ocrCts = new CancellationTokenSource();
-            SetFileOperationBusy(true, startStatus);
-            return _ocrCts.Token;
-        }
-
-        private void EndOcrOp()
-        {
-            SetFileOperationBusy(false);
-            _ocrCts?.Dispose();
-            _ocrCts = null;
-        }
-
-        // Updates the status line from any thread (OCR work runs on a background Task).
-        private void SetOcrStatus(string msg)
-        {
-            if (Dispatcher.CheckAccess()) SetStatus(msg);
-            else Dispatcher.Invoke(() => SetStatus(msg));
-        }
+        // Cancellation, the busy state and the cross-thread status line are shared with the other
+        // long-running operations (see BeginCancellableOp / EndCancellableOp / SetWorkerStatus in
+        // MainWindow.xaml.cs); Esc cancels whichever one is in flight.
 
         // ============================================================
         // OCR languages (multi-select, on-demand download)
@@ -163,14 +139,14 @@ namespace TDPdf
 
             int pageIdx = Math.Max(0, PageList.SelectedIndex);
             root.Items.Add(MakeMenuItem("OCR Current _Page to Clipboard", (_, _) => OcrPageToClipboard(pageIdx),
-                "Ctrl+Shift+O", "Recognize the current page's text and copy it to the clipboard"));
+                "Ctrl+Shift+O", "Recognize the current page's text and copy it to the clipboard", "\uEE6F"));
             root.Items.Add(MakeMenuItem("OCR _Region to Clipboard", (_, _) => BeginOcrRegion(),
-                null, "Drag a box over an area to recognize just that region"));
+                null, "Drag a box over an area to recognize just that region", "\uE7A8"));
             root.Items.Add(new Separator());
             root.Items.Add(MakeMenuItem("Make _Searchable PDF…", (_, _) => MakeSearchablePdf(),
-                null, "OCR every page and save a copy with an invisible, searchable text layer"));
+                null, "OCR every page and save a copy with an invisible, searchable text layer", "\uE721"));
             root.Items.Add(MakeMenuItem("_Extract All Text…", (_, _) => ExtractAllText(),
-                null, "OCR every page and save the text to a .txt or .md file"));
+                null, "OCR every page and save the text to a .txt or .md file", "\uE8A5"));
             root.Items.Add(new Separator());
             root.Items.Add(BuildLanguageMenu());
         }
@@ -290,7 +266,7 @@ namespace TDPdf
                     await fileStream.WriteAsync(buffer.AsMemory(0, n), ct);
                     read += n;
                     double mb = read / 1048576.0;
-                    SetOcrStatus(total.HasValue
+                    SetWorkerStatus(total.HasValue
                         ? $"{label} {mb:F1} / {total.Value / 1048576.0:F1} MB  (Esc to cancel)"
                         : $"{label} {mb:F1} MB  (Esc to cancel)");
                 }
@@ -307,7 +283,7 @@ namespace TDPdf
         // Downloads a single language's traineddata (standard or HQ, per the toggle) and selects it.
         private async void DownloadOcrLanguage(string code, string name)
         {
-            var ct = BeginOcrOp($"Downloading {name} language data...");
+            var ct = BeginCancellableOp($"Downloading {name} language data...");
             string tessDir = OcrNativeBootstrap.EnsureTessDataDir();
             string dest = Path.Combine(tessDir, code + ".traineddata");
             try
@@ -335,7 +311,7 @@ namespace TDPdf
             }
             finally
             {
-                EndOcrOp();
+                EndCancellableOp();
             }
         }
 
@@ -363,7 +339,7 @@ namespace TDPdf
                 return;
             }
 
-            var ct = BeginOcrOp("Downloading high quality language models...");
+            var ct = BeginCancellableOp("Downloading high quality language models...");
             string tessDir = OcrNativeBootstrap.EnsureTessDataDir();
             var failed = new List<string>();
             try
@@ -396,7 +372,7 @@ namespace TDPdf
             }
             finally
             {
-                EndOcrOp();
+                EndCancellableOp();
             }
         }
 
@@ -420,7 +396,7 @@ namespace TDPdf
                 "TDPdf", MessageBoxButton.OKCancel, MessageBoxImage.Information);
             if (choice != MessageBoxResult.OK) return false;
 
-            var ct = BeginOcrOp("Downloading language model...");
+            var ct = BeginCancellableOp("Downloading language model...");
             try
             {
                 string tessDir = OcrNativeBootstrap.EnsureTessDataDir();
@@ -451,7 +427,7 @@ namespace TDPdf
             }
             finally
             {
-                EndOcrOp();
+                EndCancellableOp();
             }
         }
 
@@ -472,7 +448,7 @@ namespace TDPdf
             string file = _currentFile;
             string lang = CurrentOcrLanguageString();
 
-            var ct = BeginOcrOp("Running OCR...  (Esc to cancel)");
+            var ct = BeginCancellableOp("Running OCR...  (Esc to cancel)");
             try
             {
                 OcrResult result = await Task.Run(() =>
@@ -504,7 +480,7 @@ namespace TDPdf
             }
             finally
             {
-                EndOcrOp();
+                EndCancellableOp();
             }
         }
 
@@ -538,7 +514,7 @@ namespace TDPdf
             int renderW = rd.w, renderH = rd.h;
             Rect cb = canvasBounds;
 
-            var ct = BeginOcrOp("Recognizing region...  (Esc to cancel)");
+            var ct = BeginCancellableOp("Recognizing region...  (Esc to cancel)");
             try
             {
                 OcrResult result = await Task.Run(() =>
@@ -573,7 +549,7 @@ namespace TDPdf
             }
             finally
             {
-                EndOcrOp();
+                EndCancellableOp();
             }
         }
 
@@ -614,7 +590,7 @@ namespace TDPdf
 
             // Snapshot the current document (with its rotations) to a temp; we render and re-open from this so
             // the live _doc is never touched. Unburned overlay annotations are not included.
-            string src = MakeOcrTempFile("ocrsrc");
+            string src = MakeTempPdfPath("ocrsrc");
             try { _doc.Save(src); }
             catch (Exception ex)
             {
@@ -624,8 +600,8 @@ namespace TDPdf
                 return;
             }
 
-            var ct = BeginOcrOp("Making searchable PDF...  (Esc to cancel)");
-            void report(int i, int n) => SetOcrStatus($"Making searchable PDF... page {i + 1} of {n}  (Esc to cancel)");
+            var ct = BeginCancellableOp("Making searchable PDF...  (Esc to cancel)");
+            void report(int i, int n) => SetWorkerStatus($"Making searchable PDF... page {i + 1} of {n}  (Esc to cancel)");
             string lang = CurrentOcrLanguageString();
 
             try
@@ -645,7 +621,7 @@ namespace TDPdf
             finally
             {
                 TryDeleteFile(src);
-                EndOcrOp();
+                EndCancellableOp();
             }
         }
 
@@ -742,7 +718,7 @@ namespace TDPdf
             string outPath = dlg.FileName;
             bool markdown = Path.GetExtension(outPath).Equals(".md", StringComparison.OrdinalIgnoreCase);
 
-            string src = MakeOcrTempFile("ocrtxt");
+            string src = MakeTempPdfPath("ocrtxt");
             int pageCount;
             try { _doc.Save(src); pageCount = _doc.PageCount; }
             catch (Exception ex)
@@ -753,8 +729,8 @@ namespace TDPdf
                 return;
             }
 
-            var ct = BeginOcrOp("Extracting text...  (Esc to cancel)");
-            void report(int i, int n) => SetOcrStatus($"Extracting text... page {i + 1} of {n}  (Esc to cancel)");
+            var ct = BeginCancellableOp("Extracting text...  (Esc to cancel)");
+            void report(int i, int n) => SetWorkerStatus($"Extracting text... page {i + 1} of {n}  (Esc to cancel)");
             string lang = CurrentOcrLanguageString();
 
             try
@@ -771,7 +747,7 @@ namespace TDPdf
             finally
             {
                 TryDeleteFile(src);
-                EndOcrOp();
+                EndCancellableOp();
             }
         }
 
@@ -825,7 +801,8 @@ namespace TDPdf
 
         private string SuggestSearchableName() => SuggestBaseName() + "-searchable.pdf";
 
-        private static string MakeOcrTempFile(string purpose) =>
+        // Shared with the image export (ExportImages.cs); TryDeleteFile above is its cleanup twin.
+        private static string MakeTempPdfPath(string purpose) =>
             Path.Combine(Path.GetTempPath(), $"tdpdf_{purpose}_{Guid.NewGuid():N}.pdf");
     }
 }

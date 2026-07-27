@@ -59,6 +59,7 @@ namespace TDPdf.Services
         private int _alignV = 1;             // vertical page position:   0 = top,  1 = center, 2 = bottom
         private double _marginPx;            // extra inset inside the printable area (DIPs)
         private int _nUp = 1;                // pages per sheet (1, 2, 4, 6, 9)
+        private int _subset;                 // page subset: 0 = all, 1 = odd page numbers only, 2 = even only
 
         // Printable area in DIPs for the currently selected printer + orientation.
         private double _areaW = 816;   // Letter portrait fallback (8.5in * 96)
@@ -514,9 +515,26 @@ namespace TDPdf.Services
                 Text         = "e.g. 1-3,5  (blank = all)",
                 Foreground   = R("TextSecondary"),
                 FontSize     = 11,
-                Margin       = new Thickness(0, 0, 0, 8),
+                Margin       = new Thickness(0, 0, 0, 6),
                 TextWrapping = TextWrapping.Wrap
             });
+
+            // Odd/even subset: manual duplex for printers without a duplexer - print the odd pages,
+            // flip the stack, print the even pages. Applies on top of the Pages range above, and the
+            // preview follows because everything reads SelectedIndices().
+            var subset = new ComboBox { Margin = new Thickness(0, 0, 0, 12), Height = 26 };
+            ApplyComboStyle(subset);
+            subset.Items.Add("All pages");
+            subset.Items.Add("Odd pages only");
+            subset.Items.Add("Even pages only");
+            subset.SelectedIndex = 0;
+            subset.SelectionChanged += (s, _) =>
+            {
+                _subset = Math.Max(0, ((ComboBox)s).SelectedIndex);
+                _previewIndex = 0;
+                UpdatePreview();
+            };
+            panel.Children.Add(subset);
 
             // Buttons pinned below the scroller so they stay visible on a short window.
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
@@ -747,9 +765,24 @@ namespace TDPdf.Services
         };
 
         // The page indices the preview walks AND the Print button sends — whatever range is typed in the
-        // Pages box (blank or unparseable falls back to every page, matching ParseRange). Driving the
-        // preview off this keeps it showing exactly the pages that will print.
-        private List<int> SelectedIndices() => ParseRange(_pagesBox.Text, _pageCount);
+        // Pages box (blank or unparseable falls back to every page, matching ParseRange), narrowed by the
+        // odd/even selector. Driving the preview, the sheet count and the spool path off this one list is
+        // what keeps the printed output from ever drifting from what the preview showed.
+        //
+        // The subset filters on the 1-based page NUMBER the user sees, so 0-based index 0 is page 1 = odd.
+        // Unlike ParseRange, an empty result here is meaningful (e.g. a 1-page document with "Even pages
+        // only") and is NOT widened back to every page — callers treat it as "nothing to print".
+        private List<int> SelectedIndices()
+        {
+            var list = ParseRange(_pagesBox.Text, _pageCount);
+            if (_subset == 0) return list;
+
+            bool wantOdd = _subset == 1;
+            var filtered = new List<int>(list.Count);
+            foreach (int i in list)
+                if ((i % 2 == 0) == wantOdd) filtered.Add(i);   // 0-based even index == odd page number
+            return filtered;
+        }
 
         private int SheetCount()
         {
@@ -826,9 +859,21 @@ namespace TDPdf.Services
         private void UpdatePreview()
         {
             _previewHost.Children.Clear();
-            if (_pageCount == 0) { _pageLabel.Text = "No pages"; return; }
+            if (_pageCount == 0) { _pageLabel.Text = "No pages"; UpdatePrintEnabled(false); return; }
 
             var selected = SelectedIndices();
+            if (selected.Count == 0)
+            {
+                // The typed range and the odd/even selector can intersect to nothing (a one-page document
+                // with "Even pages only", say). Show an empty preview that says so rather than a stale
+                // sheet, and disable Print so we never spool a blank job.
+                _previewIndex   = 0;
+                _pageLabel.Text = "No pages selected";
+                UpdatePrintEnabled(false);
+                return;
+            }
+            UpdatePrintEnabled(true);
+
             int sheets = Math.Max(1, (selected.Count + _nUp - 1) / _nUp);
             int sheet  = Math.Max(0, Math.Min(_previewIndex, sheets - 1));
             _previewIndex = sheet;
@@ -850,6 +895,17 @@ namespace TDPdf.Services
             _pageLabel.Text = _nUp > 1
                 ? $"Sheet {sheet + 1} of {sheets}"
                 : $"Page {(idxs.Count > 0 ? idxs[0] + 1 : 1)} of {_pageCount}";
+        }
+
+        // Greys out Print when the page range + odd/even selector leave nothing to send. The flat button
+        // template has no disabled visual of its own, so opacity carries the state.
+        private void UpdatePrintEnabled(bool anySelected)
+        {
+            _printBtn.IsEnabled = anySelected;
+            _printBtn.Opacity   = anySelected ? 1.0 : 0.5;
+            _printBtn.ToolTip   = anySelected
+                ? null
+                : "No pages match the current page range and odd/even selection.";
         }
 
         // Persists the device-level print choices so the dialog reopens with the user's last setup.
@@ -876,10 +932,12 @@ namespace TDPdf.Services
                 return;
             }
 
-            var indices = ParseRange(_pagesBox.Text, _pageCount);
+            // Exactly the list the preview walks (typed range narrowed by the odd/even selector) — going
+            // through the same choke point is what guarantees the spooled job matches what was shown.
+            var indices = SelectedIndices();
             if (indices.Count == 0)
             {
-                TdpDialog.Show(this, "No valid pages in that range.", "TDPdf",
+                TdpDialog.Show(this, "No pages match the current page range and odd/even selection.", "TDPdf",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -1053,7 +1111,9 @@ namespace TDPdf.Services
         private void RemoveOverlay(Border overlay) => _rootGrid.Children.Remove(overlay);
 
         // Parses "1-3,5" style ranges into sorted 0-based indices. Blank/invalid = all pages.
-        private static List<int> ParseRange(string? text, int count)
+        // Internal because it is the app's one page-range syntax: the print dialog and the
+        // image export (File ▸ Export Pages as Images…) share it, hint text included.
+        internal static List<int> ParseRange(string? text, int count)
         {
             text = text?.Trim() ?? "";
             if (text.Length == 0) return [.. Enumerable.Range(0, count)];

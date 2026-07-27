@@ -12,6 +12,13 @@
     <SolidColorBrush x:Key="SeparatorBrush" Color="{x:Static SystemColors.WindowTextColor}"/>
     <SolidColorBrush x:Key="AccentGreen" Color="{x:Static SystemColors.HighlightTextColor}"/>
     <SolidColorBrush x:Key="AccentGreenDim" Color="{x:Static SystemColors.HighlightColor}"/>
+    <!-- Flowing text-selection quads (upstream KillerPDF v1.6.5, #127): the system selection
+         colour, which is exactly what a high-contrast user has configured for this purpose. -->
+    <SolidColorBrush x:Key="SelectionAccent" Color="{x:Static SystemColors.HighlightColor}"/>
+    <!-- Select-tool box marquee. High contrast keeps the stroke fully opaque so the box edge stays
+         unmistakable; only the fill is knocked back so the page underneath is still readable. -->
+    <SolidColorBrush x:Key="MarqueeFill"   Color="{x:Static SystemColors.HighlightColor}" Opacity="0.25"/>
+    <SolidColorBrush x:Key="MarqueeStroke" Color="{x:Static SystemColors.HighlightColor}"/>
     <SolidColorBrush x:Key="TextPrimary" Color="{x:Static SystemColors.WindowTextColor}"/>
     <SolidColorBrush x:Key="TextSecondary" Color="{x:Static SystemColors.WindowTextColor}"/>
     <SolidColorBrush x:Key="TextMuted" Color="{x:Static SystemColors.GrayTextColor}"/>

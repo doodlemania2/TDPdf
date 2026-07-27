@@ -224,11 +224,24 @@ namespace PdfSharpCore.Drawing.Layout
                 var lineBlocks = line as Block[] ?? line.ToArray();
                 if (Alignment == XParagraphAlignment.Justify)
                 {
+                    // LineBreak blocks carry no text (the Block(BlockType) ctor never sets Text) and
+                    // CreateLayout never assigns them a Location, so they keep XPoint(0,0) and
+                    // GetLines' GroupBy lumps them in with the first line. Drawing one dereferenced
+                    // null and threw. They have nothing to render - skip them. (Matches the guards
+                    // XTextSegmentFormatter already applies to LineBreak blocks.)
+                    var drawable = lineBlocks.Where(b => b.Type != BlockType.LineBreak && b.Text != null).ToArray();
+                    if (drawable.Length == 0)
+                        continue;
+
                     var locationX = dx;
-                    var gapSize = (layoutRectangle.Width - lineBlocks.Select(l => l.Width).Sum())/ (lineBlocks.Count() - 1);
-                    foreach (var block in lineBlocks)
+                    // A single-block line has no gaps to distribute; dividing by zero here yielded
+                    // Infinity and pushed every following block off the page.
+                    var gapSize = drawable.Length > 1
+                        ? (layoutRectangle.Width - drawable.Select(l => l.Width).Sum()) / (drawable.Length - 1)
+                        : 0;
+                    foreach (var block in drawable)
                     {
-                        _gfx.DrawString(block.Text.Trim(), font, brush, locationX, dy + lineBlocks.First().Location.Y, XStringFormats.TopLeft);
+                        _gfx.DrawString(block.Text.Trim(), font, brush, locationX, dy + drawable.First().Location.Y, XStringFormats.TopLeft);
                         locationX += block.Width + gapSize;
                     }
                 }

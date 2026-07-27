@@ -190,14 +190,17 @@ namespace TDPdf.Services
                     {
                         document = PdfReader.Open(path, PdfDocumentOpenMode.Modify);
                         PreloadDocnet(path, cancellationToken);
-                        return new PdfOpenResult(document, path, path, false);
+                        // A file encrypted with an EMPTY user password opens without a prompt but is
+                        // still protected, so the trailer scan is the only reliable signal here.
+                        return new PdfOpenResult(document, path, path, false,
+                            wasProtected: FileHasEncryption(path));
                     }
                     catch (Exception ex) when (IsOwnerPasswordException(ex))
                     {
                         document?.Close();
                         document = PdfReader.Open(path, PdfDocumentOpenMode.ReadOnly);
                         PreloadDocnet(path, cancellationToken);
-                        return new PdfOpenResult(document, path, path, true);
+                        return new PdfOpenResult(document, path, path, true, wasProtected: true);
                     }
                     catch (Exception ex) when (!IsPasswordException(ex))
                     {
@@ -225,13 +228,42 @@ namespace TDPdf.Services
                 document.Close();
                 document = PdfReader.Open(tempDec, PdfDocumentOpenMode.Modify);
                 PreloadDocnet(tempDec, cancellationToken);
-                return new PdfOpenResult(document, path, tempDec, false);
+                // The working copy is DECRYPTED: PdfSharpCore writes no /Encrypt unless a password is
+                // set on the document, so every later save of this session is unprotected by
+                // construction. WasProtected lets the UI say so instead of dropping it silently.
+                return new PdfOpenResult(document, path, tempDec, false, wasProtected: true);
             }
             catch
             {
                 document?.Close();
                 throw;
             }
+        }
+
+        /// <summary>
+        /// True if the PDF file has an /Encrypt entry in its trailer. Scans the last 2 KB so it is
+        /// fast, and works regardless of how PdfSharpCore reports security state after
+        /// authenticating with an empty password — a file whose user password is empty (owner
+        /// restrictions only) opens with no prompt at all yet is still encrypted.
+        /// </summary>
+        /// <remarks>
+        /// Latin-1 rather than Windows-1252 so no <c>CodePagesEncodingProvider</c> registration is
+        /// required (the app registers none, and a throw here would silently read as "not
+        /// encrypted"); the marker is pure ASCII, so the two decode it identically.
+        /// Shared with the batch/CLI resave harness — see <c>BatchMode.BatchResaveOne</c>.
+        /// </remarks>
+        internal static bool FileHasEncryption(string path)
+        {
+            try
+            {
+                using var fs = File.OpenRead(path);
+                long scan = Math.Min(2048, fs.Length);
+                fs.Seek(-scan, SeekOrigin.End);
+                var buf = new byte[scan];
+                _ = fs.Read(buf, 0, buf.Length);
+                return System.Text.Encoding.Latin1.GetString(buf).Contains("/Encrypt");
+            }
+            catch { return false; }
         }
 
         // Heuristic: does this look like a password / encryption failure
@@ -305,7 +337,8 @@ namespace TDPdf.Services
                     ["PageCount"]     = document.PageCount.ToString(),
                 });
 
-                return new PdfOpenResult(document, path, tempPath, openedReadOnly: false, recoveredFromRaster: true);
+                return new PdfOpenResult(document, path, tempPath, openedReadOnly: false,
+                    recoveredFromRaster: true, wasProtected: FileHasEncryption(path));
             }
             catch (OperationCanceledException)
             {
@@ -361,12 +394,57 @@ namespace TDPdf.Services
         }
 
 
+        /// <summary>
+        /// Composites a straight-alpha BGRA buffer over opaque white, in place.
+        /// </summary>
+        /// <remarks>
+        /// PDFium leaves every unpainted background pixel at BGRA 0,0,0,0. Handing that
+        /// straight to an encoder means JPEG (which has no alpha channel) renders the
+        /// background solid BLACK, while PNG and the flatten path carry a needless
+        /// full-page alpha channel that PdfSharpCore re-emits as an /SMask.
+        ///
+        /// PDFium's ARGB buffers are non-premultiplied, so this is plain source-over
+        /// against white: out = src * a + 255 * (1 - a), evaluated in fixed point as
+        /// (src * a + 255 * (255 - a) + 127) / 255. That is exact at both ends
+        /// (a = 0 -> white, a = 255 -> src) and correct for the partial coverage in
+        /// between, so it stays right even where a "replace fully transparent pixels"
+        /// shortcut would leave anti-aliased edges dark.
+        ///
+        /// Every pixel ends fully opaque, so callers can hand the same buffer to a
+        /// 32-bit alpha-free pixel format (GDI+ Format32bppRgb, WPF Bgr32) and get an
+        /// image with no alpha channel at all. Done in place with no second buffer:
+        /// a full-page raster is ~100 MB at 1200 dpi.
+        /// </remarks>
+        internal static void CompositeBgraOverWhite(byte[] bgra)
+        {
+            for (int i = 0; i + 3 < bgra.Length; i += 4)
+            {
+                byte a = bgra[i + 3];
+                if (a == 255) continue;          // already opaque - the common case
+                if (a == 0)
+                {
+                    bgra[i] = 255; bgra[i + 1] = 255; bgra[i + 2] = 255; bgra[i + 3] = 255;
+                    continue;
+                }
+                int inv = 255 - a;
+                bgra[i]     = (byte)((bgra[i]     * a + 255 * inv + 127) / 255);
+                bgra[i + 1] = (byte)((bgra[i + 1] * a + 255 * inv + 127) / 255);
+                bgra[i + 2] = (byte)((bgra[i + 2] * a + 255 * inv + 127) / 255);
+                bgra[i + 3] = 255;
+            }
+        }
+
+        // Encodes a PDFium BGRA page raster to PNG. The buffer is composited over white
+        // first and written through Format32bppRgb (same 4-byte layout, alpha ignored),
+        // so GDI+ emits a 24-bit PNG with no alpha channel. Mutates <paramref name="bgra"/>.
         private static byte[] EncodeBgraToPng(byte[] bgra, int width, int height)
         {
-            using (var bitmap = new DrawingBitmap(width, height, PixelFormat.Format32bppArgb))
+            CompositeBgraOverWhite(bgra);
+
+            using (var bitmap = new DrawingBitmap(width, height, PixelFormat.Format32bppRgb))
             {
                 var rect = new DrawingRectangle(0, 0, width, height);
-                var data = bitmap.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                var data = bitmap.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
                 try
                 {
                     Marshal.Copy(bgra, 0, data.Scan0, Math.Min(bgra.Length, Math.Abs(data.Stride) * height));
@@ -511,13 +589,15 @@ namespace TDPdf.Services
 
     internal sealed class PdfOpenResult
     {
-        public PdfOpenResult(PdfDocument document, string displayPath, string workingPath, bool openedReadOnly, bool recoveredFromRaster = false)
+        public PdfOpenResult(PdfDocument document, string displayPath, string workingPath, bool openedReadOnly,
+            bool recoveredFromRaster = false, bool wasProtected = false)
         {
             Document = document;
             DisplayPath = displayPath;
             WorkingPath = workingPath;
             OpenedReadOnly = openedReadOnly;
             RecoveredFromRaster = recoveredFromRaster;
+            WasProtected = wasProtected;
         }
 
         public PdfDocument Document { get; }
@@ -532,6 +612,15 @@ namespace TDPdf.Services
         /// text); the original vector content is not preserved.
         /// </summary>
         public bool RecoveredFromRaster { get; }
+
+        /// <summary>
+        /// True when the source file was encrypted: it needed a password to open, it refused
+        /// Modify mode because of owner restrictions, or it carries an /Encrypt trailer entry with
+        /// an empty user password. TDPdf always rewrites through PdfSharpCore, which cannot
+        /// re-encrypt, so any save of such a document produces an UNPROTECTED file — the UI uses
+        /// this to say so, and to offer File ▸ Remove Password.
+        /// </summary>
+        public bool WasProtected { get; }
     }
 
     internal sealed class PdfPageSize
