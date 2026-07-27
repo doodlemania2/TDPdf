@@ -64,6 +64,18 @@ namespace TDPdf.Properties
             set => this[nameof(RecentFiles)] = value;
         }
 
+        // Privacy switch for the recent-files list (#146, upstream v1.6.5). When true, opening a
+        // document no longer records its path, so nothing about the user's documents accumulates on
+        // a shared machine. Turning it on in the Settings dialog also empties the stored list.
+        // Default False keeps the recent list working for everyone who has not asked for otherwise.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool DontRememberRecentFiles
+        {
+            get => (bool)this[nameof(DontRememberRecentFiles)];
+            set => this[nameof(DontRememberRecentFiles)] = value;
+        }
+
         // --- Print dialog: remember the last device-level choices across sessions. ---
 
         // Full name of the last-used print queue; empty falls back to the OS default printer.
@@ -165,6 +177,34 @@ namespace TDPdf.Properties
         {
             get => (string)this[nameof(ShortcutView)];
             set => this[nameof(ShortcutView)] = value;
+        }
+
+        // Display-only "night mode" for the document itself (#135): when true the rendered page
+        // pixels are shown with inverted colors in the main viewer. Never touches the file — save,
+        // flatten, print, image export, OCR and the sidebar thumbnails all stay true-color. Like
+        // ViewMode this is an app-wide reading preference, so it applies to every tab. Default False
+        // means a reset user.config (App.EnsureSettingsHealthy) simply comes back true-color.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool InvertDocumentColors
+        {
+            get => (bool)this[nameof(InvertDocumentColors)];
+            set => this[nameof(InvertDocumentColors)] = value;
+        }
+
+        // App-wide UI scale (upstream v1.6.5): the LayoutTransform factor applied to the chrome —
+        // menu, toolbar, tab strip, and sidebar. Never touches the document pane, so app size and
+        // page zoom stay two separate controls (LastZoomLevel above is the page one). Clamped to
+        // 0.7–2.5 by ApplyAppScale on read as well as on write, so a hand-edited or partially
+        // written user.config can't leave the chrome unusable. Like ViewMode / InvertDocumentColors
+        // this is an app-wide preference; the default of 1 means a reset user.config
+        // (App.EnsureSettingsHealthy) simply comes back at 100%.
+        [UserScopedSetting]
+        [DefaultSettingValue("1")]
+        public double AppScale
+        {
+            get => (double)this[nameof(AppScale)];
+            set => this[nameof(AppScale)] = value;
         }
 
         // --- OCR (Tesseract) ---

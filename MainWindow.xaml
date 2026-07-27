@@ -42,6 +42,23 @@
         <KeyBinding Key="Add" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomInRoutedCommand}"/>
         <KeyBinding Key="OemMinus" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomOutRoutedCommand}"/>
         <KeyBinding Key="Subtract" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomOutRoutedCommand}"/>
+        <!-- #135: display-only document dark mode. Ctrl+I is free in TDPdf (no bold/italic/underline
+             text styling), so it keeps the discoverable, conventional binding rather than upstream's
+             bare N. -->
+        <KeyBinding Key="I" Modifiers="Control" Command="{x:Static local:MainWindow.InvertColorsCommand}"/>
+        <!-- App-wide UI scale (AppScale.cs) — the chrome, NOT the page. Deliberately Ctrl+Shift so
+             it can never be confused with the Ctrl+0/+/- document zoom above; Ctrl+Shift+S and
+             Ctrl+Shift+Z are the only Ctrl+Shift letters already taken. -->
+        <KeyBinding Key="OemPlus"  Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleUpCommand}"/>
+        <KeyBinding Key="Add"      Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleUpCommand}"/>
+        <KeyBinding Key="OemMinus" Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleDownCommand}"/>
+        <KeyBinding Key="Subtract" Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleDownCommand}"/>
+        <KeyBinding Key="D0"       Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleResetCommand}"/>
+        <KeyBinding Key="NumPad0"  Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleResetCommand}"/>
+        <!-- The unmodified tool keys (V / P / 1-0 / T X I H K U S D E G C) are deliberately NOT
+             KeyBindings: a window-level KeyBinding fires even while a TextBox has focus, so typing
+             "d" in the find bar or a form field would silently swap tools. They live in
+             OnPreviewKeyDown instead, behind the IsTypingTarget() guard. -->
     </Window.InputBindings>
 
     <Window.Resources>
@@ -342,10 +359,23 @@
 
         <!-- SubmenuHeader template is defined inline in the Style.Triggers below. -->
 
+        <!-- Shared look for the MDL2 glyph that sits in a menu row's left gutter. Set as
+             MenuItem.Icon (a real TextBlock, never a bare string) so the icon column renders it
+             natively; MakeMenuItem in MainWindow.xaml.cs builds the code-side equivalent. -->
+        <Style x:Key="MenuGlyph" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+        </Style>
+
         <Style TargetType="MenuItem">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
-            <Setter Property="Padding" Value="20,6,40,6"/>
+            <!-- Left padding is small because the 20px icon/check gutter below supplies the indent. -->
+            <Setter Property="Padding" Value="6,6,40,6"/>
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontSize" Value="12"/>
             <!-- Default Template = SubmenuItem (leaf rows inside a popup) -->
@@ -356,13 +386,26 @@
                                 Padding="{TemplateBinding Padding}" CornerRadius="3">
                             <Grid>
                                 <Grid.ColumnDefinitions>
+                                    <!-- Icon / check gutter, always reserved so every row's header
+                                         starts at the same x whether or not it carries a glyph. -->
+                                    <ColumnDefinition Width="20"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <ContentPresenter ContentSource="Header"
+                                <ContentPresenter x:Name="IconPresenter" Grid.Column="0"
+                                                  ContentSource="Icon"
+                                                  VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                <!-- Check state for IsChecked rows (OCR languages, Invert Colors).
+                                     Shares the gutter with the icon; the check wins when both apply. -->
+                                <TextBlock x:Name="CheckGlyph" Grid.Column="0" Text="&#xE73E;"
+                                           FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                           Foreground="{DynamicResource AccentGreen}"
+                                           VerticalAlignment="Center" HorizontalAlignment="Center"
+                                           Visibility="Collapsed"/>
+                                <ContentPresenter Grid.Column="1" ContentSource="Header"
                                                   RecognizesAccessKey="True"
                                                   VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="1" Text="{TemplateBinding InputGestureText}"
+                                <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}"
                                            Foreground="{DynamicResource TextSecondary}" FontSize="11"
                                            VerticalAlignment="Center" Margin="24,0,0,0"/>
                             </Grid>
@@ -370,6 +413,10 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
                                 <Setter TargetName="MenuBd" Property="Background" Value="{DynamicResource BgHover}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckGlyph" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="IconPresenter" Property="Visibility" Value="Collapsed"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -414,13 +461,18 @@
                                             Padding="{TemplateBinding Padding}" CornerRadius="3">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
+                                                <!-- Same 20px gutter as the leaf rows so a submenu
+                                                     header's header text lines up with theirs. -->
+                                                <ColumnDefinition Width="20"/>
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
-                                            <ContentPresenter ContentSource="Header"
+                                            <ContentPresenter Grid.Column="0" ContentSource="Icon"
+                                                              VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                            <ContentPresenter Grid.Column="1" ContentSource="Header"
                                                               RecognizesAccessKey="True"
                                                               VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="1" Text="&#xE76C;"
+                                            <TextBlock Grid.Column="2" Text="&#xE76C;"
                                                        FontFamily="Segoe MDL2 Assets" FontSize="10"
                                                        Foreground="{DynamicResource TextSecondary}"
                                                        VerticalAlignment="Center" Margin="16,0,0,0"/>
@@ -844,9 +896,25 @@
                     <TextBlock x:Name="MaximizeButtonLabel" Text="Maximize or restore window"/>
                     <TextBlock x:Name="CloseWindowButtonLabel" Text="Close window"/>
                 </Grid>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
-                    <TextBlock Text="TD" FontFamily="Segoe UI" FontWeight="Bold" FontSize="16" Foreground="{DynamicResource TextPrimary}"/>
-                    <TextBlock Text="Pdf" FontFamily="Segoe UI" FontWeight="Bold" FontSize="16" Foreground="{DynamicResource AccentGreen}"/>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                    <!-- Logo: app icon + wordmark, and the grip for the app-wide UI scale
+                         (AppScale.cs). Rolling the wheel here grows or shrinks the chrome; the
+                         title bar and footer are deliberately NOT scaled, so the logo never moves
+                         out from under the cursor. The press is left unhandled so it still bubbles
+                         to TitleBar_MouseLeftButtonDown for window drag / double-click maximize. -->
+                    <Border x:Name="LogoBar" Background="Transparent" Padding="4,0"
+                            VerticalAlignment="Stretch"
+                            MouseWheel="LogoBar_MouseWheel"
+                            AutomationProperties.Name="TDPdf app size"
+                            AutomationProperties.HelpText="Scroll the mouse wheel over the logo to scale the menu, toolbar, tab strip, and sidebar between 70% and 250%. Ctrl+Shift+Plus and Ctrl+Shift+Minus do the same; Ctrl+Shift+0 resets.">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Image Source="pack://application:,,,/Resources/splash-logo.png"
+                                   Width="18" Height="18" Margin="0,0,7,0" VerticalAlignment="Center"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                            <TextBlock Text="TD" FontFamily="Segoe UI" FontWeight="Bold" FontSize="16" Foreground="{DynamicResource TextPrimary}"/>
+                            <TextBlock Text="Pdf" FontFamily="Segoe UI" FontWeight="Bold" FontSize="16" Foreground="{DynamicResource AccentGreen}"/>
+                        </StackPanel>
+                    </Border>
                     <TextBlock Text="" x:Name="FileNameLabel" VerticalAlignment="Center" Margin="16,0,0,0"
                                Foreground="{DynamicResource TextSecondary}" FontFamily="Consolas" FontSize="11"
                                AutomationProperties.Name="Current file"/>
@@ -877,70 +945,188 @@
               Padding="4,0"
               KeyboardNavigation.TabNavigation="Continue"
               AutomationProperties.Name="Main menu">
-            <MenuItem Header="_File">
-                <MenuItem Header="_New"             InputGestureText="Ctrl+N"       Click="New_Click"/>
-                <MenuItem Header="_Open…"           InputGestureText="Ctrl+O"       Click="Open_Click"/>
-                <MenuItem Header="_Close"           InputGestureText="Ctrl+W"       Click="CloseFile_Click"/>
+            <!-- Every leaf row carries its toolbar glyph in the left gutter (the same 20px column
+                 the check mark uses); see the MenuItem template above and MakeMenuItem for the
+                 code-built context menus. -->
+            <MenuItem Header="_File" SubmenuOpened="FileMenu_SubmenuOpened">
+                <MenuItem Header="_New"             InputGestureText="Ctrl+N"       Click="New_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7C3;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Open…"           InputGestureText="Ctrl+O"       Click="Open_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8DA;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Close"           InputGestureText="Ctrl+W"       Click="CloseFile_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE711;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="_Save"            InputGestureText="Ctrl+S"       Click="SaveInPlace_Click"/>
-                <MenuItem Header="Save _As…"        InputGestureText="Ctrl+Shift+S" Click="SaveAs_Click"/>
-                <MenuItem Header="Save _Flattened…"                                  Click="SaveFlattened_Click"/>
-                <MenuItem Header="_Export Tables to CSV…"                            Click="ExportTablesCsv_Click"/>
+                <MenuItem Header="_Save"            InputGestureText="Ctrl+S"       Click="SaveInPlace_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE105;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Save _As…"        InputGestureText="Ctrl+Shift+S" Click="SaveAs_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE74E;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Save _Flattened…"                                  Click="SaveFlattened_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B9;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- #149: enabled by FileMenu_SubmenuOpened only when the active document
+                     needed a password (or carried owner restrictions) to open. -->
+                <MenuItem x:Name="RemovePasswordMenuItem"
+                          Header="Remove Pass_word…"                                Click="RemovePassword_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE785;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Export Tables to CSV…"                            Click="ExportTablesCsv_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A5;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- #132: renders the chosen pages to PNG/JPEG through the same pipeline as the CLI's to-image command. -->
+                <MenuItem Header="Export Pages as _Images…"                          Click="ExportImages_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE91B;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="_Merge…"                                          Click="Merge_Click"/>
-                <MenuItem Header="E_xtract Pages…"                                  Click="Split_Click"/>
+                <MenuItem Header="_Merge…"                                          Click="Merge_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE710;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="E_xtract Pages…"                                  Click="Split_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B1;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="_Print…"          InputGestureText="Ctrl+P"       Click="Print_Click"/>
+                <MenuItem Header="_Print…"          InputGestureText="Ctrl+P"       Click="Print_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE749;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="Document _Info…"   InputGestureText="F12"          Click="DocumentInfo_Click"/>
+                <MenuItem Header="Document _Info…"   InputGestureText="F12"          Click="DocumentInfo_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE946;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="E_xit"            InputGestureText="Alt+F4"       Click="Exit_Click"/>
+                <MenuItem Header="E_xit"            InputGestureText="Alt+F4"       Click="Exit_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7E8;"/></MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="_Edit">
-                <MenuItem Header="_Undo"            InputGestureText="Ctrl+Z"       Click="Undo_Click"/>
-                <MenuItem Header="_Redo"            InputGestureText="Ctrl+Y"       Click="Redo_Click"/>
+                <MenuItem Header="_Undo"            InputGestureText="Ctrl+Z"       Click="Undo_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7A7;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Redo"            InputGestureText="Ctrl+Y"       Click="Redo_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7A6;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="_Find…"           InputGestureText="Ctrl+F"       Command="{x:Static ApplicationCommands.Find}"/>
+                <MenuItem Header="_Find…"           InputGestureText="Ctrl+F"       Command="{x:Static ApplicationCommands.Find}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE721;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="_Delete Selected Pages"                           Click="Delete_Click"/>
-                <MenuItem Header="_Clear All Annotations"                           Click="ClearAnnotations_Click"/>
+                <MenuItem Header="_Delete Selected Pages"                           Click="Delete_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8C6;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Clear All Annotations"                           Click="ClearAnnotations_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xED62;"/></MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="_View">
-                <MenuItem Header="Zoom _In"         InputGestureText="Ctrl++"       Command="{x:Static local:MainWindow.ZoomInRoutedCommand}"/>
-                <MenuItem Header="Zoom _Out"        InputGestureText="Ctrl+-"       Command="{x:Static local:MainWindow.ZoomOutRoutedCommand}"/>
-                <MenuItem Header="_Reset Zoom"      InputGestureText="Ctrl+0"       Command="{x:Static local:MainWindow.ZoomResetRoutedCommand}"/>
+                <MenuItem Header="Zoom _In"         InputGestureText="Ctrl++"       Command="{x:Static local:MainWindow.ZoomInRoutedCommand}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE948;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Zoom _Out"        InputGestureText="Ctrl+-"       Command="{x:Static local:MainWindow.ZoomOutRoutedCommand}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE949;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Reset Zoom"      InputGestureText="Ctrl+0"       Command="{x:Static local:MainWindow.ZoomResetRoutedCommand}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE72C;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="Toggle _Sidebar"                                  Click="SidebarToggle_Click"/>
+                <!-- The gutter added in 1.19 gives this row a real check mark (SyncDocInvertUi sets
+                     IsChecked), replacing the old header-text flip that stood in for missing state. -->
+                <MenuItem x:Name="InvertColorsMenuItem"
+                          Header="_Invert Colors"   InputGestureText="Ctrl+I"       Click="DocInvert_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE708;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Toggle _Sidebar"                                  Click="SidebarToggle_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE700;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <!-- App size scales the CHROME only (menu, toolbar, tab strip, sidebar); the page
+                     keeps its own zoom above. Also driven by the wheel over the title-bar logo. -->
+                <MenuItem Header="App Size _Larger"  InputGestureText="Ctrl+Shift++" Command="{x:Static local:MainWindow.AppScaleUpCommand}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8E8;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="App Size Small_er" InputGestureText="Ctrl+Shift+-" Command="{x:Static local:MainWindow.AppScaleDownCommand}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8E7;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Reset App Si_ze"   InputGestureText="Ctrl+Shift+0" Command="{x:Static local:MainWindow.AppScaleResetCommand}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8E9;"/></MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
+            <!-- Tool rows advertise the 1.19 single-key shortcuts (see OnPreviewKeyDown). The digits
+                 mirror the toolbar left to right; V / P and G / C are letter-only. -->
             <MenuItem Header="_Tools">
-                <MenuItem Header="_Select"                                          Click="ToolSelect_Click"/>
-                <MenuItem Header="_Pan / Hand"                                      Click="ToolPan_Click"/>
-                <MenuItem Header="_Text"                                            Click="ToolText_Click"/>
-                <MenuItem Header="Edit Existing Te_xt"                              Click="ToolEditText_Click"/>
-                <MenuItem Header="Edit Existing _Image"                             Click="ToolEditImage_Click"/>
-                <MenuItem Header="I_nsert Image"                                    Click="ToolImage_Click"/>
-                <MenuItem Header="_Highlight"                                       Click="ToolHighlight_Click"/>
-                <MenuItem Header="Sh_ape"                                           Click="ToolShape_Click"/>
-                <MenuItem Header="_Draw"                                            Click="ToolDraw_Click"/>
-                <MenuItem Header="_Eraser"                                          Click="ToolErase_Click"/>
-                <MenuItem Header="Si_gnature"                                       Click="ToolSignature_Click"/>
-                <MenuItem Header="_Crop"                                            Click="ToolCrop_Click"/>
-                <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click"/>
+                <MenuItem Header="_Select"          InputGestureText="V"            Click="ToolSelect_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B3;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Pan / Hand"      InputGestureText="P"            Click="ToolPan_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7C9;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Text"            InputGestureText="1, T"         Click="ToolText_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8D2;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Edit Existing Te_xt" InputGestureText="2, X"      Click="ToolEditText_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE104;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Edit Existing _Image" InputGestureText="3"        Click="ToolEditImage_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB9F;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="I_nsert Image"    InputGestureText="4, I"         Click="ToolImage_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE91B;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Highlight"       InputGestureText="5, H"         Click="ToolHighlight_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xED56;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Stri_kethrough"   InputGestureText="6, K"         Click="ToolStrike_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEDE0;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Underline"       InputGestureText="7, U"         Click="ToolUnderline_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8DC;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Sh_ape"           InputGestureText="8, S"         Click="ToolShape_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xF158;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Draw"            InputGestureText="9, D"         Click="ToolDraw_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xED63;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Eraser"          InputGestureText="0, E"         Click="ToolErase_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE75C;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Si_gnature"       InputGestureText="G"            Click="ToolSignature_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEE56;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Crop"            InputGestureText="C"            Click="ToolCrop_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7A8;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE90F;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <!-- OCR submenu is rebuilt on open (OcrMenu_SubmenuOpened); the placeholder keeps the
                      submenu arrow visible so the event fires. -->
                 <MenuItem Header="_OCR" SubmenuOpened="OcrMenu_SubmenuOpened">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEE6F;"/></MenuItem.Icon>
                     <MenuItem Header="…"/>
                 </MenuItem>
                 <Separator/>
-                <MenuItem Header="Se_ttings…"                                       Click="Settings_Click"/>
+                <MenuItem Header="Se_ttings…"                                       Click="Settings_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE713;"/></MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="_Help">
-                <MenuItem Header="View on _GitHub"                                  Click="HelpGitHub_Click"/>
-                <MenuItem Header="_Report an Issue"                                 Click="HelpReportIssue_Click"/>
-                <MenuItem Header="View _Changelog"                                  Click="HelpChangelog_Click"/>
+                <MenuItem Header="View on _GitHub"                                  Click="HelpGitHub_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE774;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_Report an Issue"                                 Click="HelpReportIssue_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7BA;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="View _Changelog"                                  Click="HelpChangelog_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE81C;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="_About TDPdf"     InputGestureText="F1"           Command="{x:Static local:MainWindow.AboutCommand}"/>
+                <MenuItem Header="_About TDPdf"     InputGestureText="F1"           Command="{x:Static local:MainWindow.AboutCommand}">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE897;"/></MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
         </Menu>
 
@@ -956,6 +1142,7 @@
                     <TextBlock x:Name="SaveFlattenedButtonLabel" Text="Save flattened PDF"/><TextBlock x:Name="PrintButtonLabel" Text="Print"/>
                     <TextBlock x:Name="SelectToolButtonLabel" Text="Select tool"/><TextBlock x:Name="TextToolButtonLabel" Text="Text tool"/>
                     <TextBlock x:Name="HighlightToolButtonLabel" Text="Highlight tool"/><TextBlock x:Name="DrawToolButtonLabel" Text="Draw tool"/>
+                    <TextBlock x:Name="StrikeToolButtonLabel" Text="Strikethrough tool"/><TextBlock x:Name="UnderlineToolButtonLabel" Text="Underline tool"/>
                     <TextBlock x:Name="SignatureButtonLabel" Text="Signature tool"/><TextBlock x:Name="CropToolButtonLabel" Text="Crop tool"/>
                     <TextBlock x:Name="EditTextToolButtonLabel" Text="Edit existing text tool"/><TextBlock x:Name="EditImageToolButtonLabel" Text="Edit existing image tool"/>
                     <TextBlock x:Name="UndoButtonLabel" Text="Undo last annotation"/><TextBlock x:Name="SettingsButtonLabel" Text="Settings"/>
@@ -980,21 +1167,27 @@
                     <Button Content="&#xE749;" Style="{StaticResource ToolbarButton}" Click="Print_Click" ToolTip="Print (Ctrl+P, Alt+P)" KeyboardNavigation.TabIndex="13" AutomationProperties.Name="Print" AutomationProperties.HelpText="Print the current PDF. Shortcut Ctrl+P. Access key Alt+P." AutomationProperties.AccessKey="P" AutomationProperties.LabeledBy="{Binding ElementName=PrintButtonLabel}"/>
                     <Button Content="&#xE713;" Style="{StaticResource ToolbarButton}" Click="Settings_Click" ToolTip="Settings" KeyboardNavigation.TabIndex="27" AutomationProperties.Name="Settings" AutomationProperties.HelpText="Open theme and window frame settings." AutomationProperties.LabeledBy="{Binding ElementName=SettingsButtonLabel}"/>
                 </StackPanel>
-                <!-- Edit tools + zoom -->
+                <!-- Edit tools + zoom.
+                     Each tool advertises its 1.19 single-key shortcut alongside the Alt access key,
+                     in the same "(key, Alt+key)" style the file buttons use. The digits mirror this
+                     strip left to right — 1 at the Text tool through 0 at the Eraser — while Select,
+                     Pan, Signature and Crop are letter-only (see OnPreviewKeyDown). -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                    <Button x:Name="ToolSelectBtn" Content="&#xE8B3;" Style="{StaticResource ToolbarButton}" Click="ToolSelect_Click" ToolTip="Select Tool (Alt+Q)" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Select tool" AutomationProperties.HelpText="Select annotations, drag to select text, or double-click text to edit. Access key Alt+Q." AutomationProperties.AccessKey="Q" AutomationProperties.LabeledBy="{Binding ElementName=SelectToolButtonLabel}"/>
-                    <Button x:Name="ToolPanBtn" Content="&#xE7C9;" Style="{StaticResource ToolbarButton}" Click="ToolPan_Click" ToolTip="Pan / Hand Tool — drag the page; middle-click to pan in any tool" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Pan tool" AutomationProperties.HelpText="Drag the page to scroll. Middle-mouse drag also pans while any tool is active."/>
-                    <Button x:Name="ToolTextBtn" Content="&#xE8D2;" Style="{StaticResource ToolbarButton}" Click="ToolText_Click" ToolTip="Text Tool (Alt+T)" KeyboardNavigation.TabIndex="15" AutomationProperties.Name="Text tool" AutomationProperties.HelpText="Click the page to add text. Access key Alt+T." AutomationProperties.AccessKey="T" AutomationProperties.LabeledBy="{Binding ElementName=TextToolButtonLabel}"/>
-                    <Button x:Name="ToolEditTextBtn" Content="&#xE104;" Style="{StaticResource ToolbarButton}" Click="ToolEditText_Click" ToolTip="Edit Existing Text" KeyboardNavigation.TabIndex="16" AutomationProperties.Name="Edit existing text tool" AutomationProperties.HelpText="Click a PDF text run to white-out and redraw it." AutomationProperties.LabeledBy="{Binding ElementName=EditTextToolButtonLabel}"/>
-                    <Button x:Name="ToolEditImageBtn" Content="&#xEB9F;" Style="{StaticResource ToolbarButton}" Click="ToolEditImage_Click" ToolTip="Edit Existing Image" KeyboardNavigation.TabIndex="17" AutomationProperties.Name="Edit existing image tool" AutomationProperties.HelpText="Click a PDF image to replace, delete, or resize it." AutomationProperties.LabeledBy="{Binding ElementName=EditImageToolButtonLabel}"/>
-                    <Button x:Name="ToolImageBtn" Content="&#xE91B;" Style="{StaticResource ToolbarButton}" Click="ToolImage_Click" ToolTip="Insert Image (Alt+I)" KeyboardNavigation.TabIndex="18" AutomationProperties.Name="Insert image tool" AutomationProperties.HelpText="Click the page to insert a PNG/JPG/BMP/GIF/TIFF as a resizable annotation. Access key Alt+I." AutomationProperties.AccessKey="I"/>
-                    <Button x:Name="ToolHighlightBtn" Content="&#xED56;" Style="{StaticResource ToolbarButton}" Click="ToolHighlight_Click" ToolTip="Highlight Tool (Alt+H)" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Highlight tool" AutomationProperties.HelpText="Drag on the page to add a highlight. Access key Alt+H." AutomationProperties.AccessKey="H" AutomationProperties.LabeledBy="{Binding ElementName=HighlightToolButtonLabel}"/>
-                    <Button x:Name="ToolShapeBtn" Content="&#xF158;" Style="{StaticResource ToolbarButton}" Click="ToolShape_Click" ToolTip="Shape Tool — rectangle / ellipse / line with stroke and fill" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Shape tool" AutomationProperties.HelpText="Drag on the page to draw a rectangle, ellipse, or line."/>
-                    <Button x:Name="ToolDrawBtn" Content="&#xED63;" Style="{StaticResource ToolbarButton}" Click="ToolDraw_Click" ToolTip="Draw Tool (Alt+R)" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Draw tool" AutomationProperties.HelpText="Draw freehand ink on the page. Access key Alt+R." AutomationProperties.AccessKey="R" AutomationProperties.LabeledBy="{Binding ElementName=DrawToolButtonLabel}"/>
-                    <Button x:Name="ToolEraseBtn" Content="&#xE75C;" Style="{StaticResource ToolbarButton}" Click="ToolErase_Click" ToolTip="Eraser — click an annotation to remove it" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Eraser tool" AutomationProperties.HelpText="Click an annotation to delete it."/>
+                    <Button x:Name="ToolSelectBtn" Content="&#xE8B3;" Style="{StaticResource ToolbarButton}" Click="ToolSelect_Click" ToolTip="Select Tool (V, Alt+Q)" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Select tool" AutomationProperties.HelpText="Select annotations, drag to select text, or double-click text to edit. Shortcut V. Access key Alt+Q." AutomationProperties.AccessKey="Q" AutomationProperties.LabeledBy="{Binding ElementName=SelectToolButtonLabel}"/>
+                    <Button x:Name="ToolPanBtn" Content="&#xE7C9;" Style="{StaticResource ToolbarButton}" Click="ToolPan_Click" ToolTip="Pan / Hand Tool (P) — drag the page; middle-click to pan in any tool" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Pan tool" AutomationProperties.HelpText="Drag the page to scroll. Middle-mouse drag also pans while any tool is active. Shortcut P."/>
+                    <Button x:Name="ToolTextBtn" Content="&#xE8D2;" Style="{StaticResource ToolbarButton}" Click="ToolText_Click" ToolTip="Text Tool (1 or T, Alt+T)" KeyboardNavigation.TabIndex="15" AutomationProperties.Name="Text tool" AutomationProperties.HelpText="Click the page to add text. Shortcut 1 or T. Access key Alt+T." AutomationProperties.AccessKey="T" AutomationProperties.LabeledBy="{Binding ElementName=TextToolButtonLabel}"/>
+                    <Button x:Name="ToolEditTextBtn" Content="&#xE104;" Style="{StaticResource ToolbarButton}" Click="ToolEditText_Click" ToolTip="Edit Existing Text (2 or X)" KeyboardNavigation.TabIndex="16" AutomationProperties.Name="Edit existing text tool" AutomationProperties.HelpText="Click a PDF text run to white-out and redraw it. Shortcut 2 or X." AutomationProperties.LabeledBy="{Binding ElementName=EditTextToolButtonLabel}"/>
+                    <Button x:Name="ToolEditImageBtn" Content="&#xEB9F;" Style="{StaticResource ToolbarButton}" Click="ToolEditImage_Click" ToolTip="Edit Existing Image (3)" KeyboardNavigation.TabIndex="17" AutomationProperties.Name="Edit existing image tool" AutomationProperties.HelpText="Click a PDF image to replace, delete, or resize it. Shortcut 3." AutomationProperties.LabeledBy="{Binding ElementName=EditImageToolButtonLabel}"/>
+                    <Button x:Name="ToolImageBtn" Content="&#xE91B;" Style="{StaticResource ToolbarButton}" Click="ToolImage_Click" ToolTip="Insert Image (4 or I, Alt+I)" KeyboardNavigation.TabIndex="18" AutomationProperties.Name="Insert image tool" AutomationProperties.HelpText="Click the page to insert a PNG/JPG/BMP/GIF/TIFF as a resizable annotation. Shortcut 4 or I. Access key Alt+I." AutomationProperties.AccessKey="I"/>
+                    <Button x:Name="ToolHighlightBtn" Content="&#xED56;" Style="{StaticResource ToolbarButton}" Click="ToolHighlight_Click" ToolTip="Highlight Tool (5 or H, Alt+H)" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Highlight tool" AutomationProperties.HelpText="Drag on the page to add a highlight. Shortcut 5 or H. Access key Alt+H." AutomationProperties.AccessKey="H" AutomationProperties.LabeledBy="{Binding ElementName=HighlightToolButtonLabel}"/>
+                    <Button x:Name="ToolStrikeBtn" Content="&#xEDE0;" Style="{StaticResource ToolbarButton}" Click="ToolStrike_Click" ToolTip="Strikethrough (6 or K) — drag across text" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Strikethrough tool" AutomationProperties.HelpText="Drag across words on the page to strike them through. The markup follows the text, hugging each line. Shortcut 6 or K." AutomationProperties.LabeledBy="{Binding ElementName=StrikeToolButtonLabel}"/>
+                    <Button x:Name="ToolUnderlineBtn" Content="&#xE8DC;" Style="{StaticResource ToolbarButton}" Click="ToolUnderline_Click" ToolTip="Underline (7 or U) — drag across text" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Underline tool" AutomationProperties.HelpText="Drag across words on the page to underline them. The markup follows the text, hugging each line. Shortcut 7 or U." AutomationProperties.LabeledBy="{Binding ElementName=UnderlineToolButtonLabel}"/>
+                    <Button x:Name="ToolShapeBtn" Content="&#xF158;" Style="{StaticResource ToolbarButton}" Click="ToolShape_Click" ToolTip="Shape Tool (8 or S) — rectangle / ellipse / line / freeform polygon with stroke and fill" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Shape tool" AutomationProperties.HelpText="Drag on the page to draw a rectangle, ellipse, or line, or pick the polygon sub-mode and click to place each point. Shortcut 8 or S."/>
+                    <Button x:Name="ToolDrawBtn" Content="&#xED63;" Style="{StaticResource ToolbarButton}" Click="ToolDraw_Click" ToolTip="Draw Tool (9 or D, Alt+R)" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Draw tool" AutomationProperties.HelpText="Draw freehand ink on the page. Shortcut 9 or D. Access key Alt+R." AutomationProperties.AccessKey="R" AutomationProperties.LabeledBy="{Binding ElementName=DrawToolButtonLabel}"/>
+                    <Button x:Name="ToolEraseBtn" Content="&#xE75C;" Style="{StaticResource ToolbarButton}" Click="ToolErase_Click" ToolTip="Eraser (0 or E) — click an annotation to remove it" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Eraser tool" AutomationProperties.HelpText="Click an annotation to delete it. Shortcut 0 or E."/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
-                    <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature (Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature tool" AutomationProperties.HelpText="Create and place signatures. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
-                    <Button x:Name="ToolCropBtn" Content="&#xE7A8;" Style="{StaticResource ToolbarButton}" Click="ToolCrop_Click" ToolTip="Crop pages (Alt+C)" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Crop tool" AutomationProperties.HelpText="Drag a rectangle on the page, then apply the crop. Access key Alt+C." AutomationProperties.AccessKey="C" AutomationProperties.LabeledBy="{Binding ElementName=CropToolButtonLabel}"/>
+                    <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature (G, Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature tool" AutomationProperties.HelpText="Create and place signatures. Shortcut G. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
+                    <Button x:Name="ToolCropBtn" Content="&#xE7A8;" Style="{StaticResource ToolbarButton}" Click="ToolCrop_Click" ToolTip="Crop pages (C, Alt+C)" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Crop tool" AutomationProperties.HelpText="Drag a rectangle on the page, then apply the crop. Shortcut C. Access key Alt+C." AutomationProperties.AccessKey="C" AutomationProperties.LabeledBy="{Binding ElementName=CropToolButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE7A7;" Style="{StaticResource ToolbarButton}" Click="Undo_Click" ToolTip="Undo Last (Ctrl+Z, Alt+Z)" KeyboardNavigation.TabIndex="23" AutomationProperties.Name="Undo last annotation" AutomationProperties.HelpText="Undo the last annotation change. Shortcut Ctrl+Z. Access key Alt+Z." AutomationProperties.AccessKey="Z" AutomationProperties.LabeledBy="{Binding ElementName=UndoButtonLabel}"/>
                     <Button Content="&#xED62;" Style="{StaticResource ToolbarButtonDanger}" Click="ClearAnnotations_Click" ToolTip="Clear All Annotations (Alt+L)" KeyboardNavigation.TabIndex="24" AutomationProperties.Name="Clear all annotations" AutomationProperties.HelpText="Clear all annotations on the current page. Access key Alt+L." AutomationProperties.AccessKey="L" AutomationProperties.LabeledBy="{Binding ElementName=ClearAnnotationsButtonLabel}"/>
@@ -1039,8 +1232,11 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Sidebar column: inner grid splits content from permanent toggle strip -->
-            <Grid Grid.Column="0">
+            <!-- Sidebar column: inner grid splits content from permanent toggle strip.
+                 Named because the app-wide UI scale (AppScale.cs) hangs its LayoutTransform here —
+                 the SidebarCol width sites convert through SbPx so the collapse/expand glide keeps
+                 working at any scale. -->
+            <Grid x:Name="SidebarOuterGrid" Grid.Column="0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>        <!-- page list content -->
                     <ColumnDefinition Width="24"/>       <!-- toggle strip — always visible -->
@@ -1050,7 +1246,10 @@
                 <Border x:Name="SidebarBorder" Grid.Column="0"
                         Background="{DynamicResource SidebarBackground}"
                         BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,0,0">
-                    <DockPanel>
+                    <!-- SidebarContentPanel is pinned to a fixed width for the duration of a
+                         collapse/expand glide (SetSidebarCollapsed) so the shrinking border clips
+                         the thumbnails instead of squeezing them. Normal layout is Stretch. -->
+                    <DockPanel x:Name="SidebarContentPanel">
                         <!-- PAGES / OUTLINES tab selector -->
                         <Grid x:Name="SidebarTabRow" DockPanel.Dock="Top" Margin="8,8,8,0">
                             <Grid.ColumnDefinitions>
@@ -1074,12 +1273,15 @@
                                        Foreground="{DynamicResource TextSecondary}"
                                        FontFamily="Segoe UI" FontSize="11" FontWeight="SemiBold"
                                        VerticalAlignment="Center"/>
+                            <!-- The page total and jump box start hidden: with no document open
+                                 there is no page count, and an empty box next to "/ –" is noise.
+                                 UpdatePageControlsForDoc reveals them when a document is up. -->
                             <TextBlock x:Name="PageTotalLabel" DockPanel.Dock="Right"
-                                       Text="/ –" VerticalAlignment="Center"
+                                       Text="/ –" VerticalAlignment="Center" Visibility="Collapsed"
                                        FontFamily="Consolas" FontSize="11"
                                        Foreground="{DynamicResource TextSecondary}"
                                        Margin="2,0,0,0"/>
-                            <TextBox x:Name="PageJumpBox" DockPanel.Dock="Right"
+                            <TextBox x:Name="PageJumpBox" DockPanel.Dock="Right" Visibility="Collapsed"
                                      Width="36" Height="20" VerticalAlignment="Center"
                                      TextAlignment="Center" VerticalContentAlignment="Center"
                                      FontFamily="Consolas" FontSize="11"
@@ -1155,12 +1357,35 @@
                         Background="{DynamicResource BgDark}"
                         BorderBrush="{DynamicResource BorderDim}"
                         BorderThickness="1,0,0,0">
-                    <Button x:Name="SidebarToggleBtn"
-                            Content="&#xE76B;" ToolTip="Collapse sidebar"
-                            Style="{StaticResource ToolbarButton}"
-                            Width="24" Padding="0" FontSize="10"
-                            VerticalAlignment="Top" Margin="0,6,0,0"
-                            Click="SidebarToggle_Click"/>
+                    <Grid>
+                        <Button x:Name="SidebarToggleBtn"
+                                Content="&#xE76B;" ToolTip="Collapse sidebar"
+                                Style="{StaticResource ToolbarButton}"
+                                Width="24" Padding="0" FontSize="10"
+                                VerticalAlignment="Top" Margin="0,6,0,0"
+                                Click="SidebarToggle_Click"/>
+                        <!-- #135: invert document colors. Moon glyph (MDL2 QuietHours); the icon
+                             lights in the accent while active, driven by Tag="on" from
+                             SyncDocInvertUi so all three themes repaint live. ToolTip and
+                             AutomationProperties.HelpText are filled there too (they change with
+                             the state), matching how the toolbar buttons state the hint twice. -->
+                        <Button x:Name="InvertColorsBtn"
+                                Content="&#xE708;"
+                                Width="24" Height="24" Padding="0" FontSize="13"
+                                VerticalAlignment="Bottom" Margin="0,0,0,6"
+                                Click="DocInvert_Click"
+                                AutomationProperties.Name="Invert document colors">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+                                    <Style.Triggers>
+                                        <Trigger Property="Tag" Value="on">
+                                            <Setter Property="Foreground" Value="{DynamicResource AccentGreen}"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </Grid>
                 </Border>
             </Grid>
 
@@ -1281,6 +1506,19 @@
                     </Button>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <!-- App-wide UI scale (AppScale.cs), deliberately sat next to the page-zoom
+                         chip so the two sizes read as the pair they are: this one scales the
+                         chrome, that one the page. Scroll to step, click to reset — the same
+                         gestures as the title-bar logo, and reachable even when the custom title
+                         bar is hidden (Settings ▸ native window frame). The footer itself is never
+                         scaled, so this chip holds still under the cursor. -->
+                    <Button x:Name="AppScaleButton" Content="UI 100%"
+                             Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
+                             FontFamily="Consolas" FontSize="10"
+                             Click="AppScaleReset_Click" MouseWheel="LogoBar_MouseWheel"
+                             ToolTip="App size — scroll to resize the menu, toolbar, tab strip and sidebar; click to reset to 100% (Ctrl+Shift+0)"
+                             AutomationProperties.Name="App size"
+                             AutomationProperties.HelpText="Scales the application chrome between 70 and 250 percent. Scroll the mouse wheel to change it, or press Control Shift Plus and Control Shift Minus. Click to reset. The document page keeps its own zoom."/>
                     <Button x:Name="StatusZoomButton" Content="{Binding Zoom.DisplayText, RelativeSource={RelativeSource AncestorType=Window}}"
                              Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
                              FontFamily="Consolas" FontSize="10"
@@ -1414,6 +1652,13 @@
                             <DockPanel Margin="0,0,0,4"><TextBlock Text="&#x2190; / &#x2192; or &#x2191; / &#x2193;" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Previous / next page" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                             <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Scroll" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Zoom in / out" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                             <DockPanel Margin="0,0,0,0"><TextBlock Text="Middle drag" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Pan view" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+
+                            <TextBlock Text="VIEW" Foreground="{DynamicResource AccentGreen}"
+                                       FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+I" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Invert colors (display only)" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Shift++ / -" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="App size larger / smaller" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Shift+0" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Reset app size" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Scroll on logo" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="App size (chrome only)" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                         </StackPanel>
 
                         <StackPanel Grid.Column="2">
@@ -1429,6 +1674,27 @@
                             <DockPanel Margin="0,0,0,4"><TextBlock Text="Enter / Shift+Enter" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Next / previous result" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                             <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+A" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Select all text on page" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                             <DockPanel Margin="0,0,0,0"><TextBlock Text="Ctrl+C" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Copy selected text" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+
+                            <!-- Tool keys (1.19). Unmodified keys, live only while a document is open
+                                 and the keyboard focus is not in a text box. The digits mirror the
+                                 toolbar left to right; Select / Pan / Signature / Crop are letter-only. -->
+                            <TextBlock Text="TOOLS" Foreground="{DynamicResource AccentGreen}"
+                                       FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="V" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Select" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="P" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Pan / hand" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="1 / T" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Text" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="2 / X" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Edit existing text" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="3" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Edit existing image" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="4 / I" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Insert image" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="5 / H" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Highlight" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="6 / K" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Strikethrough" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="7 / U" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Underline" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="8 / S" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Shape" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="9 / D" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Draw" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="0 / E" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Eraser" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="G" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Signature" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="C" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Crop" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Escape" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Step back to the Select tool" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
 
                             <TextBlock Text="HELP" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>

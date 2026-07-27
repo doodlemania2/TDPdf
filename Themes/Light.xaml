@@ -12,6 +12,11 @@
     <SolidColorBrush x:Key="SeparatorBrush" Color="#c8d2da"/>
     <SolidColorBrush x:Key="AccentGreen" Color="#047857"/>
     <SolidColorBrush x:Key="AccentGreenDim" Color="#d1fae5"/>
+    <!-- Flowing text-selection quads (upstream KillerPDF v1.6.5, #127). See Dark.xaml. -->
+    <SolidColorBrush x:Key="SelectionAccent" Color="#047857"/>
+    <!-- Select-tool box marquee, same accent at marquee alphas (was a hardcoded royal blue). -->
+    <SolidColorBrush x:Key="MarqueeFill"   Color="#047857" Opacity="0.16"/>
+    <SolidColorBrush x:Key="MarqueeStroke" Color="#047857" Opacity="0.47"/>
     <SolidColorBrush x:Key="TextPrimary" Color="#111827"/>
     <SolidColorBrush x:Key="TextSecondary" Color="#4b5563"/>
     <SolidColorBrush x:Key="TextMuted" Color="#6b7280"/>

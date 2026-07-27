@@ -50,6 +50,12 @@ namespace TDPdf
             "--log", "--dpi", "--format", "--pages", "--printer", "--lang", "--password", "--copies",
         ];
 
+        // Valueless switches. These need no entry above (and must not have one, or they
+        // would swallow the following argument); ParseCliArgs records any other "--x" with
+        // an empty value, so the commands just probe them with options.ContainsKey.
+        //   --quiet         (--batch-resave)
+        //   --transparent   (--to-image, png only)
+
         // Temp files a CLI run creates (decrypt copies, flatten sources); deleted in TryRunCli's finally.
         private static readonly List<string> _cliTemps = new();
 
@@ -149,8 +155,10 @@ namespace TDPdf
             "  --split <in.pdf> <outDir>                write one PDF per page",
             "  --decrypt <in.pdf> <out.pdf> [--password <p>]",
             "                                           remove encryption (lossless when possible)",
-            "  --to-image <in.pdf> <outDir> [--dpi <n>] [--format png|jpg] [--pages <range>]",
-            "                                           render pages to images (default 150 dpi, png)",
+            "  --to-image <in.pdf> <outDir> [--dpi <n>] [--format png|jpg] [--pages <range>] [--transparent]",
+            "                                           render pages to images (default 150 dpi, png;",
+            "                                           the page background composites to white unless",
+            "                                           --transparent is given, which needs --format png)",
             "  --flatten <in.pdf> <out.pdf> [--dpi <n>] rasterize into an uneditable PDF (default 150 dpi)",
             "  --print <in.pdf> [--printer <name>] [--pages <range>] [--copies <n>]",
             "                                           print silently (default printer if none named)",
@@ -377,59 +385,53 @@ namespace TDPdf
         }
 
         // ============================================================
-        // --to-image <in.pdf> <outDir> [--dpi n] [--format png|jpg] [--pages range]
+        // --to-image <in.pdf> <outDir> [--dpi n] [--format png|jpg] [--pages range] [--transparent]
         // ============================================================
+        // PDFium leaves unpainted background pixels at BGRA 0,0,0,0, so a bare export
+        // used to come out black in JPEG (no alpha channel to honor) and needlessly
+        // alpha-laden in PNG. PageImageExporter.Encode composites over white by default;
+        // --transparent keeps the raw alpha, and only PNG can carry it.
+        //
+        // The rasterize/encode/name half of this command lives in PageImageExporter, which the
+        // GUI's File ▸ Export Pages as Images… drives with the same arguments; only the source
+        // preparation differs (here: decrypt-on-demand; there: burn pending annotations).
         private static int CliToImage(List<string> pos, Dictionary<string, string> options, TextWriter con)
         {
             if (pos.Count != 2)
             {
-                con.WriteLine("Usage: TDPdf.exe --to-image <in.pdf> <outputFolder> [--dpi <n>] [--format png|jpg] [--pages <range>]");
+                con.WriteLine("Usage: TDPdf.exe --to-image <in.pdf> <outputFolder> [--dpi <n>] [--format png|jpg] [--pages <range>] [--transparent]");
                 return 2;
             }
             string inPath = Path.GetFullPath(pos[0]), outDir = Path.GetFullPath(pos[1]);
             if (!File.Exists(inPath)) { con.WriteLine($"Input not found: {inPath}"); return 2; }
-            double dpi = CliParseDpi(options, 150);
+            double dpi = CliParseDpi(options, PageImageExporter.DefaultDpi);
             options.TryGetValue("--format", out var fmtRaw);
-            string fmt = (fmtRaw ?? "png").ToLowerInvariant();
-            if (fmt == "jpeg") fmt = "jpg";
-            if (fmt != "png" && fmt != "jpg") { con.WriteLine("--format must be png or jpg"); return 2; }
-            Directory.CreateDirectory(outDir);
+            if (!PageImageExporter.TryNormalizeFormat(fmtRaw, out string fmt))
+            { con.WriteLine("--format must be png or jpg"); return 2; }
+
+            // JPEG has no alpha channel, so --transparent can only mean something for png.
+            // Say so rather than silently writing opaque files the caller did not expect.
+            bool transparent = options.ContainsKey("--transparent");
+            if (transparent && fmt != PageImageExporter.PngFormat)
+            {
+                con.WriteLine("--transparent ignored: JPEG has no alpha channel; background composited to white.");
+                transparent = false;
+            }
 
             options.TryGetValue("--password", out var password);
             string renderPath = CliPrepareRenderSource(inPath, password);
 
-            using var dr = DocLib.Instance.GetDocReader(renderPath, new PageDimensions(dpi / 72.0));
-            int pageCount = dr.GetPageCount();
-
-            List<int> selected;
+            List<int>? selected = null;
             if (options.TryGetValue("--pages", out var rangeSpec))
             {
-                var parsed = CliParsePageRange(rangeSpec, pageCount, out string err);
-                if (parsed is null) { con.WriteLine(err); return 2; }
-                selected = parsed;
-            }
-            else
-            {
-                selected = [.. Enumerable.Range(0, pageCount)];
+                selected = CliParsePageRange(rangeSpec, PageImageExporter.GetPageCount(renderPath), out string err);
+                if (selected is null) { con.WriteLine(err); return 2; }
             }
 
             string baseName = Path.GetFileNameWithoutExtension(inPath);
-            int digits = Math.Max(3, pageCount.ToString().Length);
-            foreach (var idx in selected)
-            {
-                byte[] raw; int w, h;
-                using (var pr = dr.GetPageReader(idx))
-                {
-                    raw = pr.GetImage();
-                    w = pr.GetPageWidth();
-                    h = pr.GetPageHeight();
-                }
-                if (raw is null || raw.Length == 0 || w <= 0 || h <= 0) continue;
-                var bytes = CliEncodeImage(raw, w, h, fmt);
-                var name = $"{baseName}-page-{(idx + 1).ToString().PadLeft(digits, '0')}.{fmt}";
-                File.WriteAllBytes(Path.Combine(outDir, name), bytes);
-            }
-            con.WriteLine($"Rendered {selected.Count} pages at {dpi:0} dpi ({fmt}) into {outDir}");
+            int written = PageImageExporter.Export(renderPath, outDir, baseName, selected, dpi, fmt,
+                                                   transparent, report: null, CancellationToken.None);
+            con.WriteLine($"Rendered {written} pages at {dpi:0} dpi ({fmt}{(transparent ? ", transparent" : "")}) into {outDir}");
             return 0;
         }
 
@@ -449,7 +451,11 @@ namespace TDPdf
             }
             string inPath = Path.GetFullPath(pos[0]), outPath = Path.GetFullPath(pos[1]);
             if (!File.Exists(inPath)) { con.WriteLine($"Input not found: {inPath}"); return 2; }
-            double dpi = CliParseDpi(options, 150);
+            double dpi = CliParseDpi(options, PageImageExporter.DefaultDpi);
+            // --transparent belongs to --to-image only: a flattened PDF is a print-ready
+            // substitute for the original, so its page images are always opaque.
+            if (options.ContainsKey("--transparent"))
+                con.WriteLine("--transparent ignored: flattened pages are always opaque.");
             options.TryGetValue("--password", out var password);
 
             // Build the flatten source exactly as the GUI does: open, scrub, capture point sizes,
@@ -490,7 +496,7 @@ namespace TDPdf
                     h = pr.GetPageHeight();
                 }
                 if (raw is null || raw.Length == 0 || w <= 0 || h <= 0) continue;
-                var png = CliEncodeImage(raw, w, h, "png");
+                var png = PageImageExporter.Encode(raw, w, h, PageImageExporter.PngFormat, transparent: false);
 
                 double wPt = i < pageSizes.Count ? pageSizes[i].WPt : w * 72.0 / dpi;
                 double hPt = i < pageSizes.Count ? pageSizes[i].HPt : h * 72.0 / dpi;
@@ -747,29 +753,17 @@ namespace TDPdf
             catch { return false; }
         }
 
-        // Encodes a raw BGRA buffer to PNG or JPEG via WPF's codecs.
-        private static byte[] CliEncodeImage(byte[] bgra, int width, int height, string fmt)
-        {
-            var bmp = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, bgra, width * 4);
-            BitmapEncoder encoder = fmt == "jpg"
-                ? new JpegBitmapEncoder { QualityLevel = 90 }
-                : new PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(bmp));
-            using var ms = new MemoryStream();
-            encoder.Save(ms);
-            return ms.ToArray();
-        }
-
         private static void CliEnsureParentDir(string path)
         {
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         }
 
+        // Same 24-1200 window the export dialog enforces (PageImageExporter owns the bounds);
+        // anything unparsable or out of range falls back to the caller's default.
         private static double CliParseDpi(Dictionary<string, string> options, double fallback)
         {
-            if (options.TryGetValue("--dpi", out var s) &&
-                double.TryParse(s, out double d) && d >= 24 && d <= 1200)
+            if (options.TryGetValue("--dpi", out var s) && PageImageExporter.TryParseDpi(s, out double d))
                 return d;
             return fallback;
         }

@@ -240,24 +240,12 @@ namespace TDPdf
         }
 
         /// <summary>
-        /// True if the PDF file has an /Encrypt entry in its trailer. Scans the
-        /// last 2 KB so it is fast, and works regardless of how PdfSharpCore reports
-        /// security state after authenticating with an empty password.
+        /// True if the PDF file has an /Encrypt entry in its trailer. The scan itself lives in
+        /// <see cref="TDPdf.Services.PdfDocumentService.FileHasEncryption"/> so the GUI open path
+        /// (#149, which needs the same answer to offer Remove Password) and the CLI share one copy.
         /// </summary>
-        private static bool CliPdfFileHasEncryption(string path)
-        {
-            try
-            {
-                using var fs = File.OpenRead(path);
-                long scan = Math.Min(2048, fs.Length);
-                fs.Seek(-scan, SeekOrigin.End);
-                var buf = new byte[scan];
-                _ = fs.Read(buf, 0, buf.Length);
-                var text = Encoding.GetEncoding(1252).GetString(buf);
-                return text.Contains("/Encrypt");
-            }
-            catch { return false; }
-        }
+        private static bool CliPdfFileHasEncryption(string path) =>
+            TDPdf.Services.PdfDocumentService.FileHasEncryption(path);
 
         private static string FlattenBatchDetail(string? s) =>
             (s ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();

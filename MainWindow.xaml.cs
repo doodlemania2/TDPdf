@@ -37,6 +37,12 @@ namespace TDPdf
         public static readonly RoutedUICommand RedoCommand = new("Redo", "Redo", typeof(MainWindow));
         public static readonly RoutedUICommand SaveAsCommand = new("Save As", "SaveAs", typeof(MainWindow));
         public static readonly RoutedUICommand AboutCommand = new("About TDPdf", "About", typeof(MainWindow));
+        public static readonly RoutedUICommand InvertColorsCommand = new("Invert Colors", "InvertColors", typeof(MainWindow));
+        // App-wide UI scale (AppScale.cs) — the chrome, not the document pane. Separate commands
+        // from the Zoom* trio above so the two can never be wired to the same gesture by accident.
+        public static readonly RoutedUICommand AppScaleUpCommand = new("App Size Larger", "AppScaleUp", typeof(MainWindow));
+        public static readonly RoutedUICommand AppScaleDownCommand = new("App Size Smaller", "AppScaleDown", typeof(MainWindow));
+        public static readonly RoutedUICommand AppScaleResetCommand = new("Reset App Size", "AppScaleReset", typeof(MainWindow));
 
         public ZoomViewModel Zoom { get; } = new();
 
@@ -111,6 +117,9 @@ namespace TDPdf
         private double _drawWidth = 3;
         private byte _drawOpacity = 255;
         private Color _highlightColor = Color.FromArgb(80, 255, 255, 0);
+        // Strikethrough / Underline draw a thin opaque band rather than a translucent wash, so they
+        // get their own default colour (upstream KillerPDF v1.6.5, #127).
+        private Color _markupLineColor = Color.FromArgb(255, 220, 38, 38);
         private Border? _drawSettingsBar;
 
         // Text (typewriter) tool settings
@@ -163,6 +172,17 @@ namespace TDPdf
         private double _shapeStrokeWidth = 2;
         private Border? _shapeSettingsBar;
 
+        // In-progress free-form polygon — per-document state, forwarded from the active tab's
+        // DocumentContext exactly like _annotations / _undoStack. Non-empty = placement is live.
+        private List<Point> _polyVertices => _ctx.PolyVertices;
+        private int _polyPage { get => _ctx.PolyPage; set => _ctx.PolyPage = value; }
+        private Polyline? _polyPreview { get => _ctx.PolyPreview; set => _ctx.PolyPreview = value; }
+        private Polyline? _polyRubber { get => _ctx.PolyRubber; set => _ctx.PolyRubber = value; }
+        private Ellipse? _polySnapDot { get => _ctx.PolySnapDot; set => _ctx.PolySnapDot = value; }
+
+        /// <summary>A click within this many canvas px of the first vertex closes the polygon.</summary>
+        private const double ShapePolySnapPx = 9;
+
         // Zoom fit-mode tracking (for auto-refit on window resize)
         private ZoomFitMode _zoomFitMode = ZoomFitMode.None;
         private bool _applyingFitZoom;
@@ -187,7 +207,24 @@ namespace TDPdf
         private readonly Button _sidebarToggleBtn = null!;
         private readonly Border _sidebarBorder = null!;
         private readonly ColumnDefinition _sidebarCol = null!;
+        private readonly DockPanel _sidebarContentPanel = null!;
         private readonly WrapPanel _pageContentPanel = null!;
+
+        // Sidebar collapse/expand glide (upstream KillerPDF v1.6.5). SidebarStripWidth is the
+        // permanent toggle strip the column shrinks to; it never reaches 0.
+        // The two constants are LOGICAL px (what the sidebar content lays out in); SidebarCol
+        // itself is outside the app-scale LayoutTransform, so its widths are SCREEN px. SbPx()
+        // (AppScale.cs) converts, and the two fields below are already screen px — ApplyAppScale
+        // rescales them whenever the app scale changes.
+        private const double SidebarStripWidth = 24;
+        private const double SidebarDefaultWidth = 180;   // matches SidebarCol's XAML width
+        private double _sidebarExpandedWidth = SidebarDefaultWidth;   // width the next expand restores
+        private double _sidebarAnimTarget = SidebarDefaultWidth;      // where the running glide lands
+        private Action? _sidebarAnimDone;                             // finish work for the running glide
+
+        // The document-present state the auto collapse/expand rule was last applied for; null until
+        // the first sync. Used to fire the rule only on the empty <-> document transition.
+        private bool? _sidebarSyncedHasDoc;
 
         // Text selection
         private bool _isSelecting;
@@ -228,6 +265,8 @@ namespace TDPdf
         private Button _toolEditTextBtn = null!;
         private Button _toolEditImageBtn = null!;
         private Button _toolHighlightBtn = null!;
+        private Button _toolStrikeBtn = null!;
+        private Button _toolUnderlineBtn = null!;
         private Button _toolDrawBtn = null!;
         private Button _toolSignatureBtn = null!;
         private Button _toolImageBtn = null!;
@@ -239,6 +278,15 @@ namespace TDPdf
         private System.Windows.Controls.Primitives.ToggleButton _gridViewToggle = null!;
         private Border _recentFilesBox = null!;
         private StackPanel _recentFilesList = null!;
+        private MenuItem _removePasswordMenuItem = null!;
+        private Button _invertColorsBtn = null!;
+        private MenuItem _invertColorsMenuItem = null!;
+
+        // The primary page's TRUE-color bitmap, mirroring whatever RenderPage put in PageImage.
+        // PageImage.Source may be the display-only inverted copy (#135), and the image-edit tool
+        // encodes a region of the page into the annotation that gets baked into the saved PDF, so
+        // that capture must read this, never the Image.
+        private BitmapSource? _primaryPageBitmap;
 
         // ============================================================
         // View mode (app-wide). Single and Grid behave exactly as the original
@@ -292,6 +340,15 @@ namespace TDPdf
         private Border _toolbarBorder = null!;
         private Border _statusBarBorder = null!;
 
+        // Sidebar column's inner grid — one of the four hosts the app-wide UI scale's
+        // LayoutTransform is applied to (AppScale.cs); the others are MainMenu, _toolbarBorder,
+        // and _tabStripBorder.
+        private Grid _sidebarOuterGrid = null!;
+
+        // Footer chip that shows and drives the app scale (never itself scaled — the footer is
+        // fixed so the chip holds still under the cursor while the wheel steps the size).
+        private Button _appScaleButton = null!;
+
         // Outline / bookmarks sidebar tab (manual refs — XAML codegen doesn't resolve these)
         private TreeView _outlineTree = null!;
         private ScrollViewer _outlineScrollViewer = null!;
@@ -324,6 +381,8 @@ namespace TDPdf
             _toolEditTextBtn = (Button)FindName("ToolEditTextBtn")!;
             _toolEditImageBtn = (Button)FindName("ToolEditImageBtn")!;
             _toolHighlightBtn = (Button)FindName("ToolHighlightBtn")!;
+            _toolStrikeBtn = (Button)FindName("ToolStrikeBtn")!;
+            _toolUnderlineBtn = (Button)FindName("ToolUnderlineBtn")!;
             _toolDrawBtn = (Button)FindName("ToolDrawBtn")!;
             _toolSignatureBtn = (Button)FindName("ToolSignatureBtn")!;
             _toolImageBtn = (Button)FindName("ToolImageBtn")!;
@@ -334,12 +393,16 @@ namespace TDPdf
             _sidebarToggleBtn = (Button)FindName("SidebarToggleBtn")!;
             _sidebarBorder = (Border)FindName("SidebarBorder")!;
             _sidebarCol = (ColumnDefinition)FindName("SidebarCol")!;
+            _sidebarContentPanel = (DockPanel)FindName("SidebarContentPanel")!;
             _pageContentPanel = (WrapPanel)FindName("PageContentPanel")!;
             _saveAsBtnRef = (Button)FindName("SaveAsBtn")!;
             _closeFileBtnRef = (Button)FindName("CloseFileBtn")!;
             _gridViewToggle = (System.Windows.Controls.Primitives.ToggleButton)FindName("GridViewToggle")!;
             _recentFilesBox = (Border)FindName("RecentFilesBox")!;
             _recentFilesList = (StackPanel)FindName("RecentFilesList")!;
+            _removePasswordMenuItem = (MenuItem)FindName("RemovePasswordMenuItem")!;
+            _invertColorsBtn = (Button)FindName("InvertColorsBtn")!;
+            _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
             _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
             // Restore the persisted view mode (defaults to Grid, matching the original layout).
             if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
@@ -363,6 +426,8 @@ namespace TDPdf
             _rootGrid = (Grid)FindName("RootGrid")!;
             _toolbarBorder = (Border)FindName("ToolbarBorder")!;
             _statusBarBorder = (Border)FindName("StatusBarBorder")!;
+            _sidebarOuterGrid = (Grid)FindName("SidebarOuterGrid")!;
+            _appScaleButton = (Button)FindName("AppScaleButton")!;
             RebuildTabStrip();
             ApplyCustomChromeVisibility();
             ThemeManager.ThemeChanged += ThemeManager_ThemeChanged;
@@ -371,6 +436,12 @@ namespace TDPdf
             CommandBindings.Add(new CommandBinding(ZoomInRoutedCommand, (_, _) => ChangeZoomByCommand(ZoomChange.In)));
             CommandBindings.Add(new CommandBinding(ZoomOutRoutedCommand, (_, _) => ChangeZoomByCommand(ZoomChange.Out)));
             CommandBindings.Add(new CommandBinding(ZoomResetRoutedCommand, (_, _) => ChangeZoomByCommand(ZoomChange.Reset)));
+            CommandBindings.Add(new CommandBinding(InvertColorsCommand, (_, _) => ToggleDocInvert(!_docInvert)));
+            CommandBindings.Add(new CommandBinding(AppScaleUpCommand, (_, _) => AppScaleUp()));
+            CommandBindings.Add(new CommandBinding(AppScaleDownCommand, (_, _) => AppScaleDown()));
+            CommandBindings.Add(new CommandBinding(AppScaleResetCommand, (_, _) => AppScaleReset()));
+            InitDocInvert();   // #135: restore the persisted display-only dark mode + light the rail moon
+            InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
             LoadSignatures();
             BuildContextMenu();
             SetTool(EditTool.Select);
@@ -383,6 +454,11 @@ namespace TDPdf
             Loaded += async (_, _) =>
             {
                 RefreshRecentFilesUi();
+
+                // Nothing is open yet, so start on the collapsed rail (instant — no glide before the
+                // first paint). A file from the command line or the restored session expands it below,
+                // via FinishOpenFileAsync.
+                SyncSidebarToDocState(hasDoc: _doc is not null, startup: true);
 
                 var args = Environment.GetCommandLineArgs();
                 if (args.Length > 1 && System.IO.File.Exists(args[1]))
@@ -508,12 +584,12 @@ namespace TDPdf
                 if (WmMouseHWheel(wParam, lParam))
                     handled = true;
             }
-            else if (msg == WM_KEYDOWN && (int)wParam == VK_ESCAPE && _ocrCts is { IsCancellationRequested: false })
+            else if (msg == WM_KEYDOWN && (int)wParam == VK_ESCAPE && _cancellableOpCts is { IsCancellationRequested: false })
             {
-                // SetFileOperationBusy disables the WPF content during OCR, so Esc never reaches
-                // OnPreviewKeyDown. The native HWND stays Win32-enabled, though, so we catch it here and
-                // cancel the in-flight OCR / language download cooperatively.
-                _ocrCts.Cancel();
+                // SetFileOperationBusy disables the WPF content during these operations, so Esc never
+                // reaches OnPreviewKeyDown. The native HWND stays Win32-enabled, though, so we catch it
+                // here and cancel the in-flight OCR / language download / image export cooperatively.
+                _cancellableOpCts.Cancel();
                 SetStatus("Cancelling...");
                 handled = true;
             }
@@ -679,6 +755,11 @@ namespace TDPdf
 
         private void ToggleFullScreen()
         {
+            // Full screen snapshots and then overwrites the sidebar column outright. A glide still in
+            // flight holds an animation on ColumnDefinition.Width, which outranks the local values set
+            // below — land it first so the snapshot is of a settled sidebar and the writes stick.
+            FinishSidebarAnimation();
+
             bool entering = !_fullScreen;
             _fullScreen = entering;
 
@@ -775,9 +856,26 @@ namespace TDPdf
         {
             public PdfDocument? Doc;
             public string? CurrentFile;          // working path (may be a temp copy after edits)
-            public string? OriginalPath;         // real on-disk file the user opened; null for untitled/temp/recovered docs. Used for session restore.
+            // The user's real on-disk document: what session restore reopens, what goes in the
+            // recent list, and — crucially — what a plain (in-place) Save writes to.
+            // This is NOT CurrentFile: the WORKING path gets repointed at a copy under %TEMP% by the
+            // decrypt-on-open of a password-protected file, by SaveTempAndReload after any structural
+            // edit (rotate / delete / reorder / crop), and by the #106 PDFium repair. Saving to
+            // CurrentFile in those states writes into %TEMP% — which is deleted on exit — and the
+            // user's document is never updated. Null when there is no such home yet (New /
+            // merged-on-drop / imported images / raster-recovered / a file inside %TEMP%), in which
+            // case Ctrl+S routes to Save As. Retargeted by a successful Save As.
+            public string? OriginalPath;
             public string DisplayName = "";      // shown in the tab header and title bar
             public bool IsDirty;
+
+            // True when the source file needed a password, or carried owner restrictions, to open.
+            // TDPdf rewrites the whole file through PdfSharpCore on every save and PdfSharpCore
+            // emits no /Encrypt unless a password is set on the document, so saving a document that
+            // was protected necessarily produces an UNPROTECTED file. The save says so instead of
+            // dropping the protection silently, and this gates File ▸ Remove Password. Cleared once
+            // a save has written this tab's file unprotected.
+            public bool WasProtected;
 
             // True for docs with no real on-disk home yet (merged-on-drop, imported images).
             // The working path is a temp file, so Ctrl+S must route to Save As instead of
@@ -810,6 +908,32 @@ namespace TDPdf
 
             // The clickable tab-header chip (built lazily by RebuildTabStrip).
             public Border? Chip;
+
+            // ── Flowing text selection (upstream KillerPDF v1.6.5, #127) ──
+            // Per-document, like Chip above: the character cache is keyed on THIS document's
+            // working path, and a caret is an index into one of ITS pages, so neither may ever leak
+            // across a tab switch. See TextSelection.cs.
+            public readonly TDPdf.Services.TextRunService TextRuns = new();
+            public bool TxtSelActive;                      // a flowing drag is in progress
+            public bool TxtSelHasRange;                    // a committed selection is on screen
+            public (int Page, int Caret) TxtSelAnchor;
+            public (int Page, int Caret) TxtSelFocus;
+            public Point TxtSelDownPos;                    // press point, canvas coords
+            public bool TxtSelDragStarted;                 // movement has passed the click threshold
+            public PageAnnotation? TxtSelClickAnnot;       // annotation under the press; selected on a plain click
+            public Rect TxtSelClickAnnotBounds;
+            public EditTool? TxtSelCommitTool;             // set while a markup tool owns the drag
+
+            // ── In-progress free-form polygon (Shapes tool, upstream KillerPDF v1.6.5) ──
+            // Per-document too: the vertices are canvas coordinates on THIS document's page. A
+            // non-empty PolyVertices means a polygon is being placed; ResolveShapePolygon settles
+            // it (committing or discarding) and tears the preview visuals back down, and that
+            // always runs before _ctx is swapped, so only one context can hold a live polygon.
+            public readonly List<Point> PolyVertices = new();
+            public int PolyPage = -1;
+            public Polyline? PolyPreview;    // the committed vertices
+            public Polyline? PolyRubber;     // last vertex → cursor, dashed
+            public Ellipse? PolySnapDot;     // ring over the first vertex, lit when a click would close
         }
 
         private sealed class RenderedPage
@@ -943,8 +1067,10 @@ namespace TDPdf
 
         // The real, on-disk documents currently open, in tab order (temp / untitled / merged / imported /
         // recovered docs have a null OriginalPath and are excluded — they have no lasting home to reopen).
+        // IsRecentEligiblePath also drops documents opened from under %TEMP% (e.g. a mail attachment):
+        // those ARE a valid in-place save target, but they are not a location worth reopening next launch.
         private List<string> OpenSessionFiles() => _tabs
-            .Where(t => t.Doc is not null && !string.IsNullOrEmpty(t.OriginalPath) && System.IO.File.Exists(t.OriginalPath))
+            .Where(t => t.Doc is not null && IsRecentEligiblePath(t.OriginalPath))
             .Select(t => t.OriginalPath!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1144,6 +1270,30 @@ namespace TDPdf
             singleInstance.Unchecked += SingleInstanceSettingChanged;
             panel.Children.Add(singleInstance);
 
+            panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
+
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Privacy",
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BrushResource("TextPrimary"),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+
+            // #146: the write-side companion to the two "clear the list" affordances (the start
+            // screen's Clear recent files button and the Open button's right-click Clear List).
+            var forgetRecent = new CheckBox
+            {
+                Content = "Don't remember recently opened files",
+                IsChecked = TDPdf.Properties.Settings.Default.DontRememberRecentFiles,
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Stops TDPdf recording the documents you open. Turning this on also clears the list already stored.",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            forgetRecent.Checked += ForgetRecentFilesSettingChanged;
+            forgetRecent.Unchecked += ForgetRecentFilesSettingChanged;
+            panel.Children.Add(forgetRecent);
+
             var note = new TextBlock
             {
                 Text = "Tab changes take effect after restarting TDPdf. Native frame changes are applied after restarting TDPdf. Themes update immediately.",
@@ -1181,6 +1331,31 @@ namespace TDPdf
             TdpDialog.Show(this,
                 "Restart required for the single-window tabs setting to take effect.",
                 "TDPdf", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        // #146 (upstream KillerPDF v1.6.5): "Don't remember recently opened files". Upstream parks
+        // this in its About window beside a "Clear all Data" button; TDPdf's About is a plain
+        // TdpDialog text box with no controls, so the toggle lives here in the Settings dialog
+        // where every other user preference already lives — no new window for one checkbox.
+        // Switching it ON also empties the stored list: the point of the setting is that nothing
+        // about the user's documents lingers on a shared machine, which a write-side gate alone
+        // would not deliver. Preference only — never touches _isDirty.
+        private void ForgetRecentFilesSettingChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox cb)
+                return;
+
+            bool requested = cb.IsChecked == true;
+            if (TDPdf.Properties.Settings.Default.DontRememberRecentFiles == requested)
+                return;
+
+            TDPdf.Properties.Settings.Default.DontRememberRecentFiles = requested;
+            TDPdf.Properties.Settings.Default.Save();
+            if (requested)
+                ClearRecentFiles();   // forget what is already there, not just what comes next
+            SetStatus(requested
+                ? "Recently opened files are no longer remembered"
+                : "Recently opened files will be remembered");
         }
 
         private void NativeFrameSettingChanged(object sender, RoutedEventArgs e)
@@ -1239,22 +1414,23 @@ namespace TDPdf
         {
             var menu = new ContextMenu();
 
-            menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard"));
+            menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard", "\uE8C8"));
             menu.Items.Add(MakeMenuItem("OCR Page to Clip_board", (s, e) => OcrPageToClipboard(Math.Max(0, PageList.SelectedIndex)),
-                "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard"));
-            menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF"));
+                "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
+            menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
             menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), null, "Switch to the select tool"));
-            menu.Items.Add(MakeMenuItem("_Text Tool", (s, e) => SetTool(EditTool.Text), null, "Switch to the text tool"));
-            menu.Items.Add(MakeMenuItem("Edit Existing Text", (s, e) => SetTool(EditTool.EditText), null, "Switch to the existing text edit tool"));
-            menu.Items.Add(MakeMenuItem("Edit Existing Image", (s, e) => SetTool(EditTool.EditImage), null, "Switch to the existing image edit tool"));
-            menu.Items.Add(MakeMenuItem("_Highlight Tool", (s, e) => SetTool(EditTool.Highlight), null, "Switch to the highlight tool"));
-            menu.Items.Add(MakeMenuItem("_Draw Tool", (s, e) => SetTool(EditTool.Draw), null, "Switch to the draw tool"));
-            menu.Items.Add(MakeMenuItem("_Crop Tool", (s, e) => SetTool(EditTool.Crop), null, "Switch to the crop tool"));
+            // Tool rows carry the toolbar's glyph and the tool's single-key shortcut (see OnPreviewKeyDown).
+            menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), "V", "Switch to the select tool", "\uE8B3"));
+            menu.Items.Add(MakeMenuItem("_Text Tool", (s, e) => SetTool(EditTool.Text), "1", "Switch to the text tool", "\uE8D2"));
+            menu.Items.Add(MakeMenuItem("Edit Existing Text", (s, e) => SetTool(EditTool.EditText), "2", "Switch to the existing text edit tool", "\uE104"));
+            menu.Items.Add(MakeMenuItem("Edit Existing Image", (s, e) => SetTool(EditTool.EditImage), "3", "Switch to the existing image edit tool", "\uEB9F"));
+            menu.Items.Add(MakeMenuItem("_Highlight Tool", (s, e) => SetTool(EditTool.Highlight), "5", "Switch to the highlight tool", "\uED56"));
+            menu.Items.Add(MakeMenuItem("_Draw Tool", (s, e) => SetTool(EditTool.Draw), "9", "Switch to the draw tool", "\uED63"));
+            menu.Items.Add(MakeMenuItem("_Crop Tool", (s, e) => SetTool(EditTool.Crop), "C", "Switch to the crop tool", "\uE7A8"));
             menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("De_lete Selected", (s, e) => DeleteSelected(), "Delete", "Delete the selected annotation"));
-            menu.Items.Add(MakeMenuItem("_Undo Last", (s, e) => Undo_Click(s!, e), "Ctrl+Z", "Undo the last annotation change"));
-            menu.Items.Add(MakeMenuItem("Cle_ar Page Annotations", (s, e) => ClearAnnotations_Click(s!, e), null, "Clear all annotations on this page"));
+            menu.Items.Add(MakeMenuItem("De_lete Selected", (s, e) => DeleteSelected(), "Delete", "Delete the selected annotation", "\uE74D"));
+            menu.Items.Add(MakeMenuItem("_Undo Last", (s, e) => Undo_Click(s!, e), "Ctrl+Z", "Undo the last annotation change", "\uE7A7"));
+            menu.Items.Add(MakeMenuItem("Cle_ar Page Annotations", (s, e) => ClearAnnotations_Click(s!, e), null, "Clear all annotations on this page", "\uED62"));
 
             _annotationCanvas.ContextMenu = menu;
         }
@@ -1263,18 +1439,20 @@ namespace TDPdf
         {
             if (_doc is null) return;
             var menu = new ContextMenu();
-            menu.Items.Add(MakeMenuItem("Insert Blank Page After", (s, ev) => InsertBlankPage_Click(s!, ev)));
+            menu.Items.Add(MakeMenuItem("Insert Blank Page After", (s, ev) => InsertBlankPage_Click(s!, ev), null, null, "\uE7C3"));
             menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90)));
-            menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90)));
+            // One Rotate glyph serves both directions: the counter-clockwise row draws it mirrored,
+            // so the pair reads as a matched set instead of two unrelated icons.
+            menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
+            menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
-                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)"));
+                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", "\uE90F"));
             menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("Move Page Up",   (s, ev) => MoveUp_Click(s!, ev)));
-            menu.Items.Add(MakeMenuItem("Move Page Down", (s, ev) => MoveDown_Click(s!, ev)));
+            menu.Items.Add(MakeMenuItem("Move Page Up",   (s, ev) => MoveUp_Click(s!, ev), null, null, "\uE74A"));
+            menu.Items.Add(MakeMenuItem("Move Page Down", (s, ev) => MoveDown_Click(s!, ev), null, null, "\uE74B"));
             menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("Extract Page(s)", (s, ev) => Split_Click(s!, ev)));
-            menu.Items.Add(MakeMenuItem("Delete Page(s)", (s, ev) => Delete_Click(s!, ev)));
+            menu.Items.Add(MakeMenuItem("Extract Page(s)", (s, ev) => Split_Click(s!, ev), null, null, "\uE8B1"));
+            menu.Items.Add(MakeMenuItem("Delete Page(s)", (s, ev) => Delete_Click(s!, ev), null, null, "\uE8C6"));
             menu.PlacementTarget = PageList;
             menu.IsOpen = true;
             e.Handled = true;
@@ -1307,16 +1485,49 @@ namespace TDPdf
             }
         }
 
-        private static MenuItem MakeMenuItem(string header, RoutedEventHandler click, string? gesture = null, string? helpText = null)
+        /// <summary>
+        /// Builds a themed context-menu row. <paramref name="glyph"/> is an optional Segoe MDL2
+        /// codepoint painted in the menu's 20px left gutter — the same column the check mark uses
+        /// (see the MenuItem ControlTemplate in MainWindow.xaml). Glyphs mirror the toolbar button
+        /// for the same action so the two surfaces read alike. <paramref name="mirrorGlyph"/> flips
+        /// it horizontally, which is how the counter-clockwise rotate row gets a true mirrored
+        /// partner for the clockwise one out of a single codepoint.
+        /// </summary>
+        private static MenuItem MakeMenuItem(string header, RoutedEventHandler click, string? gesture = null,
+                                             string? helpText = null, string? glyph = null, bool mirrorGlyph = false)
         {
             var item = new MenuItem { Header = header };
             item.Click += click;
             if (gesture != null)
                 item.InputGestureText = gesture;
+            if (glyph != null)
+                item.Icon = MakeMenuGlyph(glyph, mirrorGlyph);
             var automationName = header.Replace("_", string.Empty);
             AutomationProperties.SetName(item, automationName);
             AutomationProperties.SetHelpText(item, helpText ?? automationName);
             return item;
+        }
+
+        /// <summary>Segoe MDL2 "Rotate". Used as-is for clockwise and mirrored for counter-clockwise
+        /// so the two rotate rows are a matched pair rather than two unrelated icons.</summary>
+        private const string RotateGlyph = "\uE7AD";
+
+        /// <summary>Code-side twin of the MenuGlyph style in MainWindow.xaml: an MDL2 TextBlock for
+        /// a MenuItem.Icon, themed by resource reference so Dark / Light / HighContrast repaint it.</summary>
+        private static TextBlock MakeMenuGlyph(string glyph, bool mirror = false)
+        {
+            var tb = new TextBlock
+            {
+                Text = glyph,
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                RenderTransformOrigin = new Point(0.5, 0.5),
+            };
+            tb.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
+            if (mirror) tb.RenderTransform = new ScaleTransform(-1, 1);
+            return tb;
         }
 
         // ============================================================
@@ -1410,7 +1621,18 @@ namespace TDPdf
             return result;
         }
 
-        private async Task FinishOpenFileAsync(PdfOpenResult result, CancellationToken cancellationToken)
+        /// <summary>
+        /// Installs an opened <see cref="PdfOpenResult"/> into the active tab.
+        /// </summary>
+        /// <param name="internalReload">
+        /// True when this is TDPdf re-loading the SAME document from a working file it just wrote
+        /// (the crop pipeline, and its failure-restore), rather than the user opening a file. Such a
+        /// reload must not touch the tab's identity — OriginalPath, IsUntitled, WasProtected and the
+        /// recent list — because DisplayPath is then a temp path: claiming it as the document would
+        /// re-introduce the "Ctrl+S writes into %TEMP%" bug this whole change exists to fix.
+        /// </param>
+        private async Task FinishOpenFileAsync(PdfOpenResult result, CancellationToken cancellationToken,
+            bool internalReload = false)
         {
             bool assignedDocument = false;
             try
@@ -1423,7 +1645,9 @@ namespace TDPdf
                 _doc = result.Document;
                 assignedDocument = true;
                 _currentFile = result.WorkingPath;
-                SetDisplayName(System.IO.Path.GetFileName(result.DisplayPath));
+                // Same reason as the identity block below: a crop reload's DisplayPath is the
+                // "<name>.crop-<guid>.pdf" working file, which must not become the tab's name.
+                if (!internalReload) SetDisplayName(System.IO.Path.GetFileName(result.DisplayPath));
                 _annotations.Clear();
                 ClearFormState();
                 _undoStack.Clear();
@@ -1445,8 +1669,13 @@ namespace TDPdf
                 _gridViewToggle.IsEnabled = true;
                 _pageJumpBox.IsEnabled = true;
                 _pageTotalLabel.Text = $"/ {_doc.PageCount}";
+                SyncSidebarToDocState(hasDoc: true, startup: false);   // a document is up: open the rail
                 MarkDirty(false);
-                _ctx.IsUntitled = false;   // a real on-disk open; merged/imported callers set this true afterward
+                if (!internalReload)
+                {
+                    _ctx.IsUntitled = false;   // a real on-disk open; merged/imported callers set this true afterward
+                    _ctx.WasProtected = result.WasProtected;
+                }
                 if (_doc.PageCount > 0)
                 {
                     PageList.SelectedIndex = 0;
@@ -1462,15 +1691,26 @@ namespace TDPdf
                 SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix} - {_doc.PageCount} page(s)");
                 UpdateTabChrome();
 
-                // Record real, on-disk user files in the recent list. Skip recovered docs (rasterized
-                // rebuilds) and temp working files (New / merged-on-drop / imported images), whose
-                // DisplayPath lives under the temp dir and has no lasting saved location. The same
-                // eligibility gate marks this tab's OriginalPath so the whole session can restore on
-                // next launch; temp/recovered docs stay null and are excluded from the saved session.
-                if (!result.RecoveredFromRaster && IsRecentEligiblePath(result.DisplayPath))
+                // OriginalPath is the user's document: the in-place save target and the session
+                // entry. A document has one unless WE rebuilt it (raster recovery writes a lossy
+                // reconstruction into %TEMP%) or the path simply is not on disk.
+                //
+                // Living under %TEMP% is deliberately NOT disqualifying: a PDF opened from an email
+                // attachment extracts to a temp folder and is still a real document the user expects
+                // Ctrl+S to update. The working files TDPdf creates ITSELF (New, merge-on-drop,
+                // imported images, zip extraction) are classified where they are created — see
+                // FinalizeUnsavedTab and OpenSeparatelyAsync — not by where they happen to live.
+                //
+                // Assigned unconditionally so reopening into a context that already held a document
+                // can never leave the previous file's path behind. Skipped entirely for an internal
+                // reload, which keeps the tab pointed at the document the user actually opened.
+                if (!internalReload)
                 {
-                    AddRecentFile(result.DisplayPath);
-                    _ctx.OriginalPath = result.DisplayPath;
+                    bool hasRealHome = !result.RecoveredFromRaster && System.IO.File.Exists(result.DisplayPath);
+                    _ctx.OriginalPath = hasRealHome ? result.DisplayPath : null;
+                    // The recent list keeps its own stricter gate — temp paths are correctly excluded
+                    // from it even when they are a perfectly good save target.
+                    if (hasRealHome && IsRecentEligiblePath(result.DisplayPath)) AddRecentFile(result.DisplayPath);
                 }
             }
             catch
@@ -1485,42 +1725,11 @@ namespace TDPdf
             ex.Message.IndexOf("protected", StringComparison.OrdinalIgnoreCase) >= 0 ||
             ex.Message.IndexOf("encrypted", StringComparison.OrdinalIgnoreCase) >= 0;
 
-        private string? PromptForPassword(string filename)
-        {
-            string? result = null;
-            var win = new Window
-            {
-                Title = "Password Required",
-                Width = 360,
-                Height = 165,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = BrushResource("BgPanel")
-            };
-            var sp = new StackPanel { Margin = new Thickness(20, 16, 20, 16) };
-            sp.Children.Add(new TextBlock
-            {
-                Text = $"\"{System.IO.Path.GetFileName(filename)}\" is password protected.",
-                Foreground = BrushResource("TextPrimary"),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 0, 10)
-            });
-            var pwBox = new PasswordBox { Margin = new Thickness(0, 0, 0, 14) };
-            sp.Children.Add(pwBox);
-            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            var okBtn = new Button { Content = "Open", Width = 76, Margin = new Thickness(0, 0, 8, 0) };
-            var cancelBtn = new Button { Content = "Cancel", Width = 76 };
-            okBtn.Click += (s, ev) => { result = pwBox.Password; win.DialogResult = true; };
-            cancelBtn.Click += (s, ev) => { win.DialogResult = false; };
-            cancelBtn.IsCancel = true;   // Esc cancels the prompt (Enter is handled on pwBox below)
-            pwBox.KeyDown += (s, ev) => { if (ev.Key == Key.Enter) { result = pwBox.Password; win.DialogResult = true; } };
-            btnRow.Children.Add(okBtn);
-            btnRow.Children.Add(cancelBtn);
-            sp.Children.Add(btnRow);
-            win.Content = sp;
-            return win.ShowDialog() == true ? result : null;
-        }
+        // Themed "Password Required" prompt. The old inline dialog kept the native OS title bar and
+        // used stock PasswordBox/Button chrome, which rendered as light Aero controls on a dark
+        // panel; TdpDialog gives it the same borderless wordmark chrome as every other TDPdf dialog.
+        // Enter/Esc and the Open/Cancel semantics (null == cancelled) are unchanged.
+        private string? PromptForPassword(string filename) => TdpDialog.PromptPassword(this, filename);
 
         private void RefreshPageList(IReadOnlyList<BitmapSource?>? thumbnails = null)
         {
@@ -1651,6 +1860,7 @@ namespace TDPdf
 
                     if (result.Bitmap is null || result.Width <= 0 || result.Height <= 0)
                     {
+                        _primaryPageBitmap = null;
                         PageImage.Source = null;
                         SetStatus($"Page {pageIndex + 1} - could not render");
                         return;
@@ -1665,7 +1875,12 @@ namespace TDPdf
 
                 _renderDims[pageIndex] = ((int)Math.Round(renderedPage.DisplayWidth), (int)Math.Round(renderedPage.DisplayHeight));
                 PageImage.Tag = pageIndex;   // page identity for Grid scroll tracking (nearest-tile counter)
-                PageImage.Source = renderedPage.Bitmap;
+                // #135: DisplayBitmap returns the cached bitmap untouched unless the display-only
+                // invert is on, in which case it returns a separate inverted copy. _renderCache (and
+                // _primaryPageBitmap, which the image-edit tool bakes into the saved PDF) keep the
+                // document's true colors.
+                _primaryPageBitmap = renderedPage.Bitmap;
+                PageImage.Source = DisplayBitmap(renderedPage.Bitmap);
                 PageImage.Width = renderedPage.DisplayWidth;
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
@@ -1691,6 +1906,7 @@ namespace TDPdf
             }
             catch (Exception ex)
             {
+                _primaryPageBitmap = null;
                 PageImage.Source = null;
                 SetStatus($"Render error: {ex.Message}");
             }
@@ -1820,6 +2036,9 @@ namespace TDPdf
                 if (ct.IsCancellationRequested) return;
 
                 _renderDims[pi] = (w, h);
+                // #135: display-only invert. The buffer is ours and is about to become a throwaway
+                // display bitmap, so flip it in place — nothing else ever sees these bytes.
+                if (_docInvert) InvertBgraInPlace(rawBytes);
                 var bitmap = new WriteableBitmap(w, h, 96.0 * dpiScaleX, 96.0 * dpiScaleY, PixelFormats.Bgra32, null);
                 bitmap.WritePixels(new Int32Rect(0, 0, w, h), rawBytes, w * 4, 0);
 
@@ -1873,6 +2092,40 @@ namespace TDPdf
             _isFileOperationBusy = isBusy;
             IsEnabled = !isBusy;
             SetBusy(isBusy, status);
+        }
+
+        // ============================================================
+        // Cancellable long-running operations (OCR, image export)
+        // ============================================================
+
+        // Non-null only while such an operation is in flight. Window state rather than
+        // per-document state on purpose: BeginCancellableOp disables the whole window for the
+        // duration, so exactly one of these can ever be running. The WM_KEYDOWN hook in WndProc
+        // cancels it on Esc even though the WPF content is disabled, because the native HWND
+        // stays Win32-enabled and still receives key messages.
+        private CancellationTokenSource? _cancellableOpCts;
+
+        /// <summary>Registers a cancellable operation, shows the busy state, and returns its token.</summary>
+        private CancellationToken BeginCancellableOp(string startStatus)
+        {
+            _cancellableOpCts?.Dispose();
+            _cancellableOpCts = new CancellationTokenSource();
+            SetFileOperationBusy(true, startStatus);
+            return _cancellableOpCts.Token;
+        }
+
+        private void EndCancellableOp()
+        {
+            SetFileOperationBusy(false);
+            _cancellableOpCts?.Dispose();
+            _cancellableOpCts = null;
+        }
+
+        /// <summary>Updates the status line from any thread (this work runs on a background Task).</summary>
+        private void SetWorkerStatus(string msg)
+        {
+            if (Dispatcher.CheckAccess()) SetStatus(msg);
+            else Dispatcher.Invoke(() => SetStatus(msg));
         }
 
         /// <summary>
@@ -2160,6 +2413,7 @@ namespace TDPdf
                             double dpiX = 96.0 * fw / dipW;
                             double dpiY = 96.0 * fh / dipH;
 
+                            if (_docInvert) InvertBgraInPlace(bytes);   // #135: display-only invert
                             var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
                             bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
                             bmp.Freeze();
@@ -2341,6 +2595,7 @@ namespace TDPdf
             if (!_continuousBaseBitmaps.ContainsKey(pageIndex))
                 _continuousBaseBitmaps[pageIndex] = baseSrc;
 
+            if (_docInvert) InvertBgraInPlace(bgra);   // #135: display-only invert
             var bmp = new WriteableBitmap(pxW, pxH, dpiX, dpiY, PixelFormats.Bgra32, null);
             bmp.WritePixels(new Int32Rect(0, 0, pxW, pxH), bgra, pxW * 4, 0);
             bmp.Freeze();
@@ -2458,6 +2713,7 @@ namespace TDPdf
             double dipH = dipW * fh / fw;
             double dpiX = 96.0 * fw / dipW;
             double dpiY = 96.0 * fh / dipH;
+            if (_docInvert) InvertBgraInPlace(bytes);   // #135: display-only invert
             var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
             bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
             bmp.Freeze();
@@ -2697,10 +2953,15 @@ namespace TDPdf
                 var annotsArr = pdfPage.Elements.GetArray("/Annots");
                 if (annotsArr is null || annotsArr.Elements.Count == 0) return links;
 
-                double pageWidthPt  = pdfPage.Width.Point;
-                double pageHeightPt = pdfPage.Height.Point;
-                if (pageWidthPt  <= 0) pageWidthPt  = 595.28;
-                if (pageHeightPt <= 0) pageHeightPt = 841.89;
+                // Same page-box resolution as the form-field overlays: the box PDFium actually
+                // rasterized (CropBox over MediaBox, inherited through the page tree, origin honoured).
+                // Never pdfPage.Width/Height — those read through the create-on-read MediaBox getter,
+                // which both PLANTS a degenerate /MediaBox [0 0 0 0] into the page dictionary (Adobe
+                // then rejects the saved page as "dimensions out-of-range") and returns 0 for a page
+                // whose box is only inherited, which used to fall back to a hardcoded A4 size and
+                // misplace every link on non-A4 documents.
+                var box = GetVisiblePageBox(pdfPage);
+                int rotation = ((pdfPage.Rotate % 360) + 360) % 360;
 
                 for (int i = 0; i < annotsArr.Elements.Count; i++)
                 {
@@ -2717,13 +2978,9 @@ namespace TDPdf
                     double ry1 = rectArr.Elements.GetReal(1);
                     double rx2 = rectArr.Elements.GetReal(2);
                     double ry2 = rectArr.Elements.GetReal(3);
-                    if (rx1 > rx2) (rx1, rx2) = (rx2, rx1);
-                    if (ry1 > ry2) (ry1, ry2) = (ry2, ry1);
 
-                    double cx = rx1 / pageWidthPt  * bitmapW;
-                    double cy = (pageHeightPt - ry2) / pageHeightPt * bitmapH;
-                    double cw = (rx2 - rx1) / pageWidthPt  * bitmapW;
-                    double ch = (ry2 - ry1) / pageHeightPt * bitmapH;
+                    // The bitmap already has the page /Rotate applied; link /Rect coords do not.
+                    var (cx, cy, cw, ch) = PdfRectToCanvas(box, rotation, bitmapW, bitmapH, rx1, ry1, rx2, ry2);
                     if (cw < 1 || ch < 1) continue;
 
                     int? targetPage = null;
@@ -2784,11 +3041,11 @@ namespace TDPdf
                 var cm = new ContextMenu();
                 if (lnk.Tag is string uriTag && uriTag.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
                     cm.Items.Add(MakeMenuItem("Copy Email Address", (_, _) =>
-                        Clipboard.SetText(uriTag["mailto:".Length..])));
+                        Clipboard.SetText(uriTag["mailto:".Length..]), null, null, "\uE715"));
                 else if (lnk.Tag is string httpTag)
-                    cm.Items.Add(MakeMenuItem("Copy URL", (_, _) => Clipboard.SetText(httpTag)));
+                    cm.Items.Add(MakeMenuItem("Copy URL", (_, _) => Clipboard.SetText(httpTag), null, null, "\uE71B"));
                 cm.Items.Add(MakeMenuItem("Remove Link from PDF", (_, _) =>
-                    RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex)));
+                    RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex), null, null, "\uE74D"));
                 overlay.ContextMenu = cm;
 
                 _annotationCanvas.Children.Add(overlay);
@@ -3318,12 +3575,18 @@ namespace TDPdf
             if (_doc is null || pageIndex < 0 || pageIndex >= _doc.PageCount) return result;
 
             var page = _doc.Pages[pageIndex];
-            // Use the MediaBox directly — PdfSharpCore swaps page.Width/Height for 90/270
-            // rotated pages to return visual dimensions, but field /Rect coords are always
-            // in the unrotated MediaBox coordinate space.
-            var mediaBox = page.MediaBox;
-            double pageW = mediaBox.Width  > 0 ? mediaBox.Width  : 595.28;
-            double pageH = mediaBox.Height > 0 ? mediaBox.Height : 841.89;
+            // Resolve the box the overlay's bitmap was actually rendered from: PDFium rasterizes the
+            // CropBox (falling back to the MediaBox), so field /Rect coordinates must be mapped
+            // relative to THAT box's own lower-left origin and size. GetVisiblePageBox also walks the
+            // page tree for an inherited box and never touches the create-on-read page.MediaBox /
+            // page.CropBox / page.Width getters — reading those returned an empty rectangle for an
+            // inherited box, which used to drop the page onto a hardcoded A4 size and shift every
+            // field overlay (worst near the top of the page) on US Letter and other non-A4 documents.
+            //
+            // The box is deliberately NOT rotated here: field /Rect coords live in unrotated user
+            // space, and PdfRectToCanvas maps them onto the already-rotated bitmap. (That is also why
+            // page.Width/Height are unusable — PdfSharpCore swaps them for 90/270 pages.)
+            var box = GetVisiblePageBox(page);
             int rotation = ((page.Rotate % 360) + 360) % 360;
 
             try
@@ -3346,40 +3609,9 @@ namespace TDPdf
                     double ry1 = rectArr.Elements.GetReal(1);
                     double rx2 = rectArr.Elements.GetReal(2);
                     double ry2 = rectArr.Elements.GetReal(3);
-                    if (rx1 > rx2) (rx1, rx2) = (rx2, rx1);
-                    if (ry1 > ry2) (ry1, ry2) = (ry2, ry1);
-
-                    // Map PDF rect (bottom-left origin, unrotated) to canvas coords. The
-                    // canvas matches the Docnet-rendered bitmap, which already applied the
-                    // page rotation, so we transform accordingly.
-                    double cx, cy, cw, ch;
-                    switch (rotation)
-                    {
-                        case 90:  // 90 CW: canvas is pageH-wide x pageW-tall
-                            cx = ry1         / pageH * canvasW;
-                            cy = rx1         / pageW * canvasH;
-                            cw = (ry2 - ry1) / pageH * canvasW;
-                            ch = (rx2 - rx1) / pageW * canvasH;
-                            break;
-                        case 180:
-                            cx = (pageW - rx2) / pageW * canvasW;
-                            cy = ry1           / pageH * canvasH;
-                            cw = (rx2 - rx1)   / pageW * canvasW;
-                            ch = (ry2 - ry1)   / pageH * canvasH;
-                            break;
-                        case 270: // 270 CW: canvas is pageH-wide x pageW-tall
-                            cx = (pageH - ry2) / pageH * canvasW;
-                            cy = (pageW - rx2) / pageW * canvasH;
-                            cw = (ry2 - ry1)   / pageH * canvasW;
-                            ch = (rx2 - rx1)   / pageW * canvasH;
-                            break;
-                        default:  // 0 — standard bottom-left PDF -> top-left canvas
-                            cx = rx1           / pageW * canvasW;
-                            cy = (pageH - ry2) / pageH * canvasH;
-                            cw = (rx2 - rx1)   / pageW * canvasW;
-                            ch = (ry2 - ry1)   / pageH * canvasH;
-                            break;
-                    }
+                    // Map the widget rect onto the Docnet/PDFium bitmap the canvas mirrors — the same
+                    // conversion the link overlays use.
+                    var (cx, cy, cw, ch) = PdfRectToCanvas(box, rotation, canvasW, canvasH, rx1, ry1, rx2, ry2);
                     if (cw < 2 || ch < 2) continue;
 
                     // Walk the parent chain to resolve inherited attributes.
@@ -4441,34 +4673,34 @@ namespace TDPdf
                 if (inMulti && _bmExtraSel.Count > 1)
                 {
                     menu.Items.Add(MakeMenuItem($"Delete ({_bmExtraSel.Count})",
-                                                (_, _2) => DeleteSelectedBookmarks(nref), "Delete"));
+                                                (_, _2) => DeleteSelectedBookmarks(nref), "Delete", null, "\uE74D"));
                 }
                 else
                 {
-                    menu.Items.Add(MakeMenuItem("_Rename", (_, _2) => BeginInlineRename(tvi, nref), "F2"));
-                    menu.Items.Add(MakeMenuItem("Add _child bookmark", (_, _2) => AddBookmarkInto(nref)));
-                    menu.Items.Add(MakeMenuItem("Set destination to current page", (_, _2) => SetBookmarkDestination(nref)));
+                    menu.Items.Add(MakeMenuItem("_Rename", (_, _2) => BeginInlineRename(tvi, nref), "F2", null, "\uE8AC"));
+                    menu.Items.Add(MakeMenuItem("Add _child bookmark", (_, _2) => AddBookmarkInto(nref), null, null, "\uE710"));
+                    menu.Items.Add(MakeMenuItem("Set destination to current page", (_, _2) => SetBookmarkDestination(nref), null, null, "\uE718"));
                     menu.Items.Add(new Separator());
                     int idx = nref.Parent.IndexOf(nref.Outline);
-                    var up = MakeMenuItem("Move _up", (_, _2) => MoveBookmark(nref, -1));
+                    var up = MakeMenuItem("Move _up", (_, _2) => MoveBookmark(nref, -1), null, null, "\uE74A");
                     up.IsEnabled = idx > 0;
                     menu.Items.Add(up);
-                    var down = MakeMenuItem("Move _down", (_, _2) => MoveBookmark(nref, +1));
+                    var down = MakeMenuItem("Move _down", (_, _2) => MoveBookmark(nref, +1), null, null, "\uE74B");
                     down.IsEnabled = idx >= 0 && idx < nref.Parent.Count - 1;
                     menu.Items.Add(down);
                     menu.Items.Add(new Separator());
-                    menu.Items.Add(MakeMenuItem("_Delete", (_, _2) => DeleteSelectedBookmarks(nref), "Delete"));
+                    menu.Items.Add(MakeMenuItem("_Delete", (_, _2) => DeleteSelectedBookmarks(nref), "Delete", null, "\uE74D"));
                 }
             }
             else
             {
-                menu.Items.Add(MakeMenuItem("_Add bookmark", (_, _2) => AddBookmarkInto(null)));
+                menu.Items.Add(MakeMenuItem("_Add bookmark", (_, _2) => AddBookmarkInto(null), null, null, "\uE710"));
                 bool hasAny = _doc?.Internals.Catalog.Elements.ContainsKey("/Outlines") == true
                               && _outlineTree.Items.Count > 1;   // ghost row + at least one real entry
                 if (hasAny)
                 {
                     menu.Items.Add(new Separator());
-                    menu.Items.Add(MakeMenuItem("Delete all bookmarks", (_, _2) => DeleteAllBookmarks()));
+                    menu.Items.Add(MakeMenuItem("Delete all bookmarks", (_, _2) => DeleteAllBookmarks(), null, null, "\uE74D"));
                 }
             }
             menu.PlacementTarget = _outlineTree;
@@ -4523,6 +4755,8 @@ namespace TDPdf
                 (_toolEditTextBtn, EditTool.EditText),
                 (_toolEditImageBtn, EditTool.EditImage),
                 (_toolHighlightBtn, EditTool.Highlight),
+                (_toolStrikeBtn, EditTool.Strikethrough),
+                (_toolUnderlineBtn, EditTool.Underline),
                 (_toolDrawBtn, EditTool.Draw),
                 (_toolSignatureBtn, EditTool.Signature),
                 (_toolImageBtn, EditTool.Image),
@@ -4547,6 +4781,8 @@ namespace TDPdf
                 EditTool.EditText => Cursors.IBeam,
                 EditTool.EditImage => Cursors.Hand,
                 EditTool.Highlight => Cursors.Cross,
+                EditTool.Strikethrough => Cursors.Cross,
+                EditTool.Underline => Cursors.Cross,
                 EditTool.Draw => Cursors.Pen,
                 EditTool.Signature => Cursors.Hand,
                 EditTool.Image => Cursors.Hand,
@@ -4557,8 +4793,8 @@ namespace TDPdf
                 _ => Cursors.Arrow
             };
 
-            // Show/hide draw settings bar
-            if (tool == EditTool.Draw || tool == EditTool.Highlight)
+            // Show/hide draw settings bar (the markup tools share it — colour + opacity)
+            if (tool is EditTool.Draw or EditTool.Highlight or EditTool.Strikethrough or EditTool.Underline)
                 ShowDrawSettings(tool);
             else
                 HideDrawSettings();
@@ -4640,30 +4876,179 @@ namespace TDPdf
 
         private bool IsPointerOperationActive =>
             _isDrawing || _isSelecting || _isDraggingAnnot || _isResizingSig ||
-            _isResizingImage || _isMovingAnnot || _isResizingAnnot || _isPanning;
+            _isResizingImage || _isMovingAnnot || _isResizingAnnot || _isPanning ||
+            _txtSelActive;
 
-        private void SidebarToggle_Click(object sender, RoutedEventArgs e)
+        // Sidebar toggle strip button and the View menu's "Toggle Sidebar" both land here.
+        private void SidebarToggle_Click(object sender, RoutedEventArgs e) =>
+            SetSidebarCollapsed(!_sidebarCollapsed, animate: true);
+
+        /// <summary>
+        /// Collapses the page sidebar to the 24px toggle strip, or expands it back to the last open
+        /// width. With <paramref name="animate"/> the column glides over a quarter second instead of
+        /// snapping (upstream KillerPDF v1.6.5); the content panel is pinned at a fixed width for
+        /// the duration and the border clips it, so thumbnails hold their size and slide out of view
+        /// rather than reflowing narrower every frame. View state only \u2014 never marks the document dirty.
+        /// </summary>
+        private void SetSidebarCollapsed(bool collapse, bool animate)
         {
-            _sidebarCollapsed = !_sidebarCollapsed;
-            if (_sidebarCollapsed)
+            FinishSidebarAnimation();   // land any glide already in flight before starting another
+
+            // Remember the width we are collapsing from so the next expand restores what the user
+            // was looking at rather than a hardcoded default. (Today the column is a fixed 180 with
+            // no splitter, so this is belt-and-braces \u2014 but it costs nothing and survives a splitter
+            // being added later.)
+            // SidebarCol is in the UNSCALED outer grid, so every width here is SCREEN px while the
+            // constants below are LOGICAL px; SbPx bridges the two at the current app scale
+            // (AppScale.cs). _sidebarExpandedWidth is read from ActualWidth, so it is already
+            // screen px and ApplyAppScale rescales it when the scale changes.
+            if (collapse && _sidebarCol.ActualWidth > SbPx(SidebarStripWidth))
+                _sidebarExpandedWidth = _sidebarCol.ActualWidth;
+
+            _sidebarCollapsed = collapse;
+            _sidebarToggleBtn.Content = collapse ? "\uE76C" : "\uE76B";   // ChevronRight / ChevronLeft (Segoe MDL2)
+            _sidebarToggleBtn.ToolTip = collapse ? "Expand sidebar" : "Collapse sidebar";
+            double target = collapse ? SbPx(SidebarStripWidth) : _sidebarExpandedWidth;
+
+            // Full screen owns the live column while it is active (it zeroes width AND MinWidth to
+            // get the strip out of the way). Writing to the column here would either be undone on
+            // exit or fight the restore, so instead re-point the snapshot ToggleFullScreen restores
+            // from \u2014 leaving F11 to land on the new sidebar state when it exits. Reached when the
+            // last document is closed with Ctrl+W while full screen.
+            if (_fullScreen)
             {
-                _sidebarBorder.Visibility = Visibility.Collapsed;
-                _sidebarCol.Width = new GridLength(24);
-                _sidebarCol.MinWidth = 24;
-                _sidebarToggleBtn.Content = "\uE76C"; // ChevronRight (Segoe MDL2)
-                _sidebarToggleBtn.ToolTip = "Expand sidebar";
+                _fsSidebarVis   = collapse ? Visibility.Collapsed : Visibility.Visible;
+                _fsSidebarWidth = new GridLength(target);
+                _fsSidebarMin   = SbPx(SidebarStripWidth);
+                return;
             }
-            else
+
+            if (!animate || !IsLoaded)
             {
-                _sidebarBorder.Visibility = Visibility.Visible;
-                _sidebarCol.Width = new GridLength(180);
-                _sidebarCol.MinWidth = 24;
-                _sidebarToggleBtn.Content = "\uE76B"; // ChevronLeft (Segoe MDL2)
-                _sidebarToggleBtn.ToolTip = "Collapse sidebar";
+                _sidebarBorder.Visibility = collapse ? Visibility.Collapsed : Visibility.Visible;
+                _sidebarCol.Width = new GridLength(target);
+                _sidebarCol.MinWidth = SbPx(SidebarStripWidth);
+                SettleSidebarPageView();
+                return;
             }
+
+            // The border is what does the clipping, so it stays visible for the whole glide; on a
+            // collapse it is hidden only once the strip width has been reached.
+            _sidebarBorder.Visibility = Visibility.Visible;
+            _sidebarCol.MinWidth = SbPx(SidebarStripWidth);
+            // The pinned content width is LOGICAL — the panel lives inside the scaled grid — so the
+            // screen-px column measurements are divided back out by the app scale.
+            BeginSidebarSlide(collapse
+                // Hold the open size and clip it away. The column-derived width is a fallback for the
+                // case where layout has not run since the panel was last resized.
+                ? Math.Max(_sidebarContentPanel.ActualWidth,
+                           (_sidebarCol.ActualWidth - SbPx(SidebarStripWidth)) / _appScale)
+                // Expanding: full size from the very first frame, revealed by the growing border.
+                : Math.Max(0, (target - SbPx(SidebarStripWidth)) / _appScale));
+            AnimateSidebarWidth(target, () =>
+            {
+                if (collapse) _sidebarBorder.Visibility = Visibility.Collapsed;
+                EndSidebarSlide();
+                SettleSidebarPageView();
+            });
+        }
+
+        // Pins the sidebar content at a fixed width, anchored to the column's left edge (the sidebar
+        // lives on the left, so the far edge is the one that gets clipped away), and turns on
+        // clipping so the overflow is cut rather than drawn outside the border.
+        private void BeginSidebarSlide(double contentWidth)
+        {
+            if (contentWidth <= 0) return;
+            _sidebarContentPanel.Width = contentWidth;
+            _sidebarContentPanel.HorizontalAlignment = HorizontalAlignment.Left;
+            _sidebarBorder.ClipToBounds = true;
+        }
+
+        // Hands the content back to normal stretch layout once the glide lands.
+        private void EndSidebarSlide()
+        {
+            _sidebarContentPanel.Width = double.NaN;
+            _sidebarContentPanel.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _sidebarBorder.ClipToBounds = false;
+        }
+
+        // Glides the sidebar column to a new width. Completion clears the animation and writes the
+        // target as a plain local value, so full screen and any future splitter can keep assigning
+        // Width directly (an animation left in place outranks a local value and would swallow them).
+        private void AnimateSidebarWidth(double target, Action onDone)
+        {
+            _sidebarAnimTarget = target;
+            _sidebarAnimDone = onDone;
+            var anim = new TDPdf.Controls.GridLengthAnimation
+            {
+                From     = new GridLength(Math.Max(0, _sidebarCol.ActualWidth)),
+                To       = new GridLength(target),
+                Duration = TimeSpan.FromMilliseconds(250),
+                Easing   = new System.Windows.Media.Animation.CubicEase
+                           { EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut },
+            };
+            anim.Completed += (_, _) => FinishSidebarAnimation();
+            _sidebarCol.BeginAnimation(ColumnDefinition.WidthProperty, anim);
+        }
+
+        // Lands the running glide immediately: drop the animation, write the target width as a local
+        // value, and run the pending finish work exactly once. Safe to call when nothing is running.
+        // Called both from the animation's Completed handler and from anything that needs the column
+        // back under direct control right now (ToggleFullScreen, a second toggle mid-glide).
+        private void FinishSidebarAnimation()
+        {
+            if (_sidebarAnimDone is null) return;
+            var done = _sidebarAnimDone;
+            _sidebarAnimDone = null;
+            _sidebarCol.BeginAnimation(ColumnDefinition.WidthProperty, null);
+            _sidebarCol.Width = new GridLength(_sidebarAnimTarget);
+            done();
+        }
+
+        // One crisp re-render after the pane has finished moving. During the glide every frame fires
+        // PagePreviewPanel_SizeChanged, whose debounced fit keeps the page tracking the pane; this is
+        // the single full pass that settles it afterwards.
+        private void SettleSidebarPageView()
+        {
             if (PageList.SelectedIndex >= 0)
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     () => RefreshPageView(PageList.SelectedIndex));
+        }
+
+        /// <summary>
+        /// Keeps the sidebar in step with whether a document is open (upstream KillerPDF v1.6.6): an
+        /// empty workspace has no thumbnails to show, so the rail gets out of the way and the page
+        /// jump box / "/ \u2013" total hide with it; opening a document brings them back.
+        /// </summary>
+        /// <remarks>
+        /// The rule fires only on the empty \u2194 document transition, and only from the two places that
+        /// actually make that transition (a document finished opening; the last tab closed) \u2014 never
+        /// on a tab switch, and never on the transient empty tab OpenInTabAsync creates on its way to
+        /// a second document. And it only moves a sidebar that is not already where the rule wants
+        /// it, so a manual toggle sticks: collapse the rail with a document open and opening another
+        /// document leaves it collapsed. An explicit choice is only reset by the workspace going
+        /// empty and filling again.
+        /// </remarks>
+        private void SyncSidebarToDocState(bool hasDoc, bool startup)
+        {
+            UpdatePageControlsForDoc(hasDoc);
+
+            if (_sidebarSyncedHasDoc == hasDoc) return;   // not a transition
+            _sidebarSyncedHasDoc = hasDoc;
+
+            bool wantCollapsed = !hasDoc;
+            if (_sidebarCollapsed == wantCollapsed) return;   // user already put it there
+            SetSidebarCollapsed(wantCollapsed, animate: !startup);   // instant at launch, glides at runtime
+        }
+
+        // The page jump box and its "/ \u2013" total mean nothing with no document open. The row they sit
+        // in (PageControlsRow) is owned by the PAGES / OUTLINES tab selection, so this has to be
+        // per-control \u2014 the PAGES header stays put and the row keeps its shape.
+        private void UpdatePageControlsForDoc(bool hasDoc)
+        {
+            var vis = hasDoc ? Visibility.Visible : Visibility.Collapsed;
+            _pageJumpBox.Visibility = vis;
+            _pageTotalLabel.Visibility = vis;
         }
 
         private void ToolSelect_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Select);
@@ -4671,6 +5056,8 @@ namespace TDPdf
         private void ToolEditText_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.EditText);
         private void ToolEditImage_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.EditImage);
         private void ToolHighlight_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Highlight);
+        private void ToolStrike_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Strikethrough);
+        private void ToolUnderline_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Underline);
         private void ToolDraw_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Draw);
         private void ToolImage_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Image);
         private void ToolPan_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Pan);
@@ -5093,7 +5480,7 @@ namespace TDPdf
                 if (inkTarget is not null) { inkTarget.SetColor(Color.FromArgb(inkTarget.ColorA, c.R, c.G, c.B)); RestyleReselect(inkTarget); return; }
                 if (hlTarget is not null) { hlTarget.SetColor(Color.FromArgb(hlTarget.ColorA, c.R, c.G, c.B)); RestyleReselect(hlTarget); return; }
                 if (tool == EditTool.Draw) _drawColor = Color.FromArgb(_drawOpacity, c.R, c.G, c.B);
-                else _highlightColor = Color.FromArgb(_highlightColor.A, c.R, c.G, c.B);
+                else SetMarkupToolColor(tool, Color.FromArgb(MarkupToolColor(tool).A, c.R, c.G, c.B));
                 ShowDrawSettings(tool);
             }
             void ApplyOpacity(byte a)
@@ -5101,7 +5488,11 @@ namespace TDPdf
                 if (inkTarget is not null) { inkTarget.ColorA = a; RestyleLive(inkTarget); return; }
                 if (hlTarget is not null) { hlTarget.ColorA = a; RestyleLive(hlTarget); return; }
                 if (tool == EditTool.Draw) { _drawOpacity = a; _drawColor = Color.FromArgb(a, _drawColor.R, _drawColor.G, _drawColor.B); }
-                else _highlightColor = Color.FromArgb(a, _highlightColor.R, _highlightColor.G, _highlightColor.B);
+                else
+                {
+                    var mc = MarkupToolColor(tool);
+                    SetMarkupToolColor(tool, Color.FromArgb(a, mc.R, mc.G, mc.B));
+                }
             }
             void ApplyDrawWidth(double w)
             {
@@ -5124,7 +5515,8 @@ namespace TDPdf
             Color activeColor =
                 inkTarget is not null ? Color.FromRgb(inkTarget.ColorR, inkTarget.ColorG, inkTarget.ColorB) :
                 hlTarget is not null ? Color.FromRgb(hlTarget.ColorR, hlTarget.ColorG, hlTarget.ColorB) :
-                tool == EditTool.Draw ? _drawColor : Color.FromRgb(_highlightColor.R, _highlightColor.G, _highlightColor.B);
+                tool == EditTool.Draw ? _drawColor
+                : Color.FromRgb(MarkupToolColor(tool).R, MarkupToolColor(tool).G, MarkupToolColor(tool).B);
             foreach (var color in SwatchColors)
             {
                 var swatch = new Border
@@ -5198,7 +5590,8 @@ namespace TDPdf
                 FontFamily = new FontFamily("Segoe UI"), FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0)
             });
-            byte currentOpacity = inkTarget?.ColorA ?? hlTarget?.ColorA ?? (tool == EditTool.Draw ? _drawOpacity : _highlightColor.A);
+            byte currentOpacity = inkTarget?.ColorA ?? hlTarget?.ColorA
+                ?? (tool == EditTool.Draw ? _drawOpacity : MarkupToolColor(tool).A);
             var opacitySlider = new Slider
             {
                 Minimum = 10, Maximum = 255, Value = currentOpacity,
@@ -5567,8 +5960,15 @@ namespace TDPdf
 
             void ApplyKind(ShapeKind k)
             {
+                // Leaving the Polygon sub-mode mid-placement would strand the vertices; settle
+                // them first (see the unfinished-polygon rule above ShapePolyClick).
+                if (k != ShapeKind.Polygon) ResolveShapePolygon(commit: true);
                 _shapeKind = k;
-                if (target is not null) { target.Kind = k; RestyleReselect(target); }
+                // Restyling an existing shape can't convert between the two-point kinds and a
+                // polygon — the geometry models are different — so the kind toggles only retarget
+                // the tool default when a polygon is (or would become) involved.
+                if (target is not null && k != ShapeKind.Polygon && target.Kind != ShapeKind.Polygon)
+                { target.Kind = k; RestyleReselect(target); }
                 else ShowShapeSettings();
             }
             void ApplyStroke(Color c)
@@ -5625,6 +6025,8 @@ namespace TDPdf
             AddKindToggle("\uE91A", ShapeKind.Rectangle, "Rectangle");
             AddKindToggle("\uEA3A", ShapeKind.Ellipse, "Ellipse");
             AddKindToggle("\uE739", ShapeKind.Line, "Line");
+            AddKindToggle("\uE734", ShapeKind.Polygon,
+                "Freeform polygon \u2014 click to place points, click the first point or double-click to close");
 
             panel.Children.Add(new Rectangle
             {
@@ -5773,6 +6175,193 @@ namespace TDPdf
                 (PagePreviewPanel.Parent as Grid)?.Children.Remove(_shapeSettingsBar);
                 _shapeSettingsBar = null;
             }
+        }
+
+        // ============================================================
+        // Free-form polygon placement (Shapes tool)
+        // ============================================================
+        // Upstream KillerPDF v1.6.5's fourth shape sub-mode. Vertices go down click by click on
+        // the page the first click landed on; the shape closes when a click lands on the first
+        // vertex's snap target (which lights up as the cursor nears it) or on a double-click.
+        // Esc abandons the shape, Backspace removes the last vertex.
+        //
+        // UNFINISHED-POLYGON RULE: anything that takes the document out from under the gesture —
+        // switching tool or shape sub-mode, switching tab, changing page, saving / flattening /
+        // printing, closing the document — COMMITS a polygon that already has 3+ vertices and
+        // DISCARDS anything smaller (which is not a shape yet). Only Esc discards outright. This
+        // mirrors how an open text box is committed rather than thrown away (CommitActiveTextBox,
+        // which is the chokepoint ResolveShapePolygon hangs off).
+
+        /// <summary>
+        /// One Shapes-tool click while the Polygon sub-mode is active: start the shape, add a
+        /// vertex, or close it when the click lands on the first vertex's snap target.
+        /// </summary>
+        private void ShapePolyClick(int pageIdx, Point pos)
+        {
+            if (_polyVertices.Count == 0)
+            {
+                ClearSelection();
+                _polyPage = pageIdx;
+
+                _polyPreview = new Polyline
+                {
+                    Stroke = FrozenSolidColorBrush(_shapeStrokeColor),
+                    StrokeThickness = _shapeStrokeWidth,
+                    StrokeLineJoin = PenLineJoin.Round,
+                    IsHitTestVisible = false
+                };
+                _polyPreview.Points.Add(pos);
+
+                // Rubber band from the last placed vertex to the cursor: same hue, half weight,
+                // dashed, so it reads as provisional next to the committed edges.
+                _polyRubber = new Polyline
+                {
+                    Stroke = FrozenSolidColorBrush(Color.FromArgb(
+                        (byte)Math.Max(70, _shapeStrokeColor.A / 2),
+                        _shapeStrokeColor.R, _shapeStrokeColor.G, _shapeStrokeColor.B)),
+                    StrokeThickness = Math.Max(1, _shapeStrokeWidth / 2),
+                    StrokeDashArray = new DoubleCollection { 4, 3 },
+                    IsHitTestVisible = false
+                };
+                _polyRubber.Points.Add(pos);
+                _polyRubber.Points.Add(pos);
+
+                // Snap ring over the first vertex — hidden until a click there would actually close.
+                _polySnapDot = new Ellipse
+                {
+                    Width = 14, Height = 14,
+                    StrokeThickness = 2,
+                    Stroke = (SolidColorBrush)FindResource("AccentGreen"),
+                    Fill = Brushes.Transparent,
+                    IsHitTestVisible = false,
+                    Visibility = Visibility.Collapsed
+                };
+                Canvas.SetLeft(_polySnapDot, pos.X - 7);
+                Canvas.SetTop(_polySnapDot, pos.Y - 7);
+
+                _annotationCanvas.Children.Add(_polyPreview);
+                _annotationCanvas.Children.Add(_polyRubber);
+                _annotationCanvas.Children.Add(_polySnapDot);
+                _polyVertices.Add(pos);
+                SetStatus("Polygon: click to add points — click the first point or double-click to close, "
+                          + "Backspace removes the last point, Esc cancels");
+                return;
+            }
+
+            if (pageIdx != _polyPage) return;   // the shape stays on the page it started on
+
+            if (_polyVertices.Count >= 3 && (pos - _polyVertices[0]).Length <= ShapePolySnapPx)
+            {
+                CommitShapePolygon();
+                return;
+            }
+
+            _polyVertices.Add(pos);
+            _polyPreview?.Points.Add(pos);
+            if (_polyRubber is not null) _polyRubber.Points[0] = pos;
+        }
+
+        /// <summary>
+        /// Mouse-move while a polygon is being placed: track the rubber band and light the
+        /// first-vertex snap ring once a click there would close the shape.
+        /// </summary>
+        private void UpdateShapePolyRubber(Point pos)
+        {
+            if (_polyRubber is not null && _polyRubber.Points.Count > 0)
+                _polyRubber.Points[_polyRubber.Points.Count - 1] = pos;
+            if (_polySnapDot is not null)
+                _polySnapDot.Visibility =
+                    _polyVertices.Count >= 3 && (pos - _polyVertices[0]).Length <= ShapePolySnapPx
+                        ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>Turns the in-progress vertices into a real <see cref="ShapeAnnotation"/>.</summary>
+        private void CommitShapePolygon()
+        {
+            int page = _polyPage;
+            var pts = new List<Point>(_polyVertices);
+            ResetShapePolyState();   // clears the preview visuals BEFORE the page re-render below
+
+            // A double-click close leaves a duplicate of the vertex the first click placed; drop
+            // any trailing point that sits on top of its predecessor.
+            while (pts.Count >= 2 && (pts[^1] - pts[^2]).Length < 2) pts.RemoveAt(pts.Count - 1);
+            if (pts.Count < 3 || page < 0) return;
+
+            var sa = new ShapeAnnotation
+            {
+                PageIndex = page,
+                Kind = ShapeKind.Polygon,
+                StrokeWidth = _shapeStrokeWidth,
+                HasFill = _shapeHasFill
+            };
+            sa.Points.AddRange(pts);
+            sa.SetStrokeColor(_shapeStrokeColor);
+            sa.SetFillColor(_shapeFillColor);
+            AddAnnotation(sa);       // pushes the undo snapshot and marks the document dirty
+            RenderAllAnnotations(page);
+            SetStatus($"Polygon added ({pts.Count} points)");
+        }
+
+        /// <summary>
+        /// Settles an in-progress polygon so it can never be left dangling. With
+        /// <paramref name="commit"/> a shape that already has 3+ vertices is kept; everything
+        /// else is discarded. Safe no-op when no polygon is being placed.
+        /// </summary>
+        private void ResolveShapePolygon(bool commit)
+        {
+            if (_polyVertices.Count == 0) return;
+            if (commit && _polyVertices.Count >= 3) CommitShapePolygon();
+            else
+            {
+                ResetShapePolyState();
+                SetStatus("Polygon cancelled");
+            }
+        }
+
+        /// <summary>Backspace: drop the last placed vertex; removing the only one cancels.</summary>
+        private void ShapePolyBackspace()
+        {
+            if (_polyVertices.Count == 0) return;
+            if (_polyVertices.Count == 1) { ResolveShapePolygon(commit: false); return; }
+            _polyVertices.RemoveAt(_polyVertices.Count - 1);
+            if (_polyPreview is not null && _polyPreview.Points.Count > 0)
+                _polyPreview.Points.RemoveAt(_polyPreview.Points.Count - 1);
+            if (_polyRubber is not null) _polyRubber.Points[0] = _polyVertices[^1];
+            if (_polySnapDot is not null && _polyVertices.Count < 3)
+                _polySnapDot.Visibility = Visibility.Collapsed;
+        }
+
+        /// <summary>Removes the preview visuals and clears the per-document placement state.</summary>
+        private void ResetShapePolyState()
+        {
+            if (_polyPreview is not null) _annotationCanvas.Children.Remove(_polyPreview);
+            if (_polyRubber is not null) _annotationCanvas.Children.Remove(_polyRubber);
+            if (_polySnapDot is not null) _annotationCanvas.Children.Remove(_polySnapDot);
+            _polyVertices.Clear();
+            _polyPreview = null;
+            _polyRubber = null;
+            _polySnapDot = null;
+            _polyPage = -1;
+        }
+
+        /// <summary>
+        /// True when <paramref name="pos"/> is inside the polygon (even-odd rule) or within
+        /// <paramref name="edgeTol"/> of one of its edges, closing edge included.
+        /// </summary>
+        private static bool HitTestPolygon(IReadOnlyList<Point> pts, Point pos, double edgeTol, bool filled)
+        {
+            if (pts.Count < 2) return false;
+            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
+                if (DistancePointToSegment(pos, pts[j], pts[i]) <= edgeTol) return true;
+            if (!filled) return false;
+            bool inside = false;
+            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
+            {
+                if (pts[i].Y > pos.Y != pts[j].Y > pos.Y &&
+                    pos.X < (pts[j].X - pts[i].X) * (pos.Y - pts[i].Y) / (pts[j].Y - pts[i].Y) + pts[i].X)
+                    inside = !inside;
+            }
+            return inside;
         }
 
         // ============================================================
@@ -6987,8 +7576,11 @@ namespace TDPdf
                     }
                     else
                     {
-                        // Single click: check if hitting a PlacedAnnotation first — select and drag
-                        bool hitPlaced = false;
+                        // Resolve the topmost annotation under the press FIRST, in exactly the old
+                        // order — placed annotations (signature / image) outrank the rest — so the
+                        // flowing-selection decision below can be made without changing it.
+                        PageAnnotation? underPress = null;
+                        Rect underPressBounds = Rect.Empty;
                         if (_annotations.TryGetValue(pageIdx, out var pageAnnotsList))
                         {
                             for (int i = pageAnnotsList.Count - 1; i >= 0; i--)
@@ -6996,22 +7588,13 @@ namespace TDPdf
                                 if (pageAnnotsList[i] is PlacedAnnotation pa &&
                                     HitTestAnnotation(pa, pos, out Rect paBounds))
                                 {
-                                    ClearSelection();
-                                    RenderAllAnnotations(pageIdx);
-                                    SelectAnnotation(pa, paBounds);
-                                    PushPageSnapshot(pa.PageIndex);
-                                    _isDraggingAnnot = true;
-                                    _dragAnnotStart = pos;
-                                    _dragAnnotOrigPos = pa.Position;
-                                    _dragAnnot = pa;
-                                    _annotationCanvas.CaptureMouse();
-                                    e.Handled = true;
-                                    hitPlaced = true;
+                                    underPress = pa;
+                                    underPressBounds = paBounds;
                                     break;
                                 }
                             }
-                            // Then try non-placed annotations (Shape, Highlight, Ink, Text) — select and move
-                            if (!hitPlaced)
+                            // Then non-placed annotations (Shape, Highlight, Ink, Text).
+                            if (underPress is null)
                             {
                                 for (int i = pageAnnotsList.Count - 1; i >= 0; i--)
                                 {
@@ -7020,18 +7603,58 @@ namespace TDPdf
                                     if (a is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation
                                         && HitTestAnnotation(a, pos, out Rect aBounds))
                                     {
-                                        ClearSelection();
-                                        RenderAllAnnotations(pageIdx);
-                                        SelectAnnotation(a, aBounds);
-                                        BeginAnnotMove(a, pos);
-                                        e.Handled = true;
-                                        hitPlaced = true;
+                                        underPress = a;
+                                        underPressBounds = aBounds;
                                         break;
                                     }
                                 }
                             }
                         }
-                        if (!hitPlaced)
+
+                        // Flowing text selection (upstream KillerPDF v1.6.5, #127): when the press
+                        // lands ON text the character run owns the DRAG, so a paragraph-covering
+                        // highlight no longer makes the text underneath unselectable. A plain CLICK
+                        // still selects that highlight — resolved on mouse-up via _txtSelClickAnnot.
+                        // Everything else keeps drag priority exactly as before, so dragging a
+                        // signature, image, shape, ink stroke, or text box that happens to sit over
+                        // text still moves it on the first press. Shift and an armed OCR region
+                        // capture both force the classic marquee.
+                        bool marqueeForced = _ocrRegionMode
+                            || (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+                        bool textMayWin = underPress is null or HighlightAnnotation;
+                        if (!marqueeForced && textMayWin && TryBeginTextSelection(pageIdx, pos))
+                        {
+                            ClearSelection();
+                            RenderAllAnnotations(pageIdx);
+                            _txtSelClickAnnot = underPress;
+                            _txtSelClickAnnotBounds = underPressBounds;
+                            _annotationCanvas.CaptureMouse();
+                            e.Handled = true;
+                            break;
+                        }
+
+                        if (underPress is PlacedAnnotation placed)
+                        {
+                            ClearSelection();
+                            RenderAllAnnotations(pageIdx);
+                            SelectAnnotation(placed, underPressBounds);
+                            PushPageSnapshot(placed.PageIndex);
+                            _isDraggingAnnot = true;
+                            _dragAnnotStart = pos;
+                            _dragAnnotOrigPos = placed.Position;
+                            _dragAnnot = placed;
+                            _annotationCanvas.CaptureMouse();
+                            e.Handled = true;
+                        }
+                        else if (underPress is not null)
+                        {
+                            ClearSelection();
+                            RenderAllAnnotations(pageIdx);
+                            SelectAnnotation(underPress, underPressBounds);
+                            BeginAnnotMove(underPress, pos);
+                            e.Handled = true;
+                        }
+                        else
                         {
                             ClearSelection();
                             ClearTextSelection();
@@ -7039,12 +7662,15 @@ namespace TDPdf
                             _selectStart = pos;
                             _selectRect = new Rectangle
                             {
-                                Fill = FrozenSolidColorBrush(Color.FromArgb(40, 74, 130, 255)),
-                                Stroke = FrozenSolidColorBrush(Color.FromArgb(120, 74, 130, 255)),
                                 StrokeThickness = 1,
                                 Width = 0, Height = 0,
                                 IsHitTestVisible = false
                             };
+                            // Themed, not hardcoded: MarqueeFill / MarqueeStroke are the selection
+                            // accent at marquee alphas, and a resource reference (rather than a
+                            // brush snapshot) means the box follows a live theme switch.
+                            _selectRect.SetResourceReference(Shape.FillProperty, "MarqueeFill");
+                            _selectRect.SetResourceReference(Shape.StrokeProperty, "MarqueeStroke");
                             Canvas.SetLeft(_selectRect, pos.X);
                             Canvas.SetTop(_selectRect, pos.Y);
                             _annotationCanvas.Children.Add(_selectRect);
@@ -7073,7 +7699,42 @@ namespace TDPdf
                     break;
 
                 case EditTool.Highlight:
+                case EditTool.Strikethrough:
+                case EditTool.Underline:
+                {
+                    // Markup FLOWS along the character runs exactly like text selection; the release
+                    // turns the covered lines into one grouped annotation (upstream KillerPDF
+                    // v1.6.5, #127).
                     ClearSelection();
+                    ClearTextSelection();
+                    if (TryBeginTextSelection(pageIdx, pos))
+                    {
+                        _txtSelCommitTool = _currentTool;
+                        _annotationCanvas.CaptureMouse();
+                        e.Handled = true;
+                        break;
+                    }
+                    // Nothing to flow along.
+                    //
+                    // Strikethrough and Underline are meaningless as a free rectangle, so they only
+                    // ever hint — they are new tools with no prior behaviour to preserve.
+                    //
+                    // The highlighter is different: dragging a rectangle is what it has always done,
+                    // and on a scan it is the ONLY thing that works. Upstream could drop that
+                    // because their Shapes tool's Box sub-mode explicitly inherited the old
+                    // highlighter gesture; ours inherited nothing, so dropping it here would be a
+                    // straight capability loss. It therefore keeps the classic drag in both
+                    // no-text cases and just SAYS why it is not hugging words.
+                    bool hasText = PageHasTextLayer(pageIdx);
+                    if (_currentTool != EditTool.Highlight)
+                    {
+                        SetStatus(hasText ? NoTextHereHint : NoTextLayerHint);
+                        e.Handled = true;
+                        break;
+                    }
+                    // Non-blocking explanation, only when the whole page has no text layer; missing
+                    // the words on a page that does have text is self-evident and stays silent.
+                    if (!hasText) SetStatus(NoTextLayerHighlightHint);
                     _isDrawing = true;
                     _drawStart = pos;
                     var rect = new Rectangle
@@ -7087,6 +7748,7 @@ namespace TDPdf
                     _activePreview = rect;
                     _annotationCanvas.CaptureMouse();
                     break;
+                }
 
                 case EditTool.Crop:
                     ClearSelection();
@@ -7178,6 +7840,18 @@ namespace TDPdf
 
                 case EditTool.Shape:
                 {
+                    // Freeform polygon: vertices go down click by click instead of being dragged
+                    // out, and a double-click on the third-or-later vertex closes the shape (the
+                    // first click of the pair already placed a point there — CommitShapePolygon
+                    // drops the duplicate).
+                    if (_shapeKind == ShapeKind.Polygon)
+                    {
+                        if (e.ClickCount == 2 && _polyVertices.Count >= 3) CommitShapePolygon();
+                        else ShapePolyClick(pageIdx, pos);
+                        e.Handled = true;
+                        break;
+                    }
+
                     ClearSelection();
                     _isDrawing = true;
                     _drawStart = pos;
@@ -7260,9 +7934,39 @@ namespace TDPdf
         /// Snapshot the geometric state of an annotation so a move or resize can be applied
         /// relative to the starting state without compounding rounding errors.
         /// </summary>
+        /// <summary>
+        /// Captured geometry of a <see cref="ShapeAnnotation"/>. Carries both geometry models:
+        /// Start/End for rectangle / ellipse / line, and <see cref="Points"/> for a polygon
+        /// (null for the others), so one capture type covers every shape kind.
+        /// </summary>
+        private sealed class ShapeGeom
+        {
+            public Point Start;
+            public Point End;
+            public double StrokeWidth;
+            public List<Point>? Points;
+        }
+
+        /// <summary>
+        /// Captured geometry of a <see cref="MarkupAnnotation"/>: the union bounds plus the per-line
+        /// rects, so a move/resize can be applied relative to the start without the lines drifting
+        /// out of step with the bounds.
+        /// </summary>
+        private sealed class MarkupGeom
+        {
+            public Rect Bounds;
+            public List<Rect> Lines = new();
+        }
+
         private static object CaptureGeometry(PageAnnotation annot) => annot switch
         {
-            ShapeAnnotation s => (Start: s.Start, End: s.End, StrokeWidth: s.StrokeWidth),
+            ShapeAnnotation s => new ShapeGeom
+            {
+                Start = s.Start, End = s.End, StrokeWidth = s.StrokeWidth,
+                Points = s.Kind == ShapeKind.Polygon ? new List<Point>(s.Points) : null
+            },
+            // Markup must come before HighlightAnnotation — it is a subclass.
+            MarkupAnnotation m => new MarkupGeom { Bounds = m.Bounds, Lines = new List<Rect>(m.LineRects) },
             HighlightAnnotation h => h.Bounds,
             InkAnnotation i => new List<Point>(i.Points),
             TextAnnotation t => (Position: t.Position, Width: t.Width, Height: t.Height),
@@ -7278,8 +7982,20 @@ namespace TDPdf
             if (original is null) return false;
             switch (annot)
             {
-                case ShapeAnnotation s when original is ValueTuple<Point, Point, double> o:
-                    return s.Start == o.Item1 && s.End == o.Item2;
+                case ShapeAnnotation s when original is ShapeGeom o:
+                    if (o.Points is not null)
+                    {
+                        if (s.Points.Count != o.Points.Count) return false;
+                        for (int i = 0; i < o.Points.Count; i++)
+                            if (s.Points[i] != o.Points[i]) return false;
+                        return true;
+                    }
+                    return s.Start == o.Start && s.End == o.End;
+                case MarkupAnnotation m when original is MarkupGeom mo:
+                    if (m.LineRects.Count != mo.Lines.Count) return false;
+                    for (int i = 0; i < mo.Lines.Count; i++)
+                        if (m.LineRects[i] != mo.Lines[i]) return false;
+                    return m.Bounds == mo.Bounds;
                 case HighlightAnnotation h when original is Rect r:
                     return h.Bounds == r;
                 case InkAnnotation ink when original is List<Point> pts:
@@ -7300,9 +8016,23 @@ namespace TDPdf
             double dy = cur.Y - start.Y;
             switch (annot)
             {
-                case ShapeAnnotation s when original is ValueTuple<Point, Point, double> o:
-                    s.Start = new Point(o.Item1.X + dx, o.Item1.Y + dy);
-                    s.End   = new Point(o.Item2.X + dx, o.Item2.Y + dy);
+                case ShapeAnnotation s when original is ShapeGeom o:
+                    if (o.Points is not null)
+                    {
+                        s.Points.Clear();
+                        foreach (var p in o.Points) s.Points.Add(new Point(p.X + dx, p.Y + dy));
+                        break;
+                    }
+                    s.Start = new Point(o.Start.X + dx, o.Start.Y + dy);
+                    s.End   = new Point(o.End.X + dx, o.End.Y + dy);
+                    break;
+                // Markup carries per-line rects as well as the union bounds; both move together.
+                // Matched before HighlightAnnotation — it is a subclass.
+                case MarkupAnnotation m when original is MarkupGeom mo:
+                    m.LineRects.Clear();
+                    foreach (var lr in mo.Lines)
+                        m.LineRects.Add(new Rect(lr.X + dx, lr.Y + dy, lr.Width, lr.Height));
+                    m.Bounds = new Rect(mo.Bounds.X + dx, mo.Bounds.Y + dy, mo.Bounds.Width, mo.Bounds.Height);
                     break;
                 case HighlightAnnotation h when original is Rect r:
                     h.Bounds = new Rect(r.X + dx, r.Y + dy, r.Width, r.Height);
@@ -7321,11 +8051,46 @@ namespace TDPdf
         {
             switch (annot)
             {
-                case ShapeAnnotation s when original is ValueTuple<Point, Point, double> o:
+                case ShapeAnnotation s when original is ShapeGeom o:
                 {
+                    if (o.Points is not null)
+                    {
+                        // Polygon: scale the vertices about the bounding box's top-left, exactly
+                        // like the ink path below, so the corner handle stretches the whole shape.
+                        if (o.Points.Count == 0) break;
+                        double pMinX = o.Points.Min(p => p.X), pMinY = o.Points.Min(p => p.Y);
+                        double pMaxX = o.Points.Max(p => p.X), pMaxY = o.Points.Max(p => p.Y);
+                        double pOrigW = Math.Max(1, pMaxX - pMinX), pOrigH = Math.Max(1, pMaxY - pMinY);
+                        double pNewW = Math.Max(4, pOrigW + (cur.X - start.X));
+                        double pNewH = Math.Max(4, pOrigH + (cur.Y - start.Y));
+                        double psx = pNewW / pOrigW, psy = pNewH / pOrigH;
+                        s.Points.Clear();
+                        foreach (var p in o.Points)
+                            s.Points.Add(new Point(pMinX + (p.X - pMinX) * psx, pMinY + (p.Y - pMinY) * psy));
+                        break;
+                    }
                     // Anchor to Start; drag End.
-                    s.Start = o.Item1;
-                    s.End = new Point(o.Item2.X + (cur.X - start.X), o.Item2.Y + (cur.Y - start.Y));
+                    s.Start = o.Start;
+                    s.End = new Point(o.End.X + (cur.X - start.X), o.End.Y + (cur.Y - start.Y));
+                    break;
+                }
+                // Markup: stretch the union box from its top-left and carry every line rect with
+                // it proportionally. Matched before HighlightAnnotation — it is a subclass.
+                case MarkupAnnotation m when original is MarkupGeom mo:
+                {
+                    double origW = Math.Max(1, mo.Bounds.Width);
+                    double origH = Math.Max(1, mo.Bounds.Height);
+                    double newW = Math.Max(4, mo.Bounds.Width + (cur.X - start.X));
+                    double newH = Math.Max(4, mo.Bounds.Height + (cur.Y - start.Y));
+                    double msx = newW / origW, msy = newH / origH;
+                    m.LineRects.Clear();
+                    foreach (var lr in mo.Lines)
+                        m.LineRects.Add(new Rect(
+                            mo.Bounds.X + (lr.X - mo.Bounds.X) * msx,
+                            mo.Bounds.Y + (lr.Y - mo.Bounds.Y) * msy,
+                            Math.Max(1, lr.Width * msx),
+                            Math.Max(1, lr.Height * msy)));
+                    m.Bounds = new Rect(mo.Bounds.X, mo.Bounds.Y, newW, newH);
                     break;
                 }
                 case HighlightAnnotation h when original is Rect r:
@@ -7401,6 +8166,15 @@ namespace TDPdf
             var pos = e.GetPosition(_annotationCanvas);
             pos.X = Math.Clamp(pos.X, 0, _annotationCanvas.ActualWidth);
             pos.Y = Math.Clamp(pos.Y, 0, _annotationCanvas.ActualHeight);
+
+            // Shapes tool, freeform polygon: track the rubber band from the last placed vertex and
+            // light the first-vertex snap ring. No button is held during placement, so this runs
+            // ahead of every drag path below (and after the pan check, which owns middle-drag).
+            if (_currentTool == EditTool.Shape && _polyVertices.Count > 0)
+            {
+                UpdateShapePolyRubber(pos);
+                return;
+            }
 
             // Generic annotation move
             if (_isMovingAnnot && _movingAnnot is not null && _moveOriginalGeom is not null)
@@ -7479,6 +8253,23 @@ namespace TDPdf
                 _annotationCanvas.Children.Add(_selectionBorder!);
                 _annotationCanvas.Children.Add(_resizeHandle!);
                 return;
+            }
+
+            // Flowing text selection drag (upstream KillerPDF v1.6.5, #127): move the focus caret
+            // and repaint the per-line quads. Runs ahead of the rectangle marquee below — only one
+            // of the two can ever be armed.
+            if (_txtSelActive)
+            {
+                if (e.LeftButton == MouseButtonState.Pressed)
+                {
+                    UpdateTextSelectionDrag(pos);
+                    return;
+                }
+                // Capture can be lost without a MouseUp ever arriving (WPF drops it for plenty of
+                // reasons). Settle the gesture here rather than letting the selection keep tracking
+                // a button that is not held, then fall through to the normal move handling.
+                if (_annotationCanvas.IsMouseCaptured) _annotationCanvas.ReleaseMouseCapture();
+                FinishTextSelection();
             }
 
             // Text selection drag
@@ -7683,6 +8474,18 @@ namespace TDPdf
                     SelectAnnotation(sa, new Rect(sa.Position.X, sa.Position.Y, newW, newH));
                     MarkDirty();
                 }
+                return;
+            }
+
+            // Flowing text selection release (upstream KillerPDF v1.6.5, #127): commit the run —
+            // copy it and keep the quads on screen, or turn it into markup when a markup tool owns
+            // the gesture. A click that never passed the drag threshold selects the annotation that
+            // was under the press instead.
+            if (_txtSelActive)
+            {
+                if (_annotationCanvas.IsMouseCaptured) _annotationCanvas.ReleaseMouseCapture();
+                FinishTextSelection();
+                e.Handled = true;
                 return;
             }
 
@@ -7930,7 +8733,9 @@ namespace TDPdf
                 string croppedPath = await Task.Run(() => CropService.Apply(sourcePath, pageIdx, cropRect, applyToAll), cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 var result = await OpenFileCoreAsync(croppedPath, null, cancellationToken);
-                await FinishOpenFileAsync(result, cancellationToken);
+                // Same document, reloaded from the crop working file — keep the tab's name, save
+                // target, untitled/protected state and recents entry pointing at the user's file.
+                await FinishOpenFileAsync(result, cancellationToken, internalReload: true);
                 if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                     PageList.SelectedIndex = selectedIdx;
                 else if (PageList.Items.Count > 0)
@@ -7950,7 +8755,7 @@ namespace TDPdf
                     if (_doc is null && System.IO.File.Exists(sourcePath))
                     {
                         var restoreResult = await OpenFileCoreAsync(sourcePath, null, CancellationToken.None);
-                        await FinishOpenFileAsync(restoreResult, CancellationToken.None);
+                        await FinishOpenFileAsync(restoreResult, CancellationToken.None, internalReload: true);
                         if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                             PageList.SelectedIndex = selectedIdx;
                     }
@@ -7970,26 +8775,159 @@ namespace TDPdf
             var (renderW, renderH) = _renderDims[pageIdx];
             var page = _doc!.Pages[pageIdx];
             var box = GetVisiblePageBox(page);
-            double boxLeft = Math.Min(box.X1, box.X2);
-            double boxRight = Math.Max(box.X1, box.X2);
-            double boxBottom = Math.Min(box.Y1, box.Y2);
-            double boxTop = Math.Max(box.Y1, box.Y2);
-            double sx = (boxRight - boxLeft) / renderW;
-            double sy = (boxTop - boxBottom) / renderH;
+            double sx = box.Width / renderW;
+            double sy = box.Height / renderH;
 
-            double left = boxLeft + canvasBounds.Left * sx;
-            double right = boxLeft + canvasBounds.Right * sx;
-            double top = boxTop - canvasBounds.Top * sy;
-            double bottom = boxTop - canvasBounds.Bottom * sy;
+            double left = box.X + canvasBounds.Left * sx;
+            double right = box.X + canvasBounds.Right * sx;
+            double top = box.Top - canvasBounds.Top * sy;
+            double bottom = box.Top - canvasBounds.Bottom * sy;
             return new Rect(left, bottom, right - left, top - bottom);
         }
 
-        private static PdfRectangle GetVisiblePageBox(PdfPage page)
+        // ============================================================
+        // Page boxes (/MediaBox, /CropBox)
+        // ============================================================
+
+        /// <summary>
+        /// A page box in PDF user space: lower-left origin (<see cref="X"/>, <see cref="Y"/>) plus a
+        /// size, always normalized so Width/Height are positive. The origin matters — [0 0 612 792] is
+        /// the common case but [9 9 621 801] is legal, and content/annotation coordinates are absolute
+        /// in user space, so anything mapping into the rendered bitmap must subtract the box origin
+        /// rather than assume (0,0). /Rotate is NOT applied; see Transform.cs VisiblePageSize.
+        /// </summary>
+        private readonly record struct PageBox(double X, double Y, double Width, double Height)
         {
-            var crop = page.CropBox;
-            if (Math.Abs(crop.X2 - crop.X1) > 0.1 && Math.Abs(crop.Y2 - crop.Y1) > 0.1)
-                return crop;
-            return page.MediaBox;
+            public double Right => X + Width;
+            public double Top   => Y + Height;
+        }
+
+        /// <summary>
+        /// Reads an inheritable page-tree box (/MediaBox or /CropBox) for a page, walking the /Parent
+        /// chain. Both are inheritable page attributes (PDF 32000-1 7.7.3.3): they may live on any
+        /// ancestor /Pages node instead of the page itself, and our vendored PdfSharpCore never resolves
+        /// inheritance (PdfPage.InheritValues / PdfPages.FlattenPageTree have no callers). Returns null
+        /// when no node in the chain carries a usable box.
+        /// </summary>
+        /// <remarks>
+        /// CRITICAL: this reads the RAW dictionary entry and must never be "simplified" to
+        /// page.MediaBox / page.CropBox / page.Width. Those getters route through
+        /// PdfDictionary.GetRectangle(key, create: true), which (a) returns an EMPTY rectangle for a
+        /// box that is only inherited — the caller then falls back to some hardcoded page size and every
+        /// overlay on the page is misplaced — and (b) PLANTS an empty /MediaBox|/CropBox [0 0 0 0] into
+        /// the page dictionary, which saves to disk and makes Adobe reject the page as "dimensions
+        /// out-of-range". That is the same lazy-getter trap as the phantom /Outlines (#103) and the
+        /// degenerate /CropBox fixed in v1.18.0.0; see ScrubDegeneratePageBoxes.
+        ///
+        /// The entry can be a parsed PdfArray (as loaded from disk), a PdfRectangle (GetRectangle stores
+        /// its conversion back into the dictionary — "this[key] = value" — so one earlier property read
+        /// anywhere in the app replaces the array), or an indirect reference to either. Handle all three.
+        /// </remarks>
+        private static PageBox? ReadInheritedPageBox(PdfDictionary? node, string key)
+        {
+            // Depth cap: a malformed file can have a cyclic /Parent chain.
+            for (int depth = 0; node is not null && depth < 32; depth++)
+            {
+                PdfItem? item = node.Elements[key];
+                if (item is not null and not PdfArray and not PdfRectangle)
+                    item = DerefItemStatic(item);
+
+                if (item is PdfRectangle pr)
+                    return Normalize(pr.X1, pr.Y1, pr.X2, pr.Y2);
+                if (item is PdfArray { Elements.Count: 4 } arr)
+                    return Normalize(arr.Elements.GetReal(0), arr.Elements.GetReal(1),
+                                     arr.Elements.GetReal(2), arr.Elements.GetReal(3));
+
+                var parent = node.Elements["/Parent"];
+                node = parent is null ? null
+                     : parent as PdfDictionary ?? DerefItemStatic(parent) as PdfDictionary;
+            }
+            return null;
+
+            static PageBox Normalize(double x1, double y1, double x2, double y2) =>
+                new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
+        }
+
+        /// <summary>
+        /// The page box a renderer actually draws, and therefore the box every overlay and every
+        /// canvas↔PDF mapping must use: the /CropBox when present and usable, otherwise the /MediaBox.
+        /// Inheritance-aware and origin-preserving. Mirrors PDFium's own CPDF_Page rules — clip the crop
+        /// box to the media box, and fall back to US Letter when a page carries no usable box at all —
+        /// because Docnet/PDFium produced the bitmap our overlays sit on, so our geometry must agree
+        /// with it rather than with some other notion of "the page size".
+        /// </summary>
+        private static PageBox GetVisiblePageBox(PdfPage page)
+        {
+            var media = ReadInheritedPageBox(page, "/MediaBox");
+            var crop  = ReadInheritedPageBox(page, "/CropBox");
+
+            // Sub-1pt boxes are degenerate (typically a [0 0 0 0] planted by the lazy getter), never a
+            // real page; treat them as absent.
+            if (crop is { Width: > 1, Height: > 1 } c)
+            {
+                if (media is { Width: > 1, Height: > 1 } m)
+                {
+                    double x1 = Math.Max(c.X, m.X), y1 = Math.Max(c.Y, m.Y);
+                    double x2 = Math.Min(c.Right, m.Right), y2 = Math.Min(c.Top, m.Top);
+                    if (x2 - x1 > 1 && y2 - y1 > 1) return new PageBox(x1, y1, x2 - x1, y2 - y1);
+                    return m;   // crop lies outside the media box: bogus, ignore it
+                }
+                return c;
+            }
+            if (media is { Width: > 1, Height: > 1 } mb) return mb;
+
+            // No usable box anywhere in the page tree — a malformed document. PDFium, which rendered the
+            // bitmap we are aligning to, substitutes US Letter in exactly this case, so match that instead
+            // of inventing a size (in particular A4) that the render never used.
+            return new PageBox(0, 0, 612, 792);
+        }
+
+        /// <summary>
+        /// Maps an annotation /Rect — absolute PDF user-space coordinates, bottom-left origin, always
+        /// UNROTATED — onto the canvas/bitmap PDFium rendered for the page, which has the page /Rotate
+        /// already applied. Shared by the link and form-field overlays so the two can never drift apart.
+        /// </summary>
+        /// <param name="box">The rendered page box from <see cref="GetVisiblePageBox"/> (unrotated).</param>
+        /// <param name="rotation">Page /Rotate, already normalized to 0/90/180/270.</param>
+        private static (double cx, double cy, double cw, double ch) PdfRectToCanvas(
+            PageBox box, int rotation, double canvasW, double canvasH,
+            double rx1, double ry1, double rx2, double ry2)
+        {
+            if (rx1 > rx2) (rx1, rx2) = (rx2, rx1);
+            if (ry1 > ry2) (ry1, ry2) = (ry2, ry1);
+
+            // Re-express the rect relative to the rendered box's lower-left corner, so a box with a
+            // non-zero origin (or a CropBox inset from the MediaBox) doesn't shift every overlay off
+            // the drawn page. fx/fy are now in [0, box.Width] x [0, box.Height].
+            double fx1 = rx1 - box.X, fy1 = ry1 - box.Y;
+            double fx2 = rx2 - box.X, fy2 = ry2 - box.Y;
+            double pageW = box.Width, pageH = box.Height;
+
+            // For 90/270 the bitmap's axes are swapped: canvasW spans the box's HEIGHT and canvasH
+            // its WIDTH, so the box dimension each canvas axis is divided by swaps with it.
+            switch (rotation)
+            {
+                case 90:  // 90 CW: PDF (x,y) -> canvas (y, x); canvas is pageH-wide x pageW-tall
+                    return (fy1         / pageH * canvasW,
+                            fx1         / pageW * canvasH,
+                            (fy2 - fy1) / pageH * canvasW,
+                            (fx2 - fx1) / pageW * canvasH);
+                case 180: // both axes flipped; the PDF->canvas y-flip cancels out
+                    return ((pageW - fx2) / pageW * canvasW,
+                            fy1           / pageH * canvasH,
+                            (fx2 - fx1)   / pageW * canvasW,
+                            (fy2 - fy1)   / pageH * canvasH);
+                case 270: // 270 CW: PDF (x,y) -> canvas (pageH - y, pageW - x)
+                    return ((pageH - fy2) / pageH * canvasW,
+                            (pageW - fx2) / pageW * canvasH,
+                            (fy2 - fy1)   / pageH * canvasW,
+                            (fx2 - fx1)   / pageW * canvasH);
+                default:  // 0 — standard bottom-left PDF -> top-left canvas
+                    return (fx1           / pageW * canvasW,
+                            (pageH - fy2) / pageH * canvasH,
+                            (fx2 - fx1)   / pageW * canvasW,
+                            (fy2 - fy1)   / pageH * canvasH);
+            }
         }
 
         // ============================================================
@@ -8000,6 +8938,17 @@ namespace TDPdf
         {
             switch (annot)
             {
+                // Markup is grabbed by its individual LINE rects, not the union box, so the gaps a
+                // multi-line run leaves in the margins stay click-through. Matched before
+                // HighlightAnnotation — it is a subclass. The reported bounds are still the union,
+                // so the selection border and resize handle wrap the whole run.
+                case MarkupAnnotation mk:
+                    bounds = mk.Bounds;
+                    if (mk.LineRects.Count == 0) return bounds.Contains(pos);
+                    foreach (var lr in mk.LineRects)
+                        if (lr.Contains(pos)) return true;
+                    return false;
+
                 case HighlightAnnotation ha:
                     bounds = ha.Bounds;
                     return bounds.Contains(pos);
@@ -8046,6 +8995,12 @@ namespace TDPdf
 
                 case ShapeAnnotation shp:
                     bounds = shp.Bounds;
+                    if (shp.Kind == ShapeKind.Polygon)
+                    {
+                        // Outline polygons are grabbed by their edges; filled ones anywhere inside.
+                        return HitTestPolygon(shp.Points, pos,
+                                              Math.Max(6.0, shp.StrokeWidth + 4), shp.HasFill);
+                    }
                     if (shp.Kind == ShapeKind.Line)
                     {
                         // Distance from point to line segment, threshold = max(6, strokeWidth+4) px.
@@ -8141,7 +9096,14 @@ namespace TDPdf
                         ShapeKind.Rectangle => "rectangle",
                         ShapeKind.Ellipse => "ellipse",
                         ShapeKind.Line => "line",
+                        ShapeKind.Polygon => "polygon",
                         _ => "shape"
+                    },
+                    MarkupAnnotation mk => mk.Style switch
+                    {
+                        MarkupStyle.Strikethrough => "strikethrough",
+                        MarkupStyle.Underline => "underline",
+                        _ => "highlight"
                     },
                     HighlightAnnotation => "highlight",
                     InkAnnotation => "drawing",
@@ -8176,6 +9138,10 @@ namespace TDPdf
                     break;
                 case InkAnnotation:
                     HideTextSettings(); HideShapeSettings(); ShowDrawSettings(EditTool.Draw);
+                    break;
+                // Markup must be matched before HighlightAnnotation — it is a subclass.
+                case MarkupAnnotation mk:
+                    HideTextSettings(); HideShapeSettings(); ShowDrawSettings(ToolForMarkupStyle(mk.Style));
                     break;
                 case HighlightAnnotation:
                     HideTextSettings(); HideShapeSettings(); ShowDrawSettings(EditTool.Highlight);
@@ -8222,9 +9188,16 @@ namespace TDPdf
         /// </summary>
         private static Point GetAnyPointInside(PageAnnotation annot) => annot switch
         {
+            // Polygon: a vertex is always ON the outline, so it satisfies the edge test whether or
+            // not the shape is filled (the box centre would miss a concave outline polygon).
+            ShapeAnnotation s when s.Kind == ShapeKind.Polygon && s.Points.Count > 0 => s.Points[0],
             ShapeAnnotation s => s.Kind == ShapeKind.Line
                 ? new Point((s.Start.X + s.End.X) * 0.5, (s.Start.Y + s.End.Y) * 0.5)
                 : new Point(s.Bounds.X + s.Bounds.Width * 0.5, s.Bounds.Y + s.Bounds.Height * 0.5),
+            // Markup: the union box's top-left can fall in a margin gap between lines, so use the
+            // first line rect instead. Matched before HighlightAnnotation — it is a subclass.
+            MarkupAnnotation m when m.LineRects.Count > 0
+                => new Point(m.LineRects[0].X + 1, m.LineRects[0].Y + 1),
             HighlightAnnotation h => new Point(h.Bounds.X + 1, h.Bounds.Y + 1),
             InkAnnotation i when i.Points.Count > 0 => i.Points[0],
             TextAnnotation t => new Point(t.Position.X + 1, t.Position.Y + 1),
@@ -8315,6 +9288,11 @@ namespace TDPdf
             SetStatus("Deleted selected annotation");
         }
 
+        /// <summary>
+        /// Ctrl+A: select every character on the current page. Since upstream KillerPDF v1.6.5
+        /// (#127) this paints REAL per-line quads through the flowing-selection model instead of
+        /// one canvas-sized rectangle, so what is shown is exactly what was copied.
+        /// </summary>
         private void SelectAllText()
         {
             if (_currentFile is null) return;
@@ -8323,31 +9301,28 @@ namespace TDPdf
 
             try
             {
-                using var pigDoc = PdfPigDoc.Open(_currentFile);
-                if (pageIdx >= pigDoc.NumberOfPages) return;
-                var page = pigDoc.GetPage(pageIdx + 1);
-                _selectedText = WordsToText(page.GetWords());
-                if (string.IsNullOrWhiteSpace(_selectedText))
+                var runs = _textRuns.GetPage(_currentFile, pageIdx);
+                if (runs is null || runs.Chars.Count == 0)
                 {
                     SetStatus("No text found on this page");
                     return;
                 }
-                Clipboard.SetText(_selectedText);
-                // Visual feedback: highlight entire canvas
+
                 ClearTextSelection();
-                _selectRect = new Rectangle
+                _txtSelAnchor = (pageIdx, 0);
+                _txtSelFocus = (pageIdx, runs.Chars.Count);
+                _txtSelHasRange = true;
+                RepaintTextSelection();
+
+                _selectedText = TextRunService.TextForRange(runs, 0, runs.Chars.Count, out _);
+                if (string.IsNullOrWhiteSpace(_selectedText))
                 {
-                    Fill = FrozenSolidColorBrush(Color.FromArgb(30, 74, 130, 255)),
-                    Stroke = FrozenSolidColorBrush(Color.FromArgb(80, 74, 130, 255)),
-                    StrokeThickness = 1,
-                    Width = _annotationCanvas.Width,
-                    Height = _annotationCanvas.Height,
-                    IsHitTestVisible = false
-                };
-                Canvas.SetLeft(_selectRect, 0);
-                Canvas.SetTop(_selectRect, 0);
-                _annotationCanvas.Children.Add(_selectRect);
-                SetStatus($"Selected all text - copied to clipboard");
+                    ClearTextSelection();
+                    SetStatus("No text found on this page");
+                    return;
+                }
+                Clipboard.SetText(_selectedText);
+                SetStatus("Selected all text - copied to clipboard");
             }
             catch (Exception ex)
             {
@@ -8376,6 +9351,15 @@ namespace TDPdf
                 _selectRect = null;
             }
             _selectedText = null;
+            // Flowing selection (upstream KillerPDF v1.6.5, #127) shares this teardown, so every
+            // existing caller — tool switch, page change, tab switch, double-click, Escape — drops
+            // the quads and the caret range too.
+            _txtSelActive = false;
+            _txtSelHasRange = false;
+            _txtSelDragStarted = false;
+            _txtSelCommitTool = null;
+            _txtSelClickAnnot = null;
+            RemoveTextSelQuads();
         }
 
         private void ExtractTextFromRegion(int pageIdx, Rect canvasBounds)
@@ -9072,7 +10056,9 @@ namespace TDPdf
 
         private string? CapturePageImageRegion(Rect bounds)
         {
-            if (PageImage.Source is not BitmapSource source) return null;
+            // #135: deliberately NOT PageImage.Source — that may be the inverted display copy, and
+            // this capture is baked into the saved PDF.
+            if (_primaryPageBitmap is not BitmapSource source) return null;
 
             int x = Math.Max(0, (int)Math.Floor(bounds.X));
             int y = Math.Max(0, (int)Math.Floor(bounds.Y));
@@ -9091,9 +10077,9 @@ namespace TDPdf
         private void ShowImageEditMenu(ImageEditAnnotation edit)
         {
             var menu = new ContextMenu();
-            menu.Items.Add(MakeMenuItem("Replace Image...", (s, e) => ReplaceImageEdit(edit)));
-            menu.Items.Add(MakeMenuItem("Delete Image", (s, e) => DeleteImageEdit(edit)));
-            menu.Items.Add(MakeMenuItem("Reset Size", (s, e) => ResetImageEditSize(edit)));
+            menu.Items.Add(MakeMenuItem("Replace Image...", (s, e) => ReplaceImageEdit(edit), null, null, "\uE91B"));
+            menu.Items.Add(MakeMenuItem("Delete Image", (s, e) => DeleteImageEdit(edit), null, null, "\uE74D"));
+            menu.Items.Add(MakeMenuItem("Reset Size", (s, e) => ResetImageEditSize(edit), null, null, "\uE72C"));
             menu.Items.Add(new Separator());
             menu.Items.Add(new MenuItem { Header = "Resize: drag the green handle" });
             menu.PlacementTarget = _annotationCanvas;
@@ -9304,6 +10290,11 @@ namespace TDPdf
 
         private void CommitActiveTextBox()
         {
+            // This is the app's single "settle any in-progress canvas edit" chokepoint — every
+            // save / flatten / print / close / tool switch / tab switch / page change routes
+            // through it — so an unfinished freeform polygon is settled here too rather than being
+            // left dangling on a canvas that is about to be rebuilt. See ShapePolyClick.
+            ResolveShapePolygon(commit: true);
             if (_activeTextBox is null) return;
             // If it's an inline (existing-PDF-text) edit, use the dedicated commit path
             if (_activeTextBox.Tag is TextEditContext)
@@ -9380,10 +10371,38 @@ namespace TDPdf
             // An inline bookmark rename (#133) owns the keyboard - let arrows / Delete / Home / End
             // edit the text rather than page the document or delete the bookmark.
             if (_bmRenaming) return;
+            // Any other caret-bearing surface (find bar, sidebar page-jump box, form-field overlay,
+            // editable zoom combo) owns its unmodified keys: a bare "d" must type a "d", never swap
+            // to the Draw tool, and Delete / arrows / Home / End must edit the text rather than page
+            // the document. Escape and the function keys are the deliberate exceptions - they stay
+            // global so Esc can still close the find bar or leave full screen from inside it, and
+            // F11 / F12 keep working. Modified chords (Ctrl+...) always fall through as before.
+            // The check is structural rather than a list of fields, so a text surface added later
+            // is covered by default.
+            if (IsTypingTarget() && Keyboard.Modifiers == ModifierKeys.None
+                && e.Key != Key.Escape && (e.Key < Key.F1 || e.Key > Key.F12))
+                return;
 
             // Standard shortcuts (Ctrl+N/O/S/W/Z, Ctrl+Shift+S, Ctrl+P, Ctrl+F, F1, Alt+F/E/V/T/H)
             // are routed via CommandBindings and the Menu's access keys — no need to intercept
             // them here. We still handle the genuinely context-sensitive keys below.
+
+            // An in-progress freeform polygon is the innermost thing Esc can back out of, so it
+            // gets first refusal on the key — ahead of full screen, the search bar, the shortcut
+            // overlay, and any tool step-down. Backspace walks the vertices back one at a time.
+            // Both consume the key only when a polygon is actually being placed.
+            if (e.Key == Key.Escape && _polyVertices.Count > 0)
+            {
+                ResolveShapePolygon(commit: false);
+                e.Handled = true;
+                return;
+            }
+            if (e.Key == Key.Back && _polyVertices.Count > 0)
+            {
+                ShapePolyBackspace();
+                e.Handled = true;
+                return;
+            }
 
             // Full-screen (F11) and Document Info (F12) toggles. Esc leaves full-screen first,
             // before any other Esc behaviour (search bar / shortcut overlay), so the very first
@@ -9430,6 +10449,17 @@ namespace TDPdf
             else if (e.Key == Key.Escape && ShortcutOverlay.Visibility == Visibility.Visible)
             {
                 ShortcutOverlay.Visibility = Visibility.Collapsed;
+                e.Handled = true;
+            }
+            // Esc steps DOWN rather than straight out (upstream v1.6.6, adapted): the in-progress
+            // polygon, full screen, the find bar and the shortcuts overlay each get first refusal
+            // above; with nothing left to cancel, the last step drops back to the Select tool,
+            // Acrobat-style. Unlike upstream we stop there - a further Esc does nothing, because
+            // TDPdf's Esc has never quit the app and making it do so would be destructive.
+            else if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None
+                     && _doc is not null && _currentTool != EditTool.Select)
+            {
+                SetTool(EditTool.Select);
                 e.Handled = true;
             }
             else if (e.Key == Key.OemQuestion && Keyboard.Modifiers == ModifierKeys.Control)
@@ -9510,7 +10540,75 @@ namespace TDPdf
                     PageList.ScrollIntoView(PageList.SelectedItem);
                 e.Handled = true;
             }
+            // Unmodified tool keys, last so every context-sensitive key above keeps priority.
+            // Only while a document is open and no overlay owns the keyboard; the typing guard at
+            // the top of this method already made sure the caret isn't in a text surface.
+            // A focused drop-down (the zoom combo, a PDF choice field) is excluded on top of that:
+            // it isn't a caret surface, but WPF gives it letter type-ahead, and jumping to an option
+            // by typing must keep working.
+            else if (Keyboard.Modifiers == ModifierKeys.None && _doc is not null
+                     && ShortcutOverlay.Visibility != Visibility.Visible
+                     && Keyboard.FocusedElement is not ComboBox
+                     && TrySelectToolByKey(e.Key))
+            {
+                e.Handled = true;
+            }
         }
+
+        /// <summary>
+        /// TDPdf's single-key tool map. Adapted from upstream KillerPDF v1.6.6, not copied: our tool
+        /// set differs (no Stamp, Line is a Shape sub-mode, Transform is a dialog, and we add Pan,
+        /// Erase, Edit Text, Edit Image, Strikethrough and Underline), so only the *principles*
+        /// carry over — V for Select (the Photoshop / Illustrator / Figma convention) and digits
+        /// that mirror the toolbar left to right.
+        ///
+        /// The toolbar runs Select, Pan, Text, Edit Text, Edit Image, Insert Image, Highlight,
+        /// Strikethrough, Underline, Shape, Draw, Erase | Signature, Crop. The ten mark-making tools
+        /// between Pan and that separator take 1-9 then 0, in exactly that order; the two navigation
+        /// modes before them (Select, Pan) and the two tools past the separator (Signature, Crop)
+        /// are letter-only, so the digit run has a principled start and end instead of stopping
+        /// arbitrarily. Mnemonic letters double up wherever one is free. Number-row and numpad
+        /// digits both map.
+        ///
+        /// Returns true when the key selected a tool, so the caller can mark the event handled.
+        /// </summary>
+        private bool TrySelectToolByKey(Key key)
+        {
+            switch (key)
+            {
+                case Key.V: SetTool(EditTool.Select); return true;
+                case Key.P: SetTool(EditTool.Pan); return true;
+                case Key.T: case Key.D1: case Key.NumPad1: SetTool(EditTool.Text); return true;
+                case Key.X: case Key.D2: case Key.NumPad2: SetTool(EditTool.EditText); return true;
+                case Key.D3: case Key.NumPad3: SetTool(EditTool.EditImage); return true;
+                case Key.I: case Key.D4: case Key.NumPad4: SetTool(EditTool.Image); return true;
+                case Key.H: case Key.D5: case Key.NumPad5: SetTool(EditTool.Highlight); return true;
+                case Key.K: case Key.D6: case Key.NumPad6: SetTool(EditTool.Strikethrough); return true;
+                case Key.U: case Key.D7: case Key.NumPad7: SetTool(EditTool.Underline); return true;
+                case Key.S: case Key.D8: case Key.NumPad8: SetTool(EditTool.Shape); return true;
+                case Key.D: case Key.D9: case Key.NumPad9: SetTool(EditTool.Draw); return true;
+                case Key.E: case Key.D0: case Key.NumPad0: SetTool(EditTool.Erase); return true;
+                // Signature routes through the button handler so the saved-signature popup opens,
+                // exactly as clicking the toolbar button does.
+                case Key.G: ToolSignature_Click(this, new RoutedEventArgs()); return true;
+                case Key.C: ToolCrop_Click(this, new RoutedEventArgs()); return true;
+                default: return false;
+            }
+        }
+
+        /// <summary>
+        /// True when the keyboard focus is sitting in a text-entry surface, so the unmodified keys
+        /// belong to whatever is being typed. Covers every typing target hosted by the main window:
+        /// the annotation text box and the inline PDF-text editor (both also tracked by
+        /// _activeTextBox), the find bar's search box, the sidebar page-jump box, the bookmark
+        /// inline-rename box (also tracked by _bmRenaming), the interactive form-field overlays, and
+        /// the editable zoom combo. Checked by control type rather than by field identity so a new
+        /// text surface is protected the moment it exists.
+        /// </summary>
+        private static bool IsTypingTarget() =>
+            Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase
+                or System.Windows.Controls.PasswordBox
+            || Keyboard.FocusedElement is ComboBox { IsEditable: true };
 
         // ============================================================
         // Annotation management
@@ -9689,7 +10787,13 @@ namespace TDPdf
             _annotationCanvas.Children.Clear();
             // Clearing the canvas also drops form-field overlays — restore them so they
             // survive every annotation re-render (edits, undo, selection, …).
-            if (!_annotations.ContainsKey(pageIndex)) { RestoreFormOverlays(pageIndex); return; }
+            if (!_annotations.ContainsKey(pageIndex))
+            {
+                RestoreFormOverlays(pageIndex);
+                RestorePolyPreview(pageIndex);
+                ApplyTextSelectionQuads(pageIndex);
+                return;
+            }
 
             foreach (var annot in _annotations[pageIndex])
             {
@@ -9698,6 +10802,25 @@ namespace TDPdf
                     case TextAnnotation ta:
                         RenderTextAnnotation(ta);
                         break;
+                    // Markup paints one band per covered line. Matched before HighlightAnnotation —
+                    // it is a subclass, and plain highlights must keep their single-rect render.
+                    case MarkupAnnotation mk:
+                    {
+                        var mkBrush = FrozenSolidColorBrush(mk.GetColor());
+                        foreach (var pr in mk.PaintRects())
+                        {
+                            var band = new Rectangle
+                            {
+                                Fill = mkBrush,
+                                Width = pr.Width,
+                                Height = pr.Height
+                            };
+                            Canvas.SetLeft(band, pr.X);
+                            Canvas.SetTop(band, pr.Y);
+                            _annotationCanvas.Children.Add(band);
+                        }
+                        break;
+                    }
                     case HighlightAnnotation ha:
                         var rect = new Rectangle
                         {
@@ -9863,6 +10986,27 @@ namespace TDPdf
 
             // The canvas was cleared above, so restore any form-field overlays.
             RestoreFormOverlays(pageIndex);
+            RestorePolyPreview(pageIndex);
+            // Flowing text-selection quads live on this canvas too and were wiped by the clear;
+            // repaint them last so they sit on top and survive every re-render.
+            ApplyTextSelectionQuads(pageIndex);
+        }
+
+        /// <summary>
+        /// Puts the in-progress freeform polygon's preview visuals back on the canvas after
+        /// <see cref="RenderAllAnnotations"/> cleared it. Without this a re-render during
+        /// placement (undo, a restyle, a move on another annotation) would detach the very
+        /// polyline the next vertex click writes to, leaving the shape invisible until commit.
+        /// </summary>
+        private void RestorePolyPreview(int pageIndex)
+        {
+            if (_polyVertices.Count == 0 || _polyPage != pageIndex) return;
+            if (_polyPreview is not null && !_annotationCanvas.Children.Contains(_polyPreview))
+                _annotationCanvas.Children.Add(_polyPreview);
+            if (_polyRubber is not null && !_annotationCanvas.Children.Contains(_polyRubber))
+                _annotationCanvas.Children.Add(_polyRubber);
+            if (_polySnapDot is not null && !_annotationCanvas.Children.Contains(_polySnapDot))
+                _annotationCanvas.Children.Add(_polySnapDot);
         }
 
         /// <summary>
@@ -9913,6 +11057,22 @@ namespace TDPdf
                     Canvas.SetLeft(e, b.X);
                     Canvas.SetTop(e, b.Y);
                     _annotationCanvas.Children.Add(e);
+                    break;
+                }
+                case ShapeKind.Polygon:
+                {
+                    if (shp.Points.Count < 2) break;
+                    // WPF's Polygon closes the outline itself, so the stored vertices go in as-is.
+                    var pg = new System.Windows.Shapes.Polygon
+                    {
+                        Stroke = stroke,
+                        StrokeThickness = shp.StrokeWidth,
+                        StrokeLineJoin = PenLineJoin.Round,
+                        Fill = fill ?? Brushes.Transparent,
+                        IsHitTestVisible = false
+                    };
+                    foreach (var p in shp.Points) pg.Points.Add(p);
+                    _annotationCanvas.Children.Add(pg);
                     break;
                 }
                 case ShapeKind.Line:
@@ -10125,6 +11285,9 @@ namespace TDPdf
         {
             int pageIdx = PageList.SelectedIndex;
             if (pageIdx < 0) return;
+            // Wiping the page is the opposite of keeping an unfinished shape: drop it (and its
+            // preview visuals, which the canvas clear below would otherwise strand).
+            ResolveShapePolygon(commit: false);
             if (_annotations.ContainsKey(pageIdx) && _annotations[pageIdx].Count > 0)
             {
                 PushPageSnapshot(pageIdx);
@@ -10237,6 +11400,7 @@ namespace TDPdf
                     img.Width = double.NaN;
                     img.Height = double.NaN;
                 }
+                _primaryPageBitmap = null;
                 FileNameLabel.Text = "";
                 DropZone.Visibility = Visibility.Visible;
                 PagePreviewPanel.Visibility = Visibility.Collapsed;
@@ -10245,6 +11409,7 @@ namespace TDPdf
                 _pageJumpBox.IsEnabled = false;
                 _pageJumpBox.Text = "";
                 _pageTotalLabel.Text = "/ –";
+                UpdatePageControlsForDoc(false);   // hide the empty box + "/ –" outright
                 LoadOutlines();           // no document → clears the tree and disables the tab
                 RefreshRecentFilesUi();   // start screen is visible again; refresh the recent list
             }
@@ -10264,6 +11429,7 @@ namespace TDPdf
                 _gridViewToggle.IsEnabled = true;
                 _pageJumpBox.IsEnabled = true;
                 _pageTotalLabel.Text = $"/ {_ctx.Doc.PageCount}";
+                UpdatePageControlsForDoc(true);
                 RefreshPageList(_ctx.Thumbnails);
                 LoadOutlines();   // rebuild the bookmark tree from this tab's live document
 
@@ -10388,6 +11554,11 @@ namespace TDPdf
             EnsureActiveTabRegistered();
             if (!_tabs.Contains(ctx)) return;
 
+            // A freeform polygon still being placed on the tab we are about to throw away has
+            // nowhere to land, so it is discarded rather than committed — and discarding it here,
+            // before the dirty prompt, keeps an abandoned gesture from asking about unsaved work.
+            if (ReferenceEquals(_ctx, ctx)) ResolveShapePolygon(commit: false);
+
             if (ctx.Doc is not null && ctx.IsDirty)
             {
                 if (!ReferenceEquals(_ctx, ctx)) ActivateContext(ctx);
@@ -10430,6 +11601,11 @@ namespace TDPdf
                 var empty = new DocumentContext();
                 _tabs.Add(empty);
                 ActivateContext(empty);
+                // The last document just closed — re-collapse the rail (animated) and hide the page
+                // controls. Done here rather than in ActivateContext's empty branch on purpose: that
+                // branch also runs for the throwaway tab OpenInTabAsync creates on the way to a second
+                // document, which would collapse-then-expand for no reason.
+                SyncSidebarToDocState(hasDoc: false, startup: false);
             }
             else if (closingActive)
             {
@@ -10508,8 +11684,10 @@ namespace TDPdf
                 newDoc.Close();
 
                 await OpenInTabAsync(tempPath);
-                SetDisplayName("Untitled.pdf");
-                SetStatus("New blank document");
+                // The working file is a blank PDF TDPdf just wrote to %TEMP%, not a document with a
+                // home: Ctrl+S must route to Save As instead of updating a temp copy that is deleted
+                // on exit. Not marked dirty — a fresh blank page holds no unsaved work.
+                FinalizeUnsavedTab(tempPath, "Untitled.pdf", "New blank document", markDirty: false);
             }
             catch (Exception ex)
             {
@@ -11131,9 +12309,10 @@ namespace TDPdf
         private async void SaveInPlace_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
-            // Merged-on-drop / imported-image docs have no real on-disk home (their working file is a
-            // temp copy), so an in-place save would silently write to %TEMP%. Route them to Save As.
-            if (_ctx.IsUntitled) { SaveAs_Click(sender, e); return; }
+            // New / merged-on-drop / imported-image / raster-recovered docs have no real on-disk home
+            // (their working file is a temp copy), so an in-place save would silently write to
+            // %TEMP%. Route them to Save As. OriginalPath — not _currentFile — is the destination.
+            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
             await SaveInPlaceAsync();
         }
 
@@ -11145,7 +12324,7 @@ namespace TDPdf
         private static void NormalizeDocumentForSave(PdfDocument doc)
         {
             ScrubEmptyOutlines(doc);         // #103: never write a dangling /Outlines reference
-            ScrubDegenerateCropBoxes(doc);   // never write a zero-size /CropBox (Adobe out-of-range)
+            ScrubDegeneratePageBoxes(doc);   // never write a zero-size /CropBox or /MediaBox (Adobe out-of-range)
             ScrubDeadSignatures(doc);        // a rewrite voids signatures; never ship a dead one (PDF/A 6.4.3)
         }
 
@@ -11170,47 +12349,71 @@ namespace TDPdf
             catch { /* malformed catalog - leave the save as-is */ }
         }
 
-        // Upstream v1.6.3: PdfSharpCore's PdfPage.MediaBox/CropBox property GETTERS have
-        // create-on-read semantics: touching page.CropBox on a page that has none plants an empty
-        // /CropBox [0 0 0 0] into the page dictionary. A zero-size page box saves to disk and Adobe
-        // then rejects the page as "dimensions out-of-range" even though the MediaBox is fine (Chrome
-        // falls back to the MediaBox, which is why such files still open there). Dropping a degenerate
-        // CropBox is a semantic no-op - the page falls back to its MediaBox - and it HEALS files
-        // written by affected versions when re-saved. Real crops are untouched.
-        private static void ScrubDegenerateCropBoxes(PdfDocument doc)
+        // Upstream v1.6.3 (/CropBox), extended here to /MediaBox: PdfSharpCore's PdfPage.MediaBox and
+        // .CropBox property GETTERS have create-on-read semantics, so touching page.CropBox - or
+        // page.Width/page.Height, which read MediaBox - on a page that carries no such entry plants an
+        // empty [0 0 0 0] box into the page dictionary. A zero-size page box saves to disk and Adobe
+        // then rejects the page as "dimensions out-of-range" (Chrome falls back to another box, which is
+        // why such files still open there). Both boxes are INHERITABLE page attributes, so the pages
+        // that get one planted are exactly the ones whose real box lives on an ancestor /Pages node.
+        //
+        // /CropBox: dropping a degenerate one is a semantic no-op - the page falls back to its MediaBox.
+        // /MediaBox: every page needs one, so drop the degenerate entry and re-plant the box the page
+        // tree really specifies; only when nothing usable is inheritable do we leave it absent, which at
+        // least renders (viewers substitute a default page size) where a zero-size box does not.
+        // Both HEAL files damaged by other tools or older builds when re-saved; real boxes are untouched.
+        private static void ScrubDegeneratePageBoxes(PdfDocument doc)
         {
             try
             {
                 for (int i = 0; i < doc.PageCount; i++)
                 {
-                    var elements = doc.Pages[i].Elements;
-                    var item = elements["/CropBox"];
-                    if (item is null) continue;
-                    var resolved = DerefItemStatic(item);
+                    var page = doc.Pages[i];
+                    var elements = page.Elements;
 
-                    // The box can be a parsed PdfArray (loaded from disk) or a PdfRectangle
-                    // (planted in memory by the lazy getter) - handle both.
-                    double w = -1, h = -1;
-                    if (resolved is PdfRectangle rect)
-                    {
-                        w = Math.Abs(rect.X2 - rect.X1);
-                        h = Math.Abs(rect.Y2 - rect.Y1);
-                    }
-                    else if (resolved is PdfArray arr && arr.Elements.Count == 4 &&
-                             arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
-                             arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
-                    {
-                        w = Math.Abs(RectNum(arr.Elements[2]) - RectNum(arr.Elements[0]));
-                        h = Math.Abs(RectNum(arr.Elements[3]) - RectNum(arr.Elements[1]));
-                    }
-
-                    // Remove only when we could read the box AND it is degenerate; anything we
-                    // cannot interpret is left alone rather than destroyed.
-                    if (w >= 0 && (w < 1 || h < 1))
+                    if (IsDegenerateBox(elements["/CropBox"]))
                         elements.Remove("/CropBox");
+
+                    if (IsDegenerateBox(elements["/MediaBox"]))
+                    {
+                        elements.Remove("/MediaBox");
+                        // With the bad entry gone, ask the page tree what this page's box actually is.
+                        // Re-planting it explicitly keeps the page valid no matter how the writer treats
+                        // the inherited attribute, and is identical in meaning to inheriting it.
+                        if (ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } box)
+                            elements.SetRectangle("/MediaBox",
+                                new PdfRectangle(new XPoint(box.X, box.Y), new XPoint(box.Right, box.Top)));
+                    }
                 }
             }
             catch { /* malformed page tree - leave the save as-is */ }
+        }
+
+        // True when the entry is present, readable as a rectangle, and zero/sub-point sized. Anything we
+        // cannot interpret returns false so it is left alone rather than destroyed. The box can be a
+        // parsed PdfArray (loaded from disk), a PdfRectangle (planted in memory by the lazy getter or by
+        // GetRectangle writing its conversion back), or an indirect reference to either.
+        private static bool IsDegenerateBox(PdfItem? item)
+        {
+            if (item is null) return false;
+            var resolved = DerefItemStatic(item);
+
+            double w, h;
+            if (resolved is PdfRectangle rect)
+            {
+                w = Math.Abs(rect.X2 - rect.X1);
+                h = Math.Abs(rect.Y2 - rect.Y1);
+            }
+            else if (resolved is PdfArray arr && arr.Elements.Count == 4 &&
+                     arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
+                     arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
+            {
+                w = Math.Abs(RectNum(arr.Elements[2]) - RectNum(arr.Elements[0]));
+                h = Math.Abs(RectNum(arr.Elements[3]) - RectNum(arr.Elements[1]));
+            }
+            else return false;
+
+            return w < 1 || h < 1;
         }
 
         // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
@@ -11248,14 +12451,22 @@ namespace TDPdf
             }
         }
 
-        private async Task SaveInPlaceAsync()
+        /// <summary>
+        /// Saves the active document back over the file the user opened. <paramref name="removingPassword"/>
+        /// only changes the wording of the success status: the write itself IS the password removal,
+        /// because the working document is already decrypted and PdfSharpCore never re-encrypts.
+        /// </summary>
+        private async Task SaveInPlaceAsync(bool removingPassword = false)
         {
             using var op = Telemetry.StartOperation("SaveInPlace");
             if (_doc is null || _currentFile is null) return;
             CommitActiveTextBox();
-            // Capture the destination once: a #106 repair may repoint _currentFile at a temp copy,
-            // but the in-place save must always target the file the user actually opened.
-            string targetFile = _currentFile;
+            // Capture the destination once. This is the user's real document (OriginalPath), NOT the
+            // working path: _currentFile points into %TEMP% after a decrypt-on-open, after any
+            // structural edit (SaveTempAndReload) and after a #106 repair, and saving there would
+            // update a temp file that is then deleted. Callers with no on-disk home route to Save As
+            // before getting here; the fallback keeps this method total.
+            string targetFile = _ctx.OriginalPath ?? _currentFile;
             string status = "";
 
             // The unit of work retried by RunSaveWithRecoveryAsync. Reads _doc fresh each call so a
@@ -11299,6 +12510,17 @@ namespace TDPdf
                 SetFileOperationBusy(true, "Saving...");
                 await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
+                if (_ctx.WasProtected)
+                {
+                    // #149: the file on disk no longer carries its password — PdfSharpCore writes no
+                    // /Encrypt unless a password is set on the document, and TDPdf cannot re-encrypt.
+                    // Say so rather than dropping the protection silently, and clear the flag: from
+                    // here on this tab's file is unprotected.
+                    _ctx.WasProtected = false;
+                    status = removingPassword
+                        ? $"Password protection removed — {System.IO.Path.GetFileName(targetFile)}"
+                        : status + " (password protection removed)";
+                }
                 SetStatus(status);
             }
             catch (Exception ex)
@@ -11316,6 +12538,42 @@ namespace TDPdf
             {
                 SetFileOperationBusy(false);
             }
+        }
+
+        // #149 (upstream KillerPDF v1.6.6): saves the open document back over the user's file with
+        // its password protection dropped. There is nothing to strip at save time — the working
+        // document has been decrypted since it was opened — so this IS an in-place save; what the
+        // command adds is an explicit, named way to ask for it (and the confirmation, because it
+        // rewrites the user's file irreversibly). Routed through SaveInPlaceAsync so it gets the
+        // same NormalizeDocumentForSave scrubs and #106 repair retry as every other save.
+        private async void RemovePassword_Click(object sender, RoutedEventArgs e)
+        {
+            if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            if (!_ctx.WasProtected)
+            {
+                TdpDialog.Show(this, "This document is not password protected.",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            // No on-disk home to write back over (merged / imported / raster-recovered): the user
+            // has to say where the unprotected copy goes. Save As drops the protection just the same.
+            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
+
+            var res = TdpDialog.Show(this,
+                $"Save \"{System.IO.Path.GetFileName(_ctx.OriginalPath)}\" without its password protection?\n\n" +
+                "The file is rewritten in place and anyone will be able to open it. TDPdf cannot put the password back.",
+                "Remove Password", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+            if (res != MessageBoxResult.OK) return;
+
+            await SaveInPlaceAsync(removingPassword: true);
+        }
+
+        // Remove Password stays visible for discoverability but is only actionable when the ACTIVE
+        // document actually came from a protected file. Recomputed every time the menu opens: the
+        // flag is per tab and is cleared by the save that drops the protection.
+        private void FileMenu_SubmenuOpened(object sender, RoutedEventArgs e)
+        {
+            _removePasswordMenuItem.IsEnabled = _doc is not null && _ctx.WasProtected;
         }
 
         private async void SaveAs_Click(object sender, RoutedEventArgs e)
@@ -11380,6 +12638,27 @@ namespace TDPdf
                 SetFileOperationBusy(true, "Saving...");
                 await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
+
+                // The copy the user just chose is this tab's document from here on: point the tab
+                // name and OriginalPath (the in-place save target, the session entry and the recent
+                // list) at it, so a following Ctrl+S updates THAT file rather than the one
+                // originally opened. The WORKING path (_currentFile) is deliberately left alone:
+                // with pending annotations the saved file already has them baked in while
+                // _annotations still holds them, so re-rendering from it would draw them twice.
+                // OriginalPath is retargeted unconditionally — unlike an OPEN from %TEMP% (an
+                // attachment or working artifact with no lasting home), a Save As INTO it is a
+                // destination the user explicitly picked, and Ctrl+S must never silently fall back
+                // to writing the file they saved away from. Recents keeps its own eligibility gate.
+                _ctx.IsUntitled   = false;
+                _ctx.OriginalPath = targetFile;
+                SetDisplayName(System.IO.Path.GetFileName(targetFile));
+                if (IsRecentEligiblePath(targetFile)) AddRecentFile(targetFile);
+                if (_ctx.WasProtected)
+                {
+                    // #149: the saved copy carries no password — PdfSharpCore cannot re-encrypt it.
+                    _ctx.WasProtected = false;
+                    status += " (password protection removed)";
+                }
                 SetStatus(status);
             }
             catch (Exception ex)
@@ -11453,7 +12732,11 @@ namespace TDPdf
             {
                 await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
-                SetStatus($"Flattened PDF saved to {System.IO.Path.GetFileName(targetFile)}");
+                // #149: a flatten always writes a brand-new rasterized document, so the export is
+                // unprotected even when the source was. Say so — but do NOT clear WasProtected:
+                // this wrote to a file the user picked, and THIS tab's own document is untouched.
+                var flattenNote = _ctx.WasProtected ? " (password protection removed)" : string.Empty;
+                SetStatus($"Flattened PDF saved to {System.IO.Path.GetFileName(targetFile)}{flattenNote}");
             }
             catch (Exception ex)
             {
@@ -11773,6 +13056,19 @@ namespace TDPdf
                             break;
                         }
 
+                        // Markup: one filled band per covered line. Matched before
+                        // HighlightAnnotation — it is a subclass, and a plain highlight must keep
+                        // writing exactly the single rectangle it always did.
+                        case MarkupAnnotation mk:
+                        {
+                            var mkc = mk.GetColor();
+                            var mkBrush = new XSolidBrush(XColor.FromArgb(mkc.A, mkc.R, mkc.G, mkc.B));
+                            foreach (var pr in mk.PaintRects())
+                                gfx.DrawRectangle(mkBrush,
+                                    pr.X * sx, pr.Y * sy, pr.Width * sx, pr.Height * sy);
+                            break;
+                        }
+
                         case HighlightAnnotation ha:
                             var hc = ha.GetColor();
                             var hBrush = new XSolidBrush(XColor.FromArgb(hc.A, hc.R, hc.G, hc.B));
@@ -11813,6 +13109,18 @@ namespace TDPdf
                                     double rw = b.Width * sx, rh = b.Height * sy;
                                     if (shpFill is not null) gfx.DrawEllipse(shpFill, rx, ry, rw, rh);
                                     gfx.DrawEllipse(shpPen, rx, ry, rw, rh);
+                                    break;
+                                }
+                                case ShapeKind.Polygon:
+                                {
+                                    // PdfSharpCore's DrawPolygon closes the outline for us, so the
+                                    // stored vertices (no repeated first point) map straight over.
+                                    if (shp.Points.Count < 3) break;
+                                    var poly = shp.Points
+                                        .Select(p => new XPoint(p.X * sx, p.Y * sy)).ToArray();
+                                    if (shpFill is not null)
+                                        gfx.DrawPolygon(shpFill, poly, XFillMode.Alternate);
+                                    gfx.DrawPolygon(shpPen, poly);
                                     break;
                                 }
                                 case ShapeKind.Line:
@@ -11950,6 +13258,11 @@ namespace TDPdf
             ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();
+            // Rotate / delete / reorder / crop / transform all land here and all change page
+            // geometry, so the flowing-selection character cache goes with the render cache. (The
+            // cache key already changes — the working path is repointed at a fresh temp file just
+            // below — but this keeps the invalidation explicit rather than incidental.)
+            InvalidateTextRunCache();
             ClearSelection();
             MarkDirty();
             var doc = _doc;
@@ -12409,7 +13722,18 @@ namespace TDPdf
         {
             foreach (var f in found)
             {
-                if (IsPdfPath(f)) await OpenInTabAsync(f);
+                if (IsPdfPath(f))
+                {
+                    await OpenInTabAsync(f);
+                    // A PDF that came out of a dropped .zip lives in an extraction folder TDPdf made
+                    // under %TEMP% and that the OS eventually clears — a working file, not the user's
+                    // document, so it must never be an in-place save target. Dropping OriginalPath
+                    // routes Ctrl+S to Save As. Files dropped directly keep their real path and save
+                    // normally, including the ones a user genuinely keeps under %TEMP%.
+                    if (IsUnderAnyDirectory(f, tempDirs) && _doc is not null &&
+                        string.Equals(_currentFile, f, StringComparison.OrdinalIgnoreCase))
+                        _ctx.OriginalPath = null;
+                }
                 else await OpenImagesAsImportedTabAsync(new[] { f }, System.IO.Path.GetFileName(f));
             }
             SetStatus($"Opened {found.Count} item(s) in separate tabs");
@@ -12465,15 +13789,18 @@ namespace TDPdf
             FinalizeUnsavedTab(tempPath, displayName, $"Imported {images.Length} image(s)");
         }
 
-        // After OpenInTabAsync has loaded a temp working file, mark the active tab as unsaved work.
-        // Guarded so a failed/reverted open (which returns to the previous tab) is left untouched.
-        private void FinalizeUnsavedTab(string tempPath, string displayName, string status)
+        // After OpenInTabAsync has loaded a working file TDPdf itself created, mark the active tab as
+        // having no on-disk home. Guarded so a failed/reverted open (which returns to the previous
+        // tab) is left untouched. <paramref name="markDirty"/> is false for a blank New document:
+        // it has nothing unsaved in it yet, so closing it must not prompt.
+        private void FinalizeUnsavedTab(string tempPath, string displayName, string status, bool markDirty = true)
         {
             if (_doc is null || !string.Equals(_currentFile, tempPath, StringComparison.OrdinalIgnoreCase))
                 return;   // open failed and reverted to a different tab — don't clobber it
             SetDisplayName(displayName);
-            _ctx.IsUntitled = true;   // no real on-disk home yet → Ctrl+S routes to Save As
-            MarkDirty(true);
+            _ctx.IsUntitled = true;     // no real on-disk home yet → Ctrl+S routes to Save As
+            _ctx.OriginalPath = null;   // the working file is a TDPdf-created temp, never a save target
+            if (markDirty) MarkDirty(true);
             SetStatus(status);
             RebuildTabStrip();
         }
@@ -12486,6 +13813,26 @@ namespace TDPdf
             catch { return; }
             foreach (var f in files.Where(IsOpenablePath).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
                 found.Add(f);
+        }
+
+        // True when path sits inside any of dirs. Compares full paths with a trailing separator so a
+        // sibling folder whose name merely starts with the same text cannot match.
+        private static bool IsUnderAnyDirectory(string path, List<string> dirs)
+        {
+            try
+            {
+                string full = System.IO.Path.GetFullPath(path);
+                foreach (var d in dirs)
+                {
+                    if (string.IsNullOrWhiteSpace(d)) continue;
+                    string dir = System.IO.Path.GetFullPath(d);
+                    if (!dir.EndsWith(System.IO.Path.DirectorySeparatorChar))
+                        dir += System.IO.Path.DirectorySeparatorChar;
+                    if (full.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            catch { /* malformed path — treat as not extracted */ }
+            return false;
         }
 
         private static string? ExtractZipToTemp(string zipPath)
@@ -12625,6 +13972,11 @@ namespace TDPdf
 
         private void AddRecentFile(string path)
         {
+            // #146: the privacy toggle stops the list growing at the single write path. Reads are
+            // left alone deliberately — turning the toggle on empties the store, so there is
+            // nothing left to read, and turning it back off starts an empty list rather than
+            // resurrecting the old one.
+            if (TDPdf.Properties.Settings.Default.DontRememberRecentFiles) return;
             if (string.IsNullOrWhiteSpace(path)) return;
             string normalized;
             try { normalized = System.IO.Path.GetFullPath(path); } catch { normalized = path; }
@@ -12764,12 +14116,13 @@ namespace TDPdf
                 foreach (var p in recents)
                 {
                     string path = p;   // capture
-                    var item = MakeMenuItem(System.IO.Path.GetFileName(path), async (_, _2) => await OpenRecentAsync(path));
+                    var item = MakeMenuItem(System.IO.Path.GetFileName(path), async (_, _2) => await OpenRecentAsync(path),
+                                            null, null, "\uE8A5");
                     item.ToolTip = path;
                     menu.Items.Add(item);
                 }
                 menu.Items.Add(new Separator());
-                menu.Items.Add(MakeMenuItem("Clear List", (_, _2) => ClearRecentFiles()));
+                menu.Items.Add(MakeMenuItem("Clear List", (_, _2) => ClearRecentFiles(), null, null, "\uE74D"));
             }
             menu.PlacementTarget = (UIElement)sender;
             menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
@@ -12951,6 +14304,192 @@ namespace TDPdf
             return brush;
         }
 
+        /// <summary>
+        /// The shared TDPdf dialog shell: a borderless, transparent-background window (no OS title
+        /// bar) holding a rounded panel with an accent border and a draggable Consolas wordmark
+        /// title bar. Returns the window plus the vertical stack each dialog fills with its body.
+        /// </summary>
+        private static (Window Window, StackPanel Body) CreateShell(Window? owner, string title)
+        {
+            var win = new Window
+            {
+                Title = title,
+                Width = 380,
+                SizeToContent = SizeToContent.Height,
+                WindowStyle = WindowStyle.None,
+                AllowsTransparency = true,
+                Background = System.Windows.Media.Brushes.Transparent,
+                WindowStartupLocation = owner != null
+                    ? WindowStartupLocation.CenterOwner
+                    : WindowStartupLocation.CenterScreen,
+                Owner = owner,
+                ResizeMode = ResizeMode.NoResize
+            };
+
+            var outerBorder = new Border
+            {
+                Background      = Brush("BgDark"),
+                BorderBrush     = Brush("AccentGreenDim"),
+                BorderThickness = new Thickness(1),
+                CornerRadius    = new CornerRadius(6)
+            };
+
+            var root = new StackPanel();
+
+            var titleBar = new Border
+            {
+                Background   = Brush("BgPanel"),
+                Padding      = new Thickness(16, 10, 16, 10),
+                CornerRadius = new CornerRadius(5, 5, 0, 0)
+            };
+            titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
+            titleBar.Child = new TextBlock
+            {
+                Text       = title,
+                Foreground = Brush("AccentGreen"),
+                FontWeight = FontWeights.SemiBold,
+                FontSize   = 13,
+                FontFamily = new System.Windows.Media.FontFamily("Consolas")
+            };
+            root.Children.Add(titleBar);
+
+            outerBorder.Child = root;
+            win.Content = outerBorder;
+            return (win, root);
+        }
+
+        // Flat, themed button chrome. Replaces the stock WPF template so no default blue Aero
+        // hover/focus chrome bleeds through onto a dark dialog.
+        private static ControlTemplate MakeBtnTemplate()
+        {
+            var bf = new FrameworkElementFactory(typeof(Border));
+            bf.SetBinding(Border.BackgroundProperty,
+                new System.Windows.Data.Binding("Background")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bf.SetBinding(Border.BorderBrushProperty,
+                new System.Windows.Data.Binding("BorderBrush")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bf.SetBinding(Border.BorderThicknessProperty,
+                new System.Windows.Data.Binding("BorderThickness")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bf.SetBinding(Border.PaddingProperty,
+                new System.Windows.Data.Binding("Padding")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bf.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
+            var cp = new FrameworkElementFactory(typeof(ContentPresenter));
+            cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            bf.AppendChild(cp);
+            return new ControlTemplate(typeof(Button)) { VisualTree = bf };
+        }
+
+        // Themed PasswordBox chrome: our panel fill and dim border instead of the OS white box
+        // with its blue focus ring. PART_ContentHost is the contract name WPF looks for.
+        private static ControlTemplate MakePasswordFieldTemplate()
+        {
+            var bf = new FrameworkElementFactory(typeof(Border));
+            bf.SetBinding(Border.BackgroundProperty,
+                new System.Windows.Data.Binding("Background")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bf.SetBinding(Border.BorderBrushProperty,
+                new System.Windows.Data.Binding("BorderBrush")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bf.SetBinding(Border.BorderThicknessProperty,
+                new System.Windows.Data.Binding("BorderThickness")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            bf.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
+            var host = new FrameworkElementFactory(typeof(ScrollViewer), "PART_ContentHost");
+            host.SetValue(Control.PaddingProperty, new Thickness(0));
+            host.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Hidden);
+            host.SetValue(ScrollViewer.VerticalScrollBarVisibilityProperty, ScrollBarVisibility.Hidden);
+            bf.AppendChild(host);
+            return new ControlTemplate(typeof(PasswordBox)) { VisualTree = bf };
+        }
+
+        /// <summary>
+        /// Themed "Password Required" prompt: the family dialog chrome around a themed PasswordBox.
+        /// Returns the entered password, or <c>null</c> if the user cancelled or closed the dialog.
+        /// </summary>
+        public static string? PromptPassword(Window? owner, string filename)
+        {
+            string? result = null;
+            var text  = Brush("TextPrimary");
+            var green = Brush("AccentGreen");
+
+            var (win, root) = CreateShell(owner, "TDPdf");
+
+            var message = new TextBlock
+            {
+                Foreground   = text,
+                FontSize     = 13,
+                TextWrapping = TextWrapping.Wrap
+            };
+            message.Inlines.Add(new System.Windows.Documents.Run(
+                $"“{System.IO.Path.GetFileName(filename)}” ") { FontWeight = FontWeights.SemiBold });
+            message.Inlines.Add(new System.Windows.Documents.Run("is password protected."));
+            root.Children.Add(new Border { Padding = new Thickness(20, 16, 20, 10), Child = message });
+
+            var pwBox = new PasswordBox
+            {
+                FontSize        = 12,
+                Background      = Brush("PanelBackground"),
+                Foreground      = text,
+                BorderBrush     = Brush("BorderDim"),
+                BorderThickness = new Thickness(1),
+                Padding         = new Thickness(6, 5, 6, 5),
+                CaretBrush      = text,
+                Template        = MakePasswordFieldTemplate()
+            };
+            AutomationProperties.SetName(pwBox, "Password");
+            AutomationProperties.SetHelpText(pwBox, "Password for the protected PDF");
+            root.Children.Add(new Border { Padding = new Thickness(20, 0, 20, 4), Child = pwBox });
+
+            var btnPanel = new StackPanel
+            {
+                Orientation         = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+
+            Button MakeBtn(string label, bool accent)
+            {
+                var bgNorm = accent ? Brush("AccentGreenDim") : Brush("BgPanel");
+                var bgHov  = accent ? Brush("BgPressed") : Brush("BgHover");
+                var btn = new Button
+                {
+                    Content         = label,
+                    Padding         = new Thickness(18, 6, 18, 6),
+                    Margin          = new Thickness(8, 0, 0, 0),
+                    Background      = bgNorm,
+                    Foreground      = accent ? green : text,
+                    BorderBrush     = accent ? green : Brush("BorderDim"),
+                    BorderThickness = new Thickness(1),
+                    Cursor          = Cursors.Hand,
+                    FontSize        = 12,
+                    Template        = MakeBtnTemplate()
+                };
+                btn.MouseEnter += (_, _2) => btn.Background = bgHov;
+                btn.MouseLeave += (_, _2) => btn.Background = bgNorm;
+                return btn;
+            }
+
+            var openBtn = MakeBtn("Open", accent: true);
+            openBtn.IsDefault = true;
+            openBtn.Click += (_, _2) => { result = pwBox.Password; win.Close(); };
+            var cancelBtn = MakeBtn("Cancel", accent: false);
+            cancelBtn.IsCancel = true;   // Esc closes the prompt, leaving result null
+            cancelBtn.Click += (_, _2) => { result = null; win.Close(); };
+            btnPanel.Children.Add(openBtn);
+            btnPanel.Children.Add(cancelBtn);
+            root.Children.Add(new Border { Padding = new Thickness(16, 12, 16, 16), Child = btnPanel });
+
+            // Enter submits from inside the field as well (IsDefault covers the rest of the dialog).
+            pwBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) { result = pwBox.Password; win.Close(); } };
+
+            win.Loaded += (_, _2) => pwBox.Focus();
+            win.ShowDialog();
+            return result;
+        }
+
         public static MessageBoxResult Show(
             Window? owner,
             string message,
@@ -12981,7 +14520,6 @@ namespace TDPdf
             var result = MessageBoxResult.OK;
             bool ticked = false;
             var green = Brush("AccentGreen");
-            var dark = Brush("BgDark");
             var panel = Brush("BgPanel");
             var text = Brush("TextPrimary");
             var border = Brush("BorderDim");
@@ -12991,47 +14529,7 @@ namespace TDPdf
             var danger = Brush("DangerRed");
             var warning = Brush("WarningOrange");
 
-            var win = new Window
-            {
-                Title = title,
-                Width = 380,
-                SizeToContent = SizeToContent.Height,
-                WindowStyle = WindowStyle.None,
-                AllowsTransparency = true,
-                Background = System.Windows.Media.Brushes.Transparent,
-                WindowStartupLocation = owner != null
-                    ? WindowStartupLocation.CenterOwner
-                    : WindowStartupLocation.CenterScreen,
-                Owner = owner,
-                ResizeMode = ResizeMode.NoResize
-            };
-
-            var outerBorder = new Border
-            {
-                Background      = dark,
-                BorderBrush     = greenDim,
-                BorderThickness = new Thickness(1),
-                CornerRadius    = new CornerRadius(6)
-            };
-
-            var root = new StackPanel();
-
-            var titleBar = new Border
-            {
-                Background   = panel,
-                Padding      = new Thickness(16, 10, 16, 10),
-                CornerRadius = new CornerRadius(5, 5, 0, 0)
-            };
-            titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
-            titleBar.Child = new TextBlock
-            {
-                Text       = title,
-                Foreground = green,
-                FontWeight = FontWeights.SemiBold,
-                FontSize   = 13,
-                FontFamily = new System.Windows.Media.FontFamily("Consolas")
-            };
-            root.Children.Add(titleBar);
+            var (win, root) = CreateShell(owner, title);
 
             // Message body: icon column + wrapped message text.
             var msgGrid = new Grid { Margin = new Thickness(20, 16, 20, 8) };
@@ -13086,29 +14584,6 @@ namespace TDPdf
                 Orientation         = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right
             };
-
-            static ControlTemplate MakeBtnTemplate()
-            {
-                var bf = new FrameworkElementFactory(typeof(Border));
-                bf.SetBinding(Border.BackgroundProperty,
-                    new System.Windows.Data.Binding("Background")
-                    { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-                bf.SetBinding(Border.BorderBrushProperty,
-                    new System.Windows.Data.Binding("BorderBrush")
-                    { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-                bf.SetBinding(Border.BorderThicknessProperty,
-                    new System.Windows.Data.Binding("BorderThickness")
-                    { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-                bf.SetBinding(Border.PaddingProperty,
-                    new System.Windows.Data.Binding("Padding")
-                    { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
-                bf.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
-                var cp = new FrameworkElementFactory(typeof(ContentPresenter));
-                cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-                cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
-                bf.AppendChild(cp);
-                return new ControlTemplate(typeof(Button)) { VisualTree = bf };
-            }
 
             Button MakeBtn(string label, MessageBoxResult res, bool accent = false, bool isDefault = false, bool isCancel = false)
             {
@@ -13166,8 +14641,6 @@ namespace TDPdf
                 Child   = btnPanel
             });
 
-            outerBorder.Child = root;
-            win.Content = outerBorder;
             if (defaultBtn != null)
             {
                 var toFocus = defaultBtn;
