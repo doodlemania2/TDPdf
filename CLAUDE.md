@@ -46,3 +46,52 @@ Single-window WPF app with MVVM foundations but no DI. Almost all UI behavior li
 - Set `_isDirty = true` on any change that mutates the document, and route open/close paths through the existing dirty-check prompts.
 - Versioning: bump `<Version>`, `<AssemblyVersion>`, and `<FileVersion>` together in `TDPdf.csproj`, add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md` (Keep a Changelog / SemVer), and update the compare links at the bottom.
 - GPLv3 compliance: keep `LICENSE` and `NOTICE` intact, preserve upstream copyright headers, never reintroduce upstream personal branding. New dialog titles / product strings must say "TDPdf".
+
+<!-- BEGIN derek-task-inbox — shared block, identical in every CLAUDE.md under /Volumes/Data/repos. Edit all copies together. Canonical source: the Outline "Protocol" page linked below. -->
+
+## Handing work back to Derek — the Outline Task Inbox
+
+Derek runs many agents at once, so a task mentioned only in a chat reply is lost. **Anything
+that requires Derek personally must be filed as an item in the Outline Task Inbox in the same
+turn you discover it**, and then also mentioned in your reply.
+
+- Inbox: [Derek's Task Inbox](https://outline.thedoodleproject.net/doc/dereks-task-inbox-qJpbaMEN3j) — `documentId: ae39277c-130c-4e95-90e0-80d7ed4138e4`
+- Full spec: [Protocol — how agents file tasks](https://outline.thedoodleproject.net/doc/protocol-how-agents-file-tasks-lLeYcUvbS4) — canonical if it disagrees with this block
+
+**Which direction is which.** The inbox is work *for Derek*: approvals, decisions, merging to
+`main`, entering a credential, vendor-UI clicks (CCB, Stripe, Power Platform, Azure Portal,
+Exchange), phone calls, hand-verifying prod. Work *for agents* — bugs, features, refactors,
+investigations — is a **GitHub issue** in the owning repo, never an inbox item. If an agent
+could do it, do it. Status and findings belong in your reply, not the inbox.
+
+**Filing an item**
+
+1. `mcp__outline__fetch` (`resource: "document"`, `id: "ae39277c-130c-4e95-90e0-80d7ed4138e4"`)
+   first. If the task is already filed, patch that item instead of adding a duplicate.
+2. `mcp__outline__update_document` with `editMode: "patch"`, `findText` = the target section
+   heading, `text` = that heading + a blank line + your new item, so it lands at the top of the
+   section. Sections: `## 🔴 Blocking` (an agent or a parishioner is stuck), `## 🟡 Normal`
+   (needed soon, nothing stuck), `## 🔵 Whenever`. Delete the `*Nothing pending.*` placeholder
+   when a section gets its first real item.
+
+```markdown
+- [ ] **<Imperative one-line title>** · `<repo>` · [#123](https://github.com/doodlemania2/<repo>/issues/123) · _YYYY-MM-DD_
+  - **Why:** what is broken or blocked until this happens
+  - **Do:** the exact steps or command to run
+  - **Done when:** the observable condition that means it worked
+  - **Context:** IDs, URLs, env/org, file paths — everything needed to act without asking
+  - **Filed by:** agent · <branch / worktree / session hint>
+```
+
+Every field is required, and the item must stand alone: Derek opens it cold days later with no
+memory of the session and finishes it without asking a question. That means real GUIDs and
+record IDs, the Dataverse org name (`stfoafrisco-prod` vs `stfoafrisco-staging`), the PR/issue
+link, and copy-pasteable commands — not "the affected family" or "the usual script". Never put
+a secret value in an item; name the Key Vault secret instead. One task per item.
+
+Never tick, reorder, or delete an item — checking off and archiving are Derek's alone. If a task
+you filed became unnecessary, patch it to `~~struck through~~` with the reason and date. If the
+Outline MCP is unavailable in your session (headless and cron runs sometimes lack it), say so
+explicitly and put the fully-formatted item inline in your reply rather than dropping it.
+
+<!-- END derek-task-inbox -->
