@@ -10314,6 +10314,56 @@ namespace TDPdf
             }
             RenderAllAnnotations(ctx.PageIndex);
             SetStatus($"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\"");
+            // #168: the in-place editor starts from whatever the PDF already says, so it is the path
+            // most likely to carry non-Latin text. Warn on the family the burn will actually use.
+            WarnIfGlyphsWillBeLost(ctx.ExistingAnnotation?.FontName ?? ctx.FontName, newText);
+        }
+
+        /// <summary>
+        /// #168: the editor borrows glyphs from any installed font, so text ALWAYS looks right while
+        /// it is being typed - but a PDF can only EMBED whole fonts, and a character no installed
+        /// font carries becomes an empty box in the saved file. That used to be invisible until the
+        /// user saved, closed and reopened. Say it at the moment the text is placed, while it can
+        /// still be fixed.
+        ///
+        /// Only fires when the whole fallback chain comes up short (a box mixing two non-Latin
+        /// scripts, or a script with no font installed at all), so it does not nag: ordinary
+        /// Japanese, Chinese, Korean, Thai or Devanagari text resolves silently.
+        /// </summary>
+        private void WarnIfGlyphsWillBeLost(string preferredFamily, string? text)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(text)) return;
+                string family = FontCoverage.PickFamily(preferredFamily, text);
+                string missing = FontCoverage.UncoveredChars(family, text);
+                if (missing.Length == 0) return;
+
+                SetStatus($"No installed font can draw: {missing} - these will save as empty boxes");
+
+                // Deferred rather than shown inline: CommitActiveTextBox / CommitTextEdit are the
+                // app's "settle any in-progress edit" chokepoint and run from inside save, print,
+                // close, tool-switch and tab-switch paths. A modal dialog on that stack would block
+                // the operation that asked for the settle. Background priority lets the caller
+                // finish, then raises the warning.
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        if (!IsLoaded || PresentationSource.FromVisual(this) is null) return;
+                        TdpDialog.Show(this,
+                            "Some characters in this text have no glyph in any installed font:\n\n" +
+                            missing + "\n\n" +
+                            "They look right while you type, because Windows borrows a glyph per " +
+                            "character from across your whole font set. A PDF can only embed whole " +
+                            "fonts, so these will save as empty boxes.\n\n" +
+                            "Installing a font that covers this script will fix it.",
+                            "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+                    catch { /* window went away between the commit and the dispatch */ }
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            }
+            catch { /* the warning must never be the thing that breaks placing text */ }
         }
 
         private void EditImageAtPosition(Point canvasPos, int pageIdx)
@@ -10646,6 +10696,10 @@ namespace TDPdf
                     AddAnnotation(ta);        // pushes its own snapshot
                     RenderTextAnnotation(ta);
                 }
+
+                // #168: say it NOW, not after saving and reopening. The burn resolves the same
+                // family this checks (DrawAnnotationsOnDocument), so the two never disagree.
+                WarnIfGlyphsWillBeLost(PdfFontStyle.DefaultFamily, ta.Content);
             }
             else if (reediting)
             {
@@ -13436,7 +13490,20 @@ namespace TDPdf
                         case TextAnnotation ta:
                         {
                             const double pad = 2;
-                            var font = new XFont("Segoe UI", ta.FontSize * sy);
+                            // #168: the editor is a WPF TextBox and falls back per CHARACTER across
+                            // every installed font, so anything typed looks right on screen;
+                            // PdfSharpCore resolves ONE face and emits an empty box for every
+                            // codepoint that face lacks. Segoe UI — hardcoded here before — carries
+                            // no CJK, so Japanese text was displayed correctly and then saved as
+                            // boxes. Pick a family that actually covers THIS annotation's text;
+                            // PickFamily keeps Segoe UI whenever it can carry it, which is every
+                            // Latin annotation, so nothing existing moves.
+                            var font = TdpFontResolver.TryCreate(
+                                FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, ta.Content),
+                                ta.FontSize * sy, XFontStyle.Regular);
+                            // Nothing resolvable at all (no readable font directory, or a degenerate
+                            // size): skip this ONE annotation rather than throw out of the save.
+                            if (font is null) break;
                             double lineH = ta.FontSize * sy * 1.2;
                             var taColor = ta.GetColor();
                             var taBrush = new XSolidBrush(XColor.FromArgb(taColor.A, taColor.R, taColor.G, taColor.B));
@@ -13583,13 +13650,24 @@ namespace TDPdf
                             // PdfSharpCore cannot surgically edit existing PDF content streams here.
                             // Existing text/image edits are approximated by painting a white rectangle
                             // over the original region, then drawing replacement content on top.
+                            //
+                            // Resolve the font FIRST: if nothing can be resolved the whole edit is
+                            // skipped, because covering the original line and then drawing nothing on
+                            // top would erase the page's own text (#168 safety).
+                            //
+                            // Keep the face styling detected on the original line (#182) so a
+                            // bold/italic run does not save back as plain, and run the family through
+                            // the same coverage check as placed text (#168) — the in-place editor is
+                            // the path most likely to carry non-Latin content, since it starts from
+                            // whatever the PDF already says.
+                            var editFont = TdpFontResolver.TryCreate(
+                                FontCoverage.PickFamily(tea.FontName, tea.NewContent),
+                                tea.FontSize * sy, ToXFontStyle(tea.Bold, tea.Italic));
+                            if (editFont is null) break;
                             var whiteRect = new XSolidBrush(XColors.White);
                             gfx.DrawRectangle(whiteRect,
                                 (tea.OriginalBounds.X - 2) * sx, (tea.OriginalBounds.Y - 2) * sy,
                                 (tea.OriginalBounds.Width + 4) * sx, (tea.OriginalBounds.Height + 4) * sy);
-                            // Draw replacement text, keeping the face styling detected on the original
-                            // line (#182) so a bold/italic run does not save back as plain.
-                            var editFont = new XFont(tea.FontName, tea.FontSize * sy, ToXFontStyle(tea.Bold, tea.Italic));
                             double ety = tea.Position.Y * sy + tea.FontSize * sy;
                             gfx.DrawString(tea.NewContent, editFont, XBrushes.Black, tea.Position.X * sx, ety);
                             break;
