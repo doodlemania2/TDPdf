@@ -64,18 +64,9 @@ namespace TDPdf
             var src = RenderPageBitmap(pageIdx, 1100, burned);
             if (src is null) { SetStatus("Transform: could not render the page."); return; }
 
-            var page = _doc.Pages[pageIdx];
-            var (visW, visH) = VisiblePageSize(page);   // CropBox- and /Rotate-aware, so the readout matches
-            var win = new TransformWindow(this, src, visW, visH);
-            win.ShowDialog();
-            if (!win.Applied) return;
-            if (Math.Abs(win.Angle) < 0.01 && Math.Abs(win.Scale - 1.0) < 0.001 && !win.FlipH && !win.FlipV)
-            {
-                SetStatus("Transform: nothing to apply.");
-                return;
-            }
-
-            // Apply the same transform to every selected page (defaults to the previewed page).
+            // The transform applies to every selected page (defaults to the previewed page). Resolve the
+            // selection BEFORE the modal dialog: the count decides whether perspective correction is
+            // offered, and the selection cannot change while the dialog is up.
             var indices = new List<int>();
             foreach (var item in PageList.SelectedItems)
             {
@@ -85,12 +76,30 @@ namespace TDPdf
             if (indices.Count == 0) indices.Add(pageIdx);
             indices.Sort();
 
-            ApplyPageTransform(indices, win.Angle, win.Scale, win.FixedPage, win.FlipH, win.FlipV);
+            var page = _doc.Pages[pageIdx];
+            var (visW, visH) = VisiblePageSize(page);   // CropBox- and /Rotate-aware, so the readout matches
+            // Perspective correction is single-page only. Rotate / scale / flip are page-independent, but
+            // the four corners are traced against THIS page's photographed outline; every other selected
+            // page was shot at its own angle, so re-using one quad would warp them by an outline that was
+            // never theirs. The dialog disables the section and says why rather than silently no-op'ing.
+            var win = new TransformWindow(this, src, visW, visH, allowPerspective: indices.Count == 1);
+            win.ShowDialog();
+            if (!win.Applied) return;
+            if (Math.Abs(win.Angle) < 0.01 && Math.Abs(win.Scale - 1.0) < 0.001 && !win.FlipH && !win.FlipV
+                && PerspectiveWarp.IsIdentity(win.PerspectiveCorners))
+            {
+                SetStatus("Transform: nothing to apply.");
+                return;
+            }
+
+            ApplyPageTransform(indices, win.Angle, win.Scale, win.FixedPage, win.FlipH, win.FlipV,
+                win.PerspectiveCorners);
         }
 
-        // Rasterizes the given pages with the chosen flip/scale/rotate and swaps each in for the original
-        // (undoable as one whole-document step).
-        private void ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage, bool flipH, bool flipV)
+        // Rasterizes the given pages with the chosen perspective/flip/scale/rotate and swaps each in for
+        // the original (undoable as one whole-document step).
+        private void ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
+            bool flipH, bool flipV, Point[] perspectiveCorners)
         {
             if (_doc is null || _currentFile is null) return;
             if (pageIndices.Count == 0) return;
@@ -116,7 +125,13 @@ namespace TDPdf
                     var src = RenderPageBitmap(pageIdx, 2200, renderSrc);
                     if (src is null) continue;
 
-                    var composed = ComposeTransform(src, angleDeg, scale, fixedPage, flipH, flipV);
+                    // Perspective first: the traced quad is in the ORIGINAL page raster's coordinates,
+                    // so the keystone has to be undone before flip/scale/rotate move those pixels
+                    // around. A crossing or collapsed quad throws, and the outer catch reports it —
+                    // nothing has been swapped into _doc at that point.
+                    var perspective = PerspectiveWarp.IsIdentity(perspectiveCorners)
+                        ? src : PerspectiveWarp.Apply(src, perspectiveCorners);
+                    var composed = ComposeTransform(perspective, angleDeg, scale, fixedPage, flipH, flipV);
                     byte[] png = EncodePng(composed);
 
                     // Map rendered pixels back to page points via the page's VISIBLE size (CropBox + /Rotate
@@ -157,6 +172,15 @@ namespace TDPdf
 
                 // Persist + re-render. SaveTempAndReload clears the in-app annotation overlay (as Crop/Rotate
                 // do); the transformed pages' annotations already live in the raster, so nothing is lost there.
+                //
+                // Repaint of the edited page: upstream (#175) had to add an explicit RenderPage here because
+                // its reload only refreshed secondary tiles. Ours does NOT need one — SaveTempAndReload
+                // rebuilds the sidebar via RefreshPageList, whose PageList.Items.Clear() drops the selection
+                // to -1, so restoring the index fires PageList_SelectionChanged -> RenderPage against the new
+                // temp file (the render cache was invalidated in the same call). Continuous view, which
+                // returns early from that handler, is covered by SaveTempAndReload's SetupContinuousView.
+                // Do not rely on the FitToPage calls below for the repaint: when the transformed page happens
+                // to fit at the same zoom, SetZoomLevel is a no-op and ApplyZoom never runs.
                 SaveTempAndReload();
                 if (restoreIdx >= 0 && restoreIdx < PageList.Items.Count)
                     PageList.SelectedIndex = restoreIdx;

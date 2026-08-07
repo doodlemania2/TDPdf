@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -30,13 +31,26 @@ namespace TDPdf.Services
         public bool FlipH { get; private set; }
         public bool FlipV { get; private set; }
 
+        /// <summary>
+        /// The four page corners the user traced on the preview, NORMALIZED to the preview image box
+        /// (0..1) and ordered top-left, top-right, bottom-right, bottom-left. Defaults to the image
+        /// bounds, which <see cref="PerspectiveWarp.IsIdentity"/> reads as "no correction".
+        /// </summary>
+        public Point[] PerspectiveCorners { get; private set; } =
+            new Point[] { new(0, 0), new(1, 0), new(1, 1), new(0, 1) };
+
         private const string CloseGlyph = "";     // Segoe MDL2 Assets close glyph
+
+        // Segoe MDL2 Assets chevrons for the collapsible section headers (E70D / E76C).
+        private const string ChevronDown  = "";
+        private const string ChevronRight = "";
 
         private readonly BitmapSource _src;
         private readonly double _srcW;
         private readonly double _srcH;
         private readonly double _pageWpt;
         private readonly double _pageHpt;
+        private readonly bool _allowPerspective;
 
         private readonly Image _preview = new()
         {
@@ -67,6 +81,7 @@ namespace TDPdf.Services
         private CheckBox _flipVCheck  = null!;
         private CheckBox _deskewCheck = null!;
         private TextBlock _lineCoords = null!;
+        private CheckBox _perspectiveCheck = null!;
 
         // Straighten-by-line overlay.
         private Canvas _lineCanvas = null!;
@@ -74,18 +89,32 @@ namespace TDPdf.Services
         private bool _drawingLine;
         private Point _startPagePt;
 
+        // Perspective-correction overlay: a draggable quad drawn over the preview image.
+        private Canvas _perspectiveCanvas = null!;
+        private Polygon _perspectiveOutline = null!;
+        private readonly Ellipse[] _perspectiveHandles = new Ellipse[4];
+        private int _dragPerspective = -1;   // index of the handle being dragged, -1 = idle
+        private const double HandleSize = 18;
+
         // Coalesces rapid slider changes: the heavy compose (scaling a page up makes a big bitmap) only
         // runs ~25x/sec on the latest value, so dragging stays smooth instead of queuing a backlog.
         private readonly DispatcherTimer _previewTimer;
         private bool _suppressAngleSync;   // guards the two-way slider <-> numeric-field binding
 
-        public TransformWindow(Window? owner, BitmapSource src, double pageWpt, double pageHpt)
+        /// <param name="allowPerspective">
+        /// False when more than one page is selected. The corner outline is traced against THIS page's
+        /// photo, so re-using the same quadrilateral on the other selected pages would warp them by an
+        /// outline that was never theirs; the section is shown but disabled, with the reason spelled out.
+        /// </param>
+        public TransformWindow(Window? owner, BitmapSource src, double pageWpt, double pageHpt,
+                               bool allowPerspective = true)
         {
             _src     = src;
             _srcW    = src.PixelWidth;
             _srcH    = src.PixelHeight;
             _pageWpt = pageWpt > 0 ? pageWpt : src.PixelWidth;
             _pageHpt = pageHpt > 0 ? pageHpt : src.PixelHeight;
+            _allowPerspective = allowPerspective;
 
             Title  = "TDPdf - Transform";
             Width  = 980;
@@ -259,6 +288,52 @@ namespace TDPdf.Services
             _lineCanvas.MouseLeftButtonUp   += LineCanvas_Up;
             grid.Children.Add(_lineCanvas);
 
+            // Perspective overlay: a second, sibling canvas over the same preview. It sits ABOVE the
+            // level-line canvas, and the two are mutually exclusive (see the checkbox handlers), so only
+            // one of them is ever hit-testable.
+            _perspectiveCanvas = new Canvas
+            {
+                Background      = Brushes.Transparent,
+                Visibility      = Visibility.Collapsed,
+                IsHitTestVisible = false,
+                Cursor          = Cursors.Cross
+            };
+            _perspectiveOutline = new Polygon
+            {
+                Stroke          = R("MarqueeStroke"),
+                StrokeThickness = 2,
+                StrokeDashArray = new DoubleCollection { 5, 3 },
+                Fill            = R("MarqueeFill"),
+                IsHitTestVisible = false
+            };
+            _perspectiveCanvas.Children.Add(_perspectiveOutline);
+            for (int i = 0; i < 4; i++)
+            {
+                var handle = new Ellipse
+                {
+                    Width           = HandleSize,
+                    Height          = HandleSize,
+                    Fill            = R("SelectionAccent"),
+                    Stroke          = R("BgDark"),
+                    StrokeThickness = 2,
+                    Cursor          = Cursors.SizeAll,
+                    Tag             = i
+                };
+                handle.PreviewMouseLeftButtonDown += PerspectiveHandle_Down;
+                _perspectiveHandles[i] = handle;
+                _perspectiveCanvas.Children.Add(handle);
+            }
+            // The drag is started on a child Ellipse, so capture the whole subtree: without SubTree
+            // capture the pointer leaves the 18px handle within the first mouse-move and the drag dies.
+            // handledEventsToo:true keeps the move/up reaching us even though the handle marks them
+            // handled, and LostMouseCapture is the belt-and-braces release (Alt+Tab, another capture).
+            _perspectiveCanvas.AddHandler(Mouse.PreviewMouseMoveEvent,
+                new MouseEventHandler(PerspectiveCanvas_Move), true);
+            _perspectiveCanvas.AddHandler(Mouse.PreviewMouseUpEvent,
+                new MouseButtonEventHandler(PerspectiveCanvas_Up), true);
+            _perspectiveCanvas.LostMouseCapture += (_, _2) => _dragPerspective = -1;
+            grid.Children.Add(_perspectiveCanvas);
+
             wrap.Child = grid;
             _previewArea = wrap;
             wrap.SizeChanged += (_, _2) => SizePreviewImage();
@@ -269,8 +344,10 @@ namespace TDPdf.Services
         {
             var panel = new StackPanel { Margin = new Thickness(14, 12, 14, 6) };
 
+            // Each section is built flat and then retro-wrapped by WrapSection into a collapsible body
+            // under a chevron header, so the five sections fit the 288px column without scrolling.
             // ---- Rotate ----
-            panel.Children.Add(SectionHeader("ROTATE"));
+            int rotateStart = panel.Children.Count;
             var turnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 8) };
             var turnL = MakeButton("↺ 90°", false);
             turnL.Margin = new Thickness(0, 0, 6, 0);
@@ -349,10 +426,11 @@ namespace TDPdf.Services
             angleRow.Children.Add(angleLabel);
             panel.Children.Add(angleRow);
 
+            WrapSection(panel, rotateStart, "ROTATE", expanded: true);
             panel.Children.Add(Divider());
 
             // ---- Scale ----
-            panel.Children.Add(SectionHeader("SCALE"));
+            int scaleStart = panel.Children.Count;
             _scaleSlider = new Slider
             {
                 Minimum = 10, Maximum = 400, Value = 100,
@@ -410,10 +488,11 @@ namespace TDPdf.Services
             };
             panel.Children.Add(_sizeReadout);
 
+            WrapSection(panel, scaleStart, "SCALE", expanded: false);
             panel.Children.Add(Divider());
 
             // ---- Flip ----
-            panel.Children.Add(SectionHeader("FLIP"));
+            int flipStart = panel.Children.Count;
             _flipHCheck = MakeCheck("Flip horizontal");
             _flipHCheck.Checked   += (_, _2) => { _flipH = true;  UpdatePreview(); };
             _flipHCheck.Unchecked += (_, _2) => { _flipH = false; UpdatePreview(); };
@@ -423,12 +502,20 @@ namespace TDPdf.Services
             _flipVCheck.Unchecked += (_, _2) => { _flipV = false; UpdatePreview(); };
             panel.Children.Add(_flipVCheck);
 
+            WrapSection(panel, flipStart, "FLIP", expanded: false);
             panel.Children.Add(Divider());
 
             // ---- Straighten ----
-            panel.Children.Add(SectionHeader("STRAIGHTEN"));
+            int skewStart = panel.Children.Count;
             _deskewCheck = MakeCheck("Draw a level line");
-            _deskewCheck.Checked   += (_, _2) => { _lineCanvas.IsHitTestVisible = true; };
+            // The level line and the perspective quad both drag on the preview, so they are mutually
+            // exclusive: turning one on turns the other off (upstream only did this in one direction,
+            // which left both overlays hit-testable at once).
+            _deskewCheck.Checked   += (_, _2) =>
+            {
+                _perspectiveCheck.IsChecked = false;
+                _lineCanvas.IsHitTestVisible = true;
+            };
             _deskewCheck.Unchecked += (_, _2) =>
             {
                 _lineCanvas.IsHitTestVisible = false;
@@ -449,6 +536,56 @@ namespace TDPdf.Services
             };
             panel.Children.Add(_lineCoords);
 
+            WrapSection(panel, skewStart, "STRAIGHTEN", expanded: false);
+            panel.Children.Add(Divider());
+
+            // ---- Perspective (trapezoidal distortion correction) ----
+            // Single-page only: the quad is traced against THIS page's photographed outline, and every
+            // other selected page was shot at its own angle, so re-using one quad would warp them by an
+            // outline that was never theirs. Disabled (with the reason on screen) rather than hidden, so
+            // it is obvious the feature exists and how to get at it.
+            int perspectiveStart = panel.Children.Count;
+            _perspectiveCheck = MakeCheck("Correct trapezoidal distortion");
+            _perspectiveCheck.IsEnabled = _allowPerspective;
+            if (!_allowPerspective) _perspectiveCheck.Foreground = R("DisabledForeground");
+            _perspectiveCheck.Checked += (_, _2) =>
+            {
+                _deskewCheck.IsChecked = false;
+                _perspectiveCanvas.Visibility = Visibility.Visible;
+                _perspectiveCanvas.IsHitTestVisible = true;
+                UpdatePerspectiveOverlay();
+            };
+            _perspectiveCheck.Unchecked += (_, _2) =>
+            {
+                _perspectiveCanvas.Visibility = Visibility.Collapsed;
+                _perspectiveCanvas.IsHitTestVisible = false;
+            };
+            panel.Children.Add(_perspectiveCheck);
+            panel.Children.Add(new TextBlock
+            {
+                Text = _allowPerspective
+                    ? "Drag the four corners onto the photographed page outline. Apply straightens it into a "
+                      + "rectangle BEFORE any rotate / scale / flip, so trace it on the unrotated page."
+                    : "Unavailable with more than one page selected: the corner outline is traced on this page only, "
+                      + "and the same quadrilateral would distort the others. Select a single page to correct perspective.",
+                Foreground = R("TextSecondary"), FontSize = 10, TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 4, 0, 0)
+            });
+            // Only offered when the section is live: MakeButton's flat template has no disabled visual
+            // state, so a greyed-out-but-identical-looking button would just read as broken.
+            if (_allowPerspective)
+            {
+                var resetCorners = MakeButton("Reset corners", false);
+                resetCorners.Margin = new Thickness(0, 8, 0, 0);
+                resetCorners.HorizontalAlignment = HorizontalAlignment.Left;
+                resetCorners.Padding = new Thickness(8, 2, 8, 2);
+                resetCorners.FontSize = 11;
+                resetCorners.Click += (_, _2) => ResetPerspective();
+                panel.Children.Add(resetCorners);
+            }
+
+            WrapSection(panel, perspectiveStart, "PERSPECTIVE", expanded: false);
+
             // ---- Buttons pinned below the scroller ----
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
             var reset = MakeButton("Reset all", false);
@@ -457,6 +594,7 @@ namespace TDPdf.Services
             {
                 _quarter = 0; _rotSlider.Value = 0; _scaleSlider.Value = 100;
                 _expandRadio.IsChecked = true; _flipHCheck.IsChecked = false; _flipVCheck.IsChecked = false;
+                ResetPerspective();
                 UpdatePreview();
             };
             var cancel = MakeButton("Cancel", false);
@@ -498,7 +636,72 @@ namespace TDPdf.Services
             FixedPage = _fixedPage;
             FlipH     = _flipH;
             FlipV     = _flipV;
+            // Hand back a copy: the live array is what the (still-alive) drag handlers write into.
+            PerspectiveCorners = PerspectiveCorners.ToArray();
             Close();
+        }
+
+        // ---- Perspective correction: drag the four page corners over the preview ----
+
+        private void ResetPerspective()
+        {
+            PerspectiveCorners = new Point[] { new(0, 0), new(1, 0), new(1, 1), new(0, 1) };
+            UpdatePerspectiveOverlay();
+        }
+
+        // The preview image's box expressed in the overlay canvas' own coordinates. The two are
+        // siblings in the same Grid but the Image is centred and resized by SizePreviewImage, so the
+        // corners have to be laid out against the image, not the canvas.
+        private Rect PreviewBoundsOnPerspectiveCanvas()
+        {
+            if (_preview.ActualWidth <= 0 || _preview.ActualHeight <= 0) return Rect.Empty;
+            Point origin = _preview.TranslatePoint(new Point(0, 0), _perspectiveCanvas);
+            return new Rect(origin.X, origin.Y, _preview.ActualWidth, _preview.ActualHeight);
+        }
+
+        private void UpdatePerspectiveOverlay()
+        {
+            if (_perspectiveCanvas is null || _perspectiveOutline is null) return;
+            Rect bounds = PreviewBoundsOnPerspectiveCanvas();
+            if (bounds.IsEmpty) return;
+            var points = new PointCollection();
+            for (int i = 0; i < 4; i++)
+            {
+                var p = new Point(bounds.Left + PerspectiveCorners[i].X * bounds.Width,
+                                  bounds.Top  + PerspectiveCorners[i].Y * bounds.Height);
+                points.Add(p);
+                Canvas.SetLeft(_perspectiveHandles[i], p.X - HandleSize / 2);
+                Canvas.SetTop(_perspectiveHandles[i],  p.Y - HandleSize / 2);
+            }
+            _perspectiveOutline.Points = points;
+        }
+
+        private void PerspectiveHandle_Down(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is not Ellipse { Tag: int index }) return;
+            _dragPerspective = index;
+            // SubTree so the capture survives the pointer leaving the handle mid-drag.
+            Mouse.Capture(_perspectiveCanvas, CaptureMode.SubTree);
+            e.Handled = true;
+        }
+
+        private void PerspectiveCanvas_Move(object sender, MouseEventArgs e)
+        {
+            if (_dragPerspective < 0 || e.LeftButton != MouseButtonState.Pressed) return;
+            Rect bounds = PreviewBoundsOnPerspectiveCanvas();
+            if (bounds.IsEmpty) return;
+            Point p = e.GetPosition(_perspectiveCanvas);
+            PerspectiveCorners[_dragPerspective] = new Point(
+                Math.Max(0, Math.Min(1, (p.X - bounds.Left) / bounds.Width)),
+                Math.Max(0, Math.Min(1, (p.Y - bounds.Top)  / bounds.Height)));
+            UpdatePerspectiveOverlay();
+        }
+
+        private void PerspectiveCanvas_Up(object sender, MouseButtonEventArgs e)
+        {
+            _dragPerspective = -1;
+            if (ReferenceEquals(Mouse.Captured, _perspectiveCanvas)) Mouse.Capture(null);
+            e.Handled = true;
         }
 
         // ---- Straighten-by-line: drag a line, release, and the page rotates to make that line level ----
@@ -598,6 +801,9 @@ namespace TDPdf.Services
             double clamp = Math.Min(1.0, Math.Min(areaW / dispW, areaH / dispH));   // never overflow the box
             _preview.Width  = dispW * clamp;
             _preview.Height = dispH * clamp;
+            // The handles are positioned from the image's ActualWidth/Height, which only settle after
+            // the layout pass this method just invalidated — so re-place them once that has run.
+            Dispatcher.BeginInvoke(new Action(UpdatePerspectiveOverlay), DispatcherPriority.Loaded);
         }
 
         // ---- Small themed control factory ------------------------------------
@@ -607,6 +813,53 @@ namespace TDPdf.Services
             Text = text, Foreground = R("TextSecondary"),
             FontSize = 10, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 4)
         };
+
+        /// <summary>
+        /// Retro-wraps the children already appended to <paramref name="host"/> from index
+        /// <paramref name="start"/> onward into a collapsible body under a clickable chevron header.
+        /// Building each section flat and wrapping afterwards keeps the section bodies readable in
+        /// source order instead of nesting every control inside a panel declaration.
+        /// </summary>
+        private void WrapSection(StackPanel host, int start, string title, bool expanded)
+        {
+            var children = host.Children.Cast<UIElement>().Skip(start).ToList();
+            while (host.Children.Count > start) host.Children.RemoveAt(start);
+
+            var body = new StackPanel { Visibility = expanded ? Visibility.Visible : Visibility.Collapsed };
+            foreach (var child in children) body.Children.Add(child);
+
+            var chevron = new TextBlock
+            {
+                Text = expanded ? ChevronDown : ChevronRight,
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 9, Width = 16,
+                Foreground = R("TextSecondary"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var label = SectionHeader(title);
+            label.Margin = new Thickness(0);
+
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            row.Children.Add(chevron);
+            row.Children.Add(label);
+
+            var header = new Border
+            {
+                Background = Brushes.Transparent,   // hit-testable across the whole row
+                Cursor = Cursors.Hand,
+                Padding = new Thickness(0, 5, 0, 5),
+                Child = row
+            };
+            header.MouseLeftButtonUp += (_, _2) =>
+            {
+                bool open = body.Visibility != Visibility.Visible;
+                body.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+                chevron.Text = open ? ChevronDown : ChevronRight;
+            };
+
+            host.Children.Add(header);
+            host.Children.Add(body);
+        }
 
         private Border Divider() => new()
         {
