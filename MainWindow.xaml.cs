@@ -3048,6 +3048,13 @@ namespace TDPdf
                     RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex), null, null, "\uE74D"));
                 overlay.ContextMenu = cm;
 
+                // #156 pushed the form-field overlays to ZIndex -1 so annotations paint above them.
+                // Links are added to this same canvas BEFORE the fields on the initial page render, so
+                // leaving them at the default 0 would flip the two: a widget overlapped by a /Link
+                // annotation would stop receiving its own clicks. -2 keeps the field on top of the link
+                // exactly as before. Link hit detection is a manual bounds check in
+                // Canvas_MouseLeftButtonDown, so nothing here depends on the overlay being topmost.
+                Panel.SetZIndex(overlay, -2);
                 _annotationCanvas.Children.Add(overlay);
                 _linkOverlays.Add(overlay);
             }
@@ -3554,6 +3561,18 @@ namespace TDPdf
                 if (ctrl is null) continue;
                 Canvas.SetLeft(ctrl, f.Cx);
                 Canvas.SetTop(ctrl, f.Cy);
+                // Upstream v1.7.0 (#156): field overlays sit BELOW the annotation layer. TDPdf puts
+                // annotations and form overlays on the SAME canvas, and RenderAllAnnotations paints
+                // the annotations and then calls RestoreFormOverlays — a Canvas paints later children
+                // on top, so a signature dropped on a fill-in field disappeared behind the field's own
+                // near-opaque control. Ordering cannot fix it here (this method removes and re-adds
+                // every stale overlay on each call, so the fields always end up last), but ZIndex can:
+                // annotations render at the default 0, so -1 puts the fields under them without
+                // touching a single annotation path. Clicking a covered field still works — every
+                // annotation visual is IsHitTestVisible=false, so none of them swallows the click that
+                // reaches the field beneath, and the selection chrome (borders, resize handles) stays
+                // at 0 and therefore still outranks the fields.
+                Panel.SetZIndex(ctrl, -1);
                 _annotationCanvas.Children.Add(ctrl);
                 anyField = true;
             }
@@ -3612,7 +3631,14 @@ namespace TDPdf
                     // Map the widget rect onto the Docnet/PDFium bitmap the canvas mirrors — the same
                     // conversion the link overlays use.
                     var (cx, cy, cw, ch) = PdfRectToCanvas(box, rotation, canvasW, canvasH, rx1, ry1, rx2, ry2);
-                    if (cw < 2 || ch < 2) continue;
+                    // Upstream v1.7.1 (#181): a malformed widget rectangle must not reach a WPF Width
+                    // or Height property — WPF throws for NaN and infinity, which took the viewer down
+                    // when a page click rebuilt the form overlay. "cw < 2" is no filter for those:
+                    // "∞ < 2" is false and every comparison with NaN is false, so both used to sail
+                    // straight through into the TextBox / ComboBox / checkbox / radio sizes below.
+                    if (!IsFinite(cx) || !IsFinite(cy) ||
+                        !IsFinitePositive(cw) || !IsFinitePositive(ch) ||
+                        cw < 2 || ch < 2) continue;
 
                     // Walk the parent chain to resolve inherited attributes.
                     string ft = "", name = "", curVal = "";
@@ -3747,10 +3773,31 @@ namespace TDPdf
                             node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
                         }
 
+                        // Upstream v1.7.1 (#180): /Ff is inheritable exactly like /DA, and bit 13
+                        // (4096) is Multiline. The overlay already decoded it (GetPageFormFields),
+                        // but the appearance writer never saw it: a multiline field has to lay its
+                        // value out in lines from the top of the box, a single-line one draws one
+                        // vertically centred line.
+                        int fieldFlags = 0;
+                        node = ann;
+                        while (node is not null && fieldFlags == 0)
+                        {
+                            if (node.Elements["/Ff"] is PdfInteger fi) fieldFlags = fi.Value;
+                            var pi = node.Elements["/Parent"];
+                            if (pi is null) break;
+                            node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
+                        }
+                        // Multiline is a /Tx-only flag — a /Ch choice field uses that bit position
+                        // for nothing — so gate on the field type the way GetPageFormFields does,
+                        // including its "missing /FT means /Tx" default.
+                        string ffType = fieldDict?.Elements["/FT"]?.ToString() ?? "";
+                        if (string.IsNullOrEmpty(ffType)) ffType = "/Tx";
+                        bool isMultiLine = ffType.Contains("Tx") && (fieldFlags & 4096) != 0;
+
                         if (_formTextValues.TryGetValue(objNum, out var textVal) && fieldDict is not null)
                         {
                             fieldDict.Elements["/V"] = new PdfString(textVal);
-                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH);
+                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine);
                         }
                         else if (_formCheckValues.TryGetValue(objNum, out var checkVal) && fieldDict is not null)
                         {
@@ -3817,28 +3864,88 @@ namespace TDPdf
         /// Generates a /AP /N form XObject appearance stream for a text field and sets it
         /// on the widget annotation, so the typed value shows in other viewers.
         /// </summary>
-        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH)
+        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH, bool isMultiLine)
         {
             try
             {
+                const double pad = 2;   // left/right inset, matching the Td origin below
+
                 var (fontName, fontSize) = ParseDaString(da);
                 if (fontSize <= 0) fontSize = Math.Max(6, Math.Min(fieldH * 0.65, 12));
-                fontSize = Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
+                // The "no taller than 85% of the box" clamp is a single-line rule: a multiline
+                // field is as tall as it needs to be for several lines, so applying it there
+                // blows the text up to the height of the whole box.
+                fontSize = isMultiLine ? Math.Max(6, fontSize)
+                                       : Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
 
-                // PDF baseline is measured from the bottom of the field rect.
-                double textY = (fieldH - fontSize) / 2 + fontSize * 0.2;
+                // Tj shows a string; it has no concept of a line break, so a value with newlines
+                // in it drew as one run with the breaks swallowed (they survived into the literal
+                // as \r / \n escapes and painted nothing). Lay the value out into lines and show
+                // each one, moving down by the leading between them.
+                List<string> lines = isMultiLine
+                    ? WrapFieldText(text, Math.Max(1, fieldW - pad * 2), fontSize)
+                    : new List<string> { text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ') };
+
+                double leading = fontSize * 1.16;
+                // PDF baselines are measured from the bottom of the field rect. Multiline text
+                // starts at the top and runs down; a single line stays vertically centred.
+                double textY = isMultiLine ? fieldH - fontSize
+                                           : (fieldH - fontSize) / 2 + fontSize * 0.2;
                 if (textY < 1) textY = 1;
 
-                string escaped = EscapePdfString(text);
-                string content =
-                    $"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n" +
-                    $"BT\n{fontName} {fontSize:F2} Tf\n0 g\n2 {textY:F2} Td\n({escaped}) Tj\nET\nQ\nEMC";
+                var sb = new System.Text.StringBuilder();
+                sb.Append($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n");
+                sb.Append($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n{leading:F2} TL\n{pad:F2} {textY:F2} Td\n");
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    if (i > 0) sb.Append("T*\n");   // down one leading, back to the left inset
+                    sb.Append($"({EscapePdfString(lines[i])}) Tj\n");
+                }
+                sb.Append("ET\nQ\nEMC");
 
-                var xobj = BuildFormXObject(fontName, fieldW, fieldH, content);
+                // Lines past the bottom of the box are clipped by the "re W n" above, the same
+                // way a viewer clips an over-full field.
+                var xobj = BuildFormXObject(fontName, fieldW, fieldH, sb.ToString());
                 if (xobj is null) return;
                 AttachAppearance(widgetAnn, xobj);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GenerateTextFieldAppearance: {ex}"); }
+        }
+
+        /// <summary>
+        /// Splits a multiline field's value into the lines its appearance should draw: the value's
+        /// own line breaks first, then greedy word-wrap to the field's inner width.
+        /// </summary>
+        /// <remarks>
+        /// Measured with Arial, which is metric-compatible with the Helvetica the generated
+        /// appearance stream asks for, so the wrap lands where the drawn glyphs do.
+        /// </remarks>
+        private static List<string> WrapFieldText(string text, double innerWidth, double fontSize)
+        {
+            var typeface = new Typeface("Arial");
+            double Width(string s) => new FormattedText(
+                s, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                typeface, fontSize, Brushes.Black, 1.0).Width;
+
+            var lines = new List<string>();
+            foreach (var para in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                string current = string.Empty;
+                foreach (var word in para.Split(' '))
+                {
+                    string candidate = current.Length == 0 ? word : current + " " + word;
+                    // A single word wider than the field can't be broken any further — let it
+                    // run on and be clipped rather than dropping it onto an empty line.
+                    if (current.Length > 0 && Width(candidate) > innerWidth)
+                    {
+                        lines.Add(current);
+                        current = word;
+                    }
+                    else current = candidate;
+                }
+                lines.Add(current);
+            }
+            return lines;
         }
 
         /// <summary>
@@ -3915,7 +4022,17 @@ namespace TDPdf
             res.Elements["/Font"] = fontDict;
             xobj.Elements["/Resources"] = res;
 
-            if (!TryAttachStreamBytes(xobj, bytes)) return null;
+            // Upstream v1.7.1 (#180): CreateStream, not a hand-attached PdfStream. It is the only
+            // path that also writes /Length, which every PDF stream is required to carry. The old
+            // reflection helper built PdfDictionary.PdfStream directly and assigned it through the
+            // Stream property, which skips that one line — so every /AP /N appearance TDPdf
+            // generated for a text field or checkbox went out with no /Length and the saved file
+            // was structurally invalid. PdfSharpCore's own parser refuses such a stream ("Cannot
+            // retrieve stream length."), and strict viewers report a damaged structure; PDFium-based
+            // viewers scan on to endstream and cope, which is why it went unnoticed on screen. The
+            // Debug.Assert in PdfDictionary.WriteObject that would have caught it is compiled out of
+            // Release builds.
+            xobj.CreateStream(bytes);
 
             _doc.Internals.AddObject(xobj);
             return xobj;
@@ -3927,53 +4044,6 @@ namespace TDPdf
             var apDict = new PdfDictionary();
             apDict.Elements["/N"] = xobj.Reference;
             widgetAnn.Elements["/AP"] = apDict;
-        }
-
-        /// <summary>
-        /// Attaches raw content bytes to a PdfDictionary as a stream. Accesses
-        /// PdfDictionary.PdfStream via reflection because its constructor is internal.
-        /// </summary>
-        private static bool TryAttachStreamBytes(PdfDictionary dict, byte[] bytes)
-        {
-            try
-            {
-                var dictType   = typeof(PdfDictionary);
-                var streamType = dictType.GetNestedType("PdfStream",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                if (streamType is null) return false;
-
-                System.Reflection.ConstructorInfo? ctor =
-                    streamType.GetConstructor(
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
-                        null, new[] { typeof(byte[]), typeof(PdfDictionary) }, null) ??
-                    streamType.GetConstructor(
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
-                        null, new[] { typeof(byte[]) }, null);
-                if (ctor is null) return false;
-
-                object streamObj = ctor.GetParameters().Length == 2
-                    ? ctor.Invoke(new object[] { bytes, dict })
-                    : ctor.Invoke(new object[] { bytes });
-
-                var prop = dictType.GetProperty("Stream",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                if (prop?.CanWrite == true)
-                {
-                    prop.SetValue(dict, streamObj);
-                    return true;
-                }
-
-                var field = dictType.GetField("_stream",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (field is not null)
-                {
-                    field.SetValue(dict, streamObj);
-                    return true;
-                }
-
-                return false;
-            }
-            catch { return false; }
         }
 
         /// <summary>
@@ -4001,12 +4071,72 @@ namespace TDPdf
             return (fontName, fontSize);
         }
 
+        // Upstream v1.7.1 (#180): the generated appearance streams declare /WinAnsiEncoding, but the
+        // escape that fed them replaced every character above U+00FF with '?'. WinAnsi is code page
+        // 1252, whose 0x80-0x9F block holds exactly the characters that were being thrown away —
+        // curly quotes and apostrophes, en/em dashes, bullets, ellipses — so a field pasted in from
+        // a word processor came out full of question marks ("Hunter?s Mark").
+        //
+        // Upstream calls Encoding.GetEncoding(1252). We deliberately do NOT: on .NET (Core) code
+        // page 1252 is not built in, and GetEncoding(1252) throws ArgumentException unless
+        // CodePagesEncodingProvider is registered — which this app does not do anywhere (see the
+        // remark on PdfDocumentService.FileHasEncryption, which avoids 1252 for the same reason).
+        // In a static initializer that throw would surface as a TypeInitializationException on the
+        // save path. This table is the complete set of CP1252 code points above U+00FF, so it is
+        // equivalent for every character WinAnsi can actually represent, needs no provider
+        // registration, and cannot throw. Below U+0100 CP1252 and Latin-1 agree, so those pass
+        // through untouched exactly as before; anything with no WinAnsi slot (CJK and the like)
+        // still falls back to '?', the same as the old behaviour.
+        private static readonly Dictionary<char, char> WinAnsiHighMap = new()
+        {
+            ['\u20AC'] = '\u0080',   // euro sign
+            ['\u201A'] = '\u0082',   // single low-9 quotation mark
+            ['\u0192'] = '\u0083',   // latin small letter f with hook
+            ['\u201E'] = '\u0084',   // double low-9 quotation mark
+            ['\u2026'] = '\u0085',   // horizontal ellipsis
+            ['\u2020'] = '\u0086',   // dagger
+            ['\u2021'] = '\u0087',   // double dagger
+            ['\u02C6'] = '\u0088',   // modifier letter circumflex accent
+            ['\u2030'] = '\u0089',   // per mille sign
+            ['\u0160'] = '\u008A',   // capital S with caron
+            ['\u2039'] = '\u008B',   // single left-pointing angle quotation mark
+            ['\u0152'] = '\u008C',   // capital ligature OE
+            ['\u017D'] = '\u008E',   // capital Z with caron
+            ['\u2018'] = '\u0091',   // left single quotation mark
+            ['\u2019'] = '\u0092',   // right single quotation mark (the curly apostrophe)
+            ['\u201C'] = '\u0093',   // left double quotation mark
+            ['\u201D'] = '\u0094',   // right double quotation mark
+            ['\u2022'] = '\u0095',   // bullet
+            ['\u2013'] = '\u0096',   // en dash
+            ['\u2014'] = '\u0097',   // em dash
+            ['\u02DC'] = '\u0098',   // small tilde
+            ['\u2122'] = '\u0099',   // trade mark sign
+            ['\u0161'] = '\u009A',   // small s with caron
+            ['\u203A'] = '\u009B',   // single right-pointing angle quotation mark
+            ['\u0153'] = '\u009C',   // small ligature oe
+            ['\u017E'] = '\u009E',   // small z with caron
+            ['\u0178'] = '\u009F',   // capital Y with diaeresis
+            // No WinAnsi slot of their own, but these are the folds the platform's own best-fit
+            // table applies, and word processors emit them constantly.
+            ['\u2010'] = '-',        // hyphen
+            ['\u2011'] = '-',        // non-breaking hyphen
+            ['\u2012'] = '-',        // figure dash
+            ['\u2015'] = '\u0097',   // horizontal bar -> em dash
+            ['\u2032'] = '\'',       // prime -> apostrophe
+            ['\u2033'] = '"',        // double prime -> quotation mark
+        };
+
         /// <summary>Escapes a string for use in a PDF literal string (parentheses syntax).</summary>
         private static string EscapePdfString(string s)
         {
             var sb = new System.Text.StringBuilder(s.Length);
-            foreach (char c in s)
+            foreach (char raw in s)
             {
+                // Fold to the single WinAnsi byte the appearance stream's /WinAnsiEncoding will read
+                // BEFORE escaping, so a mapped character that happens to need escaping still gets it.
+                char c = raw < 256 ? raw
+                       : WinAnsiHighMap.TryGetValue(raw, out var mapped) ? mapped
+                       : '?';
                 switch (c)
                 {
                     case '\\': sb.Append("\\\\"); break;
@@ -4015,7 +4145,7 @@ namespace TDPdf
                     case '\r': sb.Append("\\r");  break;
                     case '\n': sb.Append("\\n");  break;
                     default:
-                        sb.Append(c < 256 ? c : '?'); // keep Latin-1 range
+                        sb.Append(c);
                         break;
                 }
             }
@@ -6650,14 +6780,31 @@ namespace TDPdf
             }
         }
 
+        /// <summary>Fallback drawn-signature canvas, mirroring <see cref="SavedSignature"/>'s initializers.</summary>
+        private const double DefaultSigCanvasW = 400;
+        private const double DefaultSigCanvasH = 150;
+
+        // Upstream v1.7.1 (#181): signatures.json is plain JSON on disk and an explicit 0 in it
+        // OVERRIDES SavedSignature's property initializers, so a legacy or hand-edited entry can carry
+        // a zero (or non-finite) canvas size. Everything downstream divides by it — the preview scale,
+        // the placed annotation's SourceWidth, the resize drag — and ±∞/NaN then gets persisted onto
+        // the annotation, after which every later render crashes WPF. Read the dimensions through
+        // these so the standard canvas stands in wherever the stored value is unusable.
+        private static double SigCanvasW(SavedSignature sig)
+            => IsFinitePositive(sig.CanvasWidth) ? sig.CanvasWidth : DefaultSigCanvasW;
+
+        private static double SigCanvasH(SavedSignature sig)
+            => IsFinitePositive(sig.CanvasHeight) ? sig.CanvasHeight : DefaultSigCanvasH;
+
         private void RenderSignaturePreview(Canvas canvas, SavedSignature sig, double targetW, double targetH)
         {
-            double scaleX = targetW / sig.CanvasWidth;
-            double scaleY = targetH / sig.CanvasHeight;
+            double sigW = SigCanvasW(sig), sigH = SigCanvasH(sig);
+            double scaleX = targetW / sigW;
+            double scaleY = targetH / sigH;
             double scale = Math.Min(scaleX, scaleY) * 0.9;
 
-            double offsetX = (targetW - sig.CanvasWidth * scale) / 2;
-            double offsetY = (targetH - sig.CanvasHeight * scale) / 2;
+            double offsetX = (targetW - sigW * scale) / 2;
+            double offsetY = (targetH - sigH * scale) / 2;
 
             foreach (var stroke in sig.Strokes)
             {
@@ -7329,8 +7476,11 @@ namespace TDPdf
                 PageIndex = pageIdx,
                 Position = pos,
                 Scale = scale,
-                SourceWidth = sig.CanvasWidth,
-                SourceHeight = sig.CanvasHeight,
+                // #181: never copy an unusable stored canvas size onto the annotation — SourceWidth
+                // is a divisor in the resize drag, and a 0 there produces an infinite Scale that is
+                // then saved on the annotation and crashes every subsequent render.
+                SourceWidth = SigCanvasW(sig),
+                SourceHeight = SigCanvasH(sig),
                 ImageData = sig.ImageData
             };
 
@@ -8204,12 +8354,24 @@ namespace TDPdf
                 double dx = pos.X - _resizeSigStart.X;
                 double dy = pos.Y - _resizeSigStart.Y;
                 double delta = (Math.Abs(dx) > Math.Abs(dy) ? dx : dy);
-                double newScale = Math.Max(0.05, _resizeSigStartScale + delta / _resizeSigAnnot.SourceWidth);
+                // #181: the divisor and the starting scale both come off the annotation, and an
+                // annotation placed from a damaged signatures.json entry could carry 0 or a non-finite
+                // value in either. Math.Max does not filter those out (it returns NaN for NaN and ∞
+                // for ∞) and the result is written straight back onto the annotation below, so one bad
+                // drag used to poison every later render. Substitute the standard canvas instead.
+                double srcW = IsFinitePositive(_resizeSigAnnot.SourceWidth)
+                    ? _resizeSigAnnot.SourceWidth : DefaultSigCanvasW;
+                double startScale = IsFinitePositive(_resizeSigStartScale) ? _resizeSigStartScale : 0.5;
+                double newScale = Math.Max(0.05, startScale + delta / srcW);
                 _resizeSigAnnot.Scale = newScale;
 
-                // Update selection border and handle position live
-                double newW = _resizeSigAnnot.SourceWidth * newScale;
-                double newH = _resizeSigAnnot.SourceHeight * newScale;
+                // Update selection border and handle position live. SourceHeight gets the same
+                // treatment as SourceWidth above: newW/newH feed the border's Width/Height, which WPF
+                // rejects outright when either is not a real number.
+                double srcH = IsFinitePositive(_resizeSigAnnot.SourceHeight)
+                    ? _resizeSigAnnot.SourceHeight : DefaultSigCanvasH;
+                double newW = srcW * newScale;
+                double newH = srcH * newScale;
                 if (_selectionBorder is not null)
                 {
                     _selectionBorder.Width  = newW + 8;
@@ -8770,18 +8932,75 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// Converts a rectangle on the annotation canvas into the absolute PDF user-space rectangle
+        /// (lower-left origin, positive extents) that <see cref="CropService"/> writes as the page's
+        /// /CropBox. The exact inverse of <see cref="PdfRectToCanvas"/>, including the page /Rotate.
+        /// </summary>
+        /// <remarks>
+        /// This used to map as if /Rotate were always 0, so cropping a quarter-turned page cropped a
+        /// different region than the one dragged (on a 90-rotated page the drag axes are swapped
+        /// relative to user space, so a top-left drag cropped the bottom-left of the sheet).
+        ///
+        /// The RESULT stays unrotated user space, which is the right contract and needs no change:
+        /// PDF 32000-1 7.7.3.3 defines /CropBox — like /MediaBox — in default user space, and /Rotate
+        /// is applied by the viewer AFTER the box has been selected. So the page keeps its existing
+        /// /Rotate untouched and the crop still lands where the user dragged.
+        ///
+        /// Inverting PdfRectToCanvas point by point, with fx = rx - box.X and fy = ry - box.Y:
+        ///     0 : fx = cx*hs,                fy = box.Height - cy*vs
+        ///    90 : fy = cx*hs,                fx = cy*vs
+        ///   180 : fx = box.Width  - cx*hs,   fy = cy*vs
+        ///   270 : fy = box.Height - cx*hs,   fx = box.Width - cy*vs
+        /// where hs/vs are points-per-canvas-pixel on each canvas axis. For 90/270 the bitmap's axes
+        /// are swapped — canvas width spans the box's HEIGHT — so the two scales swap with them.
+        /// </remarks>
         private Rect CanvasRectToPdfCropRect(int pageIdx, Rect canvasBounds)
         {
             var (renderW, renderH) = _renderDims[pageIdx];
             var page = _doc!.Pages[pageIdx];
             var box = GetVisiblePageBox(page);
-            double sx = box.Width / renderW;
-            double sy = box.Height / renderH;
+            int rot = ((page.Rotate % 360) + 360) % 360;
+            bool quarterTurn = rot is 90 or 270;
 
-            double left = box.X + canvasBounds.Left * sx;
-            double right = box.X + canvasBounds.Right * sx;
-            double top = box.Top - canvasBounds.Top * sy;
-            double bottom = box.Top - canvasBounds.Bottom * sy;
+            double hs = (quarterTurn ? box.Height : box.Width) / renderW;
+            double vs = (quarterTurn ? box.Width : box.Height) / renderH;
+
+            // Map both canvas corners; which PDF edge each one becomes depends on the angle, so
+            // normalize with min/max at the end rather than assuming an ordering.
+            double fxA, fxB, fyA, fyB;
+            switch (rot)
+            {
+                case 90:
+                    fyA = canvasBounds.Left * hs;
+                    fyB = canvasBounds.Right * hs;
+                    fxA = canvasBounds.Top * vs;
+                    fxB = canvasBounds.Bottom * vs;
+                    break;
+                case 180:
+                    fxA = box.Width - canvasBounds.Left * hs;
+                    fxB = box.Width - canvasBounds.Right * hs;
+                    fyA = canvasBounds.Top * vs;
+                    fyB = canvasBounds.Bottom * vs;
+                    break;
+                case 270:
+                    fyA = box.Height - canvasBounds.Left * hs;
+                    fyB = box.Height - canvasBounds.Right * hs;
+                    fxA = box.Width - canvasBounds.Top * vs;
+                    fxB = box.Width - canvasBounds.Bottom * vs;
+                    break;
+                default:
+                    fxA = canvasBounds.Left * hs;
+                    fxB = canvasBounds.Right * hs;
+                    fyA = box.Height - canvasBounds.Top * vs;
+                    fyB = box.Height - canvasBounds.Bottom * vs;
+                    break;
+            }
+
+            double left = box.X + Math.Min(fxA, fxB);
+            double right = box.X + Math.Max(fxA, fxB);
+            double bottom = box.Y + Math.Min(fyA, fyB);
+            double top = box.Y + Math.Max(fyA, fyB);
             return new Rect(left, bottom, right - left, top - bottom);
         }
 
@@ -8930,6 +9149,52 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// The exact inverse of <see cref="PdfRectToCanvas"/>, expressed as a matrix to PREPEND to an
+        /// <see cref="XGraphics"/> transform: it maps VISUAL-frame points — canvas coordinates scaled to
+        /// points, top-left origin, y down, laid out on the box PDFium actually rendered with /Rotate
+        /// already applied — onto the frame XGraphics draws in. Prepend it and every subsequent draw call
+        /// can keep passing canvas-scaled coordinates unchanged. Null when there is nothing to apply.
+        /// </summary>
+        /// <param name="rotation">Page /Rotate, already normalized to 0/90/180/270.</param>
+        /// <param name="box">The rendered page box from <see cref="GetVisiblePageBox"/> (UNROTATED, and
+        /// with its real origin — a /CropBox inset from or offset within the /MediaBox is why the
+        /// mapping is not simply a rotation about (0,0)).</param>
+        /// <param name="pageHeightPt">
+        /// <c>page.Height.Point</c> — the height XGraphics flips about: its Initialize builds
+        /// DefaultViewMatrix = [1 0 0 -1 0 pageHeight] from the page size, so a draw at (X, Y) lands at
+        /// user-space (X, pageHeightPt - Y). It is passed in rather than derived because PdfSharpCore
+        /// reports the SWAPPED media-box dimensions for a page whose /Rotate is 90/270 (PdfPage's
+        /// dictionary ctor sets _orientation = Landscape), so "page height" there is really the visual
+        /// height. Every case below is written as "pageHeightPt minus the user-space y we want", so the
+        /// value cancels out of the result: a page whose /MediaBox is unreadable — the empty [0 0 0 0]
+        /// the lazy getter plants — still burns in the right place.
+        /// </param>
+        private static XMatrix? VisualToPageMatrix(int rotation, PageBox box, double pageHeightPt)
+        {
+            // Inverting PdfRectToCanvas point-by-point gives visual (vx, vy) -> PDF user space:
+            //    0 : (box.X + vx,            box.Y + box.Height - vy)
+            //   90 : (box.X + vy,            box.Y + vx)
+            //  180 : (box.X + box.Width - vx, box.Y + vy)
+            //  270 : (box.X + box.Width - vy, box.Y + box.Height - vx)
+            // XGraphics then applies (X, Y) -> (X, pageHeightPt - Y), so this matrix has to produce
+            // X = user x and Y = pageHeightPt - user y. XMatrix is (m11, m12, m21, m22, dx, dy) with
+            // x' = x*m11 + y*m21 + dx and y' = x*m12 + y*m22 + dy.
+            double atTop    = pageHeightPt - box.Top;   // Y for a user-space y at the box's top edge
+            double atBottom = pageHeightPt - box.Y;     // ...and at its bottom edge
+            switch (rotation)
+            {
+                case 90:  return new XMatrix(0, -1, 1, 0, box.X,     atBottom);
+                case 180: return new XMatrix(-1, 0, 0, -1, box.Right, atBottom);
+                case 270: return new XMatrix(0, 1, -1, 0, box.Right, atTop);
+                default:
+                    // Unrotated page whose rendered box is the whole media box at the origin: the
+                    // matrix is the identity XGraphics already applies, so emit nothing and keep the
+                    // content stream byte-identical to what earlier builds wrote.
+                    return box.X == 0 && atTop == 0 ? null : new XMatrix(1, 0, 0, 1, box.X, atTop);
+            }
+        }
+
         // ============================================================
         // Selection
         // ============================================================
@@ -9029,6 +9294,15 @@ namespace TDPdf
         {
             ClearSelection();
             _selectedAnnotation = annot;
+            // #181: the selection chrome is sized from these bounds and WPF rejects NaN/infinity on
+            // Width/Height, so a caller that passed geometry derived from a malformed annotation — or
+            // Rect.Empty, which WPF itself defines as (+∞, +∞, -∞, -∞) — used to crash here rather
+            // than merely draw nothing. Collapse anything non-finite to a degenerate box: the
+            // annotation still becomes the selection, so Delete and the style bar keep working.
+            if (!IsFinite(bounds.X) || !IsFinite(bounds.Y) ||
+                !IsFinite(bounds.Width) || !IsFinite(bounds.Height))
+                bounds = new Rect(IsFinite(bounds.X) ? bounds.X : 0,
+                                  IsFinite(bounds.Y) ? bounds.Y : 0, 0, 0);
             _selectionBorder = new Border
             {
                 BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
@@ -10684,13 +10958,23 @@ namespace TDPdf
 
         private void RenderTextAnnotation(TextAnnotation ta)
         {
+            // Upstream v1.7.1 (#181): WPF refuses NaN and infinity on Width/Height outright. The
+            // "> 0" tests below are no guard at all — "∞ > 0" is true — so a malformed persisted
+            // box used to take the whole viewer down on the next repaint. Width/Height of exactly 0
+            // is the legacy auto-size mode and stays legal, so only NON-FINITE values bail out.
+            if (!IsFinite(ta.Width) || !IsFinite(ta.Height)) return;
+
             var tb = new TextBlock
             {
                 Text = ta.Content,
                 Foreground = new SolidColorBrush(ta.GetColor()),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = ta.FontSize,
-                Padding = new Thickness(2)
+                Padding = new Thickness(2),
+                // #156: annotation visuals must never intercept the mouse — selection and dragging
+                // hit-test the _annotations data, not the visuals, and the form-field overlays now
+                // sit UNDER this layer and still have to receive their own clicks.
+                IsHitTestVisible = false
             };
             // Width > 0: fixed-width, word-wrapping box. Width == 0: legacy auto-size (no wrap).
             if (ta.Width > 0)
@@ -10782,6 +11066,33 @@ namespace TDPdf
             return lines;
         }
 
+        // ------------------------------------------------------------------
+        // Upstream v1.7.1 (#181): WPF throws "'∞' is not a valid value for property 'Height'" (and
+        // the same for NaN) the moment a FrameworkElement is given a non-finite size, so malformed
+        // persisted geometry could take the viewer down during an ordinary repaint. Every sized
+        // visual below is checked through these before it reaches WPF.
+        //
+        // Note that Rect.Empty is itself non-finite — WPF defines it as (+∞, +∞, -∞, -∞) — so these
+        // also catch a bounds value that came from a hit test that found nothing.
+        // ------------------------------------------------------------------
+
+        private static bool IsFinite(double value)
+            => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        private static bool IsFinitePositive(double value)
+            => IsFinite(value) && value > 0;
+
+        /// <summary>
+        /// The on-canvas size of a placed (signature / image) annotation, or false when the stored
+        /// source size and scale do not multiply out to something WPF will accept.
+        /// </summary>
+        private static bool TryGetPlacedSize(PlacedAnnotation annot, out double width, out double height)
+        {
+            width = annot.SourceWidth * annot.Scale;
+            height = annot.SourceHeight * annot.Scale;
+            return IsFinitePositive(width) && IsFinitePositive(height);
+        }
+
         private void RenderAllAnnotations(int pageIndex)
         {
             _annotationCanvas.Children.Clear();
@@ -10809,11 +11120,13 @@ namespace TDPdf
                         var mkBrush = FrozenSolidColorBrush(mk.GetColor());
                         foreach (var pr in mk.PaintRects())
                         {
+                            if (!IsFinitePositive(pr.Width) || !IsFinitePositive(pr.Height)) continue;
                             var band = new Rectangle
                             {
                                 Fill = mkBrush,
                                 Width = pr.Width,
-                                Height = pr.Height
+                                Height = pr.Height,
+                                IsHitTestVisible = false
                             };
                             Canvas.SetLeft(band, pr.X);
                             Canvas.SetTop(band, pr.Y);
@@ -10822,11 +11135,13 @@ namespace TDPdf
                         break;
                     }
                     case HighlightAnnotation ha:
+                        if (!IsFinitePositive(ha.Bounds.Width) || !IsFinitePositive(ha.Bounds.Height)) continue;
                         var rect = new Rectangle
                         {
                             Fill = FrozenSolidColorBrush(ha.GetColor()),
                             Width = ha.Bounds.Width,
-                            Height = ha.Bounds.Height
+                            Height = ha.Bounds.Height,
+                            IsHitTestVisible = false
                         };
                         Canvas.SetLeft(rect, ha.Bounds.X);
                         Canvas.SetTop(rect, ha.Bounds.Y);
@@ -10843,12 +11158,14 @@ namespace TDPdf
                             StrokeThickness = ia.StrokeWidth,
                             StrokeLineJoin = PenLineJoin.Round,
                             StrokeStartLineCap = PenLineCap.Round,
-                            StrokeEndLineCap = PenLineCap.Round
+                            StrokeEndLineCap = PenLineCap.Round,
+                            IsHitTestVisible = false
                         };
                         foreach (var pt in ia.Points) poly.Points.Add(pt);
                         _annotationCanvas.Children.Add(poly);
                         break;
                     case TextEditAnnotation tea:
+                        if (!IsFinite(tea.OriginalBounds.Width) || !IsFinite(tea.OriginalBounds.Height)) continue;
                         // White-out original text
                         var wo = new Rectangle
                         {
@@ -10867,7 +11184,8 @@ namespace TDPdf
                             Foreground = Brushes.Black,
                             FontFamily = new FontFamily(tea.FontName),
                             FontSize = tea.FontSize,
-                            Padding = new Thickness(0)
+                            Padding = new Thickness(0),
+                            IsHitTestVisible = false
                         };
                         Canvas.SetLeft(etb, tea.Position.X);
                         Canvas.SetTop(etb, tea.Position.Y);
@@ -10875,6 +11193,7 @@ namespace TDPdf
                         break;
 
                     case ImageEditAnnotation iea:
+                        if (!IsFinite(iea.OriginalBounds.Width) || !IsFinite(iea.OriginalBounds.Height)) continue;
                         var imageWhiteout = new Rectangle
                         {
                             Fill = Brushes.White,
@@ -10889,7 +11208,9 @@ namespace TDPdf
                         if (!iea.IsDeleted)
                         {
                             var source = LoadImageEditBitmap(iea);
-                            if (source is not null)
+                            if (source is not null &&
+                                IsFinitePositive(iea.TargetBounds.Width) &&
+                                IsFinitePositive(iea.TargetBounds.Height))
                             {
                                 var imgCtrl = new System.Windows.Controls.Image
                                 {
@@ -10907,6 +11228,10 @@ namespace TDPdf
                         break;
 
                     case SignatureAnnotation sa:
+                        // Guards BOTH variants: the drawn one scales its stroke width and every point
+                        // by the same Scale, so a signature whose placed size is not a real number is
+                        // unrenderable either way.
+                        if (!TryGetPlacedSize(sa, out double sigW, out double sigH)) continue;
                         if (sa.ImageData is not null)
                         {
                             // Image-based signature
@@ -10925,8 +11250,8 @@ namespace TDPdf
                                 var imgCtrl = new System.Windows.Controls.Image
                                 {
                                     Source = bmp,
-                                    Width = sa.SourceWidth * sa.Scale,
-                                    Height = sa.SourceHeight * sa.Scale,
+                                    Width = sigW,
+                                    Height = sigH,
                                     Stretch = System.Windows.Media.Stretch.Uniform,
                                     IsHitTestVisible = false
                                 };
@@ -10947,7 +11272,8 @@ namespace TDPdf
                                     StrokeThickness = 2 * sa.Scale,
                                     StrokeLineJoin = PenLineJoin.Round,
                                     StrokeStartLineCap = PenLineCap.Round,
-                                    StrokeEndLineCap = PenLineCap.Round
+                                    StrokeEndLineCap = PenLineCap.Round,
+                                    IsHitTestVisible = false
                                 };
                                 foreach (var pt in stroke)
                                     sigPoly.Points.Add(new Point(
@@ -10959,6 +11285,7 @@ namespace TDPdf
                         break;
 
                     case ImageAnnotation ia:
+                        if (!TryGetPlacedSize(ia, out double iaW, out double iaH)) continue;
                         try
                         {
                             var iaBytes = Convert.FromBase64String(ia.ImageData);
@@ -10970,8 +11297,8 @@ namespace TDPdf
                             var iaCtrl = new System.Windows.Controls.Image
                             {
                                 Source = iaBmp,
-                                Width = ia.SourceWidth * ia.Scale,
-                                Height = ia.SourceHeight * ia.Scale,
+                                Width = iaW,
+                                Height = iaH,
                                 Stretch = System.Windows.Media.Stretch.Uniform,
                                 IsHitTestVisible = false
                             };
@@ -11028,6 +11355,9 @@ namespace TDPdf
                 case ShapeKind.Rectangle:
                 {
                     var b = shp.Bounds;
+                    // Math.Max(1, x) is not a guard: it returns NaN for NaN and ∞ for ∞, both of
+                    // which WPF rejects on Width/Height (#181).
+                    if (!IsFinite(b.Width) || !IsFinite(b.Height)) break;
                     var r = new Rectangle
                     {
                         Width = Math.Max(1, b.Width),
@@ -11045,6 +11375,7 @@ namespace TDPdf
                 case ShapeKind.Ellipse:
                 {
                     var b = shp.Bounds;
+                    if (!IsFinite(b.Width) || !IsFinite(b.Height)) break;
                     var e = new Ellipse
                     {
                         Width = Math.Max(1, b.Width),
@@ -12384,37 +12715,55 @@ namespace TDPdf
                             elements.SetRectangle("/MediaBox",
                                 new PdfRectangle(new XPoint(box.X, box.Y), new XPoint(box.Right, box.Top)));
                     }
+
+                    // Upstream v1.7.1 (#169): PDF 32000-1 14.11.2 requires /CropBox to lie INSIDE
+                    // /MediaBox. A rotated page could be written with a portrait media box and a
+                    // landscape crop box, a malformed combination that strict validators reject and
+                    // that leaves renderers disagreeing about the page size. Removing the invalid crop
+                    // is lossless: the page falls back to its complete media box rather than clipping
+                    // content away. Done AFTER the media-box healing above so the comparison is against
+                    // a box that is actually usable, and skipped entirely when it is not — a bad media
+                    // box must never be a reason to delete a good crop box.
+                    const double outsideTol = 0.01;
+                    if (ReadOwnPageBox(elements["/CropBox"]) is { } crop &&
+                        ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } media &&
+                        (crop.X     < media.X     - outsideTol || crop.Y   < media.Y   - outsideTol ||
+                         crop.Right > media.Right + outsideTol || crop.Top > media.Top + outsideTol))
+                        elements.Remove("/CropBox");
                 }
             }
             catch { /* malformed page tree - leave the save as-is */ }
         }
 
-        // True when the entry is present, readable as a rectangle, and zero/sub-point sized. Anything we
-        // cannot interpret returns false so it is left alone rather than destroyed. The box can be a
-        // parsed PdfArray (loaded from disk), a PdfRectangle (planted in memory by the lazy getter or by
-        // GetRectangle writing its conversion back), or an indirect reference to either.
-        private static bool IsDegenerateBox(PdfItem? item)
+        // Reads a page's OWN /MediaBox or /CropBox entry — no /Parent walk — as a normalized PageBox,
+        // or null when the entry is absent or cannot be interpreted with certainty. Deliberately
+        // stricter than ReadInheritedPageBox, which reads for geometry: this one feeds the DESTRUCTIVE
+        // scrub decisions above, so anything ambiguous reads as null and is then left alone rather than
+        // deleted. The box can be a parsed PdfArray (loaded from disk), a PdfRectangle (planted in
+        // memory by the lazy getter or by GetRectangle writing its conversion back), or an indirect
+        // reference to either.
+        private static PageBox? ReadOwnPageBox(PdfItem? item)
         {
-            if (item is null) return false;
-            var resolved = DerefItemStatic(item);
+            if (item is null) return null;
+            if (item is not PdfArray and not PdfRectangle) item = DerefItemStatic(item);
 
-            double w, h;
-            if (resolved is PdfRectangle rect)
-            {
-                w = Math.Abs(rect.X2 - rect.X1);
-                h = Math.Abs(rect.Y2 - rect.Y1);
-            }
-            else if (resolved is PdfArray arr && arr.Elements.Count == 4 &&
-                     arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
-                     arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
-            {
-                w = Math.Abs(RectNum(arr.Elements[2]) - RectNum(arr.Elements[0]));
-                h = Math.Abs(RectNum(arr.Elements[3]) - RectNum(arr.Elements[1]));
-            }
-            else return false;
+            if (item is PdfRectangle rect)
+                return Normalize(rect.X1, rect.Y1, rect.X2, rect.Y2);
+            if (item is PdfArray arr && arr.Elements.Count == 4 &&
+                arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
+                arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
+                return Normalize(RectNum(arr.Elements[0]), RectNum(arr.Elements[1]),
+                                 RectNum(arr.Elements[2]), RectNum(arr.Elements[3]));
+            return null;
 
-            return w < 1 || h < 1;
+            static PageBox Normalize(double x1, double y1, double x2, double y2) =>
+                new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
         }
+
+        // True when the entry is present, readable as a rectangle, and zero/sub-point sized. Anything we
+        // cannot interpret returns false so it is left alone rather than destroyed.
+        private static bool IsDegenerateBox(PdfItem? item) =>
+            ReadOwnPageBox(item) is { } box && (box.Width < 1 || box.Height < 1);
 
         // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
         // existing digital signature: its /ByteRange and digest describe the old bytes (ISO 19005-2,
@@ -12993,10 +13342,27 @@ namespace TDPdf
 
                 var page = _doc.Pages[pageIdx];
                 var (renderW, renderH) = _renderDims[pageIdx];
-                double sx = page.Width.Point / renderW;
-                double sy = page.Height.Point / renderH;
+
+                // Annotation coordinates are positions on the bitmap PDFium rasterized, and PDFium
+                // renders the page's VISIBLE box (/CropBox over /MediaBox, inheritance-aware) with
+                // /Rotate applied. Scale and place against that same frame:
+                //  * the raw page.Width/Height used before are media-box derived with an implicit
+                //    (0,0) origin, so an inset or offset /CropBox displaced every annotation;
+                //  * nothing here handled /Rotate at all, so on a quarter-turned page annotations
+                //    were burned a quarter turn out of place and scaled on swapped axes (#169).
+                // TDPdf keeps the angle on the page itself (RotatePages_Click writes /Rotate and
+                // reloads), so the page dictionary is the authority — there is no separate map.
+                int rot = ((page.Rotate % 360) + 360) % 360;
+                var box = GetVisiblePageBox(page);
+                bool quarterTurn = rot is 90 or 270;   // visual extent is the box's dims swapped
+                double sx = (quarterTurn ? box.Height : box.Width) / renderW;
+                double sy = (quarterTurn ? box.Width : box.Height) / renderH;
 
                 using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
+                // ...then turn the whole drawing back into the frame XGraphics writes in, so every
+                // draw call below keeps working in canvas-scaled coordinates exactly as it always has.
+                if (VisualToPageMatrix(rot, box, page.Height.Point) is XMatrix visualToPage)
+                    gfx.MultiplyTransform(visualToPage, XMatrixOrder.Prepend);
 
                 foreach (var annot in annots)
                 {
