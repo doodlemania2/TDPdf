@@ -23,6 +23,14 @@ namespace TDPdf
         // Three PDF libraries stay in their lanes: Docnet/PDFium rasterizes the
         // page for the OCR engine, PdfSharpCore writes the invisible text layer
         // for the searchable-PDF export. Language data is downloaded on demand.
+        //
+        // NOT annotation-aware, deliberately (#141). Every other rasterize in the app now goes
+        // through PdfiumInterop.RenderPageWithAnnotations so the markup a file carries reaches the
+        // screen, the printer and the exported pixels. OCR is the exception: it rasterizes in order
+        // to recognize the PAGE's own text, and a reviewer's sticky note, highlight or stamp is not
+        // page content — feeding it to Tesseract would inject foreign words into the text layer and
+        // let a highlight band obscure the words underneath it. These four call sites stay on the
+        // plain GetImage() render on purpose; do not "fix" them to match the others.
         // ============================================================
 
         // Longest-side pixel budget for the OCR render. ~300 DPI on a Letter page, which is the sweet

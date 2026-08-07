@@ -2023,7 +2023,9 @@ namespace TDPdf
                         using var pageReader = docReader.GetPageReader(i);
                         int w = pageReader.GetPageWidth();
                         int h = pageReader.GetPageHeight();
-                        var rawBytes = pageReader.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var rawBytes = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
+                                       ?? pageReader.GetImage();
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
                         result.Add((i, w, h, rawBytes));
                     }
@@ -2401,7 +2403,9 @@ namespace TDPdf
                         using var pr = docReader.GetPageReader(i);
                         int w = pr.GetPageWidth();
                         int h = pr.GetPageHeight();
-                        var raw = pr.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
+                                  ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
 
                         int fi = i, fw = w, fh = h;
@@ -2560,7 +2564,9 @@ namespace TDPdf
                         docReader ??= DocLib.Instance.GetDocReader(currentFile, new PageDimensions(hiW, hiW * 2));
                         using var pr = docReader.GetPageReader(p);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
-                        var raw = pr.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, p, w, h)
+                                  ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
 
                         int fp = p, fw = w, fh = h;
@@ -2688,7 +2694,9 @@ namespace TDPdf
                         docReader ??= DocLib.Instance.GetDocReader(currentFile, new PageDimensions(renderW, renderW * 2));
                         using var pr = docReader.GetPageReader(i);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
-                        var raw = pr.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
+                                  ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
                         int fi = i, fw = w, fh = h; byte[] bytes = raw;
                         if (ct.IsCancellationRequested) return;
@@ -13211,7 +13219,7 @@ namespace TDPdf
 
         // #106: Rebuilds the current document through PDFium (which emits clean stream/xref structures)
         // and reopens it in place so a failed save can be retried against a repaired source. Reuses the
-        // shared TryPdfiumRepair helper (no second repair implementation). Fully guarded: returns false
+        // shared PdfiumInterop.TryPdfiumRepair helper (no second repair implementation). Fully guarded: returns false
         // — never throws — when repair is not possible, leaving the original failure to surface.
         private async Task<bool> TryRepairCurrentDocumentForSaveAsync()
         {
@@ -13222,7 +13230,7 @@ namespace TDPdf
                 var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
                     $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
                 bool ok = await System.Threading.Tasks.Task.Run(
-                    () => TDPdf.Services.PdfDocumentService.TryPdfiumRepair(current!, fixedPath));
+                    () => TDPdf.Services.PdfiumInterop.TryPdfiumRepair(current!, fixedPath));
                 if (!ok) return false;
                 var repaired = await _pdfDocumentService.OpenPdfSharpAsync(
                     fixedPath, PdfDocumentOpenMode.Modify, CancellationToken.None);
@@ -13330,7 +13338,7 @@ namespace TDPdf
                         $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
                     try
                     {
-                        if (TDPdf.Services.PdfDocumentService.TryPdfiumRepair(path, fixedPath))
+                        if (TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
                         {
                             reopened = PdfReader.Open(fixedPath, PdfDocumentOpenMode.Modify);
                             reopenedPath = fixedPath;
@@ -13709,7 +13717,7 @@ namespace TDPdf
             {
                 var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
                     $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
-                if (!TDPdf.Services.PdfDocumentService.TryPdfiumRepair(tempPath, fixedPath))
+                if (!TDPdf.Services.PdfiumInterop.TryPdfiumRepair(tempPath, fixedPath))
                     throw; // PDFium also failed — re-throw the original reopen error
                 tempPath = fixedPath;
                 _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);

@@ -85,9 +85,14 @@ namespace TDPdf.Services
                         cancellationToken.ThrowIfCancellationRequested();
                         using var pageDocReader = DocLib.Instance.GetDocReader(sourcePath, new PageDimensions(dimMin, dimMax));
                         using var pageReader = pageDocReader.GetPageReader(i);
-                        bgra = pageReader.GetImage();
                         rw = pageReader.GetPageWidth();
                         rh = pageReader.GetPageHeight();
+                        // #141: with annotations — a flatten builds a NEW document out of these pixels,
+                        // so anything Docnet's flag-0 GetImage leaves out (the file's own sticky notes,
+                        // highlights, stamps, and filled form values) was silently dropped from the
+                        // output. Falls back to the old raster if PDFium can't take the direct path.
+                        bgra = PdfiumInterop.RenderPageWithAnnotations(sourcePath, i, rw, rh)
+                               ?? pageReader.GetImage();
                     }
 
                     if (bgra == null || bgra.Length == 0 || rw <= 0 || rh <= 0) return;
@@ -153,7 +158,10 @@ namespace TDPdf.Services
                 {
                     int width = pageReader.GetPageWidth();
                     int height = pageReader.GetPageHeight();
-                    var rawBytes = pageReader.GetImage();
+                    // #141: with annotations, so the viewer shows the markup the file carries the way
+                    // Firefox and SumatraPDF do. White background matches the page's white Border.
+                    var rawBytes = PdfiumInterop.RenderPageWithAnnotations(path, pageIndex, width, height)
+                                   ?? pageReader.GetImage();
                     cancellationToken.ThrowIfCancellationRequested();
 
                     if (width <= 0 || height <= 0 || rawBytes == null || rawBytes.Length == 0)
@@ -316,7 +324,7 @@ namespace TDPdf.Services
 
         /// <summary>
         /// Opens an owner-restricted file that PdfSharpCore cannot parse, by way of a PDFium-rewritten
-        /// working copy in %TEMP% (<see cref="TryPdfiumRepair"/> — <c>FPDF_SaveWithVersion</c> with
+        /// working copy in %TEMP% (<see cref="PdfiumInterop.TryPdfiumRepair"/> — <c>FPDF_SaveWithVersion</c> with
         /// <c>FPDF_REMOVE_SECURITY</c>, the same path CLI <c>--decrypt</c> and the post-save xref
         /// repair use). Unlike the raster fallback this is lossless: text stays selectable.
         /// </summary>
@@ -335,7 +343,7 @@ namespace TDPdf.Services
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!TryPdfiumRepair(path, repairedPath))
+                if (!PdfiumInterop.TryPdfiumRepair(path, repairedPath))
                 {
                     TryDeleteQuiet(repairedPath);
                     return null;
@@ -395,7 +403,10 @@ namespace TDPdf.Services
                         {
                             int pw = pageReader.GetPageWidth();
                             int ph = pageReader.GetPageHeight();
-                            var bgra = pageReader.GetImage();
+                            // #141: with annotations — this rebuilds the document from its pixels, so
+                            // markup the source carried must survive the recovery.
+                            var bgra = PdfiumInterop.RenderPageWithAnnotations(path, i, pw, ph)
+                                       ?? pageReader.GetImage();
                             if (bgra == null || bgra.Length == 0 || pw <= 0 || ph <= 0)
                                 continue;
 
@@ -460,6 +471,21 @@ namespace TDPdf.Services
             }
         }
 
+        /// <summary>
+        /// Renders one sidebar thumbnail from an already-open reader.
+        /// </summary>
+        /// <remarks>
+        /// NOT annotation-aware, deliberately (#141) — the one rasterize in the app that still uses
+        /// the plain flag-0 <c>GetImage()</c> apart from OCR. <see cref="RenderThumbnailsAsync"/>
+        /// runs this eagerly over EVERY page of the document, awaited on the file-open path, reusing
+        /// a single reader. Routing it through <c>PdfiumInterop.RenderPageWithAnnotations</c> would
+        /// add one <c>FPDF_LoadDocument</c> plus a form-fill environment init/teardown per page —
+        /// each taking <c>PdfiumLock</c> and so contending with the foreground page render — for an
+        /// open-time cost that grows without bound with page count. The payoff would be
+        /// file-carried markup on a 256 px thumbnail, where it is barely legible. If thumbnails ever
+        /// become lazy/virtualized per page, revisit this; until then do not "fix" the
+        /// inconsistency with the other rasterize sites.
+        /// </remarks>
         private static BitmapSource? RenderPageBitmap(dynamic docReader, int pageIndex)
         {
             try
@@ -576,105 +602,8 @@ namespace TDPdf.Services
             ex.Message.IndexOf("stream length", StringComparison.OrdinalIgnoreCase) >= 0 ||
             ex.Message.IndexOf("File streams are not yet implemented", StringComparison.OrdinalIgnoreCase) >= 0;
 
-        // ── PDFium P/Invoke ──────────────────────────────────────────────────────────
-        // pdfium.dll ships with Docnet. We use it here to losslessly re-serialize a PDF
-        // (stripping encryption / page rotations) when PdfSharpCore produces a broken xref
-        // after modifying an encrypted document. PDFium is already initialised by Docnet,
-        // which we force via DocLib.Instance before any direct P/Invoke.
-
-        // THREADING (upstream KillerPDF v1.6.4): PDFium is single-threaded. Docnet serializes every
-        // native call it makes on an internal static lock (Docnet.Core.DocLib.Lock). Our DIRECT
-        // pdfium.dll calls below (the encryption-strip repair path) must hold that SAME lock, or a
-        // background Docnet render and a direct call can be inside PDFium at once — native heap
-        // corruption (exit code 0xc0000374). Reflected once; the `?? new object()` fallback keeps us
-        // safe (self-serialized) even if Docnet ever renames the field. The raw externs are suffixed
-        // Raw; only the lock-holding wrappers may be called.
-        private static readonly object PdfiumLock =
-            typeof(DocLib).GetField("Lock",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
-                ?.GetValue(null) ?? new object();
-
-        [DllImport("pdfium.dll", EntryPoint = "FPDF_LoadDocument", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr FPDF_LoadDocumentRaw(
-            [MarshalAs(UnmanagedType.LPStr)] string filePath,
-            [MarshalAs(UnmanagedType.LPStr)] string? password);
-        private static IntPtr FPDF_LoadDocument(string filePath, string? password)
-        { lock (PdfiumLock) return FPDF_LoadDocumentRaw(filePath, password); }
-
-        [DllImport("pdfium.dll", EntryPoint = "FPDF_CloseDocument", CallingConvention = CallingConvention.Cdecl)]
-        private static extern void FPDF_CloseDocumentRaw(IntPtr document);
-        private static void FPDF_CloseDocument(IntPtr document)
-        { lock (PdfiumLock) FPDF_CloseDocumentRaw(document); }
-
-        [DllImport("pdfium.dll", EntryPoint = "FPDF_SaveWithVersion", CallingConvention = CallingConvention.Cdecl)]
-        private static extern bool FPDF_SaveWithVersionRaw(
-            IntPtr document, ref FPDF_FILEWRITE fileWrite, uint flags, int fileVersion);
-        private static bool FPDF_SaveWithVersion(IntPtr document, ref FPDF_FILEWRITE fileWrite, uint flags, int fileVersion)
-        { lock (PdfiumLock) return FPDF_SaveWithVersionRaw(document, ref fileWrite, flags, fileVersion); }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct FPDF_FILEWRITE
-        {
-            public int version;       // must be 1
-            public IntPtr WriteBlock; // cdecl: int WriteBlock(FPDF_FILEWRITE*, const void*, unsigned long)
-        }
-
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate int PdfWriteBlockDelegate(IntPtr pThis, IntPtr pData, uint size);
-
-        private const uint FPDF_REMOVE_SECURITY = 3;
-
-        /// <summary>
-        /// Losslessly re-serializes <paramref name="sourcePath"/> through PDFium to
-        /// <paramref name="destPath"/>, rebuilding a valid cross-reference table and stripping
-        /// encryption. Page rotations (/Rotate), text, and other content are preserved — this is a
-        /// pure repair, NOT a flatten. Called from the rotate→save→reopen xref-error fallback when
-        /// PdfSharpCore emits a file whose xref PdfSharpCore itself then refuses to re-open.
-        /// PDFium is guaranteed initialised by then because the page preview already rendered via
-        /// Docnet. Returns true on success.
-        /// </summary>
-        internal static bool TryPdfiumRepair(string sourcePath, string destPath)
-        {
-            try
-            {
-                try { _ = DocLib.Instance; } catch { /* force PDFium init */ }
-
-                var doc = FPDF_LoadDocument(sourcePath, null);
-                if (doc == IntPtr.Zero) return false;
-                try
-                {
-                    return PdfiumSave(doc, destPath);
-                }
-                finally { FPDF_CloseDocument(doc); }
-            }
-            catch { return false; }
-        }
-
-        private static bool PdfiumSave(IntPtr doc, string destPath)
-        {
-            using var ms = new MemoryStream();
-            PdfWriteBlockDelegate cb = (_, pData, size) =>
-            {
-                var buf = new byte[size];
-                Marshal.Copy(pData, buf, 0, (int)size);
-                ms.Write(buf, 0, (int)size);
-                return 1;
-            };
-            var gch = GCHandle.Alloc(cb);
-            try
-            {
-                var fw = new FPDF_FILEWRITE
-                {
-                    version = 1,
-                    WriteBlock = Marshal.GetFunctionPointerForDelegate(cb),
-                };
-                if (!FPDF_SaveWithVersion(doc, ref fw, FPDF_REMOVE_SECURITY, 0))
-                    return false;
-            }
-            finally { gch.Free(); }
-            File.WriteAllBytes(destPath, ms.ToArray());
-            return true;
-        }
+        // Direct pdfium.dll calls (the lossless repair / encryption strip, and the
+        // annotation-aware page renderer) live in Services/PdfiumInterop.cs — one home, one lock.
     }
 
     internal sealed class PdfOpenResult

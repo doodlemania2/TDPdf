@@ -718,7 +718,10 @@ namespace TDPdf.Services
                 using var pr = docReader.GetPageReader(idx);
                 int w = pr.GetPageWidth();
                 int h = pr.GetPageHeight();
-                var raw = pr.GetImage();
+                // #141: with the annotations the file carries — what the preview shows has to match
+                // what the spooled sheet prints. White background matches the white sheet.
+                var raw = PdfiumInterop.RenderPageWithAnnotations(_pdfPath, idx, w, h)
+                          ?? pr.GetImage();
                 if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) return null;
 
                 var bmp = new WriteableBitmap(w, h, RenderDpi, RenderDpi, PixelFormats.Bgra32, null);
@@ -995,7 +998,9 @@ namespace TDPdf.Services
                         {
                             using var pr = dr.GetPageReader(idx);
                             int w = pr.GetPageWidth(), h = pr.GetPageHeight();
-                            var raw = pr.GetImage();
+                            // #141: with the annotations the file carries — printing used to omit them.
+                            var raw = PdfiumInterop.RenderPageWithAnnotations(_pdfPath, idx, w, h)
+                                      ?? pr.GetImage();
                             if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) continue;
                             var bmp = new WriteableBitmap(w, h, PrintDpi, PrintDpi, PixelFormats.Bgra32, null);
                             bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);

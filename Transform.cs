@@ -214,7 +214,7 @@ namespace TDPdf
             catch (Exception xrefEx) when (PdfDocumentService.IsXRefException(xrefEx))
             {
                 var fixedPath = TempPdfPath("xffixed");
-                if (!PdfDocumentService.TryPdfiumRepair(tempClean, fixedPath)) throw;
+                if (!PdfiumInterop.TryPdfiumRepair(tempClean, fixedPath)) throw;
                 tempClean = fixedPath;
                 _doc = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
             }
@@ -235,7 +235,11 @@ namespace TDPdf
                 using var pr = docReader.GetPageReader(pageIdx);
                 int w = pr.GetPageWidth();
                 int h = pr.GetPageHeight();
-                byte[] bgra = pr.GetImage();
+                // #141: with the annotations the file carries — a transform re-emits the page as an
+                // image, so markup the source carried must survive it. The white fill below is kept:
+                // it is what guarantees a white page even if this falls back to GetImage.
+                byte[] bgra = PdfiumInterop.RenderPageWithAnnotations(srcPath, pageIdx, w, h)
+                              ?? pr.GetImage();
                 if (bgra is null || bgra.Length == 0 || w <= 0 || h <= 0) return null;
 
                 var raw = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, bgra, w * 4);

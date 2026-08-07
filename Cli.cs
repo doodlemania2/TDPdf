@@ -33,7 +33,7 @@ namespace TDPdf
     // Each command reuses the same pipeline its GUI equivalent runs - the merge
     // named-destination rewrite (BuildNamedDestMap / RewriteNamedDestLinks), the
     // pre-save scrubs (NormalizeDocumentForSave + StripLinkAnnotationBorders),
-    // the PDFium decrypt (PdfDocumentService.TryPdfiumRepair), the 150-DPI
+    // the PDFium decrypt (PdfiumInterop.TryPdfiumRepair), the 150-DPI
     // rasterize (mirrors PdfDocumentService.SaveFlattenedAsync), and the OCR
     // text-layer builder (BuildSearchablePdf) - so CLI output is the kind of
     // file the GUI would produce.
@@ -346,7 +346,7 @@ namespace TDPdf
         // --decrypt <in.pdf> <out.pdf> [--password <p>]
         // ============================================================
         // Without a password: the same lossless PDFium strip the GUI uses at open
-        // time (PdfDocumentService.TryPdfiumRepair, owner/permissions encryption),
+        // time (PdfiumInterop.TryPdfiumRepair, owner/permissions encryption),
         // with an Import-rebuild fallback. With a password: PdfSharpCore opens with
         // the password and saves a decrypted copy, the same sequence as the GUI password path.
         private static int CliDecrypt(List<string> pos, Dictionary<string, string> options, TextWriter con)
@@ -370,7 +370,7 @@ namespace TDPdf
                 return 0;
             }
 
-            if (PdfDocumentService.TryPdfiumRepair(inPath, outPath))
+            if (PdfiumInterop.TryPdfiumRepair(inPath, outPath))
             {
                 con.WriteLine($"Decrypted (lossless) -> {outPath}");
                 return 0;
@@ -491,9 +491,12 @@ namespace TDPdf
                 byte[] raw; int w, h;
                 using (var pr = dr.GetPageReader(i))
                 {
-                    raw = pr.GetImage();
                     w = pr.GetPageWidth();
                     h = pr.GetPageHeight();
+                    // #141: with annotations — a flatten builds a new document from these pixels.
+                    // Flattened pages are always opaque, so never ask for a transparent background.
+                    raw = PdfiumInterop.RenderPageWithAnnotations(renderPath, i, w, h)
+                          ?? pr.GetImage();
                 }
                 if (raw is null || raw.Length == 0 || w <= 0 || h <= 0) continue;
                 var png = PageImageExporter.Encode(raw, w, h, PageImageExporter.PngFormat, transparent: false);
@@ -585,9 +588,12 @@ namespace TDPdf
                     byte[] raw; int w, h;
                     using (var pr = dr.GetPageReader(idx))
                     {
-                        raw = pr.GetImage();
                         w = pr.GetPageWidth();
                         h = pr.GetPageHeight();
+                        // #141: with annotations — headless printing used to omit the markup the
+                        // file carries, exactly as the GUI print path did. Paper is white.
+                        raw = PdfiumInterop.RenderPageWithAnnotations(renderPath, idx, w, h)
+                              ?? pr.GetImage();
                     }
                     if (raw is null || raw.Length == 0 || w <= 0 || h <= 0) continue;
                     var bs = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, raw, w * 4);
@@ -730,7 +736,7 @@ namespace TDPdf
                 pdoc.Save(dec);
                 return dec;
             }
-            if (PdfDocumentService.TryPdfiumRepair(inPath, dec) || CliTryImportRepair(inPath, dec))
+            if (PdfiumInterop.TryPdfiumRepair(inPath, dec) || CliTryImportRepair(inPath, dec))
                 return dec;
             throw new InvalidOperationException(
                 "File is encrypted and could not be unlocked - pass --password if it needs one.");
