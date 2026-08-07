@@ -208,6 +208,19 @@ namespace TDPdf.Properties
             set => this[nameof(InvertDocumentColors)] = value;
         }
 
+        // Whether the night mode above inverts PICTURES along with the rest of the page (#135
+        // follow-up). Default False, so photos and charts keep their real colors — a negative of a
+        // photograph is worse than useless. True restores the whole-page inversion, which is what a
+        // SCANNED document needs: there the entire page is one image, so the carve-out would make
+        // night mode do nothing. Companion to InvertDocumentColors and equally display-only.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool DocInvertImages
+        {
+            get => (bool)this[nameof(DocInvertImages)];
+            set => this[nameof(DocInvertImages)] = value;
+        }
+
         // App-wide UI scale (upstream v1.6.5): the LayoutTransform factor applied to the chrome —
         // menu, toolbar, tab strip, and sidebar. Never touches the document pane, so app size and
         // page zoom stay two separate controls (LastZoomLevel above is the page one). Clamped to

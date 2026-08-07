@@ -285,6 +285,7 @@ namespace TDPdf
         private MenuItem _removePasswordMenuItem = null!;
         private Button _invertColorsBtn = null!;
         private MenuItem _invertColorsMenuItem = null!;
+        private MenuItem _invertImagesMenuItem = null!;
 
         // The primary page's TRUE-color bitmap, mirroring whatever RenderPage put in PageImage.
         // PageImage.Source may be the display-only inverted copy (#135), and the image-edit tool
@@ -407,6 +408,7 @@ namespace TDPdf
             _removePasswordMenuItem = (MenuItem)FindName("RemovePasswordMenuItem")!;
             _invertColorsBtn = (Button)FindName("InvertColorsBtn")!;
             _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
+            _invertImagesMenuItem = (MenuItem)FindName("InvertImagesMenuItem")!;
             _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
             // Restore the persisted view mode (defaults to Grid, matching the original layout).
             if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
@@ -1818,6 +1820,10 @@ namespace TDPdf
         {
             _renderCache.Clear();
             _renderDims.Clear();
+            // #135 follow-up: the night-mode image boxes are measured from the document, so they go
+            // stale with it (a page rotated, cropped, transformed, or the file re-saved to a fresh
+            // temp copy). They are keyed by file path as well, so this is belt and braces.
+            _pageImageRects.Clear();
         }
 
         // #122 (upstream v1.6.3): the per-tab rendered-page cache used to grow without bound — a page
@@ -1884,6 +1890,14 @@ namespace TDPdf
 
                 if (_doc is null) return;
 
+                // #135 follow-up: this page's image boxes, so night mode can carve the pictures back
+                // out of the inversion. Off the UI thread on the first inverted render of the page
+                // (one PdfPig open, disposed there); a no-op afterwards and whenever night mode or
+                // the carve-out is off, so it costs the common path nothing.
+                var keepRects = await ImageRectsForAsync(currentFile, pageIndex, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_doc is null) return;
+
                 _renderDims[pageIndex] = ((int)Math.Round(renderedPage.DisplayWidth), (int)Math.Round(renderedPage.DisplayHeight));
                 PageImage.Tag = pageIndex;   // page identity for Grid scroll tracking (nearest-tile counter)
                 // #135: DisplayBitmap returns the cached bitmap untouched unless the display-only
@@ -1891,7 +1905,7 @@ namespace TDPdf
                 // _primaryPageBitmap, which the image-edit tool bakes into the saved PDF) keep the
                 // document's true colors.
                 _primaryPageBitmap = renderedPage.Bitmap;
-                PageImage.Source = DisplayBitmap(renderedPage.Bitmap);
+                PageImage.Source = DisplayBitmap(renderedPage.Bitmap, keepRects);
                 PageImage.Width = renderedPage.DisplayWidth;
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
@@ -2039,13 +2053,16 @@ namespace TDPdf
             int lastPage = Math.Min(_doc.PageCount - 1, primaryPageIdx + maxSecondaryPages);
             string currentFile = _currentFile;
 
-            List<(int pi, int w, int h, byte[] rawBytes)> pages;
+            List<(int pi, int w, int h, byte[] rawBytes, FracRect[] keep)> pages;
             try
             {
                 pages = await Task.Run(() =>
                 {
-                    var result = new List<(int pi, int w, int h, byte[] rawBytes)>();
+                    var result = new List<(int pi, int w, int h, byte[] rawBytes, FracRect[] keep)>();
                     using var docReader = DocLib.Instance.GetDocReader(currentFile, new PageDimensions(scaledMax, scaledMax));
+                    // #135 follow-up: one PdfPig open serves every uncached page in this loop and is
+                    // released with the loop (see PigScope).
+                    using var pig = new PigScope();
                     for (int i = primaryPageIdx + 1; i <= lastPage; i++)
                     {
                         ct.ThrowIfCancellationRequested();
@@ -2056,7 +2073,9 @@ namespace TDPdf
                         var rawBytes = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
                                        ?? pageReader.GetImage();
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
-                        result.Add((i, w, h, rawBytes));
+                        // Measured here rather than on the UI thread below, so the parse never
+                        // stalls the tile pass.
+                        result.Add((i, w, h, rawBytes, _docInvert ? ImageRectsFor(currentFile, i, pig) : []));
                     }
                     return result;
                 }, ct);
@@ -2066,14 +2085,15 @@ namespace TDPdf
 
             if (ct.IsCancellationRequested) return;
 
-            foreach (var (pi, w, h, rawBytes) in pages)
+            foreach (var (pi, w, h, rawBytes, keep) in pages)
             {
                 if (ct.IsCancellationRequested) return;
 
                 _renderDims[pi] = (w, h);
-                // #135: display-only invert. The buffer is ours and is about to become a throwaway
+                // #135: display-only invert, with the page's pictures carved back out (empty keep =
+                // the plain full-page flip). The buffer is ours and is about to become a throwaway
                 // display bitmap, so flip it in place — nothing else ever sees these bytes.
-                if (_docInvert) InvertBgraInPlace(rawBytes);
+                if (_docInvert) InvertBgraInPlaceExcept(rawBytes, w, h, keep);
                 var bitmap = new WriteableBitmap(w, h, 96.0 * dpiScaleX, 96.0 * dpiScaleY, PixelFormats.Bgra32, null);
                 bitmap.WritePixels(new Int32Rect(0, 0, w, h), rawBytes, w * 4, 0);
 
@@ -2467,6 +2487,9 @@ namespace TDPdf
                 {
                     using var docReader = DocLib.Instance.GetDocReader(
                         currentFile, new PageDimensions(renderW, renderW * 2));
+                    // #135 follow-up: one PdfPig open covers every uncached page this pass fills and
+                    // is released with the pass (see PigScope).
+                    using var pig = new PigScope();
 
                     for (int i = winLo; i <= winHi; i++)
                     {
@@ -2481,6 +2504,8 @@ namespace TDPdf
 
                         int fi = i, fw = w, fh = h;
                         byte[] bytes = raw;
+                        // Measured off the UI thread, so the marshal below stays a pure blit.
+                        FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, i, pig) : [];
                         Application.Current.Dispatcher.Invoke(() =>
                         {
                             if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
@@ -2492,7 +2517,9 @@ namespace TDPdf
                             double dpiX = 96.0 * fw / dipW;
                             double dpiY = 96.0 * fh / dipH;
 
-                            if (_docInvert) InvertBgraInPlace(bytes);   // #135: display-only invert
+                            // #135: display-only invert, pictures carved back out (empty keep = the
+                            // plain full-page flip, which is also what "invert images too" wants).
+                            if (_docInvert) InvertBgraInPlaceExcept(bytes, fw, fh, keep);
                             var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
                             bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
                             bmp.Freeze();
@@ -2627,6 +2654,8 @@ namespace TDPdf
             _ = System.Threading.Tasks.Task.Run(() =>
             {
                 Docnet.Core.Readers.IDocReader? docReader = null;
+                // #135 follow-up: one PdfPig open for the whole re-sharpen pass (see PigScope).
+                using var pig = new PigScope();
                 try
                 {
                     foreach (int p in work)
@@ -2642,11 +2671,14 @@ namespace TDPdf
 
                         int fp = p, fw = w, fh = h;
                         byte[] bytes = raw;
+                        // Measured here (off the UI thread); the rects are fractional, so the same
+                        // cached set serves this hi-res raster and the base one it replaces.
+                        FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, p, pig) : [];
                         if (cts.IsCancellationRequested) return;
                         Dispatcher.Invoke(() =>
                         {
                             if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
-                            SharpenContinuousSlot(fp, fw, fh, bytes);
+                            SharpenContinuousSlot(fp, fw, fh, bytes, keep);
                         });
                     }
                 }
@@ -2659,7 +2691,7 @@ namespace TDPdf
         // (the shared ScaleTransform still supplies the zoom). Captures the slot's current base bitmap
         // once so RestoreContinuousBase can put it back when the page scrolls away. Only sharpens slots
         // that already carry a base bitmap, so it never fights the streaming base pass.
-        private void SharpenContinuousSlot(int pageIndex, int pxW, int pxH, byte[] bgra)
+        private void SharpenContinuousSlot(int pageIndex, int pxW, int pxH, byte[] bgra, FracRect[] keep)
         {
             if (pageIndex < 0 || pageIndex >= _continuousPanel.Children.Count) return;
             if (_continuousPanel.Children[pageIndex] is not Border slot) return;
@@ -2676,7 +2708,8 @@ namespace TDPdf
             if (!_continuousBaseBitmaps.ContainsKey(pageIndex))
                 _continuousBaseBitmaps[pageIndex] = baseSrc;
 
-            if (_docInvert) InvertBgraInPlace(bgra);   // #135: display-only invert
+            // #135: display-only invert, pictures carved back out (empty keep = full-page flip).
+            if (_docInvert) InvertBgraInPlaceExcept(bgra, pxW, pxH, keep);
             var bmp = new WriteableBitmap(pxW, pxH, dpiX, dpiY, PixelFormats.Bgra32, null);
             bmp.WritePixels(new Int32Rect(0, 0, pxW, pxH), bgra, pxW * 4, 0);
             bmp.Freeze();
@@ -2757,6 +2790,8 @@ namespace TDPdf
             _ = System.Threading.Tasks.Task.Run(() =>
             {
                 Docnet.Core.Readers.IDocReader? docReader = null;
+                // #135 follow-up: one PdfPig open for the whole window-fill pass (see PigScope).
+                using var pig = new PigScope();
                 try
                 {
                     foreach (int i in need)
@@ -2770,11 +2805,12 @@ namespace TDPdf
                                   ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
                         int fi = i, fw = w, fh = h; byte[] bytes = raw;
+                        FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, i, pig) : [];
                         if (ct.IsCancellationRequested) return;
                         Dispatcher.Invoke(() =>
                         {
                             if (ct.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
-                            ApplyContinuousBaseStable(fi, fw, fh, bytes);
+                            ApplyContinuousBaseStable(fi, fw, fh, bytes, keep);
                         });
                     }
                 }
@@ -2786,7 +2822,7 @@ namespace TDPdf
         // Applies a base bitmap into a continuous slot WITHOUT changing the slot's height, so pages
         // below it never move (no scroll jump). Used only by window maintenance; the placeholder height
         // set at layout already matches the page aspect, so the natural-size bitmap fills the slot.
-        private void ApplyContinuousBaseStable(int fi, int fw, int fh, byte[] bytes)
+        private void ApplyContinuousBaseStable(int fi, int fw, int fh, byte[] bytes, FracRect[] keep)
         {
             if (fi < 0 || fi >= _continuousPanel.Children.Count) return;
             if (_continuousPanel.Children[fi] is not Border slot || slot.Child is not Image img) return;
@@ -2796,7 +2832,8 @@ namespace TDPdf
             double dipH = dipW * fh / fw;
             double dpiX = 96.0 * fw / dipW;
             double dpiY = 96.0 * fh / dipH;
-            if (_docInvert) InvertBgraInPlace(bytes);   // #135: display-only invert
+            // #135: display-only invert, pictures carved back out (empty keep = full-page flip).
+            if (_docInvert) InvertBgraInPlaceExcept(bytes, fw, fh, keep);
             var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
             bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
             bmp.Freeze();
@@ -10970,6 +11007,20 @@ namespace TDPdf
                 int dir = (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.PageUp) ? -1 : 1;
                 if (NavigatePageStep(dir))   // one spread at a time in Two-Page mode (#120)
                     PageList.ScrollIntoView(PageList.SelectedItem);
+                e.Handled = true;
+            }
+            // Shift+N pairs with Ctrl+I: it toggles whether night mode inverts PICTURES too — the
+            // option on the moon's right-click menu, and the thing that makes a scanned page (one
+            // full-page image) usable in night mode. TDPdf keeps Ctrl+I for the mode itself rather
+            // than taking upstream's bare N, because our single-letter keys are all tool shortcuts.
+            // Shift+N is free: TrySelectToolByKey is gated on ModifierKeys.None, and nothing else
+            // binds a Shift+letter. The typing guard above only returns for unmodified keys, so the
+            // caret check is repeated here — a capital N in the find box must type an N.
+            else if (e.Key == Key.N && Keyboard.Modifiers == ModifierKeys.Shift && _doc is not null
+                     && !IsTypingTarget()
+                     && ShortcutOverlay.Visibility != Visibility.Visible)
+            {
+                ToggleDocInvertImages(!_docInvertImages);
                 e.Handled = true;
             }
             // Unmodified tool keys, last so every context-sensitive key above keeps priority.

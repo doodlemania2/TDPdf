@@ -1037,6 +1037,13 @@
                           Header="_Invert Colors"   InputGestureText="Ctrl+I"       Click="DocInvert_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE708;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- Night mode keeps pictures their real colors by default; this row (and the
+                     moon's right-click menu, and Shift+N) restores the whole-page inversion —
+                     which is what a scan needs, since there the page IS one image. -->
+                <MenuItem x:Name="InvertImagesMenuItem"
+                          Header="Invert I_mages Too" InputGestureText="Shift+N"    Click="DocInvertImages_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB9F;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Toggle _Sidebar"                                  Click="SidebarToggle_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE700;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1368,7 +1375,9 @@
                              lights in the accent while active, driven by Tag="on" from
                              SyncDocInvertUi so all three themes repaint live. ToolTip and
                              AutomationProperties.HelpText are filled there too (they change with
-                             the state), matching how the toolbar buttons state the hint twice. -->
+                             the state), matching how the toolbar buttons state the hint twice.
+                             Right-click opens the night-mode options (the "invert images too"
+                             carve-out); that ContextMenu is attached in BuildDocInvertRailMenu. -->
                         <Button x:Name="InvertColorsBtn"
                                 Content="&#xE708;"
                                 Width="24" Height="24" Padding="0" FontSize="13"
@@ -1656,6 +1665,7 @@
                             <TextBlock Text="VIEW" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
                             <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+I" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Invert colors (display only)" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Shift+N" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Invert images too (for scans)" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                             <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Shift++ / -" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="App size larger / smaller" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                             <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Shift+0" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Reset app size" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
                             <DockPanel Margin="0,0,0,0"><TextBlock Text="Scroll on logo" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="App size (chrome only)" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>

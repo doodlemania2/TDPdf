@@ -104,6 +104,8 @@ namespace TDPdf
             {
                 ["F10"] = ("Edit", "Context menu"),
                 ["Enter"] = ("Search", "Previous result"),
+                // Pairs with Ctrl+I: whether night mode inverts pictures too (needed on a scan).
+                ["N"] = ("View", "Invert images too"),
             },
             [KbLayer.Alt] = new()
             {
