@@ -33,6 +33,7 @@ namespace TDPdf
         public static readonly RoutedUICommand ZoomResetRoutedCommand = new("Reset Zoom", "ZoomReset", typeof(MainWindow));
         public static readonly RoutedUICommand NewDocumentCommand = new("New Document", "NewDocument", typeof(MainWindow));
         public static readonly RoutedUICommand CloseFileCommand = new("Close File", "CloseFile", typeof(MainWindow));
+        public static readonly RoutedUICommand CloseOtherTabsCommand = new("Close Other Tabs", "CloseOtherTabs", typeof(MainWindow));
         public static readonly RoutedUICommand UndoCommand = new("Undo", "Undo", typeof(MainWindow));
         public static readonly RoutedUICommand RedoCommand = new("Redo", "Redo", typeof(MainWindow));
         public static readonly RoutedUICommand SaveAsCommand = new("Save As", "SaveAs", typeof(MainWindow));
@@ -446,8 +447,10 @@ namespace TDPdf
             CommandBindings.Add(new CommandBinding(AppScaleUpCommand, (_, _) => AppScaleUp()));
             CommandBindings.Add(new CommandBinding(AppScaleDownCommand, (_, _) => AppScaleDown()));
             CommandBindings.Add(new CommandBinding(AppScaleResetCommand, (_, _) => AppScaleReset()));
+            CommandBindings.Add(new CommandBinding(CloseOtherTabsCommand, (_, _) => CloseOtherTabs(_ctx)));
             InitDocInvert();   // #135: restore the persisted display-only dark mode + light the rail moon
             InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
+            ApplyLayoutShortcutLabels();   // #153: spell the zoom chords for THIS keyboard layout
             LoadSignatures();
             BuildContextMenu();
             SetTool(EditTool.Select);
@@ -1300,6 +1303,22 @@ namespace TDPdf
             forgetRecent.Unchecked += ForgetRecentFilesSettingChanged;
             panel.Children.Add(forgetRecent);
 
+            // The read-side companion to the link confirmation's "Don't ask again" checkbox. Without
+            // this the opt-out is a one-way trapdoor: ConfirmOpenLink is the only writer of
+            // SkipLinkConfirm and it only ever sets it, so nothing in the UI could turn the
+            // confirmation back on. Checkbox reads the inverse of the stored setting.
+            var confirmLinks = new CheckBox
+            {
+                Content = "Confirm before opening links",
+                IsChecked = !TDPdf.Properties.Settings.Default.SkipLinkConfirm,
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Ask for confirmation before a link in a PDF opens in your browser. Ticking \"Don't ask again\" in that prompt clears this.",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            confirmLinks.Checked += ConfirmOpenLinksSettingChanged;
+            confirmLinks.Unchecked += ConfirmOpenLinksSettingChanged;
+            panel.Children.Add(confirmLinks);
+
             var note = new TextBlock
             {
                 Text = "Tab changes take effect after restarting TDPdf. Native frame changes are applied after restarting TDPdf. Themes update immediately.",
@@ -1362,6 +1381,26 @@ namespace TDPdf
             SetStatus(requested
                 ? "Recently opened files are no longer remembered"
                 : "Recently opened files will be remembered");
+        }
+
+        // Makes the link-confirmation opt-out two-way. The stored setting is the negative
+        // (SkipLinkConfirm) because ConfirmOpenLink's "Don't ask again" wrote it that way; the name
+        // is kept so an existing opt-out still reads correctly — a rename would need a migration
+        // read of the old key for no user-visible gain. Preference only — never touches _isDirty.
+        private void ConfirmOpenLinksSettingChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox cb)
+                return;
+
+            bool confirm = cb.IsChecked == true;
+            if (TDPdf.Properties.Settings.Default.SkipLinkConfirm == !confirm)
+                return;
+
+            TDPdf.Properties.Settings.Default.SkipLinkConfirm = !confirm;
+            TDPdf.Properties.Settings.Default.Save();
+            SetStatus(confirm
+                ? "Links will ask before opening"
+                : "Links will open without asking");
         }
 
         private void NativeFrameSettingChanged(object sender, RoutedEventArgs e)
@@ -10821,6 +10860,71 @@ namespace TDPdf
         // Keyboard shortcuts
         // ============================================================
 
+        /// <summary>
+        /// #153: the four chords whose key is identified by a PUNCTUATION character — document
+        /// zoom in / out (Ctrl) and app-wide chrome size up / down (Ctrl+Shift). A
+        /// <c>KeyBinding</c> can only match a virtual key, i.e. a key position, which is a US
+        /// layout assumption; these match the character the key actually types on whatever layout
+        /// is active. The numpad twins stay as KeyBindings in MainWindow.xaml — the numpad is
+        /// layout-independent — and reaching them here first simply runs the same action.
+        /// </summary>
+        /// <remarks>
+        /// The ORDER is load-bearing and must not be rearranged: <see cref="KeyLayout.IsCtrlChar"/>
+        /// deliberately ignores Shift (on most layouts Shift is how "+" is produced), so on a US
+        /// keyboard Ctrl+Shift+= types "+" and would be swallowed as a zoom-in if the app-size
+        /// chords were not tested first.
+        /// </remarks>
+        private bool TryPunctuationShortcut(KeyEventArgs e)
+        {
+            var mods = Keyboard.Modifiers;
+            const ModifierKeys ctrlShift = ModifierKeys.Control | ModifierKeys.Shift;
+
+            if (KeyLayout.IsCtrlShiftChar(e.Key, '+', '=')
+                || ((e.Key == Key.OemPlus || e.Key == Key.Add) && mods == ctrlShift))
+            {
+                AppScaleUp();
+                return true;
+            }
+            if (KeyLayout.IsCtrlShiftChar(e.Key, '-')
+                || ((e.Key == Key.OemMinus || e.Key == Key.Subtract) && mods == ctrlShift))
+            {
+                AppScaleDown();
+                return true;
+            }
+            if (KeyLayout.IsCtrlChar(e.Key, '+', '=')
+                || ((e.Key == Key.OemPlus || e.Key == Key.Add) && mods == ModifierKeys.Control))
+            {
+                ChangeZoomByCommand(ZoomChange.In);
+                return true;
+            }
+            if (KeyLayout.IsCtrlChar(e.Key, '-')
+                || ((e.Key == Key.OemMinus || e.Key == Key.Subtract) && mods == ModifierKeys.Control))
+            {
+                ChangeZoomByCommand(ZoomChange.Out);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// #153: rewrites the shortcut spellings that depend on the keyboard layout. "=" is a plain
+        /// keypress on US but needs Shift on German, where "+" is the unshifted one instead — and
+        /// since the bindings above accept whichever key TYPES the character, the labels have to
+        /// follow suit or the app advertises a chord that does nothing on that machine. Called once
+        /// at startup; a layout switched mid-session is rare enough to leave alone.
+        /// </summary>
+        private void ApplyLayoutShortcutLabels()
+        {
+            string zin = KeyLayout.ZoomInChar(), zout = KeyLayout.ZoomOutChar();
+            if (FindName("ZoomInMenuItem") is MenuItem zoomIn) zoomIn.InputGestureText = $"Ctrl+{zin}";
+            if (FindName("AppSizeLargerMenuItem") is MenuItem bigger) bigger.InputGestureText = $"Ctrl+Shift+{zin}";
+            if (FindName("AppSizeSmallerMenuItem") is MenuItem smaller) smaller.InputGestureText = $"Ctrl+Shift+{zout}";
+            if (FindName("ZoomInButton") is Button zoomInBtn) zoomInBtn.ToolTip = $"Zoom In (Ctrl+{zin})";
+            if (FindName("KsAppSizeKeys") is TextBlock appSizeKeys) appSizeKeys.Text = $"Ctrl+Shift+{zin} / {zout}";
+            // The rendered keyboard board relabels its own punctuation caps as it is built
+            // (KbCapText in KeyboardMapOverlay.cs) — it is created lazily, on first use.
+        }
+
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
             base.OnPreviewKeyDown(e);
@@ -10828,6 +10932,17 @@ namespace TDPdf
             // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
             // modifier layer on the board. (upstream KillerPDF v1.6.4)
             KbSyncLayerFromModifiers();
+
+            // #153: the punctuation zoom / app-size chords, matched by the character the key TYPES
+            // on the active layout rather than by its US position. Handled here, ABOVE the typing
+            // and caret guards, because these were window-level KeyBindings until now and those
+            // fired wherever the focus was — moving them into this handler must not quietly
+            // narrow that.
+            if (TryPunctuationShortcut(e))
+            {
+                e.Handled = true;
+                return;
+            }
 
             // Don't intercept keys when typing in a TextBox
             if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
@@ -10925,7 +11040,12 @@ namespace TDPdf
                 SetTool(EditTool.Select);
                 e.Handled = true;
             }
-            else if (e.Key == Key.OemQuestion && Keyboard.Modifiers == ModifierKeys.Control)
+            // #153: matched by the character the key TYPES, not its position. Typing "?" holds
+            // Shift on every layout, so the old exact-equality modifier test meant this only ever
+            // fired for Ctrl+/ — even on a US keyboard. The positional check is kept as a fast
+            // path (and as the Ctrl+/ spelling) for where it already worked.
+            else if (KeyLayout.IsCtrlChar(e.Key, '?')
+                     || (e.Key == Key.OemQuestion && Keyboard.Modifiers == ModifierKeys.Control))
             {
                 ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                     ? Visibility.Collapsed : Visibility.Visible;
@@ -12067,6 +12187,17 @@ namespace TDPdf
             {
                 if (!ReferenceEquals(_ctx, ctx)) ActivateContext(ctx);
             };
+
+            // Right-click menu. Rebuilt with the strip on every tab change, so "Close Other Tabs"
+            // can be enabled purely from the current count with no live refresh to maintain.
+            var chipMenu = new ContextMenu();
+            chipMenu.Items.Add(MakeMenuItem("Close Tab", (_, _) => CloseTab(ctx), "Ctrl+W",
+                "Close this document", "\uE8BB"));
+            var closeOthers = MakeMenuItem("Close Other Tabs", (_, _) => CloseOtherTabs(ctx), "Ctrl+Shift+W",
+                "Close every open document except this one", "\uE711");
+            closeOthers.IsEnabled = _tabs.Count > 1;
+            chipMenu.Items.Add(closeOthers);
+            chip.ContextMenu = chipMenu;
             return chip;
         }
 
@@ -12156,6 +12287,36 @@ namespace TDPdf
             }
             RebuildTabStrip();
             SetStatus("Ready");
+        }
+
+        /// <summary>
+        /// Ctrl+Shift+W / tab right-click: closes every tab except <paramref name="keep"/>.
+        /// Deliberately routed through <see cref="CloseTab"/> one tab at a time rather than
+        /// shortcutting the teardown, so each unsaved document still gets the same prompt — and a
+        /// "No" leaves that one tab open instead of aborting the whole sweep. CloseTab activates a
+        /// dirty tab before prompting, so the kept tab is re-activated at the end.
+        /// </summary>
+        private void CloseOtherTabs(DocumentContext keep)
+        {
+            EnsureActiveTabRegistered();
+            if (!_tabs.Contains(keep)) return;
+
+            var others = _tabs.Where(t => !ReferenceEquals(t, keep)).ToList();
+            if (others.Count == 0) return;
+
+            foreach (var other in others)
+            {
+                CloseTab(other);
+                if (!_tabs.Contains(keep)) return;   // defensive: the kept tab went away somehow
+            }
+
+            if (!ReferenceEquals(_ctx, keep)) ActivateContext(keep);
+            RebuildTabStrip();
+
+            int closed = others.Count - _tabs.Count + 1;
+            SetStatus(closed <= 0
+                ? "No other tabs were closed"
+                : closed == 1 ? "Closed 1 other tab" : $"Closed {closed} other tabs");
         }
 
         /// <summary>Sets the active document's display name (tab header + title bar).</summary>

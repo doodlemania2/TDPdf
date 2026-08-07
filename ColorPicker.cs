@@ -28,6 +28,15 @@ namespace TDPdf
         /// <summary>The color chosen when OK is pressed; the seed color otherwise.</summary>
         public Color SelectedColor { get; private set; }
 
+        /// <summary>
+        /// True once OK has committed. Callers must read THIS rather than <c>ShowDialog</c>'s
+        /// return value: the eyedropper opens a nested modal (the capture window, owned by this
+        /// dialog), and a nested modal closing inside an outer one can corrupt the outer frame's
+        /// result — OK set <c>DialogResult = true</c> and <c>ShowDialog</c> still returned false,
+        /// silently discarding the pick and leaving the tool on its previous color.
+        /// </summary>
+        public bool Accepted { get; private set; }
+
         private double _h, _s = 1, _v = 1;      // HSV working state (h 0..360, s/v 0..1)
         private bool _updating;                 // guards the field <-> thumb <-> preview sync loop
         private readonly IReadOnlyList<Color> _recent;
@@ -40,6 +49,8 @@ namespace TDPdf
         private Border _hueThumb = null!;
         private TextBox _rBox = null!, _gBox = null!, _bBox = null!, _hexBox = null!;
         private Border _preview = null!;
+        private Button _eyedropBtn = null!;
+        private bool _eyedropArmed;             // true while the capture overlay is live
 
         private const int SvW = 216, SvH = 160, HueW = 16;
 
@@ -47,9 +58,10 @@ namespace TDPdf
         public static bool TryPickColor(Window? owner, Color initial, IReadOnlyList<Color> recent, out Color picked)
         {
             var dlg = new TdpColorPicker(owner, initial, recent);
-            bool ok = dlg.ShowDialog() == true;
+            dlg.ShowDialog();
             picked = dlg.SelectedColor;
-            return ok;
+            // Deliberately NOT ShowDialog's return — see TdpColorPicker.Accepted.
+            return dlg.Accepted;
         }
 
         private TdpColorPicker(Window? owner, Color initial, IReadOnlyList<Color> recent)
@@ -77,7 +89,7 @@ namespace TDPdf
 
             KeyDown += (_, e) =>
             {
-                if (e.Key == Key.Escape) { DialogResult = false; Close(); }
+                if (e.Key == Key.Escape) Cancel();
                 else if (e.Key == Key.Enter) Accept();
             };
         }
@@ -188,18 +200,21 @@ namespace TDPdf
             inputRow.Children.Add(FieldGroup("R", _rBox));
             inputRow.Children.Add(FieldGroup("G", _gBox));
             inputRow.Children.Add(FieldGroup("B", _bBox));
-            var eyedrop = new Button
+            _eyedropBtn = new Button
             {
                 Width = 30, Height = 24, Margin = new Thickness(8, 14, 0, 0),
                 Background = Brush("BgPanel"), Foreground = Brush("TextPrimary"),
                 BorderBrush = Brush("BorderDim"), BorderThickness = new Thickness(1),
+                // No Cursor here on purpose: the crosshair belongs to the capture overlay that
+                // opens on click. On the button it showed up on mere hover, before a pick started.
                 Content = CrosshairIcon(), ToolTip = "Pick a color from anywhere on screen",
-                Cursor = Cursors.Cross, Template = MakeButtonTemplate()
+                Template = MakeButtonTemplate()
             };
-            eyedrop.MouseEnter += (_, _) => eyedrop.Background = Brush("BgHover");
-            eyedrop.MouseLeave += (_, _) => eyedrop.Background = Brush("BgPanel");
-            eyedrop.Click += (_, _) => RunEyedropper();
-            inputRow.Children.Add(eyedrop);
+            // Hover must not fight the armed look RunEyedropper holds while the capture is live.
+            _eyedropBtn.MouseEnter += (_, _) => { if (!_eyedropArmed) _eyedropBtn.Background = Brush("BgHover"); };
+            _eyedropBtn.MouseLeave += (_, _) => { if (!_eyedropArmed) _eyedropBtn.Background = Brush("BgPanel"); };
+            _eyedropBtn.Click += (_, _) => RunEyedropper();
+            inputRow.Children.Add(_eyedropBtn);
             body.Children.Add(inputRow);
 
             // Hex row.
@@ -250,7 +265,7 @@ namespace TDPdf
             };
             var cancel = MakeButton("Cancel", accent: false);
             cancel.IsCancel = true;
-            cancel.Click += (_, _) => { DialogResult = false; Close(); };
+            cancel.Click += (_, _) => Cancel();
             var ok = MakeButton("OK", accent: true);
             ok.IsDefault = true;
             ok.Margin = new Thickness(8, 0, 0, 0);
@@ -263,7 +278,24 @@ namespace TDPdf
             Content = outer;
         }
 
-        private void Accept() { SelectedColor = HsvToRgb(_h, _s, _v); DialogResult = true; Close(); }
+        /// <summary>Escape / Cancel. Same DialogResult caveat as <see cref="Accept"/>: once the
+        /// nested capture modal has run the setter can throw, and that must not leave the dialog
+        /// stuck open.</summary>
+        private void Cancel()
+        {
+            try { DialogResult = false; } catch (InvalidOperationException) { }
+            Close();
+        }
+
+        private void Accept()
+        {
+            SelectedColor = HsvToRgb(_h, _s, _v);
+            Accepted = true;
+            // Best-effort only — see Accepted. Setting DialogResult can also throw once the nested
+            // capture modal has run, and the commit must not die with it.
+            try { DialogResult = true; } catch (InvalidOperationException) { }
+            Close();
+        }
 
         // ── Interaction ─────────────────────────────────────────────────────────
         private void SvPick(Point p) { _s = Clamp01(p.X / SvW); _v = Clamp01(1 - p.Y / SvH); SyncFromHsv(); }
@@ -297,7 +329,27 @@ namespace TDPdf
         }
 
         // ── Eyedropper (desktop-wide) ───────────────────────────────────────────
+
+        /// <summary>
+        /// Arms the button (accent border + tint) for as long as the capture overlay is live, so
+        /// the active state stays visible even when the crosshair is off in another corner of the
+        /// screen, then always restores the resting look.
+        /// </summary>
         private void RunEyedropper()
+        {
+            _eyedropArmed = true;
+            _eyedropBtn.Background = Brush("AccentGreenDim");
+            _eyedropBtn.BorderBrush = Brush("AccentGreen");
+            try { RunEyedropperCore(); }
+            finally
+            {
+                _eyedropArmed = false;
+                _eyedropBtn.Background = Brush(_eyedropBtn.IsMouseOver ? "BgHover" : "BgPanel");
+                _eyedropBtn.BorderBrush = Brush("BorderDim");
+            }
+        }
+
+        private void RunEyedropperCore()
         {
             try
             {

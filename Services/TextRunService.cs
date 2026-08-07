@@ -44,6 +44,11 @@ namespace TDPdf.Services
         public double Bottom;
         public double Left;
         public double Right;
+        /// <summary>
+        /// True when this line reads right-to-left (Hebrew / Arabic / …). Detected per line, so a
+        /// page that mixes scripts gets each line's own direction without a document-wide setting.
+        /// </summary>
+        public bool RightToLeft;
         public int End => Start + Count;
     }
 
@@ -62,8 +67,9 @@ namespace TDPdf.Services
     ///
     /// Word geometry comes from PdfPig's <c>GetWords()</c> — the same source the search and the
     /// rectangle region extractor already use — so nothing can drift between the three. Words are
-    /// grouped into lines by vertical overlap and ordered top-to-bottom, left-to-right; each word's
-    /// <c>Letters</c> supply the per-character boxes the caret model needs.
+    /// grouped into lines by vertical overlap and ordered top-to-bottom, then in each line's own
+    /// detected reading direction; each word's <c>Letters</c> supply the per-character boxes the
+    /// caret model needs.
     ///
     /// Performance: <c>GetWords()</c> means opening and parsing the page with PdfPig, which is far
     /// too slow to do on every mouse-move. Everything is therefore cached per page, keyed by the
@@ -150,23 +156,39 @@ namespace TDPdf.Services
                 }
             }
 
-            // Reading order: lines top-to-bottom (PDF Y grows upward, so larger Top first), words
-            // left-to-right inside each line.
+            // Reading order: lines top-to-bottom (PDF Y grows upward, so larger Top first). Each
+            // line then picks its own horizontal direction, so a page mixing Latin and Hebrew /
+            // Arabic paragraphs gets both right without a document-wide setting (#170).
             lineWords.Sort((a, b) => b.Top.CompareTo(a.Top));
 
             int wordOrdinal = 0;
             for (int li = 0; li < lineWords.Count; li++)
             {
                 var (ws, top, bottom) = lineWords[li];
-                ws.Sort((a, b) => a.BoundingBox.Left.CompareTo(b.BoundingBox.Left));
+                bool rtl = IsRightToLeftText(ws.Select(w => w.Text));
+                ws.Sort(rtl
+                    ? (a, b) => RightOf(b.BoundingBox).CompareTo(RightOf(a.BoundingBox))
+                    : (a, b) => LeftOf(a.BoundingBox).CompareTo(LeftOf(b.BoundingBox)));
 
                 // The line index stored on each character is the index this line will occupy in
                 // result.Lines, which is only the same as li while no line has been skipped.
                 int lineIndex = result.Lines.Count;
-                var line = new RunLine { Start = result.Chars.Count, Top = top, Bottom = bottom };
+                var line = new RunLine
+                {
+                    Start = result.Chars.Count,
+                    Top = top,
+                    Bottom = bottom,
+                    RightToLeft = rtl,
+                };
                 foreach (var w in ws)
                 {
-                    foreach (var letter in w.Letters)
+                    // Letters arrive in the content stream's order, which for RTL runs is not the
+                    // visual order, so they are re-sorted into the line's reading direction too.
+                    var letters = w.Letters.ToList();
+                    letters.Sort(rtl
+                        ? (a, b) => RightOf(b.BoundingBox).CompareTo(RightOf(a.BoundingBox))
+                        : (a, b) => LeftOf(a.BoundingBox).CompareTo(LeftOf(b.BoundingBox)));
+                    foreach (var letter in letters)
                     {
                         var g = letter.BoundingBox;
                         double l = Math.Min(g.Left, g.Right);
@@ -177,11 +199,45 @@ namespace TDPdf.Services
                 }
                 line.Count = result.Chars.Count - line.Start;
                 if (line.Count == 0) continue;
-                line.Left = result.Chars[line.Start].Left;
-                line.Right = result.Chars[line.End - 1].Right;
+                // Physical extremes, not "first char / last char": on an RTL line the first
+                // character in reading order is the rightmost one.
+                double minLeft = double.MaxValue, maxRight = double.MinValue;
+                for (int ci = line.Start; ci < line.End; ci++)
+                {
+                    if (result.Chars[ci].Left < minLeft) minLeft = result.Chars[ci].Left;
+                    if (result.Chars[ci].Right > maxRight) maxRight = result.Chars[ci].Right;
+                }
+                line.Left = minLeft;
+                line.Right = maxRight;
                 result.Lines.Add(line);
             }
             return result;
+        }
+
+        private static double LeftOf(UglyToad.PdfPig.Core.PdfRectangle r) => Math.Min(r.Left, r.Right);
+        private static double RightOf(UglyToad.PdfPig.Core.PdfRectangle r) => Math.Max(r.Left, r.Right);
+
+        /// <summary>
+        /// Majority vote over a line's characters: RTL when right-to-left letters outnumber the
+        /// left-to-right ones. The ranges are Hebrew/Arabic/Syriac/Thaana/NKo/Samaritan and friends
+        /// (U+0590–U+08FF) plus the Arabic presentation-form blocks many PDFs actually encode.
+        /// Digits and punctuation are neutral and deliberately do not vote either way.
+        /// </summary>
+        internal static bool IsRightToLeftText(IEnumerable<string> values)
+        {
+            int rtl = 0, ltr = 0;
+            foreach (string value in values)
+            {
+                if (string.IsNullOrEmpty(value)) continue;
+                foreach (char c in value)
+                {
+                    if ((c >= '\u0590' && c <= '\u08FF') ||
+                        (c >= '\uFB1D' && c <= '\uFDFF') ||
+                        (c >= '\uFE70' && c <= '\uFEFF')) rtl++;
+                    else if (char.IsLetter(c)) ltr++;
+                }
+            }
+            return rtl > ltr;
         }
 
         /// <summary>
@@ -225,6 +281,20 @@ namespace TDPdf.Services
             var last = runs.Lines[runs.Lines.Count - 1];
             if (y > first.Top && ReferenceEquals(target, first) && x < first.Left) return 0;
             if (y < last.Bottom && ReferenceEquals(target, last) && x > last.Right) return runs.Chars.Count;
+
+            // On an RTL line the caret grows leftward, so every comparison mirrors (#170).
+            if (target.RightToLeft)
+            {
+                if (x >= target.Right) return target.Start;
+                if (x <= target.Left) return target.End;
+                for (int i = target.Start; i < target.End; i++)
+                {
+                    var c = runs.Chars[i];
+                    double mid = (c.Left + c.Right) / 2;
+                    if (x > mid) return i;
+                }
+                return target.End;
+            }
 
             if (x <= target.Left) return target.Start;
             if (x >= target.Right) return target.End;

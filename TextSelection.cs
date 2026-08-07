@@ -275,8 +275,15 @@ namespace TDPdf
                 int segEnd = Math.Min(end, line.End);
                 if (segEnd <= i) break;   // defensive: never spin on malformed geometry
 
-                double left = runs.Chars[i].Left;
-                double right = runs.Chars[segEnd - 1].Right;
+                // A selected caret slice runs left-to-right on an LTR line and right-to-left on an
+                // RTL one, so take the slice's physical extremes instead of assuming the first
+                // glyph is the leftmost and the last the rightmost (#170).
+                double left = double.MaxValue, right = double.MinValue;
+                for (int ci = i; ci < segEnd; ci++)
+                {
+                    if (runs.Chars[ci].Left < left) left = runs.Chars[ci].Left;
+                    if (runs.Chars[ci].Right > right) right = runs.Chars[ci].Right;
+                }
                 double h = (line.Top - line.Bottom) * sy;
                 double pad = h * 0.12;   // a touch of breathing room around the glyph box
 
