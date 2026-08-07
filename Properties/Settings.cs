@@ -24,12 +24,28 @@ namespace TDPdf.Properties
             set => this[nameof(UseNativeWindowFrame)] = value;
         }
 
+        // Last page zoom, as TRUE zoom (1 = the page at natural size, which is the percentage the
+        // status bar and the zoom box show). See MainWindow.DisplayZoomFactor for why that is not
+        // the same number as the ScaleTransform outside Continuous view.
         [UserScopedSetting]
         [DefaultSettingValue("1")]
         public double LastZoomLevel
         {
             get => (double)this[nameof(LastZoomLevel)];
             set => this[nameof(LastZoomLevel)] = value;
+        }
+
+        // Remembered fit preference (upstream v1.7.1). One of the ZoomFitMode enum names:
+        // "None" (default), "Width", "Page". Written only when the user explicitly picks Fit Width
+        // or Fit Page — the zoom dropdown, or Ctrl+2 / Ctrl+3 — never by a fit the app applies on
+        // its own. When set it wins over the per-view-mode open rule in ApplyViewModeOnOpen, so
+        // someone on a small screen does not have to choose Fit Page again for every document.
+        [UserScopedSetting]
+        [DefaultSettingValue("None")]
+        public string DefaultFitMode
+        {
+            get => (string)this[nameof(DefaultFitMode)];
+            set => this[nameof(DefaultFitMode)] = value;
         }
 
         // When true (default), launching TDPdf while it is already running
@@ -190,6 +206,19 @@ namespace TDPdf.Properties
         {
             get => (bool)this[nameof(InvertDocumentColors)];
             set => this[nameof(InvertDocumentColors)] = value;
+        }
+
+        // Whether the night mode above inverts PICTURES along with the rest of the page (#135
+        // follow-up). Default False, so photos and charts keep their real colors — a negative of a
+        // photograph is worse than useless. True restores the whole-page inversion, which is what a
+        // SCANNED document needs: there the entire page is one image, so the carve-out would make
+        // night mode do nothing. Companion to InvertDocumentColors and equally display-only.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool DocInvertImages
+        {
+            get => (bool)this[nameof(DocInvertImages)];
+            set => this[nameof(DocInvertImages)] = value;
         }
 
         // App-wide UI scale (upstream v1.6.5): the LayoutTransform factor applied to the chrome —

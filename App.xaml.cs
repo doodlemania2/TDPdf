@@ -111,6 +111,15 @@ namespace TDPdf
         {
             base.OnStartup(e);
 
+            // #168: install the font resolver before ANYTHING can create an XFont — PdfSharpCore
+            // caches the resolver on the first font operation and then refuses to swap it
+            // ("Must not change font resolver after is was once used"). Every XFont in the app is
+            // reached from here: the annotation burn (MainWindow), the searchable-PDF text layer
+            // (Ocr.cs), and the headless CLI below. The stock resolver sees only *.ttf, so without
+            // this the save path cannot embed the .ttc families every CJK script relies on.
+            // Indexing is lazy, so this costs nothing on the headless install/uninstall paths.
+            Services.TdpFontResolver.Install();
+
             // Handle install/uninstall flags BEFORE wiring up UI / theme / crash plumbing.
             //
             // Intune (install behavior=System) runs us as LocalSystem in session 0 where

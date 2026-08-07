@@ -33,14 +33,20 @@
         <KeyBinding Key="F" Modifiers="Control" Command="{x:Static ApplicationCommands.Find}"/>
         <KeyBinding Key="N" Modifiers="Control" Command="{x:Static local:MainWindow.NewDocumentCommand}"/>
         <KeyBinding Key="W" Modifiers="Control" Command="{x:Static local:MainWindow.CloseFileCommand}"/>
+        <KeyBinding Key="W" Modifiers="Control+Shift" Command="{x:Static local:MainWindow.CloseOtherTabsCommand}"/>
         <KeyBinding Key="Z" Modifiers="Control" Command="{x:Static local:MainWindow.UndoCommand}"/>
         <KeyBinding Key="Y" Modifiers="Control" Command="{x:Static local:MainWindow.RedoCommand}"/>
         <KeyBinding Key="Z" Modifiers="Control+Shift" Command="{x:Static local:MainWindow.RedoCommand}"/>
         <KeyBinding Key="F1" Command="{x:Static local:MainWindow.AboutCommand}"/>
+        <!-- #153: the punctuation zoom chords are NOT KeyBindings any more. A KeyBinding matches a
+             virtual key, i.e. a key POSITION, which silently assumes a US layout — on German "="
+             is Shift+0 and the extra Shift breaks the match a second time. They now live in
+             OnPreviewKeyDown (TryPunctuationShortcut), matched by the character the key TYPES on
+             the active layout. The numpad twins stay here: the numpad is layout-independent, and
+             Ctrl+NumPad0 gives every layout a zoom reset even where the digit row needs Shift. -->
         <KeyBinding Key="D0" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomResetRoutedCommand}"/>
-        <KeyBinding Key="OemPlus" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomInRoutedCommand}"/>
+        <KeyBinding Key="NumPad0" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomResetRoutedCommand}"/>
         <KeyBinding Key="Add" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomInRoutedCommand}"/>
-        <KeyBinding Key="OemMinus" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomOutRoutedCommand}"/>
         <KeyBinding Key="Subtract" Modifiers="Control" Command="{x:Static local:MainWindow.ZoomOutRoutedCommand}"/>
         <!-- #135: display-only document dark mode. Ctrl+I is free in TDPdf (no bold/italic/underline
              text styling), so it keeps the discoverable, conventional binding rather than upstream's
@@ -49,9 +55,10 @@
         <!-- App-wide UI scale (AppScale.cs) — the chrome, NOT the page. Deliberately Ctrl+Shift so
              it can never be confused with the Ctrl+0/+/- document zoom above; Ctrl+Shift+S and
              Ctrl+Shift+Z are the only Ctrl+Shift letters already taken. -->
-        <KeyBinding Key="OemPlus"  Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleUpCommand}"/>
+        <!-- #153 again: the punctuation halves moved to TryPunctuationShortcut, where they are
+             ALSO tested ahead of the plain Ctrl zoom chords — those ignore Shift, so a
+             Ctrl+Shift+= would otherwise be eaten as a zoom-in. -->
         <KeyBinding Key="Add"      Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleUpCommand}"/>
-        <KeyBinding Key="OemMinus" Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleDownCommand}"/>
         <KeyBinding Key="Subtract" Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleDownCommand}"/>
         <KeyBinding Key="D0"       Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleResetCommand}"/>
         <KeyBinding Key="NumPad0"  Modifiers="Control+Shift" Command="{x:Static local:MainWindow.AppScaleResetCommand}"/>
@@ -369,6 +376,25 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
             <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+        </Style>
+
+        <!-- #177: the two halves of a shortcuts-overlay row. Rows are 2-column Grids (a fixed key
+             column, the description taking the rest), both cells wrapping and vertically centred
+             so a long description folds onto a second line without knocking its key out of line.
+             Kept as styles so the ~40 rows below stay one line each. -->
+        <Style x:Key="KsKeys" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
+        <Style x:Key="KsDesc" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
 
         <Style TargetType="MenuItem">
@@ -1021,7 +1047,12 @@
                 </MenuItem>
             </MenuItem>
             <MenuItem Header="_View">
-                <MenuItem Header="Zoom _In"         InputGestureText="Ctrl++"       Command="{x:Static local:MainWindow.ZoomInRoutedCommand}">
+                <!-- InputGestureText on this row and the two App Size rows below is REWRITTEN at
+                     startup by ApplyLayoutShortcutLabels (#153): which character the zoom key
+                     types depends on the keyboard layout, so a hardcoded US spelling would
+                     advertise a chord that does nothing on a German or Nordic machine. -->
+                <MenuItem x:Name="ZoomInMenuItem"
+                          Header="Zoom _In"         InputGestureText="Ctrl+="       Command="{x:Static local:MainWindow.ZoomInRoutedCommand}">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE948;"/></MenuItem.Icon>
                 </MenuItem>
                 <MenuItem Header="Zoom _Out"        InputGestureText="Ctrl+-"       Command="{x:Static local:MainWindow.ZoomOutRoutedCommand}">
@@ -1037,16 +1068,25 @@
                           Header="_Invert Colors"   InputGestureText="Ctrl+I"       Click="DocInvert_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE708;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- Night mode keeps pictures their real colors by default; this row (and the
+                     moon's right-click menu, and Shift+N) restores the whole-page inversion —
+                     which is what a scan needs, since there the page IS one image. -->
+                <MenuItem x:Name="InvertImagesMenuItem"
+                          Header="Invert I_mages Too" InputGestureText="Shift+N"    Click="DocInvertImages_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB9F;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Toggle _Sidebar"                                  Click="SidebarToggle_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE700;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
                 <!-- App size scales the CHROME only (menu, toolbar, tab strip, sidebar); the page
                      keeps its own zoom above. Also driven by the wheel over the title-bar logo. -->
-                <MenuItem Header="App Size _Larger"  InputGestureText="Ctrl+Shift++" Command="{x:Static local:MainWindow.AppScaleUpCommand}">
+                <MenuItem x:Name="AppSizeLargerMenuItem"
+                          Header="App Size _Larger"  InputGestureText="Ctrl+Shift+=" Command="{x:Static local:MainWindow.AppScaleUpCommand}">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8E8;"/></MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="App Size Small_er" InputGestureText="Ctrl+Shift+-" Command="{x:Static local:MainWindow.AppScaleDownCommand}">
+                <MenuItem x:Name="AppSizeSmallerMenuItem"
+                          Header="App Size Small_er" InputGestureText="Ctrl+Shift+-" Command="{x:Static local:MainWindow.AppScaleDownCommand}">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8E7;"/></MenuItem.Icon>
                 </MenuItem>
                 <MenuItem Header="Reset App Si_ze"   InputGestureText="Ctrl+Shift+0" Command="{x:Static local:MainWindow.AppScaleResetCommand}">
@@ -1209,7 +1249,7 @@
                               SelectedItem="{Binding Zoom.SelectedLevel, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}"
                               Text="{Binding Zoom.DisplayText, RelativeSource={RelativeSource AncestorType=Window}, Mode=OneWay}"
                               SelectionChanged="ZoomBox_SelectionChanged" ToolTip="Zoom level (Ctrl+scroll to zoom)"/>
-                    <Button Content="&#xE948;" Style="{StaticResource ToolbarButton}" Click="ZoomIn_Click" ToolTip="Zoom In (Ctrl+=)" KeyboardNavigation.TabIndex="28" AutomationProperties.Name="Zoom in" AutomationProperties.HelpText="Increase the page zoom level. Shortcut Control plus."/>
+                    <Button x:Name="ZoomInButton" Content="&#xE948;" Style="{StaticResource ToolbarButton}" Click="ZoomIn_Click" ToolTip="Zoom In (Ctrl+=)" KeyboardNavigation.TabIndex="28" AutomationProperties.Name="Zoom in" AutomationProperties.HelpText="Increase the page zoom level. Shortcut Control plus."/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -1368,7 +1408,9 @@
                              lights in the accent while active, driven by Tag="on" from
                              SyncDocInvertUi so all three themes repaint live. ToolTip and
                              AutomationProperties.HelpText are filled there too (they change with
-                             the state), matching how the toolbar buttons state the hint twice. -->
+                             the state), matching how the toolbar buttons state the hint twice.
+                             Right-click opens the night-mode options (the "invert images too"
+                             carve-out); that ContextMenu is attached in BuildDocInvertRailMenu. -->
                         <Button x:Name="InvertColorsBtn"
                                 Content="&#xE708;"
                                 Width="24" Height="24" Padding="0" FontSize="13"
@@ -1562,10 +1604,10 @@
                     BorderThickness="1"
                     CornerRadius="6"
                     Padding="28,16,28,22"
-                    HorizontalAlignment="Center"
+                    Margin="48,32,48,32"
+                    HorizontalAlignment="Stretch"
                     VerticalAlignment="Center"
-                    MinWidth="480"
-                    MaxWidth="640"
+                    MaxWidth="900"
                     MouseLeftButtonDown="ShortcutOverlayCard_MouseLeftButtonDown">
                 <StackPanel>
                     <Grid Margin="0,0,0,12">
@@ -1640,65 +1682,66 @@
                         <StackPanel Grid.Column="0">
                             <TextBlock Text="FILE" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+O" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Open" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+W" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Close file" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+N" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="New blank document" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+S" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Save" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Shift+S" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Save As" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Ctrl+P" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Print" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+O"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Open"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+W"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Close file"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+N"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="New blank document"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Save"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Save As"/></Grid>
+                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+P"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Print"/></Grid>
 
                             <TextBlock Text="NAVIGATION" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="&#x2190; / &#x2192; or &#x2191; / &#x2193;" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Previous / next page" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Scroll" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Zoom in / out" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Middle drag" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Pan view" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="&#x2190; / &#x2192; or &#x2191; / &#x2193;"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Previous / next page"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Scroll"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Zoom in / out"/></Grid>
+                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Middle drag"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Pan view"/></Grid>
 
                             <TextBlock Text="VIEW" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+I" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Invert colors (display only)" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Shift++ / -" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="App size larger / smaller" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Shift+0" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Reset app size" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Scroll on logo" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="App size (chrome only)" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+I"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Invert colors (display only)"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Shift+N"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Invert images too (for scans)"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock x:Name="KsAppSizeKeys" Style="{StaticResource KsKeys}" Text="Ctrl+Shift++ / -"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="App size larger / smaller"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+0"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Reset app size"/></Grid>
+                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Scroll on logo"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="App size (chrome only)"/></Grid>
                         </StackPanel>
 
                         <StackPanel Grid.Column="2">
                             <TextBlock Text="EDITING" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+Z" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Undo" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Delete" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Delete selected annotation" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Enter / Escape" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Confirm / cancel text or crop" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Z"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Undo"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Delete"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Delete selected annotation"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Enter / Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Confirm / cancel text or crop"/></Grid>
 
                             <TextBlock Text="SEARCH &amp; SELECT" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+F" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Find / search" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Enter / Shift+Enter" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Next / previous result" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="Ctrl+A" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Select all text on page" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Ctrl+C" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Copy selected text" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+F"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Find / search"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Enter / Shift+Enter"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Next / previous result"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+A"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Select all text on page"/></Grid>
+                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Copy selected text"/></Grid>
 
                             <!-- Tool keys (1.19). Unmodified keys, live only while a document is open
                                  and the keyboard focus is not in a text box. The digits mirror the
                                  toolbar left to right; Select / Pan / Signature / Crop are letter-only. -->
                             <TextBlock Text="TOOLS" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="V" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Select" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="P" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Pan / hand" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="1 / T" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Text" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="2 / X" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Edit existing text" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="3" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Edit existing image" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="4 / I" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Insert image" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="5 / H" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Highlight" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="6 / K" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Strikethrough" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="7 / U" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Underline" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="8 / S" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Shape" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="9 / D" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Draw" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="0 / E" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Eraser" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="G" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Signature" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,4"><TextBlock Text="C" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Crop" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
-                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Escape" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="Step back to the Select tool" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="V"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Select"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="P"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Pan / hand"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="1 / T"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Text"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="2 / X"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Edit existing text"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="3"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Edit existing image"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="4 / I"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Insert image"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="5 / H"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Highlight"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="6 / K"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Strikethrough"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="7 / U"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Underline"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="8 / S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Shape"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="9 / D"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Draw"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="0 / E"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Eraser"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="G"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Signature"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Crop"/></Grid>
+                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Step back to the Select tool"/></Grid>
 
                             <TextBlock Text="HELP" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
-                            <DockPanel Margin="0,0,0,0"><TextBlock Text="Ctrl+?" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Width="120"/><TextBlock Text="This shortcut list" FontSize="11" Foreground="{DynamicResource TextPrimary}"/></DockPanel>
+                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+?"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="This shortcut list"/></Grid>
                         </StackPanel>
                     </Grid>
 

@@ -33,6 +33,7 @@ namespace TDPdf
         public static readonly RoutedUICommand ZoomResetRoutedCommand = new("Reset Zoom", "ZoomReset", typeof(MainWindow));
         public static readonly RoutedUICommand NewDocumentCommand = new("New Document", "NewDocument", typeof(MainWindow));
         public static readonly RoutedUICommand CloseFileCommand = new("Close File", "CloseFile", typeof(MainWindow));
+        public static readonly RoutedUICommand CloseOtherTabsCommand = new("Close Other Tabs", "CloseOtherTabs", typeof(MainWindow));
         public static readonly RoutedUICommand UndoCommand = new("Undo", "Undo", typeof(MainWindow));
         public static readonly RoutedUICommand RedoCommand = new("Redo", "Redo", typeof(MainWindow));
         public static readonly RoutedUICommand SaveAsCommand = new("Save As", "SaveAs", typeof(MainWindow));
@@ -185,6 +186,10 @@ namespace TDPdf
 
         // Zoom fit-mode tracking (for auto-refit on window resize)
         private ZoomFitMode _zoomFitMode = ZoomFitMode.None;
+        // Vestigial re-entrancy guard around the FitToWidth / FitToPage zoom writes: set and
+        // cleared, never read (hence the CS0414 the build carries). Deliberately left alone —
+        // it is NOT the remembered-fit flag, which is the persisted Settings.DefaultFitMode, and
+        // the resize re-fit it would have guarded is already debounced by _fitResizePending.
         private bool _applyingFitZoom;
         private bool _fitResizePending;
 
@@ -281,6 +286,7 @@ namespace TDPdf
         private MenuItem _removePasswordMenuItem = null!;
         private Button _invertColorsBtn = null!;
         private MenuItem _invertColorsMenuItem = null!;
+        private MenuItem _invertImagesMenuItem = null!;
 
         // The primary page's TRUE-color bitmap, mirroring whatever RenderPage put in PageImage.
         // PageImage.Source may be the display-only inverted copy (#135), and the image-edit tool
@@ -403,6 +409,7 @@ namespace TDPdf
             _removePasswordMenuItem = (MenuItem)FindName("RemovePasswordMenuItem")!;
             _invertColorsBtn = (Button)FindName("InvertColorsBtn")!;
             _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
+            _invertImagesMenuItem = (MenuItem)FindName("InvertImagesMenuItem")!;
             _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
             // Restore the persisted view mode (defaults to Grid, matching the original layout).
             if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
@@ -440,8 +447,10 @@ namespace TDPdf
             CommandBindings.Add(new CommandBinding(AppScaleUpCommand, (_, _) => AppScaleUp()));
             CommandBindings.Add(new CommandBinding(AppScaleDownCommand, (_, _) => AppScaleDown()));
             CommandBindings.Add(new CommandBinding(AppScaleResetCommand, (_, _) => AppScaleReset()));
+            CommandBindings.Add(new CommandBinding(CloseOtherTabsCommand, (_, _) => CloseOtherTabs(_ctx)));
             InitDocInvert();   // #135: restore the persisted display-only dark mode + light the rail moon
             InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
+            ApplyLayoutShortcutLabels();   // #153: spell the zoom chords for THIS keyboard layout
             LoadSignatures();
             BuildContextMenu();
             SetTool(EditTool.Select);
@@ -1294,6 +1303,22 @@ namespace TDPdf
             forgetRecent.Unchecked += ForgetRecentFilesSettingChanged;
             panel.Children.Add(forgetRecent);
 
+            // The read-side companion to the link confirmation's "Don't ask again" checkbox. Without
+            // this the opt-out is a one-way trapdoor: ConfirmOpenLink is the only writer of
+            // SkipLinkConfirm and it only ever sets it, so nothing in the UI could turn the
+            // confirmation back on. Checkbox reads the inverse of the stored setting.
+            var confirmLinks = new CheckBox
+            {
+                Content = "Confirm before opening links",
+                IsChecked = !TDPdf.Properties.Settings.Default.SkipLinkConfirm,
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Ask for confirmation before a link in a PDF opens in your browser. Ticking \"Don't ask again\" in that prompt clears this.",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            confirmLinks.Checked += ConfirmOpenLinksSettingChanged;
+            confirmLinks.Unchecked += ConfirmOpenLinksSettingChanged;
+            panel.Children.Add(confirmLinks);
+
             var note = new TextBlock
             {
                 Text = "Tab changes take effect after restarting TDPdf. Native frame changes are applied after restarting TDPdf. Themes update immediately.",
@@ -1356,6 +1381,26 @@ namespace TDPdf
             SetStatus(requested
                 ? "Recently opened files are no longer remembered"
                 : "Recently opened files will be remembered");
+        }
+
+        // Makes the link-confirmation opt-out two-way. The stored setting is the negative
+        // (SkipLinkConfirm) because ConfirmOpenLink's "Don't ask again" wrote it that way; the name
+        // is kept so an existing opt-out still reads correctly — a rename would need a migration
+        // read of the old key for no user-visible gain. Preference only — never touches _isDirty.
+        private void ConfirmOpenLinksSettingChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox cb)
+                return;
+
+            bool confirm = cb.IsChecked == true;
+            if (TDPdf.Properties.Settings.Default.SkipLinkConfirm == !confirm)
+                return;
+
+            TDPdf.Properties.Settings.Default.SkipLinkConfirm = !confirm;
+            TDPdf.Properties.Settings.Default.Save();
+            SetStatus(confirm
+                ? "Links will ask before opening"
+                : "Links will open without asking");
         }
 
         private void NativeFrameSettingChanged(object sender, RoutedEventArgs e)
@@ -1686,6 +1731,10 @@ namespace TDPdf
                         (Action)ApplyViewModeOnOpen);
                 }
                 var readOnlySuffix = result.OpenedReadOnly ? " (read-only - owner restrictions)" : string.Empty;
+                // An owner-restricted file PdfSharpCore could not parse comes back as a PDFium-repaired,
+                // decrypted copy: editable, so it must NOT claim read-only, but say the restriction went.
+                if (result.RestrictionsRemoved)
+                    readOnlySuffix = " (owner restrictions removed)";
                 if (result.RecoveredFromRaster)
                     readOnlySuffix = " (recovered - pages rasterized, text not selectable)";
                 SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix} - {_doc.PageCount} page(s)");
@@ -1800,13 +1849,20 @@ namespace TDPdf
 
         private int GetCurrentDpiX()
         {
-            return Math.Max(1, (int)Math.Round(_currentDpiScale * Zoom.ZoomLevel * 96.0));
+            // LayoutZoomScale, not the true zoom: this sizes the RASTER, which has to match the
+            // tile's on-screen pixels 1:1. (Rendering at the true zoom would over-sample by the
+            // display factor and, at 400%, allocate a needlessly larger bitmap.)
+            return Math.Max(1, (int)Math.Round(_currentDpiScale * LayoutZoomScale * 96.0));
         }
 
         private void InvalidateRenderCache()
         {
             _renderCache.Clear();
             _renderDims.Clear();
+            // #135 follow-up: the night-mode image boxes are measured from the document, so they go
+            // stale with it (a page rotated, cropped, transformed, or the file re-saved to a fresh
+            // temp copy). They are keyed by file path as well, so this is belt and braces.
+            _pageImageRects.Clear();
         }
 
         // #122 (upstream v1.6.3): the per-tab rendered-page cache used to grow without bound — a page
@@ -1873,6 +1929,14 @@ namespace TDPdf
 
                 if (_doc is null) return;
 
+                // #135 follow-up: this page's image boxes, so night mode can carve the pictures back
+                // out of the inversion. Off the UI thread on the first inverted render of the page
+                // (one PdfPig open, disposed there); a no-op afterwards and whenever night mode or
+                // the carve-out is off, so it costs the common path nothing.
+                var keepRects = await ImageRectsForAsync(currentFile, pageIndex, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_doc is null) return;
+
                 _renderDims[pageIndex] = ((int)Math.Round(renderedPage.DisplayWidth), (int)Math.Round(renderedPage.DisplayHeight));
                 PageImage.Tag = pageIndex;   // page identity for Grid scroll tracking (nearest-tile counter)
                 // #135: DisplayBitmap returns the cached bitmap untouched unless the display-only
@@ -1880,11 +1944,22 @@ namespace TDPdf
                 // _primaryPageBitmap, which the image-edit tool bakes into the saved PDF) keep the
                 // document's true colors.
                 _primaryPageBitmap = renderedPage.Bitmap;
-                PageImage.Source = DisplayBitmap(renderedPage.Bitmap);
+                PageImage.Source = DisplayBitmap(renderedPage.Bitmap, keepRects);
                 PageImage.Width = renderedPage.DisplayWidth;
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
                 _annotationCanvas.Height = renderedPage.DisplayHeight;
+                // #151: the page-number tooltip used to exist only on the SECONDARY tiles, so
+                // whether you got one depended on the view mode — none in Single, none in
+                // Continuous, right-hand page only in Two-Page, from page 2 in Grid. The primary
+                // tile gets it here, kept in step with the page it is showing. No "click to
+                // navigate" hint: clicking the primary tile is what draws/selects, and it is
+                // already the current page. The tooltip goes on the annotation canvas rather than
+                // PageImage because the canvas is the transparent hit-test surface on top of it.
+                _annotationCanvas.ToolTip = $"Page {pageIndex + 1}";
+                // The display factor is per page, so a document of mixed page sizes has to
+                // re-derive the transform when the primary tile changes, at the same true zoom.
+                SyncLayoutZoom();
                 ClearSelection();
                 ClearSecondaryPages();
                 RenderAllAnnotations(pageIndex);
@@ -1988,40 +2063,58 @@ namespace TDPdf
             // (Using viewportW / zoom - pad fills the viewport exactly and leaves no room.)
             double primaryPageW = _annotationCanvas.Width > 0 ? _annotationCanvas.Width : 595;
             double pageSlotW = primaryPageW + 12; // page width + right-gutter margin
-            double availablePreZoom = (viewportW - 24) / Zoom.ZoomLevel; // inner space in pre-zoom coords
-            // Two-Page always shows exactly two columns; Grid wraps to fit the viewport.
-            int pagesPerRow = twoPage ? 2 : Math.Max(1, (int)(availablePreZoom / pageSlotW));
+            // Cap how many secondary pages we render at once. Long documents otherwise
+            // allocate a (potentially multi-MB) bitmap per page on first grid display.
+            // Two-Page renders just the single page to the right of the primary.
+            int maxSecondaryPages = twoPage ? 1 : 25;
+
+            // Inner space in pre-zoom (tile-layout) coords, so it is the LAYOUT scale that divides
+            // out here, not the true zoom — primaryPageW above is a tile width.
+            double availablePreZoom = (viewportW - 24) / Math.Max(0.0001, LayoutZoomScale);
+            // Two-Page always shows exactly two columns; Grid wraps to fit the viewport, but never
+            // claims more columns than there are tiles to put in them. Without that ceiling a very
+            // small page (whose tile is many times its natural size, so its layout scale at the
+            // 5% floor is tiny) would ask the WrapPanel for a width of hundreds of thousands of
+            // DIPs to hold at most 26 pages.
+            int pagesPerRow = twoPage
+                ? 2
+                : Math.Clamp((int)(availablePreZoom / pageSlotW), 1, maxSecondaryPages + 1);
             double panelW = pagesPerRow * pageSlotW;
             if (panelW > 0) _pageContentPanel.Width = panelW;
 
             var dpiInfo = VisualTreeHelper.GetDpi(this);
             double dpiScaleX = dpiInfo.DpiScaleX;
             double dpiScaleY = dpiInfo.DpiScaleY;
-            int scaledMax = (int)(1536 * Math.Max(dpiScaleX, dpiScaleY));
-
-            // Cap how many secondary pages we render at once. Long documents otherwise
-            // allocate a (potentially multi-MB) bitmap per page on first grid display.
-            // Two-Page renders just the single page to the right of the primary.
-            int maxSecondaryPages = twoPage ? 1 : 25;
+            // Same square box as the primary tile (PdfDocumentService.RenderBoxDip), in device
+            // pixels, so grid tiles land on the same DIP size as the primary and the display
+            // factor is one number for the whole wrap panel.
+            int scaledMax = (int)(TDPdf.Services.PdfDocumentService.RenderBoxDip * Math.Max(dpiScaleX, dpiScaleY));
             int lastPage = Math.Min(_doc.PageCount - 1, primaryPageIdx + maxSecondaryPages);
             string currentFile = _currentFile;
 
-            List<(int pi, int w, int h, byte[] rawBytes)> pages;
+            List<(int pi, int w, int h, byte[] rawBytes, FracRect[] keep)> pages;
             try
             {
                 pages = await Task.Run(() =>
                 {
-                    var result = new List<(int pi, int w, int h, byte[] rawBytes)>();
+                    var result = new List<(int pi, int w, int h, byte[] rawBytes, FracRect[] keep)>();
                     using var docReader = DocLib.Instance.GetDocReader(currentFile, new PageDimensions(scaledMax, scaledMax));
+                    // #135 follow-up: one PdfPig open serves every uncached page in this loop and is
+                    // released with the loop (see PigScope).
+                    using var pig = new PigScope();
                     for (int i = primaryPageIdx + 1; i <= lastPage; i++)
                     {
                         ct.ThrowIfCancellationRequested();
                         using var pageReader = docReader.GetPageReader(i);
                         int w = pageReader.GetPageWidth();
                         int h = pageReader.GetPageHeight();
-                        var rawBytes = pageReader.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var rawBytes = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
+                                       ?? pageReader.GetImage();
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
-                        result.Add((i, w, h, rawBytes));
+                        // Measured here rather than on the UI thread below, so the parse never
+                        // stalls the tile pass.
+                        result.Add((i, w, h, rawBytes, _docInvert ? ImageRectsFor(currentFile, i, pig) : []));
                     }
                     return result;
                 }, ct);
@@ -2031,14 +2124,15 @@ namespace TDPdf
 
             if (ct.IsCancellationRequested) return;
 
-            foreach (var (pi, w, h, rawBytes) in pages)
+            foreach (var (pi, w, h, rawBytes, keep) in pages)
             {
                 if (ct.IsCancellationRequested) return;
 
                 _renderDims[pi] = (w, h);
-                // #135: display-only invert. The buffer is ours and is about to become a throwaway
+                // #135: display-only invert, with the page's pictures carved back out (empty keep =
+                // the plain full-page flip). The buffer is ours and is about to become a throwaway
                 // display bitmap, so flip it in place — nothing else ever sees these bytes.
-                if (_docInvert) InvertBgraInPlace(rawBytes);
+                if (_docInvert) InvertBgraInPlaceExcept(rawBytes, w, h, keep);
                 var bitmap = new WriteableBitmap(w, h, 96.0 * dpiScaleX, 96.0 * dpiScaleY, PixelFormats.Bgra32, null);
                 bitmap.WritePixels(new Int32Rect(0, 0, w, h), rawBytes, w * 4, 0);
 
@@ -2072,7 +2166,31 @@ namespace TDPdf
             }
         }
 
-        private void SetStatus(string text) => StatusText.Text = text;
+        // A "held" status briefly outranks routine ones. Scrolling the wheel over the logo to
+        // resize the app has to show "App size N%", but the chrome resize immediately re-runs the
+        // fit pipeline, whose "Page x of y - 100%" would stomp the readout on the very next
+        // layout pass. While a hold is live, plain SetStatus calls are dropped; the hold refreshes
+        // on every wheel notch and expires on its own, after which normal statuses flow again.
+        // The hold is short and covers only that stomp — the readout's own five-second lifetime is
+        // ShowScaleReadout's job (AppScale.cs). Put here rather than at the ~200 SetStatus callers
+        // because SetBusy / SetFileOperationBusy / SetWorkerStatus all funnel through this line.
+        private DateTime _statusHoldUntil = DateTime.MinValue;
+
+        private void SetStatus(string text)
+        {
+            if (DateTime.UtcNow < _statusHoldUntil) return;   // a held message is showing
+            StatusText.Text = text;
+        }
+
+        /// <summary>
+        /// Writes a status that plain <see cref="SetStatus"/> calls cannot overwrite for
+        /// <paramref name="holdMs"/> milliseconds.
+        /// </summary>
+        private void SetStatusHeld(string text, int holdMs = 1200)
+        {
+            _statusHoldUntil = DateTime.UtcNow.AddMilliseconds(holdMs);
+            StatusText.Text = text;
+        }
 
         private void SetBusy(bool isBusy, string? status = null)
         {
@@ -2254,15 +2372,26 @@ namespace TDPdf
                 primaryBorder.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
             _continuousPanel.Visibility = isContinuous ? Visibility.Visible : Visibility.Collapsed;
 
+            // A fit the user explicitly chose is a standing preference and outranks the
+            // per-view-mode default below (upstream v1.7.1): someone reading on a small screen
+            // should not have to pick Fit Page again for every manual they open.
+            ZoomFitMode preferred = ReadDefaultFitMode();
+
             if (isContinuous)
             {
+                // SetupContinuousView ends in FitToWidth, which is also Continuous's own default;
+                // only a remembered Fit Page has to override it, once the strip exists.
                 SetupContinuousView(Math.Max(0, PageList.SelectedIndex));
+                if (preferred == ZoomFitMode.Page) FitToPage();
                 return;
             }
 
-            // Single / Two-Page open fit-to-page; Grid keeps its column-fit default (fit-width
-            // is a sensible neutral starting zoom that RefreshPageView then column-snaps).
-            if (_viewMode == ViewMode.Single || _viewMode == ViewMode.TwoPage) FitToPage();
+            // Otherwise Single / Two-Page open fit-to-page and Grid keeps its column-fit default
+            // (fit-width is a sensible neutral starting zoom that RefreshPageView then
+            // column-snaps).
+            if (preferred == ZoomFitMode.Width) FitToWidth();
+            else if (preferred == ZoomFitMode.Page) FitToPage();
+            else if (_viewMode == ViewMode.Single || _viewMode == ViewMode.TwoPage) FitToPage();
             else FitToWidth();
             RefreshPageView(_viewMode == ViewMode.Grid ? 0 : Math.Max(0, PageList.SelectedIndex));
         }
@@ -2325,12 +2454,19 @@ namespace TDPdf
                     Margin = new Thickness(0, 0, 0, 12),
                     Background = BrushResource("BgPanel"),
                     Tag = i,
+                    // #151: same page-number tooltip as the wrap-panel tiles — Continuous had none
+                    // at all. Clicking a slot really does select that page, so it keeps the hint.
+                    ToolTip = $"Page {i + 1} — click to navigate",
                     Child = pageImg
                 };
                 placeholder.PreviewMouseLeftButtonDown += (_, _) => SelectContinuousPage(capturedI);
                 _continuousPanel.Children.Add(placeholder);
                 y += slotH + 12;
             }
+
+            // Entering Continuous flips the display factor to 1, so the layout scale for the zoom
+            // already in force changes even though the zoom itself has not.
+            SyncLayoutZoom();
 
             // Continuous opens fit-to-width per the open-fit rules.
             FitToWidth();
@@ -2390,6 +2526,9 @@ namespace TDPdf
                 {
                     using var docReader = DocLib.Instance.GetDocReader(
                         currentFile, new PageDimensions(renderW, renderW * 2));
+                    // #135 follow-up: one PdfPig open covers every uncached page this pass fills and
+                    // is released with the pass (see PigScope).
+                    using var pig = new PigScope();
 
                     for (int i = winLo; i <= winHi; i++)
                     {
@@ -2397,11 +2536,15 @@ namespace TDPdf
                         using var pr = docReader.GetPageReader(i);
                         int w = pr.GetPageWidth();
                         int h = pr.GetPageHeight();
-                        var raw = pr.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
+                                  ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
 
                         int fi = i, fw = w, fh = h;
                         byte[] bytes = raw;
+                        // Measured off the UI thread, so the marshal below stays a pure blit.
+                        FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, i, pig) : [];
                         Application.Current.Dispatcher.Invoke(() =>
                         {
                             if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
@@ -2413,7 +2556,9 @@ namespace TDPdf
                             double dpiX = 96.0 * fw / dipW;
                             double dpiY = 96.0 * fh / dipH;
 
-                            if (_docInvert) InvertBgraInPlace(bytes);   // #135: display-only invert
+                            // #135: display-only invert, pictures carved back out (empty keep = the
+                            // plain full-page flip, which is also what "invert images too" wants).
+                            if (_docInvert) InvertBgraInPlaceExcept(bytes, fw, fh, keep);
                             var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
                             bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
                             bmp.Freeze();
@@ -2548,6 +2693,8 @@ namespace TDPdf
             _ = System.Threading.Tasks.Task.Run(() =>
             {
                 Docnet.Core.Readers.IDocReader? docReader = null;
+                // #135 follow-up: one PdfPig open for the whole re-sharpen pass (see PigScope).
+                using var pig = new PigScope();
                 try
                 {
                     foreach (int p in work)
@@ -2556,16 +2703,21 @@ namespace TDPdf
                         docReader ??= DocLib.Instance.GetDocReader(currentFile, new PageDimensions(hiW, hiW * 2));
                         using var pr = docReader.GetPageReader(p);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
-                        var raw = pr.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, p, w, h)
+                                  ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
 
                         int fp = p, fw = w, fh = h;
                         byte[] bytes = raw;
+                        // Measured here (off the UI thread); the rects are fractional, so the same
+                        // cached set serves this hi-res raster and the base one it replaces.
+                        FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, p, pig) : [];
                         if (cts.IsCancellationRequested) return;
                         Dispatcher.Invoke(() =>
                         {
                             if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
-                            SharpenContinuousSlot(fp, fw, fh, bytes);
+                            SharpenContinuousSlot(fp, fw, fh, bytes, keep);
                         });
                     }
                 }
@@ -2578,7 +2730,7 @@ namespace TDPdf
         // (the shared ScaleTransform still supplies the zoom). Captures the slot's current base bitmap
         // once so RestoreContinuousBase can put it back when the page scrolls away. Only sharpens slots
         // that already carry a base bitmap, so it never fights the streaming base pass.
-        private void SharpenContinuousSlot(int pageIndex, int pxW, int pxH, byte[] bgra)
+        private void SharpenContinuousSlot(int pageIndex, int pxW, int pxH, byte[] bgra, FracRect[] keep)
         {
             if (pageIndex < 0 || pageIndex >= _continuousPanel.Children.Count) return;
             if (_continuousPanel.Children[pageIndex] is not Border slot) return;
@@ -2595,7 +2747,8 @@ namespace TDPdf
             if (!_continuousBaseBitmaps.ContainsKey(pageIndex))
                 _continuousBaseBitmaps[pageIndex] = baseSrc;
 
-            if (_docInvert) InvertBgraInPlace(bgra);   // #135: display-only invert
+            // #135: display-only invert, pictures carved back out (empty keep = full-page flip).
+            if (_docInvert) InvertBgraInPlaceExcept(bgra, pxW, pxH, keep);
             var bmp = new WriteableBitmap(pxW, pxH, dpiX, dpiY, PixelFormats.Bgra32, null);
             bmp.WritePixels(new Int32Rect(0, 0, pxW, pxH), bgra, pxW * 4, 0);
             bmp.Freeze();
@@ -2676,6 +2829,8 @@ namespace TDPdf
             _ = System.Threading.Tasks.Task.Run(() =>
             {
                 Docnet.Core.Readers.IDocReader? docReader = null;
+                // #135 follow-up: one PdfPig open for the whole window-fill pass (see PigScope).
+                using var pig = new PigScope();
                 try
                 {
                     foreach (int i in need)
@@ -2684,14 +2839,17 @@ namespace TDPdf
                         docReader ??= DocLib.Instance.GetDocReader(currentFile, new PageDimensions(renderW, renderW * 2));
                         using var pr = docReader.GetPageReader(i);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
-                        var raw = pr.GetImage();
+                        // #141: with the annotations the file carries (see PdfiumInterop).
+                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
+                                  ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
                         int fi = i, fw = w, fh = h; byte[] bytes = raw;
+                        FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, i, pig) : [];
                         if (ct.IsCancellationRequested) return;
                         Dispatcher.Invoke(() =>
                         {
                             if (ct.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
-                            ApplyContinuousBaseStable(fi, fw, fh, bytes);
+                            ApplyContinuousBaseStable(fi, fw, fh, bytes, keep);
                         });
                     }
                 }
@@ -2703,7 +2861,7 @@ namespace TDPdf
         // Applies a base bitmap into a continuous slot WITHOUT changing the slot's height, so pages
         // below it never move (no scroll jump). Used only by window maintenance; the placeholder height
         // set at layout already matches the page aspect, so the natural-size bitmap fills the slot.
-        private void ApplyContinuousBaseStable(int fi, int fw, int fh, byte[] bytes)
+        private void ApplyContinuousBaseStable(int fi, int fw, int fh, byte[] bytes, FracRect[] keep)
         {
             if (fi < 0 || fi >= _continuousPanel.Children.Count) return;
             if (_continuousPanel.Children[fi] is not Border slot || slot.Child is not Image img) return;
@@ -2713,7 +2871,8 @@ namespace TDPdf
             double dipH = dipW * fh / fw;
             double dpiX = 96.0 * fw / dipW;
             double dpiY = 96.0 * fh / dipH;
-            if (_docInvert) InvertBgraInPlace(bytes);   // #135: display-only invert
+            // #135: display-only invert, pictures carved back out (empty keep = full-page flip).
+            if (_docInvert) InvertBgraInPlaceExcept(bytes, fw, fh, keep);
             var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
             bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
             bmp.Freeze();
@@ -3048,6 +3207,13 @@ namespace TDPdf
                     RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex), null, null, "\uE74D"));
                 overlay.ContextMenu = cm;
 
+                // #156 pushed the form-field overlays to ZIndex -1 so annotations paint above them.
+                // Links are added to this same canvas BEFORE the fields on the initial page render, so
+                // leaving them at the default 0 would flip the two: a widget overlapped by a /Link
+                // annotation would stop receiving its own clicks. -2 keeps the field on top of the link
+                // exactly as before. Link hit detection is a manual bounds check in
+                // Canvas_MouseLeftButtonDown, so nothing here depends on the overlay being topmost.
+                Panel.SetZIndex(overlay, -2);
                 _annotationCanvas.Children.Add(overlay);
                 _linkOverlays.Add(overlay);
             }
@@ -3554,6 +3720,18 @@ namespace TDPdf
                 if (ctrl is null) continue;
                 Canvas.SetLeft(ctrl, f.Cx);
                 Canvas.SetTop(ctrl, f.Cy);
+                // Upstream v1.7.0 (#156): field overlays sit BELOW the annotation layer. TDPdf puts
+                // annotations and form overlays on the SAME canvas, and RenderAllAnnotations paints
+                // the annotations and then calls RestoreFormOverlays — a Canvas paints later children
+                // on top, so a signature dropped on a fill-in field disappeared behind the field's own
+                // near-opaque control. Ordering cannot fix it here (this method removes and re-adds
+                // every stale overlay on each call, so the fields always end up last), but ZIndex can:
+                // annotations render at the default 0, so -1 puts the fields under them without
+                // touching a single annotation path. Clicking a covered field still works — every
+                // annotation visual is IsHitTestVisible=false, so none of them swallows the click that
+                // reaches the field beneath, and the selection chrome (borders, resize handles) stays
+                // at 0 and therefore still outranks the fields.
+                Panel.SetZIndex(ctrl, -1);
                 _annotationCanvas.Children.Add(ctrl);
                 anyField = true;
             }
@@ -3612,7 +3790,14 @@ namespace TDPdf
                     // Map the widget rect onto the Docnet/PDFium bitmap the canvas mirrors — the same
                     // conversion the link overlays use.
                     var (cx, cy, cw, ch) = PdfRectToCanvas(box, rotation, canvasW, canvasH, rx1, ry1, rx2, ry2);
-                    if (cw < 2 || ch < 2) continue;
+                    // Upstream v1.7.1 (#181): a malformed widget rectangle must not reach a WPF Width
+                    // or Height property — WPF throws for NaN and infinity, which took the viewer down
+                    // when a page click rebuilt the form overlay. "cw < 2" is no filter for those:
+                    // "∞ < 2" is false and every comparison with NaN is false, so both used to sail
+                    // straight through into the TextBox / ComboBox / checkbox / radio sizes below.
+                    if (!IsFinite(cx) || !IsFinite(cy) ||
+                        !IsFinitePositive(cw) || !IsFinitePositive(ch) ||
+                        cw < 2 || ch < 2) continue;
 
                     // Walk the parent chain to resolve inherited attributes.
                     string ft = "", name = "", curVal = "";
@@ -3747,10 +3932,31 @@ namespace TDPdf
                             node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
                         }
 
+                        // Upstream v1.7.1 (#180): /Ff is inheritable exactly like /DA, and bit 13
+                        // (4096) is Multiline. The overlay already decoded it (GetPageFormFields),
+                        // but the appearance writer never saw it: a multiline field has to lay its
+                        // value out in lines from the top of the box, a single-line one draws one
+                        // vertically centred line.
+                        int fieldFlags = 0;
+                        node = ann;
+                        while (node is not null && fieldFlags == 0)
+                        {
+                            if (node.Elements["/Ff"] is PdfInteger fi) fieldFlags = fi.Value;
+                            var pi = node.Elements["/Parent"];
+                            if (pi is null) break;
+                            node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
+                        }
+                        // Multiline is a /Tx-only flag — a /Ch choice field uses that bit position
+                        // for nothing — so gate on the field type the way GetPageFormFields does,
+                        // including its "missing /FT means /Tx" default.
+                        string ffType = fieldDict?.Elements["/FT"]?.ToString() ?? "";
+                        if (string.IsNullOrEmpty(ffType)) ffType = "/Tx";
+                        bool isMultiLine = ffType.Contains("Tx") && (fieldFlags & 4096) != 0;
+
                         if (_formTextValues.TryGetValue(objNum, out var textVal) && fieldDict is not null)
                         {
                             fieldDict.Elements["/V"] = new PdfString(textVal);
-                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH);
+                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine);
                         }
                         else if (_formCheckValues.TryGetValue(objNum, out var checkVal) && fieldDict is not null)
                         {
@@ -3817,28 +4023,88 @@ namespace TDPdf
         /// Generates a /AP /N form XObject appearance stream for a text field and sets it
         /// on the widget annotation, so the typed value shows in other viewers.
         /// </summary>
-        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH)
+        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH, bool isMultiLine)
         {
             try
             {
+                const double pad = 2;   // left/right inset, matching the Td origin below
+
                 var (fontName, fontSize) = ParseDaString(da);
                 if (fontSize <= 0) fontSize = Math.Max(6, Math.Min(fieldH * 0.65, 12));
-                fontSize = Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
+                // The "no taller than 85% of the box" clamp is a single-line rule: a multiline
+                // field is as tall as it needs to be for several lines, so applying it there
+                // blows the text up to the height of the whole box.
+                fontSize = isMultiLine ? Math.Max(6, fontSize)
+                                       : Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
 
-                // PDF baseline is measured from the bottom of the field rect.
-                double textY = (fieldH - fontSize) / 2 + fontSize * 0.2;
+                // Tj shows a string; it has no concept of a line break, so a value with newlines
+                // in it drew as one run with the breaks swallowed (they survived into the literal
+                // as \r / \n escapes and painted nothing). Lay the value out into lines and show
+                // each one, moving down by the leading between them.
+                List<string> lines = isMultiLine
+                    ? WrapFieldText(text, Math.Max(1, fieldW - pad * 2), fontSize)
+                    : new List<string> { text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ') };
+
+                double leading = fontSize * 1.16;
+                // PDF baselines are measured from the bottom of the field rect. Multiline text
+                // starts at the top and runs down; a single line stays vertically centred.
+                double textY = isMultiLine ? fieldH - fontSize
+                                           : (fieldH - fontSize) / 2 + fontSize * 0.2;
                 if (textY < 1) textY = 1;
 
-                string escaped = EscapePdfString(text);
-                string content =
-                    $"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n" +
-                    $"BT\n{fontName} {fontSize:F2} Tf\n0 g\n2 {textY:F2} Td\n({escaped}) Tj\nET\nQ\nEMC";
+                var sb = new System.Text.StringBuilder();
+                sb.Append($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n");
+                sb.Append($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n{leading:F2} TL\n{pad:F2} {textY:F2} Td\n");
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    if (i > 0) sb.Append("T*\n");   // down one leading, back to the left inset
+                    sb.Append($"({EscapePdfString(lines[i])}) Tj\n");
+                }
+                sb.Append("ET\nQ\nEMC");
 
-                var xobj = BuildFormXObject(fontName, fieldW, fieldH, content);
+                // Lines past the bottom of the box are clipped by the "re W n" above, the same
+                // way a viewer clips an over-full field.
+                var xobj = BuildFormXObject(fontName, fieldW, fieldH, sb.ToString());
                 if (xobj is null) return;
                 AttachAppearance(widgetAnn, xobj);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GenerateTextFieldAppearance: {ex}"); }
+        }
+
+        /// <summary>
+        /// Splits a multiline field's value into the lines its appearance should draw: the value's
+        /// own line breaks first, then greedy word-wrap to the field's inner width.
+        /// </summary>
+        /// <remarks>
+        /// Measured with Arial, which is metric-compatible with the Helvetica the generated
+        /// appearance stream asks for, so the wrap lands where the drawn glyphs do.
+        /// </remarks>
+        private static List<string> WrapFieldText(string text, double innerWidth, double fontSize)
+        {
+            var typeface = new Typeface("Arial");
+            double Width(string s) => new FormattedText(
+                s, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                typeface, fontSize, Brushes.Black, 1.0).Width;
+
+            var lines = new List<string>();
+            foreach (var para in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                string current = string.Empty;
+                foreach (var word in para.Split(' '))
+                {
+                    string candidate = current.Length == 0 ? word : current + " " + word;
+                    // A single word wider than the field can't be broken any further — let it
+                    // run on and be clipped rather than dropping it onto an empty line.
+                    if (current.Length > 0 && Width(candidate) > innerWidth)
+                    {
+                        lines.Add(current);
+                        current = word;
+                    }
+                    else current = candidate;
+                }
+                lines.Add(current);
+            }
+            return lines;
         }
 
         /// <summary>
@@ -3915,7 +4181,17 @@ namespace TDPdf
             res.Elements["/Font"] = fontDict;
             xobj.Elements["/Resources"] = res;
 
-            if (!TryAttachStreamBytes(xobj, bytes)) return null;
+            // Upstream v1.7.1 (#180): CreateStream, not a hand-attached PdfStream. It is the only
+            // path that also writes /Length, which every PDF stream is required to carry. The old
+            // reflection helper built PdfDictionary.PdfStream directly and assigned it through the
+            // Stream property, which skips that one line — so every /AP /N appearance TDPdf
+            // generated for a text field or checkbox went out with no /Length and the saved file
+            // was structurally invalid. PdfSharpCore's own parser refuses such a stream ("Cannot
+            // retrieve stream length."), and strict viewers report a damaged structure; PDFium-based
+            // viewers scan on to endstream and cope, which is why it went unnoticed on screen. The
+            // Debug.Assert in PdfDictionary.WriteObject that would have caught it is compiled out of
+            // Release builds.
+            xobj.CreateStream(bytes);
 
             _doc.Internals.AddObject(xobj);
             return xobj;
@@ -3927,53 +4203,6 @@ namespace TDPdf
             var apDict = new PdfDictionary();
             apDict.Elements["/N"] = xobj.Reference;
             widgetAnn.Elements["/AP"] = apDict;
-        }
-
-        /// <summary>
-        /// Attaches raw content bytes to a PdfDictionary as a stream. Accesses
-        /// PdfDictionary.PdfStream via reflection because its constructor is internal.
-        /// </summary>
-        private static bool TryAttachStreamBytes(PdfDictionary dict, byte[] bytes)
-        {
-            try
-            {
-                var dictType   = typeof(PdfDictionary);
-                var streamType = dictType.GetNestedType("PdfStream",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                if (streamType is null) return false;
-
-                System.Reflection.ConstructorInfo? ctor =
-                    streamType.GetConstructor(
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
-                        null, new[] { typeof(byte[]), typeof(PdfDictionary) }, null) ??
-                    streamType.GetConstructor(
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
-                        null, new[] { typeof(byte[]) }, null);
-                if (ctor is null) return false;
-
-                object streamObj = ctor.GetParameters().Length == 2
-                    ? ctor.Invoke(new object[] { bytes, dict })
-                    : ctor.Invoke(new object[] { bytes });
-
-                var prop = dictType.GetProperty("Stream",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                if (prop?.CanWrite == true)
-                {
-                    prop.SetValue(dict, streamObj);
-                    return true;
-                }
-
-                var field = dictType.GetField("_stream",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (field is not null)
-                {
-                    field.SetValue(dict, streamObj);
-                    return true;
-                }
-
-                return false;
-            }
-            catch { return false; }
         }
 
         /// <summary>
@@ -4001,12 +4230,72 @@ namespace TDPdf
             return (fontName, fontSize);
         }
 
+        // Upstream v1.7.1 (#180): the generated appearance streams declare /WinAnsiEncoding, but the
+        // escape that fed them replaced every character above U+00FF with '?'. WinAnsi is code page
+        // 1252, whose 0x80-0x9F block holds exactly the characters that were being thrown away —
+        // curly quotes and apostrophes, en/em dashes, bullets, ellipses — so a field pasted in from
+        // a word processor came out full of question marks ("Hunter?s Mark").
+        //
+        // Upstream calls Encoding.GetEncoding(1252). We deliberately do NOT: on .NET (Core) code
+        // page 1252 is not built in, and GetEncoding(1252) throws ArgumentException unless
+        // CodePagesEncodingProvider is registered — which this app does not do anywhere (see the
+        // remark on PdfDocumentService.FileHasEncryption, which avoids 1252 for the same reason).
+        // In a static initializer that throw would surface as a TypeInitializationException on the
+        // save path. This table is the complete set of CP1252 code points above U+00FF, so it is
+        // equivalent for every character WinAnsi can actually represent, needs no provider
+        // registration, and cannot throw. Below U+0100 CP1252 and Latin-1 agree, so those pass
+        // through untouched exactly as before; anything with no WinAnsi slot (CJK and the like)
+        // still falls back to '?', the same as the old behaviour.
+        private static readonly Dictionary<char, char> WinAnsiHighMap = new()
+        {
+            ['\u20AC'] = '\u0080',   // euro sign
+            ['\u201A'] = '\u0082',   // single low-9 quotation mark
+            ['\u0192'] = '\u0083',   // latin small letter f with hook
+            ['\u201E'] = '\u0084',   // double low-9 quotation mark
+            ['\u2026'] = '\u0085',   // horizontal ellipsis
+            ['\u2020'] = '\u0086',   // dagger
+            ['\u2021'] = '\u0087',   // double dagger
+            ['\u02C6'] = '\u0088',   // modifier letter circumflex accent
+            ['\u2030'] = '\u0089',   // per mille sign
+            ['\u0160'] = '\u008A',   // capital S with caron
+            ['\u2039'] = '\u008B',   // single left-pointing angle quotation mark
+            ['\u0152'] = '\u008C',   // capital ligature OE
+            ['\u017D'] = '\u008E',   // capital Z with caron
+            ['\u2018'] = '\u0091',   // left single quotation mark
+            ['\u2019'] = '\u0092',   // right single quotation mark (the curly apostrophe)
+            ['\u201C'] = '\u0093',   // left double quotation mark
+            ['\u201D'] = '\u0094',   // right double quotation mark
+            ['\u2022'] = '\u0095',   // bullet
+            ['\u2013'] = '\u0096',   // en dash
+            ['\u2014'] = '\u0097',   // em dash
+            ['\u02DC'] = '\u0098',   // small tilde
+            ['\u2122'] = '\u0099',   // trade mark sign
+            ['\u0161'] = '\u009A',   // small s with caron
+            ['\u203A'] = '\u009B',   // single right-pointing angle quotation mark
+            ['\u0153'] = '\u009C',   // small ligature oe
+            ['\u017E'] = '\u009E',   // small z with caron
+            ['\u0178'] = '\u009F',   // capital Y with diaeresis
+            // No WinAnsi slot of their own, but these are the folds the platform's own best-fit
+            // table applies, and word processors emit them constantly.
+            ['\u2010'] = '-',        // hyphen
+            ['\u2011'] = '-',        // non-breaking hyphen
+            ['\u2012'] = '-',        // figure dash
+            ['\u2015'] = '\u0097',   // horizontal bar -> em dash
+            ['\u2032'] = '\'',       // prime -> apostrophe
+            ['\u2033'] = '"',        // double prime -> quotation mark
+        };
+
         /// <summary>Escapes a string for use in a PDF literal string (parentheses syntax).</summary>
         private static string EscapePdfString(string s)
         {
             var sb = new System.Text.StringBuilder(s.Length);
-            foreach (char c in s)
+            foreach (char raw in s)
             {
+                // Fold to the single WinAnsi byte the appearance stream's /WinAnsiEncoding will read
+                // BEFORE escaping, so a mapped character that happens to need escaping still gets it.
+                char c = raw < 256 ? raw
+                       : WinAnsiHighMap.TryGetValue(raw, out var mapped) ? mapped
+                       : '?';
                 switch (c)
                 {
                     case '\\': sb.Append("\\\\"); break;
@@ -4015,7 +4304,7 @@ namespace TDPdf
                     case '\r': sb.Append("\\r");  break;
                     case '\n': sb.Append("\\n");  break;
                     default:
-                        sb.Append(c < 256 ? c : '?'); // keep Latin-1 range
+                        sb.Append(c);
                         break;
                 }
             }
@@ -6650,14 +6939,31 @@ namespace TDPdf
             }
         }
 
+        /// <summary>Fallback drawn-signature canvas, mirroring <see cref="SavedSignature"/>'s initializers.</summary>
+        private const double DefaultSigCanvasW = 400;
+        private const double DefaultSigCanvasH = 150;
+
+        // Upstream v1.7.1 (#181): signatures.json is plain JSON on disk and an explicit 0 in it
+        // OVERRIDES SavedSignature's property initializers, so a legacy or hand-edited entry can carry
+        // a zero (or non-finite) canvas size. Everything downstream divides by it — the preview scale,
+        // the placed annotation's SourceWidth, the resize drag — and ±∞/NaN then gets persisted onto
+        // the annotation, after which every later render crashes WPF. Read the dimensions through
+        // these so the standard canvas stands in wherever the stored value is unusable.
+        private static double SigCanvasW(SavedSignature sig)
+            => IsFinitePositive(sig.CanvasWidth) ? sig.CanvasWidth : DefaultSigCanvasW;
+
+        private static double SigCanvasH(SavedSignature sig)
+            => IsFinitePositive(sig.CanvasHeight) ? sig.CanvasHeight : DefaultSigCanvasH;
+
         private void RenderSignaturePreview(Canvas canvas, SavedSignature sig, double targetW, double targetH)
         {
-            double scaleX = targetW / sig.CanvasWidth;
-            double scaleY = targetH / sig.CanvasHeight;
+            double sigW = SigCanvasW(sig), sigH = SigCanvasH(sig);
+            double scaleX = targetW / sigW;
+            double scaleY = targetH / sigH;
             double scale = Math.Min(scaleX, scaleY) * 0.9;
 
-            double offsetX = (targetW - sig.CanvasWidth * scale) / 2;
-            double offsetY = (targetH - sig.CanvasHeight * scale) / 2;
+            double offsetX = (targetW - sigW * scale) / 2;
+            double offsetY = (targetH - sigH * scale) / 2;
 
             foreach (var stroke in sig.Strokes)
             {
@@ -7329,8 +7635,11 @@ namespace TDPdf
                 PageIndex = pageIdx,
                 Position = pos,
                 Scale = scale,
-                SourceWidth = sig.CanvasWidth,
-                SourceHeight = sig.CanvasHeight,
+                // #181: never copy an unusable stored canvas size onto the annotation — SourceWidth
+                // is a divisor in the resize drag, and a 0 there produces an infinite Scale that is
+                // then saved on the annotation and crashes every subsequent render.
+                SourceWidth = SigCanvasW(sig),
+                SourceHeight = SigCanvasH(sig),
                 ImageData = sig.ImageData
             };
 
@@ -8204,12 +8513,24 @@ namespace TDPdf
                 double dx = pos.X - _resizeSigStart.X;
                 double dy = pos.Y - _resizeSigStart.Y;
                 double delta = (Math.Abs(dx) > Math.Abs(dy) ? dx : dy);
-                double newScale = Math.Max(0.05, _resizeSigStartScale + delta / _resizeSigAnnot.SourceWidth);
+                // #181: the divisor and the starting scale both come off the annotation, and an
+                // annotation placed from a damaged signatures.json entry could carry 0 or a non-finite
+                // value in either. Math.Max does not filter those out (it returns NaN for NaN and ∞
+                // for ∞) and the result is written straight back onto the annotation below, so one bad
+                // drag used to poison every later render. Substitute the standard canvas instead.
+                double srcW = IsFinitePositive(_resizeSigAnnot.SourceWidth)
+                    ? _resizeSigAnnot.SourceWidth : DefaultSigCanvasW;
+                double startScale = IsFinitePositive(_resizeSigStartScale) ? _resizeSigStartScale : 0.5;
+                double newScale = Math.Max(0.05, startScale + delta / srcW);
                 _resizeSigAnnot.Scale = newScale;
 
-                // Update selection border and handle position live
-                double newW = _resizeSigAnnot.SourceWidth * newScale;
-                double newH = _resizeSigAnnot.SourceHeight * newScale;
+                // Update selection border and handle position live. SourceHeight gets the same
+                // treatment as SourceWidth above: newW/newH feed the border's Width/Height, which WPF
+                // rejects outright when either is not a real number.
+                double srcH = IsFinitePositive(_resizeSigAnnot.SourceHeight)
+                    ? _resizeSigAnnot.SourceHeight : DefaultSigCanvasH;
+                double newW = srcW * newScale;
+                double newH = srcH * newScale;
                 if (_selectionBorder is not null)
                 {
                     _selectionBorder.Width  = newW + 8;
@@ -8770,18 +9091,75 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// Converts a rectangle on the annotation canvas into the absolute PDF user-space rectangle
+        /// (lower-left origin, positive extents) that <see cref="CropService"/> writes as the page's
+        /// /CropBox. The exact inverse of <see cref="PdfRectToCanvas"/>, including the page /Rotate.
+        /// </summary>
+        /// <remarks>
+        /// This used to map as if /Rotate were always 0, so cropping a quarter-turned page cropped a
+        /// different region than the one dragged (on a 90-rotated page the drag axes are swapped
+        /// relative to user space, so a top-left drag cropped the bottom-left of the sheet).
+        ///
+        /// The RESULT stays unrotated user space, which is the right contract and needs no change:
+        /// PDF 32000-1 7.7.3.3 defines /CropBox — like /MediaBox — in default user space, and /Rotate
+        /// is applied by the viewer AFTER the box has been selected. So the page keeps its existing
+        /// /Rotate untouched and the crop still lands where the user dragged.
+        ///
+        /// Inverting PdfRectToCanvas point by point, with fx = rx - box.X and fy = ry - box.Y:
+        ///     0 : fx = cx*hs,                fy = box.Height - cy*vs
+        ///    90 : fy = cx*hs,                fx = cy*vs
+        ///   180 : fx = box.Width  - cx*hs,   fy = cy*vs
+        ///   270 : fy = box.Height - cx*hs,   fx = box.Width - cy*vs
+        /// where hs/vs are points-per-canvas-pixel on each canvas axis. For 90/270 the bitmap's axes
+        /// are swapped — canvas width spans the box's HEIGHT — so the two scales swap with them.
+        /// </remarks>
         private Rect CanvasRectToPdfCropRect(int pageIdx, Rect canvasBounds)
         {
             var (renderW, renderH) = _renderDims[pageIdx];
             var page = _doc!.Pages[pageIdx];
             var box = GetVisiblePageBox(page);
-            double sx = box.Width / renderW;
-            double sy = box.Height / renderH;
+            int rot = ((page.Rotate % 360) + 360) % 360;
+            bool quarterTurn = rot is 90 or 270;
 
-            double left = box.X + canvasBounds.Left * sx;
-            double right = box.X + canvasBounds.Right * sx;
-            double top = box.Top - canvasBounds.Top * sy;
-            double bottom = box.Top - canvasBounds.Bottom * sy;
+            double hs = (quarterTurn ? box.Height : box.Width) / renderW;
+            double vs = (quarterTurn ? box.Width : box.Height) / renderH;
+
+            // Map both canvas corners; which PDF edge each one becomes depends on the angle, so
+            // normalize with min/max at the end rather than assuming an ordering.
+            double fxA, fxB, fyA, fyB;
+            switch (rot)
+            {
+                case 90:
+                    fyA = canvasBounds.Left * hs;
+                    fyB = canvasBounds.Right * hs;
+                    fxA = canvasBounds.Top * vs;
+                    fxB = canvasBounds.Bottom * vs;
+                    break;
+                case 180:
+                    fxA = box.Width - canvasBounds.Left * hs;
+                    fxB = box.Width - canvasBounds.Right * hs;
+                    fyA = canvasBounds.Top * vs;
+                    fyB = canvasBounds.Bottom * vs;
+                    break;
+                case 270:
+                    fyA = box.Height - canvasBounds.Left * hs;
+                    fyB = box.Height - canvasBounds.Right * hs;
+                    fxA = box.Width - canvasBounds.Top * vs;
+                    fxB = box.Width - canvasBounds.Bottom * vs;
+                    break;
+                default:
+                    fxA = canvasBounds.Left * hs;
+                    fxB = canvasBounds.Right * hs;
+                    fyA = box.Height - canvasBounds.Top * vs;
+                    fyB = box.Height - canvasBounds.Bottom * vs;
+                    break;
+            }
+
+            double left = box.X + Math.Min(fxA, fxB);
+            double right = box.X + Math.Max(fxA, fxB);
+            double bottom = box.Y + Math.Min(fyA, fyB);
+            double top = box.Y + Math.Max(fyA, fyB);
             return new Rect(left, bottom, right - left, top - bottom);
         }
 
@@ -8930,6 +9308,52 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// The exact inverse of <see cref="PdfRectToCanvas"/>, expressed as a matrix to PREPEND to an
+        /// <see cref="XGraphics"/> transform: it maps VISUAL-frame points — canvas coordinates scaled to
+        /// points, top-left origin, y down, laid out on the box PDFium actually rendered with /Rotate
+        /// already applied — onto the frame XGraphics draws in. Prepend it and every subsequent draw call
+        /// can keep passing canvas-scaled coordinates unchanged. Null when there is nothing to apply.
+        /// </summary>
+        /// <param name="rotation">Page /Rotate, already normalized to 0/90/180/270.</param>
+        /// <param name="box">The rendered page box from <see cref="GetVisiblePageBox"/> (UNROTATED, and
+        /// with its real origin — a /CropBox inset from or offset within the /MediaBox is why the
+        /// mapping is not simply a rotation about (0,0)).</param>
+        /// <param name="pageHeightPt">
+        /// <c>page.Height.Point</c> — the height XGraphics flips about: its Initialize builds
+        /// DefaultViewMatrix = [1 0 0 -1 0 pageHeight] from the page size, so a draw at (X, Y) lands at
+        /// user-space (X, pageHeightPt - Y). It is passed in rather than derived because PdfSharpCore
+        /// reports the SWAPPED media-box dimensions for a page whose /Rotate is 90/270 (PdfPage's
+        /// dictionary ctor sets _orientation = Landscape), so "page height" there is really the visual
+        /// height. Every case below is written as "pageHeightPt minus the user-space y we want", so the
+        /// value cancels out of the result: a page whose /MediaBox is unreadable — the empty [0 0 0 0]
+        /// the lazy getter plants — still burns in the right place.
+        /// </param>
+        private static XMatrix? VisualToPageMatrix(int rotation, PageBox box, double pageHeightPt)
+        {
+            // Inverting PdfRectToCanvas point-by-point gives visual (vx, vy) -> PDF user space:
+            //    0 : (box.X + vx,            box.Y + box.Height - vy)
+            //   90 : (box.X + vy,            box.Y + vx)
+            //  180 : (box.X + box.Width - vx, box.Y + vy)
+            //  270 : (box.X + box.Width - vy, box.Y + box.Height - vx)
+            // XGraphics then applies (X, Y) -> (X, pageHeightPt - Y), so this matrix has to produce
+            // X = user x and Y = pageHeightPt - user y. XMatrix is (m11, m12, m21, m22, dx, dy) with
+            // x' = x*m11 + y*m21 + dx and y' = x*m12 + y*m22 + dy.
+            double atTop    = pageHeightPt - box.Top;   // Y for a user-space y at the box's top edge
+            double atBottom = pageHeightPt - box.Y;     // ...and at its bottom edge
+            switch (rotation)
+            {
+                case 90:  return new XMatrix(0, -1, 1, 0, box.X,     atBottom);
+                case 180: return new XMatrix(-1, 0, 0, -1, box.Right, atBottom);
+                case 270: return new XMatrix(0, 1, -1, 0, box.Right, atTop);
+                default:
+                    // Unrotated page whose rendered box is the whole media box at the origin: the
+                    // matrix is the identity XGraphics already applies, so emit nothing and keep the
+                    // content stream byte-identical to what earlier builds wrote.
+                    return box.X == 0 && atTop == 0 ? null : new XMatrix(1, 0, 0, 1, box.X, atTop);
+            }
+        }
+
         // ============================================================
         // Selection
         // ============================================================
@@ -9029,6 +9453,15 @@ namespace TDPdf
         {
             ClearSelection();
             _selectedAnnotation = annot;
+            // #181: the selection chrome is sized from these bounds and WPF rejects NaN/infinity on
+            // Width/Height, so a caller that passed geometry derived from a malformed annotation — or
+            // Rect.Empty, which WPF itself defines as (+∞, +∞, -∞, -∞) — used to crash here rather
+            // than merely draw nothing. Collapse anything non-finite to a degenerate box: the
+            // annotation still becomes the selection, so Delete and the style bar keep working.
+            if (!IsFinite(bounds.X) || !IsFinite(bounds.Y) ||
+                !IsFinite(bounds.Width) || !IsFinite(bounds.Height))
+                bounds = new Rect(IsFinite(bounds.X) ? bounds.X : 0,
+                                  IsFinite(bounds.Y) ? bounds.Y : 0, 0, 0);
             _selectionBorder = new Border
             {
                 BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
@@ -9815,6 +10248,8 @@ namespace TDPdf
                         BorderThickness = new Thickness(2),
                         FontFamily = new FontFamily(existingEdit.FontName),
                         FontSize = Math.Max(existingEdit.FontSize, 10),
+                        FontWeight = existingEdit.Bold ? FontWeights.Bold : FontWeights.Normal,
+                        FontStyle = existingEdit.Italic ? FontStyles.Italic : FontStyles.Normal,
                         MinWidth = Math.Max(reb.Width + 20, 100),
                         Height = Math.Max(reb.Height + 12, 24),
                         Padding = new Thickness(2, 0, 2, 0),
@@ -9828,6 +10263,8 @@ namespace TDPdf
                             Position = existingEdit.Position,
                             FontSize = existingEdit.FontSize,
                             FontName = existingEdit.FontName,
+                            Bold = existingEdit.Bold,
+                            Italic = existingEdit.Italic,
                             ExistingAnnotation = existingEdit
                         }
                     };
@@ -9869,6 +10306,10 @@ namespace TDPdf
                     BorderThickness = new Thickness(2),
                     FontFamily = new FontFamily(hit.FontName),
                     FontSize = hit.FontSize,
+                    // PDF fonts encode bold/italic in the font name; leaving WPF to default these to
+                    // Normal made every styled line go plain the moment it was double-clicked (#182).
+                    FontWeight = hit.Bold ? FontWeights.Bold : FontWeights.Normal,
+                    FontStyle = hit.Italic ? FontStyles.Italic : FontStyles.Normal,
                     MinWidth = Math.Max(hit.CanvasBounds.Width + 20, 100),
                     Height = Math.Max(hit.CanvasBounds.Height + 12, 24),
                     Padding = new Thickness(2, 0, 2, 0),
@@ -9881,7 +10322,9 @@ namespace TDPdf
                         CanvasBounds = hit.CanvasBounds,
                         Position = hit.Position,
                         FontSize = hit.FontSize,
-                        FontName = hit.FontName
+                        FontName = hit.FontName,
+                        Bold = hit.Bold,
+                        Italic = hit.Italic
                     }
                 };
                 Canvas.SetLeft(tb, hit.CanvasBounds.X);
@@ -9929,6 +10372,9 @@ namespace TDPdf
             public Point Position { get; set; }
             public double FontSize { get; set; }
             public string FontName { get; set; } = "Segoe UI";
+            /// <summary>Face styling detected on the source PDF text (#182).</summary>
+            public bool Bold { get; set; }
+            public bool Italic { get; set; }
             /// <summary>Non-null when re-editing an already-committed annotation; update in place instead of adding a new one.</summary>
             public TextEditAnnotation? ExistingAnnotation { get; set; }
         }
@@ -10007,12 +10453,64 @@ namespace TDPdf
                     NewContent = newText,
                     OriginalContent = ctx.OriginalText,
                     FontSize = ctx.FontSize,
-                    FontName = ctx.FontName
+                    FontName = ctx.FontName,
+                    Bold = ctx.Bold,
+                    Italic = ctx.Italic
                 };
                 AddAnnotation(edit);
             }
             RenderAllAnnotations(ctx.PageIndex);
             SetStatus($"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\"");
+            // #168: the in-place editor starts from whatever the PDF already says, so it is the path
+            // most likely to carry non-Latin text. Warn on the family the burn will actually use.
+            WarnIfGlyphsWillBeLost(ctx.ExistingAnnotation?.FontName ?? ctx.FontName, newText);
+        }
+
+        /// <summary>
+        /// #168: the editor borrows glyphs from any installed font, so text ALWAYS looks right while
+        /// it is being typed - but a PDF can only EMBED whole fonts, and a character no installed
+        /// font carries becomes an empty box in the saved file. That used to be invisible until the
+        /// user saved, closed and reopened. Say it at the moment the text is placed, while it can
+        /// still be fixed.
+        ///
+        /// Only fires when the whole fallback chain comes up short (a box mixing two non-Latin
+        /// scripts, or a script with no font installed at all), so it does not nag: ordinary
+        /// Japanese, Chinese, Korean, Thai or Devanagari text resolves silently.
+        /// </summary>
+        private void WarnIfGlyphsWillBeLost(string preferredFamily, string? text)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(text)) return;
+                string family = FontCoverage.PickFamily(preferredFamily, text);
+                string missing = FontCoverage.UncoveredChars(family, text);
+                if (missing.Length == 0) return;
+
+                SetStatus($"No installed font can draw: {missing} - these will save as empty boxes");
+
+                // Deferred rather than shown inline: CommitActiveTextBox / CommitTextEdit are the
+                // app's "settle any in-progress edit" chokepoint and run from inside save, print,
+                // close, tool-switch and tab-switch paths. A modal dialog on that stack would block
+                // the operation that asked for the settle. Background priority lets the caller
+                // finish, then raises the warning.
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        if (!IsLoaded || PresentationSource.FromVisual(this) is null) return;
+                        TdpDialog.Show(this,
+                            "Some characters in this text have no glyph in any installed font:\n\n" +
+                            missing + "\n\n" +
+                            "They look right while you type, because Windows borrows a glyph per " +
+                            "character from across your whole font set. A PDF can only embed whole " +
+                            "fonts, so these will save as empty boxes.\n\n" +
+                            "Installing a font that covers this script will fix it.",
+                            "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
+                    catch { /* window went away between the commit and the dispatch */ }
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            }
+            catch { /* the warning must never be the thing that breaks placing text */ }
         }
 
         private void EditImageAtPosition(Point canvasPos, int pageIdx)
@@ -10345,6 +10843,10 @@ namespace TDPdf
                     AddAnnotation(ta);        // pushes its own snapshot
                     RenderTextAnnotation(ta);
                 }
+
+                // #168: say it NOW, not after saving and reopening. The burn resolves the same
+                // family this checks (DrawAnnotationsOnDocument), so the two never disagree.
+                WarnIfGlyphsWillBeLost(PdfFontStyle.DefaultFamily, ta.Content);
             }
             else if (reediting)
             {
@@ -10358,6 +10860,71 @@ namespace TDPdf
         // Keyboard shortcuts
         // ============================================================
 
+        /// <summary>
+        /// #153: the four chords whose key is identified by a PUNCTUATION character — document
+        /// zoom in / out (Ctrl) and app-wide chrome size up / down (Ctrl+Shift). A
+        /// <c>KeyBinding</c> can only match a virtual key, i.e. a key position, which is a US
+        /// layout assumption; these match the character the key actually types on whatever layout
+        /// is active. The numpad twins stay as KeyBindings in MainWindow.xaml — the numpad is
+        /// layout-independent — and reaching them here first simply runs the same action.
+        /// </summary>
+        /// <remarks>
+        /// The ORDER is load-bearing and must not be rearranged: <see cref="KeyLayout.IsCtrlChar"/>
+        /// deliberately ignores Shift (on most layouts Shift is how "+" is produced), so on a US
+        /// keyboard Ctrl+Shift+= types "+" and would be swallowed as a zoom-in if the app-size
+        /// chords were not tested first.
+        /// </remarks>
+        private bool TryPunctuationShortcut(KeyEventArgs e)
+        {
+            var mods = Keyboard.Modifiers;
+            const ModifierKeys ctrlShift = ModifierKeys.Control | ModifierKeys.Shift;
+
+            if (KeyLayout.IsCtrlShiftChar(e.Key, '+', '=')
+                || ((e.Key == Key.OemPlus || e.Key == Key.Add) && mods == ctrlShift))
+            {
+                AppScaleUp();
+                return true;
+            }
+            if (KeyLayout.IsCtrlShiftChar(e.Key, '-')
+                || ((e.Key == Key.OemMinus || e.Key == Key.Subtract) && mods == ctrlShift))
+            {
+                AppScaleDown();
+                return true;
+            }
+            if (KeyLayout.IsCtrlChar(e.Key, '+', '=')
+                || ((e.Key == Key.OemPlus || e.Key == Key.Add) && mods == ModifierKeys.Control))
+            {
+                ChangeZoomByCommand(ZoomChange.In);
+                return true;
+            }
+            if (KeyLayout.IsCtrlChar(e.Key, '-')
+                || ((e.Key == Key.OemMinus || e.Key == Key.Subtract) && mods == ModifierKeys.Control))
+            {
+                ChangeZoomByCommand(ZoomChange.Out);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// #153: rewrites the shortcut spellings that depend on the keyboard layout. "=" is a plain
+        /// keypress on US but needs Shift on German, where "+" is the unshifted one instead — and
+        /// since the bindings above accept whichever key TYPES the character, the labels have to
+        /// follow suit or the app advertises a chord that does nothing on that machine. Called once
+        /// at startup; a layout switched mid-session is rare enough to leave alone.
+        /// </summary>
+        private void ApplyLayoutShortcutLabels()
+        {
+            string zin = KeyLayout.ZoomInChar(), zout = KeyLayout.ZoomOutChar();
+            if (FindName("ZoomInMenuItem") is MenuItem zoomIn) zoomIn.InputGestureText = $"Ctrl+{zin}";
+            if (FindName("AppSizeLargerMenuItem") is MenuItem bigger) bigger.InputGestureText = $"Ctrl+Shift+{zin}";
+            if (FindName("AppSizeSmallerMenuItem") is MenuItem smaller) smaller.InputGestureText = $"Ctrl+Shift+{zout}";
+            if (FindName("ZoomInButton") is Button zoomInBtn) zoomInBtn.ToolTip = $"Zoom In (Ctrl+{zin})";
+            if (FindName("KsAppSizeKeys") is TextBlock appSizeKeys) appSizeKeys.Text = $"Ctrl+Shift+{zin} / {zout}";
+            // The rendered keyboard board relabels its own punctuation caps as it is built
+            // (KbCapText in KeyboardMapOverlay.cs) — it is created lazily, on first use.
+        }
+
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
             base.OnPreviewKeyDown(e);
@@ -10365,6 +10932,17 @@ namespace TDPdf
             // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
             // modifier layer on the board. (upstream KillerPDF v1.6.4)
             KbSyncLayerFromModifiers();
+
+            // #153: the punctuation zoom / app-size chords, matched by the character the key TYPES
+            // on the active layout rather than by its US position. Handled here, ABOVE the typing
+            // and caret guards, because these were window-level KeyBindings until now and those
+            // fired wherever the focus was — moving them into this handler must not quietly
+            // narrow that.
+            if (TryPunctuationShortcut(e))
+            {
+                e.Handled = true;
+                return;
+            }
 
             // Don't intercept keys when typing in a TextBox
             if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
@@ -10462,7 +11040,12 @@ namespace TDPdf
                 SetTool(EditTool.Select);
                 e.Handled = true;
             }
-            else if (e.Key == Key.OemQuestion && Keyboard.Modifiers == ModifierKeys.Control)
+            // #153: matched by the character the key TYPES, not its position. Typing "?" holds
+            // Shift on every layout, so the old exact-equality modifier test meant this only ever
+            // fired for Ctrl+/ — even on a US keyboard. The positional check is kept as a fast
+            // path (and as the Ctrl+/ spelling) for where it already worked.
+            else if (KeyLayout.IsCtrlChar(e.Key, '?')
+                     || (e.Key == Key.OemQuestion && Keyboard.Modifiers == ModifierKeys.Control))
             {
                 ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                     ? Visibility.Collapsed : Visibility.Visible;
@@ -10493,16 +11076,22 @@ namespace TDPdf
             else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
                 _zoomFitMode = ZoomFitMode.None;
-                Zoom.SetZoomLevel(1.0);   // actual size
+                // Actual size — a true 100% in every view mode, because Zoom.ZoomLevel is true
+                // zoom and MainWindow converts to the tile's layout scale (DisplayZoomFactor).
+                Zoom.SetZoomLevel(1.0);
                 e.Handled = true;
             }
+            // Ctrl+2 / Ctrl+3 are an explicit fit choice, so they are remembered for the next
+            // document opened (upstream v1.7.1).
             else if (e.Key == Key.D2 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
+                SaveDefaultFitMode(ZoomFitMode.Width);
                 FitToWidth();
                 e.Handled = true;
             }
             else if (e.Key == Key.D3 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
+                SaveDefaultFitMode(ZoomFitMode.Page);
                 FitToPage();
                 e.Handled = true;
             }
@@ -10538,6 +11127,20 @@ namespace TDPdf
                 int dir = (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.PageUp) ? -1 : 1;
                 if (NavigatePageStep(dir))   // one spread at a time in Two-Page mode (#120)
                     PageList.ScrollIntoView(PageList.SelectedItem);
+                e.Handled = true;
+            }
+            // Shift+N pairs with Ctrl+I: it toggles whether night mode inverts PICTURES too — the
+            // option on the moon's right-click menu, and the thing that makes a scanned page (one
+            // full-page image) usable in night mode. TDPdf keeps Ctrl+I for the mode itself rather
+            // than taking upstream's bare N, because our single-letter keys are all tool shortcuts.
+            // Shift+N is free: TrySelectToolByKey is gated on ModifierKeys.None, and nothing else
+            // binds a Shift+letter. The typing guard above only returns for unmodified keys, so the
+            // caret check is repeated here — a capital N in the find box must type an N.
+            else if (e.Key == Key.N && Keyboard.Modifiers == ModifierKeys.Shift && _doc is not null
+                     && !IsTypingTarget()
+                     && ShortcutOverlay.Visibility != Visibility.Visible)
+            {
+                ToggleDocInvertImages(!_docInvertImages);
                 e.Handled = true;
             }
             // Unmodified tool keys, last so every context-sensitive key above keeps priority.
@@ -10684,13 +11287,23 @@ namespace TDPdf
 
         private void RenderTextAnnotation(TextAnnotation ta)
         {
+            // Upstream v1.7.1 (#181): WPF refuses NaN and infinity on Width/Height outright. The
+            // "> 0" tests below are no guard at all — "∞ > 0" is true — so a malformed persisted
+            // box used to take the whole viewer down on the next repaint. Width/Height of exactly 0
+            // is the legacy auto-size mode and stays legal, so only NON-FINITE values bail out.
+            if (!IsFinite(ta.Width) || !IsFinite(ta.Height)) return;
+
             var tb = new TextBlock
             {
                 Text = ta.Content,
                 Foreground = new SolidColorBrush(ta.GetColor()),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = ta.FontSize,
-                Padding = new Thickness(2)
+                Padding = new Thickness(2),
+                // #156: annotation visuals must never intercept the mouse — selection and dragging
+                // hit-test the _annotations data, not the visuals, and the form-field overlays now
+                // sit UNDER this layer and still have to receive their own clicks.
+                IsHitTestVisible = false
             };
             // Width > 0: fixed-width, word-wrapping box. Width == 0: legacy auto-size (no wrap).
             if (ta.Width > 0)
@@ -10782,6 +11395,33 @@ namespace TDPdf
             return lines;
         }
 
+        // ------------------------------------------------------------------
+        // Upstream v1.7.1 (#181): WPF throws "'∞' is not a valid value for property 'Height'" (and
+        // the same for NaN) the moment a FrameworkElement is given a non-finite size, so malformed
+        // persisted geometry could take the viewer down during an ordinary repaint. Every sized
+        // visual below is checked through these before it reaches WPF.
+        //
+        // Note that Rect.Empty is itself non-finite — WPF defines it as (+∞, +∞, -∞, -∞) — so these
+        // also catch a bounds value that came from a hit test that found nothing.
+        // ------------------------------------------------------------------
+
+        private static bool IsFinite(double value)
+            => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        private static bool IsFinitePositive(double value)
+            => IsFinite(value) && value > 0;
+
+        /// <summary>
+        /// The on-canvas size of a placed (signature / image) annotation, or false when the stored
+        /// source size and scale do not multiply out to something WPF will accept.
+        /// </summary>
+        private static bool TryGetPlacedSize(PlacedAnnotation annot, out double width, out double height)
+        {
+            width = annot.SourceWidth * annot.Scale;
+            height = annot.SourceHeight * annot.Scale;
+            return IsFinitePositive(width) && IsFinitePositive(height);
+        }
+
         private void RenderAllAnnotations(int pageIndex)
         {
             _annotationCanvas.Children.Clear();
@@ -10809,11 +11449,13 @@ namespace TDPdf
                         var mkBrush = FrozenSolidColorBrush(mk.GetColor());
                         foreach (var pr in mk.PaintRects())
                         {
+                            if (!IsFinitePositive(pr.Width) || !IsFinitePositive(pr.Height)) continue;
                             var band = new Rectangle
                             {
                                 Fill = mkBrush,
                                 Width = pr.Width,
-                                Height = pr.Height
+                                Height = pr.Height,
+                                IsHitTestVisible = false
                             };
                             Canvas.SetLeft(band, pr.X);
                             Canvas.SetTop(band, pr.Y);
@@ -10822,11 +11464,13 @@ namespace TDPdf
                         break;
                     }
                     case HighlightAnnotation ha:
+                        if (!IsFinitePositive(ha.Bounds.Width) || !IsFinitePositive(ha.Bounds.Height)) continue;
                         var rect = new Rectangle
                         {
                             Fill = FrozenSolidColorBrush(ha.GetColor()),
                             Width = ha.Bounds.Width,
-                            Height = ha.Bounds.Height
+                            Height = ha.Bounds.Height,
+                            IsHitTestVisible = false
                         };
                         Canvas.SetLeft(rect, ha.Bounds.X);
                         Canvas.SetTop(rect, ha.Bounds.Y);
@@ -10843,12 +11487,14 @@ namespace TDPdf
                             StrokeThickness = ia.StrokeWidth,
                             StrokeLineJoin = PenLineJoin.Round,
                             StrokeStartLineCap = PenLineCap.Round,
-                            StrokeEndLineCap = PenLineCap.Round
+                            StrokeEndLineCap = PenLineCap.Round,
+                            IsHitTestVisible = false
                         };
                         foreach (var pt in ia.Points) poly.Points.Add(pt);
                         _annotationCanvas.Children.Add(poly);
                         break;
                     case TextEditAnnotation tea:
+                        if (!IsFinite(tea.OriginalBounds.Width) || !IsFinite(tea.OriginalBounds.Height)) continue;
                         // White-out original text
                         var wo = new Rectangle
                         {
@@ -10867,7 +11513,10 @@ namespace TDPdf
                             Foreground = Brushes.Black,
                             FontFamily = new FontFamily(tea.FontName),
                             FontSize = tea.FontSize,
-                            Padding = new Thickness(0)
+                            FontWeight = tea.Bold ? FontWeights.Bold : FontWeights.Normal,
+                            FontStyle = tea.Italic ? FontStyles.Italic : FontStyles.Normal,
+                            Padding = new Thickness(0),
+                            IsHitTestVisible = false
                         };
                         Canvas.SetLeft(etb, tea.Position.X);
                         Canvas.SetTop(etb, tea.Position.Y);
@@ -10875,6 +11524,7 @@ namespace TDPdf
                         break;
 
                     case ImageEditAnnotation iea:
+                        if (!IsFinite(iea.OriginalBounds.Width) || !IsFinite(iea.OriginalBounds.Height)) continue;
                         var imageWhiteout = new Rectangle
                         {
                             Fill = Brushes.White,
@@ -10889,7 +11539,9 @@ namespace TDPdf
                         if (!iea.IsDeleted)
                         {
                             var source = LoadImageEditBitmap(iea);
-                            if (source is not null)
+                            if (source is not null &&
+                                IsFinitePositive(iea.TargetBounds.Width) &&
+                                IsFinitePositive(iea.TargetBounds.Height))
                             {
                                 var imgCtrl = new System.Windows.Controls.Image
                                 {
@@ -10907,6 +11559,10 @@ namespace TDPdf
                         break;
 
                     case SignatureAnnotation sa:
+                        // Guards BOTH variants: the drawn one scales its stroke width and every point
+                        // by the same Scale, so a signature whose placed size is not a real number is
+                        // unrenderable either way.
+                        if (!TryGetPlacedSize(sa, out double sigW, out double sigH)) continue;
                         if (sa.ImageData is not null)
                         {
                             // Image-based signature
@@ -10925,8 +11581,8 @@ namespace TDPdf
                                 var imgCtrl = new System.Windows.Controls.Image
                                 {
                                     Source = bmp,
-                                    Width = sa.SourceWidth * sa.Scale,
-                                    Height = sa.SourceHeight * sa.Scale,
+                                    Width = sigW,
+                                    Height = sigH,
                                     Stretch = System.Windows.Media.Stretch.Uniform,
                                     IsHitTestVisible = false
                                 };
@@ -10947,7 +11603,8 @@ namespace TDPdf
                                     StrokeThickness = 2 * sa.Scale,
                                     StrokeLineJoin = PenLineJoin.Round,
                                     StrokeStartLineCap = PenLineCap.Round,
-                                    StrokeEndLineCap = PenLineCap.Round
+                                    StrokeEndLineCap = PenLineCap.Round,
+                                    IsHitTestVisible = false
                                 };
                                 foreach (var pt in stroke)
                                     sigPoly.Points.Add(new Point(
@@ -10959,6 +11616,7 @@ namespace TDPdf
                         break;
 
                     case ImageAnnotation ia:
+                        if (!TryGetPlacedSize(ia, out double iaW, out double iaH)) continue;
                         try
                         {
                             var iaBytes = Convert.FromBase64String(ia.ImageData);
@@ -10970,8 +11628,8 @@ namespace TDPdf
                             var iaCtrl = new System.Windows.Controls.Image
                             {
                                 Source = iaBmp,
-                                Width = ia.SourceWidth * ia.Scale,
-                                Height = ia.SourceHeight * ia.Scale,
+                                Width = iaW,
+                                Height = iaH,
                                 Stretch = System.Windows.Media.Stretch.Uniform,
                                 IsHitTestVisible = false
                             };
@@ -11028,6 +11686,9 @@ namespace TDPdf
                 case ShapeKind.Rectangle:
                 {
                     var b = shp.Bounds;
+                    // Math.Max(1, x) is not a guard: it returns NaN for NaN and ∞ for ∞, both of
+                    // which WPF rejects on Width/Height (#181).
+                    if (!IsFinite(b.Width) || !IsFinite(b.Height)) break;
                     var r = new Rectangle
                     {
                         Width = Math.Max(1, b.Width),
@@ -11045,6 +11706,7 @@ namespace TDPdf
                 case ShapeKind.Ellipse:
                 {
                     var b = shp.Bounds;
+                    if (!IsFinite(b.Width) || !IsFinite(b.Height)) break;
                     var e = new Ellipse
                     {
                         Width = Math.Max(1, b.Width),
@@ -11525,6 +12187,17 @@ namespace TDPdf
             {
                 if (!ReferenceEquals(_ctx, ctx)) ActivateContext(ctx);
             };
+
+            // Right-click menu. Rebuilt with the strip on every tab change, so "Close Other Tabs"
+            // can be enabled purely from the current count with no live refresh to maintain.
+            var chipMenu = new ContextMenu();
+            chipMenu.Items.Add(MakeMenuItem("Close Tab", (_, _) => CloseTab(ctx), "Ctrl+W",
+                "Close this document", "\uE8BB"));
+            var closeOthers = MakeMenuItem("Close Other Tabs", (_, _) => CloseOtherTabs(ctx), "Ctrl+Shift+W",
+                "Close every open document except this one", "\uE711");
+            closeOthers.IsEnabled = _tabs.Count > 1;
+            chipMenu.Items.Add(closeOthers);
+            chip.ContextMenu = chipMenu;
             return chip;
         }
 
@@ -11614,6 +12287,36 @@ namespace TDPdf
             }
             RebuildTabStrip();
             SetStatus("Ready");
+        }
+
+        /// <summary>
+        /// Ctrl+Shift+W / tab right-click: closes every tab except <paramref name="keep"/>.
+        /// Deliberately routed through <see cref="CloseTab"/> one tab at a time rather than
+        /// shortcutting the teardown, so each unsaved document still gets the same prompt — and a
+        /// "No" leaves that one tab open instead of aborting the whole sweep. CloseTab activates a
+        /// dirty tab before prompting, so the kept tab is re-activated at the end.
+        /// </summary>
+        private void CloseOtherTabs(DocumentContext keep)
+        {
+            EnsureActiveTabRegistered();
+            if (!_tabs.Contains(keep)) return;
+
+            var others = _tabs.Where(t => !ReferenceEquals(t, keep)).ToList();
+            if (others.Count == 0) return;
+
+            foreach (var other in others)
+            {
+                CloseTab(other);
+                if (!_tabs.Contains(keep)) return;   // defensive: the kept tab went away somehow
+            }
+
+            if (!ReferenceEquals(_ctx, keep)) ActivateContext(keep);
+            RebuildTabStrip();
+
+            int closed = others.Count - _tabs.Count + 1;
+            SetStatus(closed <= 0
+                ? "No other tabs were closed"
+                : closed == 1 ? "Closed 1 other tab" : $"Closed {closed} other tabs");
         }
 
         /// <summary>Sets the active document's display name (tab header + title bar).</summary>
@@ -12384,37 +13087,55 @@ namespace TDPdf
                             elements.SetRectangle("/MediaBox",
                                 new PdfRectangle(new XPoint(box.X, box.Y), new XPoint(box.Right, box.Top)));
                     }
+
+                    // Upstream v1.7.1 (#169): PDF 32000-1 14.11.2 requires /CropBox to lie INSIDE
+                    // /MediaBox. A rotated page could be written with a portrait media box and a
+                    // landscape crop box, a malformed combination that strict validators reject and
+                    // that leaves renderers disagreeing about the page size. Removing the invalid crop
+                    // is lossless: the page falls back to its complete media box rather than clipping
+                    // content away. Done AFTER the media-box healing above so the comparison is against
+                    // a box that is actually usable, and skipped entirely when it is not — a bad media
+                    // box must never be a reason to delete a good crop box.
+                    const double outsideTol = 0.01;
+                    if (ReadOwnPageBox(elements["/CropBox"]) is { } crop &&
+                        ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } media &&
+                        (crop.X     < media.X     - outsideTol || crop.Y   < media.Y   - outsideTol ||
+                         crop.Right > media.Right + outsideTol || crop.Top > media.Top + outsideTol))
+                        elements.Remove("/CropBox");
                 }
             }
             catch { /* malformed page tree - leave the save as-is */ }
         }
 
-        // True when the entry is present, readable as a rectangle, and zero/sub-point sized. Anything we
-        // cannot interpret returns false so it is left alone rather than destroyed. The box can be a
-        // parsed PdfArray (loaded from disk), a PdfRectangle (planted in memory by the lazy getter or by
-        // GetRectangle writing its conversion back), or an indirect reference to either.
-        private static bool IsDegenerateBox(PdfItem? item)
+        // Reads a page's OWN /MediaBox or /CropBox entry — no /Parent walk — as a normalized PageBox,
+        // or null when the entry is absent or cannot be interpreted with certainty. Deliberately
+        // stricter than ReadInheritedPageBox, which reads for geometry: this one feeds the DESTRUCTIVE
+        // scrub decisions above, so anything ambiguous reads as null and is then left alone rather than
+        // deleted. The box can be a parsed PdfArray (loaded from disk), a PdfRectangle (planted in
+        // memory by the lazy getter or by GetRectangle writing its conversion back), or an indirect
+        // reference to either.
+        private static PageBox? ReadOwnPageBox(PdfItem? item)
         {
-            if (item is null) return false;
-            var resolved = DerefItemStatic(item);
+            if (item is null) return null;
+            if (item is not PdfArray and not PdfRectangle) item = DerefItemStatic(item);
 
-            double w, h;
-            if (resolved is PdfRectangle rect)
-            {
-                w = Math.Abs(rect.X2 - rect.X1);
-                h = Math.Abs(rect.Y2 - rect.Y1);
-            }
-            else if (resolved is PdfArray arr && arr.Elements.Count == 4 &&
-                     arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
-                     arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
-            {
-                w = Math.Abs(RectNum(arr.Elements[2]) - RectNum(arr.Elements[0]));
-                h = Math.Abs(RectNum(arr.Elements[3]) - RectNum(arr.Elements[1]));
-            }
-            else return false;
+            if (item is PdfRectangle rect)
+                return Normalize(rect.X1, rect.Y1, rect.X2, rect.Y2);
+            if (item is PdfArray arr && arr.Elements.Count == 4 &&
+                arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
+                arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
+                return Normalize(RectNum(arr.Elements[0]), RectNum(arr.Elements[1]),
+                                 RectNum(arr.Elements[2]), RectNum(arr.Elements[3]));
+            return null;
 
-            return w < 1 || h < 1;
+            static PageBox Normalize(double x1, double y1, double x2, double y2) =>
+                new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
         }
+
+        // True when the entry is present, readable as a rectangle, and zero/sub-point sized. Anything we
+        // cannot interpret returns false so it is left alone rather than destroyed.
+        private static bool IsDegenerateBox(PdfItem? item) =>
+            ReadOwnPageBox(item) is { } box && (box.Width < 1 || box.Height < 1);
 
         // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
         // existing digital signature: its /ByteRange and digest describe the old bytes (ISO 19005-2,
@@ -12841,7 +13562,7 @@ namespace TDPdf
 
         // #106: Rebuilds the current document through PDFium (which emits clean stream/xref structures)
         // and reopens it in place so a failed save can be retried against a repaired source. Reuses the
-        // shared TryPdfiumRepair helper (no second repair implementation). Fully guarded: returns false
+        // shared PdfiumInterop.TryPdfiumRepair helper (no second repair implementation). Fully guarded: returns false
         // — never throws — when repair is not possible, leaving the original failure to surface.
         private async Task<bool> TryRepairCurrentDocumentForSaveAsync()
         {
@@ -12852,7 +13573,7 @@ namespace TDPdf
                 var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
                     $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
                 bool ok = await System.Threading.Tasks.Task.Run(
-                    () => TDPdf.Services.PdfDocumentService.TryPdfiumRepair(current!, fixedPath));
+                    () => TDPdf.Services.PdfiumInterop.TryPdfiumRepair(current!, fixedPath));
                 if (!ok) return false;
                 var repaired = await _pdfDocumentService.OpenPdfSharpAsync(
                     fixedPath, PdfDocumentOpenMode.Modify, CancellationToken.None);
@@ -12878,9 +13599,9 @@ namespace TDPdf
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             CommitActiveTextBox();
 
-            // Burn any pending annotations into a temp printable copy (mirroring the
-            // old PrintService flow), preview/print from that, then reload the clean
-            // document afterward so the on-screen editing state is preserved.
+            // Burn any pending annotations into a temp printable copy, preview/print from
+            // that, then reload the clean document afterward so the on-screen editing
+            // state is preserved.
             string? restorePath = null;
             string? printablePath = null;
             try
@@ -12937,17 +13658,49 @@ namespace TDPdf
         private void ReloadPrintedDocument(string path)
         {
             var previous = _doc;
-            PdfDocument reopened;
+            PdfDocument? reopened = null;
+            string reopenedPath = path;
             try
             {
                 reopened = PdfReader.Open(path, PdfDocumentOpenMode.Modify);
             }
             catch (Exception ex) when (TDPdf.Services.PdfDocumentService.IsOwnerPasswordException(ex))
             {
-                reopened = PdfReader.Open(path, PdfDocumentOpenMode.ReadOnly);
+                // Same trap as PdfDocumentService.OpenCore: PdfSharpCore's ReadOnly parser walks into
+                // a broken hint table on a malformed linearized file and throws an array-index error.
+                // The throw happens INSIDE this catch clause, so nothing on this try could catch it —
+                // and this method runs from Print_Click's finally block, where an escaping exception
+                // replaces whatever was already in flight. Contain it, then try a PDFium-repaired copy.
+                try
+                {
+                    reopened = PdfReader.Open(path, PdfDocumentOpenMode.ReadOnly);
+                }
+                catch
+                {
+                    var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                        $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                    try
+                    {
+                        if (TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
+                        {
+                            reopened = PdfReader.Open(fixedPath, PdfDocumentOpenMode.Modify);
+                            reopenedPath = fixedPath;
+                        }
+                    }
+                    catch { reopened = null; }
+                }
             }
+
+            if (reopened is null)
+            {
+                // Nothing could reopen the pre-print copy. Keep the live document (which now has the
+                // annotations burned in) rather than throwing out of Print_Click's finally block.
+                SetStatus("Printed - the pre-print copy could not be reloaded; use Save As to keep your work");
+                return;
+            }
+
             _doc = reopened;
-            _currentFile = path;
+            _currentFile = reopenedPath;
             previous?.Close();
         }
 
@@ -12972,6 +13725,10 @@ namespace TDPdf
         private bool HasPendingFormValues =>
             _formTextValues.Count > 0 || _formCheckValues.Count > 0 || _formRadioValues.Count > 0;
 
+        /// <summary>Bold/italic flags as the PdfSharpCore font style flags used when burning text (#182).</summary>
+        private static XFontStyle ToXFontStyle(bool bold, bool italic) =>
+            (bold ? XFontStyle.Bold : XFontStyle.Regular) | (italic ? XFontStyle.Italic : XFontStyle.Regular);
+
         private void DrawAnnotationsOnDocument()
         {
             if (_doc is null) return;
@@ -12993,10 +13750,27 @@ namespace TDPdf
 
                 var page = _doc.Pages[pageIdx];
                 var (renderW, renderH) = _renderDims[pageIdx];
-                double sx = page.Width.Point / renderW;
-                double sy = page.Height.Point / renderH;
+
+                // Annotation coordinates are positions on the bitmap PDFium rasterized, and PDFium
+                // renders the page's VISIBLE box (/CropBox over /MediaBox, inheritance-aware) with
+                // /Rotate applied. Scale and place against that same frame:
+                //  * the raw page.Width/Height used before are media-box derived with an implicit
+                //    (0,0) origin, so an inset or offset /CropBox displaced every annotation;
+                //  * nothing here handled /Rotate at all, so on a quarter-turned page annotations
+                //    were burned a quarter turn out of place and scaled on swapped axes (#169).
+                // TDPdf keeps the angle on the page itself (RotatePages_Click writes /Rotate and
+                // reloads), so the page dictionary is the authority — there is no separate map.
+                int rot = ((page.Rotate % 360) + 360) % 360;
+                var box = GetVisiblePageBox(page);
+                bool quarterTurn = rot is 90 or 270;   // visual extent is the box's dims swapped
+                double sx = (quarterTurn ? box.Height : box.Width) / renderW;
+                double sy = (quarterTurn ? box.Width : box.Height) / renderH;
 
                 using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
+                // ...then turn the whole drawing back into the frame XGraphics writes in, so every
+                // draw call below keeps working in canvas-scaled coordinates exactly as it always has.
+                if (VisualToPageMatrix(rot, box, page.Height.Point) is XMatrix visualToPage)
+                    gfx.MultiplyTransform(visualToPage, XMatrixOrder.Prepend);
 
                 foreach (var annot in annots)
                 {
@@ -13005,7 +13779,20 @@ namespace TDPdf
                         case TextAnnotation ta:
                         {
                             const double pad = 2;
-                            var font = new XFont("Segoe UI", ta.FontSize * sy);
+                            // #168: the editor is a WPF TextBox and falls back per CHARACTER across
+                            // every installed font, so anything typed looks right on screen;
+                            // PdfSharpCore resolves ONE face and emits an empty box for every
+                            // codepoint that face lacks. Segoe UI — hardcoded here before — carries
+                            // no CJK, so Japanese text was displayed correctly and then saved as
+                            // boxes. Pick a family that actually covers THIS annotation's text;
+                            // PickFamily keeps Segoe UI whenever it can carry it, which is every
+                            // Latin annotation, so nothing existing moves.
+                            var font = TdpFontResolver.TryCreate(
+                                FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, ta.Content),
+                                ta.FontSize * sy, XFontStyle.Regular);
+                            // Nothing resolvable at all (no readable font directory, or a degenerate
+                            // size): skip this ONE annotation rather than throw out of the save.
+                            if (font is null) break;
                             double lineH = ta.FontSize * sy * 1.2;
                             var taColor = ta.GetColor();
                             var taBrush = new XSolidBrush(XColor.FromArgb(taColor.A, taColor.R, taColor.G, taColor.B));
@@ -13152,12 +13939,24 @@ namespace TDPdf
                             // PdfSharpCore cannot surgically edit existing PDF content streams here.
                             // Existing text/image edits are approximated by painting a white rectangle
                             // over the original region, then drawing replacement content on top.
+                            //
+                            // Resolve the font FIRST: if nothing can be resolved the whole edit is
+                            // skipped, because covering the original line and then drawing nothing on
+                            // top would erase the page's own text (#168 safety).
+                            //
+                            // Keep the face styling detected on the original line (#182) so a
+                            // bold/italic run does not save back as plain, and run the family through
+                            // the same coverage check as placed text (#168) — the in-place editor is
+                            // the path most likely to carry non-Latin content, since it starts from
+                            // whatever the PDF already says.
+                            var editFont = TdpFontResolver.TryCreate(
+                                FontCoverage.PickFamily(tea.FontName, tea.NewContent),
+                                tea.FontSize * sy, ToXFontStyle(tea.Bold, tea.Italic));
+                            if (editFont is null) break;
                             var whiteRect = new XSolidBrush(XColors.White);
                             gfx.DrawRectangle(whiteRect,
                                 (tea.OriginalBounds.X - 2) * sx, (tea.OriginalBounds.Y - 2) * sy,
                                 (tea.OriginalBounds.Width + 4) * sx, (tea.OriginalBounds.Height + 4) * sy);
-                            // Draw replacement text
-                            var editFont = new XFont(tea.FontName, tea.FontSize * sy);
                             double ety = tea.Position.Y * sy + tea.FontSize * sy;
                             gfx.DrawString(tea.NewContent, editFont, XBrushes.Black, tea.Position.X * sx, ety);
                             break;
@@ -13285,7 +14084,7 @@ namespace TDPdf
             {
                 var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
                     $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
-                if (!TDPdf.Services.PdfDocumentService.TryPdfiumRepair(tempPath, fixedPath))
+                if (!TDPdf.Services.PdfiumInterop.TryPdfiumRepair(tempPath, fixedPath))
                     throw; // PDFium also failed — re-throw the original reopen error
                 tempPath = fixedPath;
                 _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
@@ -13466,6 +14265,10 @@ namespace TDPdf
 
         private void ChangeZoomByCommand(ZoomChange change)
         {
+            // An explicit zoom stops the view tracking the window size, exactly as the equivalent
+            // toolbar buttons do. Without this, Ctrl+0 landed on 100% and then the next window
+            // resize snapped straight back to the fit it was on.
+            _zoomFitMode = ZoomFitMode.None;
             switch (change)
             {
                 case ZoomChange.In:
@@ -13475,6 +14278,8 @@ namespace TDPdf
                     Zoom.ZoomOut();
                     break;
                 case ZoomChange.Reset:
+                    // True 100%, in every view mode: Zoom.ZoomLevel is true zoom (see
+                    // DisplayZoomFactor), so this needs no per-view-mode conversion.
                     Zoom.Reset();
                     break;
             }
@@ -13486,13 +14291,78 @@ namespace TDPdf
 
         private void ResetZoom_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.Reset(); }
 
-        private void ApplyZoom()
+        // ============================================================
+        // True zoom vs. layout scale        (#154, upstream "true 100%")
+        // ============================================================
+        //
+        // Zoom.ZoomLevel is TRUE zoom: 1.0 = the page at natural size, 1 PDF point = 1/72".
+        // The thing the ScaleTransform actually scales, though, is the page TILE, and outside
+        // Continuous view that tile is the render-dimension bitmap, not the natural page:
+        //
+        //   PdfDocumentService.RenderPageAsync rasterizes into a square box of
+        //   RenderBoxDip * renderScale pixels, so the page's LONGEST side lands on RenderBoxDip
+        //   DIPs and the tile's DIP width is RenderBoxDip * widthPt / longestPt. The natural DIP
+        //   width is widthPt * 96/72, so
+        //
+        //       tileDip / naturalDip = RenderBoxDip * 72/96 / longestPt = 1152 / longestPt
+        //
+        //   which is ~1.37 for A4 (longest 841.89 pt) and ~1.45 for US Letter (792 pt). Note it
+        //   depends only on the LONGEST side, so a 90/270 page rotation cannot change it.
+        //
+        // Continuous view is exempt: SetupContinuousView lays its slots out against the natural
+        // width (_continuousPageW = Width.Point * 96/72), so its factor is 1 and its zoom already
+        // read as true zoom — which is why 100% used to mean two different sizes depending on the
+        // view mode. Everything user-facing (presets, the readout, the min/max clamp) lives in
+        // true zoom; only the three places that touch layout convert, via LayoutZoomScale.
+        private double DisplayZoomFactor()
+        {
+            if (_viewMode == ViewMode.Continuous || _doc is null) return 1.0;
+            // The page in the PRIMARY tile, which is what the transform is being sized against.
+            // RenderPage stamps it on PageImage.Tag; before the first render fall back to the
+            // sidebar selection.
+            int idx = PageImage.Tag is int tagged ? tagged : PageList.SelectedIndex;
+            if (idx < 0 || idx >= _doc.PageCount) return 1.0;
+            var page = _doc.Pages[idx];
+            double longestPt = Math.Max(page.Width.Point, page.Height.Point);
+            if (longestPt <= 0) return 1.0;
+            return TDPdf.Services.PdfDocumentService.RenderBoxDip * (72.0 / 96.0) / longestPt;
+        }
+
+        /// <summary>
+        /// The current true zoom expressed as the scale the page tile's layout box needs — the
+        /// value for the ScaleTransform, the render DPI, and any arithmetic in pre-zoom
+        /// (tile-layout) coordinates. Identity with <see cref="ZoomViewModel.ZoomLevel"/> in
+        /// Continuous view.
+        /// </summary>
+        private double LayoutZoomScale
+        {
+            get
+            {
+                double factor = DisplayZoomFactor();
+                return factor > 0 ? Zoom.ZoomLevel / factor : Zoom.ZoomLevel;
+            }
+        }
+
+        /// <summary>
+        /// Pushes the current true zoom onto the page transform. Separate from
+        /// <see cref="ApplyZoom"/> because the conversion depends on the page in the primary tile
+        /// and the view mode, so it also has to run when THOSE change at a constant zoom (a
+        /// document of mixed page sizes, or entering Continuous) — and unlike ApplyZoom it neither
+        /// re-renders nor persists, so RenderPage can call it without recursing.
+        /// </summary>
+        private void SyncLayoutZoom()
         {
             if (_pageContentGrid.LayoutTransform is ScaleTransform st)
             {
-                st.ScaleX = Zoom.ZoomLevel;
-                st.ScaleY = Zoom.ZoomLevel;
+                double scale = LayoutZoomScale;
+                st.ScaleX = scale;
+                st.ScaleY = scale;
             }
+        }
+
+        private void ApplyZoom()
+        {
+            SyncLayoutZoom();
             CommitActiveTextBox();
             SaveZoomSetting();
 
@@ -13522,6 +14392,12 @@ namespace TDPdf
             }
         }
 
+        // Persists TRUE zoom (see DisplayZoomFactor), which is also what the ctor restores, so the
+        // stored number means the percentage the user last saw. An older user.config holds the old
+        // layout-scale value; reinterpreting it is harmless because the two spaces share the same
+        // 5%-400% range and the layout scale was always the LARGER of the pair, so the worst an
+        // upgrade can do is open ~27-31% smaller once — and ApplyViewModeOnOpen re-fits on the
+        // first document anyway.
         private void SaveZoomSetting()
         {
             try
@@ -13538,19 +14414,53 @@ namespace TDPdf
         private void ZoomBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_zoomBox?.SelectedItem is not ZoomLevelOption option) return;
-            if (option.IsFitWidth) { FitToWidth(); return; }
-            if (option.IsFitPage) { FitToPage(); return; }
+            // Picking a fit from the dropdown is an explicit preference, so it is remembered and
+            // applied to the next document opened (upstream v1.7.1).
+            if (option.IsFitWidth) { SaveDefaultFitMode(ZoomFitMode.Width); FitToWidth(); return; }
+            if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             // User picked an explicit zoom level — stop tracking the window size.
             _zoomFitMode = ZoomFitMode.None;
             if (option.ZoomLevel is double zoom) Zoom.SetZoomLevel(zoom);
         }
 
+        // ============================================================
+        // Remembered fit mode              (upstream v1.7.1)
+        // ============================================================
+        //
+        // Only the two EXPLICIT ways to ask for a fit write this — the zoom dropdown and
+        // Ctrl+2 / Ctrl+3. The fits the app applies for you (on open, on a view-mode switch, on a
+        // window resize) deliberately do not, or the preference could never differ from whatever
+        // the last view mode happened to want.
+        private static void SaveDefaultFitMode(ZoomFitMode mode)
+        {
+            try
+            {
+                TDPdf.Properties.Settings.Default.DefaultFitMode = mode.ToString();
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            catch { /* non-critical user preference */ }
+        }
+
+        /// <summary>The remembered fit preference, or <c>None</c> when the user has never set one.</summary>
+        private static ZoomFitMode ReadDefaultFitMode()
+        {
+            try
+            {
+                return Enum.TryParse<ZoomFitMode>(TDPdf.Properties.Settings.Default.DefaultFitMode, out var mode)
+                    ? mode : ZoomFitMode.None;
+            }
+            catch { return ZoomFitMode.None; }
+        }
+
+        // The fits are computed against the LAYOUT boxes on screen (the tile, or the continuous
+        // slot) and then multiplied back through DisplayZoomFactor, because Zoom.SetZoomLevel now
+        // takes true zoom. Equivalently: viewW / naturalWidthInDips.
         private void FitToWidth()
         {
             double viewW = PagePreviewPanel.ActualWidth - 40;
             if (viewW <= 0) return;
             // Continuous view fits against the strip's natural page width (zoom-independent), not
-            // the hidden primary PageImage.
+            // the hidden primary PageImage. Its display factor is 1, so no conversion.
             if (_viewMode == ViewMode.Continuous)
             {
                 if (_continuousPageW <= 0) return;
@@ -13563,19 +14473,42 @@ namespace TDPdf
             if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
             _zoomFitMode = ZoomFitMode.Width;
             _applyingFitZoom = true;
-            try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth); }
+            try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth * DisplayZoomFactor()); }
             finally { _applyingFitZoom = false; }
         }
 
         private void FitToPage()
         {
-            if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
             double viewW = PagePreviewPanel.ActualWidth - 40;
             double viewH = PagePreviewPanel.ActualHeight - 40;
             if (viewW <= 0 || viewH <= 0) return;
+            // Continuous: the primary PageImage is collapsed there, so its ActualWidth is 0 and
+            // this used to silently do nothing (Ctrl+3 and a remembered Fit Page were both dropped
+            // in Continuous). Fit against the strip's own slot geometry instead — natural width by
+            // the current page's natural height, both already in true-zoom space.
+            if (_viewMode == ViewMode.Continuous)
+            {
+                if (_doc is null || _doc.PageCount == 0 || _continuousPageW <= 0) return;
+                int idx = Math.Clamp(PageList.SelectedIndex, 0, _doc.PageCount - 1);
+                var slotPage = _doc.Pages[idx];
+                double pw = slotPage.Width.Point, ph = slotPage.Height.Point;
+                int rot = ((slotPage.Rotate % 360) + 360) % 360;
+                if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
+                double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
+                _zoomFitMode = ZoomFitMode.Page;
+                _applyingFitZoom = true;
+                try { Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH)); }
+                finally { _applyingFitZoom = false; }
+                return;
+            }
+            if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
             _zoomFitMode = ZoomFitMode.Page;
             _applyingFitZoom = true;
-            try { Zoom.SetZoomLevel(Math.Min(viewW / PageImage.ActualWidth, viewH / PageImage.ActualHeight)); }
+            try
+            {
+                Zoom.SetZoomLevel(Math.Min(viewW / PageImage.ActualWidth, viewH / PageImage.ActualHeight)
+                                  * DisplayZoomFactor());
+            }
             finally { _applyingFitZoom = false; }
         }
 

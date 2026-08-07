@@ -40,6 +40,12 @@ namespace TDPdf
 
         private static readonly FontFamily KbMonoFont = new("Consolas");
 
+        /// <summary>Card width caps for the two overlay views. The list value must match
+        /// ShortcutCard's MaxWidth in MainWindow.xaml — it is restored here when switching back
+        /// from the wider keyboard board (#177).</summary>
+        private const double ShortcutListMaxWidth = 900;
+        private const double KeyboardViewMaxWidth = 1080;
+
         // ── Binding tables ─────────────────────────────────────────────────────────────────────
         // key id -> (category, action caption). Category maps 1:1 to a KsCat* theme brush and to
         // the section name shown in the hover detail. Captions are plain English (no Loc()).
@@ -104,6 +110,8 @@ namespace TDPdf
             {
                 ["F10"] = ("Edit", "Context menu"),
                 ["Enter"] = ("Search", "Previous result"),
+                // Pairs with Ctrl+I: whether night mode inverts pictures too (needed on a scan).
+                ["N"] = ("View", "Invert images too"),
             },
             [KbLayer.Alt] = new()
             {
@@ -184,7 +192,11 @@ namespace TDPdf
             if (keyboard && !_kbBuilt) BuildKeyboardView();
             ShortcutListHost.Visibility     = keyboard ? Visibility.Collapsed : Visibility.Visible;
             ShortcutKeyboardHost.Visibility = keyboard ? Visibility.Visible : Visibility.Collapsed;
-            ShortcutCard.MaxWidth           = keyboard ? 1080 : 640;
+            // #177: only the KEYBOARD view needs a wider cap than the card's XAML default. The list
+            // used to be re-clamped to 640 on every open, which undid the card's own MaxWidth and
+            // squeezed ~40 two-column rows into a narrow strip; it now keeps the XAML width and
+            // uses whatever the window allows.
+            ShortcutCard.MaxWidth           = keyboard ? KeyboardViewMaxWidth : ShortcutListMaxWidth;
             KsViewListBtn.SetResourceReference(ForegroundProperty, keyboard ? "TextSecondary" : "AccentGreen");
             KsViewKeyboardBtn.SetResourceReference(ForegroundProperty, keyboard ? "AccentGreen" : "TextSecondary");
             if (keyboard) SetKbLayer(KbLayer.Base);
@@ -247,7 +259,7 @@ namespace TDPdf
                     if (id.Length == 0) { r.Children.Add(new Border { Width = U * w }); continue; }
                     var capText = new TextBlock
                     {
-                        Text = cap, FontFamily = KbMonoFont,   // symbols render via font fallback
+                        Text = KbCapText(id, cap), FontFamily = KbMonoFont,   // symbols render via font fallback
                         FontSize = 11, HorizontalAlignment = HorizontalAlignment.Center,
                         VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 5, 0, 0),
                     };
@@ -319,6 +331,26 @@ namespace TDPdf
             };
             _kbDetail.SetResourceReference(TextBlock.ForegroundProperty, "AccentGreen");
             host.Children.Add(_kbDetail);
+        }
+
+        /// <summary>
+        /// #153: the board below is a fixed ANSI picture, which is fine for letters (positional by
+        /// nature) but wrong for the two punctuation caps TDPdf actually binds — on a German
+        /// keyboard the key we treat as "=" is lettered "+". Only those two are re-lettered from
+        /// the live layout; re-drawing the whole board per layout (QWERTZ / AZERTY key order, the
+        /// extra ISO key) is a much bigger job and is deliberately not attempted.
+        /// </summary>
+        private static string KbCapText(string id, string fallback) => id switch
+        {
+            "Equals" => CharCap(Key.OemPlus, fallback),
+            "Minus" => CharCap(Key.OemMinus, fallback),
+            _ => fallback,
+        };
+
+        private static string CharCap(Key key, string fallback)
+        {
+            char c = Services.KeyLayout.CharFor(key, shift: false);
+            return c == '\0' ? fallback : c.ToString();
         }
 
         private void KbShowDetail(string id)

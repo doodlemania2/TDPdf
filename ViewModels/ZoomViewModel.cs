@@ -20,8 +20,23 @@ namespace TDPdf
         public bool IsFitPage { get; }
     }
 
+    /// <summary>
+    /// The user-facing zoom. <see cref="ZoomLevel"/> is TRUE zoom throughout: 1.0 is the page at
+    /// its natural size (1 PDF point = 1/72 inch on screen), which is exactly what the presets,
+    /// <see cref="DisplayText"/> and the clamp below all mean.
+    /// </summary>
+    /// <remarks>
+    /// It is deliberately NOT the layout scale of the page tile. Outside Continuous view the tile
+    /// is the render-dimension bitmap — about 1.37x natural for A4, 1.45x for US Letter — so
+    /// <c>MainWindow.LayoutZoomScale</c> divides this by <c>MainWindow.DisplayZoomFactor()</c>
+    /// before it reaches the <c>ScaleTransform</c> and the render DPI. Keeping the view model in
+    /// true zoom is what makes 100% mean 100% in every view mode, makes the dropdown presets and
+    /// the status readout honest, and makes the min/max clamp below mean the same thing
+    /// everywhere instead of ~5.8x in Single and exactly 4x in Continuous.
+    /// </remarks>
     public partial class ZoomViewModel : ObservableObject
     {
+        // True-zoom bounds: 5% to 400% of natural size, in every view mode.
         public const double MinZoomLevel = 0.05;
         public const double MaxZoomLevel = 4.0;
 

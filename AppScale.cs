@@ -143,8 +143,54 @@ namespace TDPdf
                     TDPdf.Properties.Settings.Default.Save();
                 }
                 catch { /* non-critical user preference */ }
-                SetStatus($"App size {(int)Math.Round(scale * 100)}% — the page keeps its own zoom");
+                ShowScaleReadout(scale);
             }
+        }
+
+        // The readout is TRANSIENT. Every wheel notch rewrites it and restarts the hide timer, so
+        // the footer carries it while you are resizing and gives the line back a beat after you
+        // stop. Before this it was a bare SetStatus with nothing to take it down again: it sat on
+        // the status bar until some unrelated code — a page change, a tool switch, an open —
+        // happened to write over it.
+        //
+        // It still goes out through SetStatusHeld, because the chrome resize re-runs the fit
+        // pipeline and its page/zoom status would otherwise stomp this on the same layout pass
+        // (MainWindow.xaml.cs SetStatus). That hold is short and covers only the stomp.
+        //
+        // Whatever was showing before the FIRST notch of a burst is snapshotted and put back, but
+        // only if the readout is still the text on screen — so a real status written after the
+        // hold lapsed is never replaced by a stale one. The restore assigns StatusText directly
+        // rather than going through SetStatus: this is putting a line back, not reporting
+        // something new.
+        //
+        // Normal priority rather than DispatcherTimer's default Background, so a busy render
+        // cannot leave the readout parked on the footer. (Same lazy-create / Stop-then-Start shape
+        // as _continuousSharpenTimer in MainWindow.xaml.cs.)
+        private System.Windows.Threading.DispatcherTimer? _appScaleHideTimer;
+        private string _appScaleStatusWas = string.Empty;
+        private string _appScaleReadout = string.Empty;
+
+        private void ShowScaleReadout(double scale)
+        {
+            if (_appScaleHideTimer is null)
+            {
+                _appScaleHideTimer = new System.Windows.Threading.DispatcherTimer(
+                    System.Windows.Threading.DispatcherPriority.Normal)
+                { Interval = TimeSpan.FromSeconds(5) };
+                _appScaleHideTimer.Tick += (_, _) =>
+                {
+                    _appScaleHideTimer!.Stop();
+                    if (StatusText.Text == _appScaleReadout) StatusText.Text = _appScaleStatusWas;
+                };
+            }
+
+            // Only the first notch of a burst snapshots; the rest would capture our own readout.
+            if (!_appScaleHideTimer.IsEnabled) _appScaleStatusWas = StatusText.Text;
+            _appScaleHideTimer.Stop();
+
+            _appScaleReadout = $"App size {(int)Math.Round(scale * 100)}% — the page keeps its own zoom";
+            SetStatusHeld(_appScaleReadout);
+            _appScaleHideTimer.Start();
         }
     }
 }

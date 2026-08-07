@@ -149,9 +149,14 @@ namespace TDPdf.Services
                 byte[] raw; int w, h;
                 using (var pageReader = docReader.GetPageReader(idx))
                 {
-                    raw = pageReader.GetImage();
                     w = pageReader.GetPageWidth();
                     h = pageReader.GetPageHeight();
+                    // #141: with annotations — an exported image should show the markup the file
+                    // carries, the same as the page does on screen. The background policy is the
+                    // caller's: PDFium fills white unless --transparent asked for the alpha, which
+                    // is exactly what Encode() below then expects (it composites only when opaque).
+                    raw = PdfiumInterop.RenderPageWithAnnotations(renderPath, idx, w, h, transparent)
+                          ?? pageReader.GetImage();
                 }
                 if (raw is null || raw.Length == 0 || w <= 0 || h <= 0) continue;
 

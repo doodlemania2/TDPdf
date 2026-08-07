@@ -1,4 +1,5 @@
 using System.Windows;
+using TDPdf.Services;
 using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
@@ -67,14 +68,31 @@ namespace TDPdf
                     double right = words.Max(w => w.BoundingBox.Right) * sx;
                     double bottom = renderHeight - (words.Min(w => w.BoundingBox.Bottom) * sy);
                     string text = string.Join(" ", words.Select(w => w.Text));
+                    // Line-height estimate, used only when the content stream yields no usable size.
                     double fontSize = Math.Max((bottom - top) * 0.75, 10);
-                    string fontName = CleanFontName(words.FirstOrDefault()?.FontName);
+                    // #166: never seed the family from Word.FontName — a Word joins its letters' font
+                    // names into one string ("Helvetica Helvetica Helvetica…"), which would reach
+                    // FontFamily verbatim on a line that has words but no letters.
+                    string fontName = PdfFontStyle.DefaultFamily;
+                    bool fontBold = false, fontItalic = false;
 
                     var firstLetter = words.SelectMany(w => w.Letters).FirstOrDefault();
                     if (firstLetter is not null)
                     {
-                        fontSize = Math.Max(firstLetter.FontSize * sy, 10);
-                        fontName = CleanFontName(firstLetter.FontName);
+                        // #163/#165: PointSize is the glyph size in points. FontSize is the raw
+                        // "/F1 <n> Tf" operand, which equals the visual size only when the text matrix
+                        // carries no scale — a generator that emits "/F1 1 Tf" and scales through Tm
+                        // reports 1 and collapsed the box onto its lower clamp. Fall back to FontSize,
+                        // then keep the line-height estimate above, because PointSize can be 0 on
+                        // fonts with no usable metrics (some Type3).
+                        double pdfPoints = firstLetter.PointSize > 0 ? firstLetter.PointSize : firstLetter.FontSize;
+                        if (pdfPoints > 0)
+                            fontSize = Math.Max(pdfPoints * sy, 10);
+
+                        var detected = PdfFontStyle.FromPdfName(firstLetter.FontName);
+                        fontName = detected.Family;
+                        fontBold = detected.Bold;
+                        fontItalic = detected.Italic;
                     }
 
                     return new TextRunHit
@@ -83,7 +101,9 @@ namespace TDPdf
                         CanvasBounds = new Rect(left, top, Math.Max(right - left, 1), Math.Max(bottom - top, 1)),
                         Position = new Point(left, top),
                         FontSize = fontSize,
-                        FontName = fontName
+                        FontName = fontName,
+                        Bold = fontBold,
+                        Italic = fontItalic
                     };
                 })
                 .Where(r => !string.IsNullOrWhiteSpace(r.Text))
@@ -107,25 +127,6 @@ namespace TDPdf
             return parsed;
         }
 
-        private static string CleanFontName(string? rawFont)
-        {
-            if (string.IsNullOrWhiteSpace(rawFont)) return "Segoe UI";
-
-            var font = rawFont;
-            int plus = font.IndexOf('+');
-            if (plus >= 0 && plus < font.Length - 1)
-                font = font.Substring(plus + 1);
-
-            font = font.Replace(",Bold", "")
-                       .Replace(",Italic", "")
-                       .Replace("-Bold", "")
-                       .Replace("-Italic", "")
-                       .Replace("-Roman", "")
-                       .Replace("-Regular", "");
-
-            return string.IsNullOrWhiteSpace(font) ? "Segoe UI" : font;
-        }
-
         private sealed class ParsedPageContent
         {
             public List<TextRunHit> TextRuns { get; set; } = new();
@@ -139,7 +140,10 @@ namespace TDPdf
         public Rect CanvasBounds { get; set; }
         public Point Position { get; set; }
         public double FontSize { get; set; } = 14;
-        public string FontName { get; set; } = "Segoe UI";
+        public string FontName { get; set; } = PdfFontStyle.DefaultFamily;
+        /// <summary>Face styling encoded in the source font's PostScript name (#182).</summary>
+        public bool Bold { get; set; }
+        public bool Italic { get; set; }
     }
 
     internal sealed class ImageHit
