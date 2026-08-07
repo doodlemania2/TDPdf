@@ -1686,6 +1686,10 @@ namespace TDPdf
                         (Action)ApplyViewModeOnOpen);
                 }
                 var readOnlySuffix = result.OpenedReadOnly ? " (read-only - owner restrictions)" : string.Empty;
+                // An owner-restricted file PdfSharpCore could not parse comes back as a PDFium-repaired,
+                // decrypted copy: editable, so it must NOT claim read-only, but say the restriction went.
+                if (result.RestrictionsRemoved)
+                    readOnlySuffix = " (owner restrictions removed)";
                 if (result.RecoveredFromRaster)
                     readOnlySuffix = " (recovered - pages rasterized, text not selectable)";
                 SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix} - {_doc.PageCount} page(s)");
@@ -10089,6 +10093,8 @@ namespace TDPdf
                         BorderThickness = new Thickness(2),
                         FontFamily = new FontFamily(existingEdit.FontName),
                         FontSize = Math.Max(existingEdit.FontSize, 10),
+                        FontWeight = existingEdit.Bold ? FontWeights.Bold : FontWeights.Normal,
+                        FontStyle = existingEdit.Italic ? FontStyles.Italic : FontStyles.Normal,
                         MinWidth = Math.Max(reb.Width + 20, 100),
                         Height = Math.Max(reb.Height + 12, 24),
                         Padding = new Thickness(2, 0, 2, 0),
@@ -10102,6 +10108,8 @@ namespace TDPdf
                             Position = existingEdit.Position,
                             FontSize = existingEdit.FontSize,
                             FontName = existingEdit.FontName,
+                            Bold = existingEdit.Bold,
+                            Italic = existingEdit.Italic,
                             ExistingAnnotation = existingEdit
                         }
                     };
@@ -10143,6 +10151,10 @@ namespace TDPdf
                     BorderThickness = new Thickness(2),
                     FontFamily = new FontFamily(hit.FontName),
                     FontSize = hit.FontSize,
+                    // PDF fonts encode bold/italic in the font name; leaving WPF to default these to
+                    // Normal made every styled line go plain the moment it was double-clicked (#182).
+                    FontWeight = hit.Bold ? FontWeights.Bold : FontWeights.Normal,
+                    FontStyle = hit.Italic ? FontStyles.Italic : FontStyles.Normal,
                     MinWidth = Math.Max(hit.CanvasBounds.Width + 20, 100),
                     Height = Math.Max(hit.CanvasBounds.Height + 12, 24),
                     Padding = new Thickness(2, 0, 2, 0),
@@ -10155,7 +10167,9 @@ namespace TDPdf
                         CanvasBounds = hit.CanvasBounds,
                         Position = hit.Position,
                         FontSize = hit.FontSize,
-                        FontName = hit.FontName
+                        FontName = hit.FontName,
+                        Bold = hit.Bold,
+                        Italic = hit.Italic
                     }
                 };
                 Canvas.SetLeft(tb, hit.CanvasBounds.X);
@@ -10203,6 +10217,9 @@ namespace TDPdf
             public Point Position { get; set; }
             public double FontSize { get; set; }
             public string FontName { get; set; } = "Segoe UI";
+            /// <summary>Face styling detected on the source PDF text (#182).</summary>
+            public bool Bold { get; set; }
+            public bool Italic { get; set; }
             /// <summary>Non-null when re-editing an already-committed annotation; update in place instead of adding a new one.</summary>
             public TextEditAnnotation? ExistingAnnotation { get; set; }
         }
@@ -10281,7 +10298,9 @@ namespace TDPdf
                     NewContent = newText,
                     OriginalContent = ctx.OriginalText,
                     FontSize = ctx.FontSize,
-                    FontName = ctx.FontName
+                    FontName = ctx.FontName,
+                    Bold = ctx.Bold,
+                    Italic = ctx.Italic
                 };
                 AddAnnotation(edit);
             }
@@ -11184,6 +11203,8 @@ namespace TDPdf
                             Foreground = Brushes.Black,
                             FontFamily = new FontFamily(tea.FontName),
                             FontSize = tea.FontSize,
+                            FontWeight = tea.Bold ? FontWeights.Bold : FontWeights.Normal,
+                            FontStyle = tea.Italic ? FontStyles.Italic : FontStyles.Normal,
                             Padding = new Thickness(0),
                             IsHitTestVisible = false
                         };
@@ -13227,9 +13248,9 @@ namespace TDPdf
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             CommitActiveTextBox();
 
-            // Burn any pending annotations into a temp printable copy (mirroring the
-            // old PrintService flow), preview/print from that, then reload the clean
-            // document afterward so the on-screen editing state is preserved.
+            // Burn any pending annotations into a temp printable copy, preview/print from
+            // that, then reload the clean document afterward so the on-screen editing
+            // state is preserved.
             string? restorePath = null;
             string? printablePath = null;
             try
@@ -13286,17 +13307,49 @@ namespace TDPdf
         private void ReloadPrintedDocument(string path)
         {
             var previous = _doc;
-            PdfDocument reopened;
+            PdfDocument? reopened = null;
+            string reopenedPath = path;
             try
             {
                 reopened = PdfReader.Open(path, PdfDocumentOpenMode.Modify);
             }
             catch (Exception ex) when (TDPdf.Services.PdfDocumentService.IsOwnerPasswordException(ex))
             {
-                reopened = PdfReader.Open(path, PdfDocumentOpenMode.ReadOnly);
+                // Same trap as PdfDocumentService.OpenCore: PdfSharpCore's ReadOnly parser walks into
+                // a broken hint table on a malformed linearized file and throws an array-index error.
+                // The throw happens INSIDE this catch clause, so nothing on this try could catch it —
+                // and this method runs from Print_Click's finally block, where an escaping exception
+                // replaces whatever was already in flight. Contain it, then try a PDFium-repaired copy.
+                try
+                {
+                    reopened = PdfReader.Open(path, PdfDocumentOpenMode.ReadOnly);
+                }
+                catch
+                {
+                    var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                        $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                    try
+                    {
+                        if (TDPdf.Services.PdfDocumentService.TryPdfiumRepair(path, fixedPath))
+                        {
+                            reopened = PdfReader.Open(fixedPath, PdfDocumentOpenMode.Modify);
+                            reopenedPath = fixedPath;
+                        }
+                    }
+                    catch { reopened = null; }
+                }
             }
+
+            if (reopened is null)
+            {
+                // Nothing could reopen the pre-print copy. Keep the live document (which now has the
+                // annotations burned in) rather than throwing out of Print_Click's finally block.
+                SetStatus("Printed - the pre-print copy could not be reloaded; use Save As to keep your work");
+                return;
+            }
+
             _doc = reopened;
-            _currentFile = path;
+            _currentFile = reopenedPath;
             previous?.Close();
         }
 
@@ -13320,6 +13373,10 @@ namespace TDPdf
         /// <summary>True if the user has entered any interactive form-field values pending save.</summary>
         private bool HasPendingFormValues =>
             _formTextValues.Count > 0 || _formCheckValues.Count > 0 || _formRadioValues.Count > 0;
+
+        /// <summary>Bold/italic flags as the PdfSharpCore font style flags used when burning text (#182).</summary>
+        private static XFontStyle ToXFontStyle(bool bold, bool italic) =>
+            (bold ? XFontStyle.Bold : XFontStyle.Regular) | (italic ? XFontStyle.Italic : XFontStyle.Regular);
 
         private void DrawAnnotationsOnDocument()
         {
@@ -13522,8 +13579,9 @@ namespace TDPdf
                             gfx.DrawRectangle(whiteRect,
                                 (tea.OriginalBounds.X - 2) * sx, (tea.OriginalBounds.Y - 2) * sy,
                                 (tea.OriginalBounds.Width + 4) * sx, (tea.OriginalBounds.Height + 4) * sy);
-                            // Draw replacement text
-                            var editFont = new XFont(tea.FontName, tea.FontSize * sy);
+                            // Draw replacement text, keeping the face styling detected on the original
+                            // line (#182) so a bold/italic run does not save back as plain.
+                            var editFont = new XFont(tea.FontName, tea.FontSize * sy, ToXFontStyle(tea.Bold, tea.Italic));
                             double ety = tea.Position.Y * sy + tea.FontSize * sy;
                             gfx.DrawString(tea.NewContent, editFont, XBrushes.Black, tea.Position.X * sx, ety);
                             break;

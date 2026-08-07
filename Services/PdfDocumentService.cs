@@ -198,9 +198,49 @@ namespace TDPdf.Services
                     catch (Exception ex) when (IsOwnerPasswordException(ex))
                     {
                         document?.Close();
-                        document = PdfReader.Open(path, PdfDocumentOpenMode.ReadOnly);
-                        PreloadDocnet(path, cancellationToken);
-                        return new PdfOpenResult(document, path, path, true, wasProtected: true);
+                        document = null;
+
+                        // An EMPTY user password opens the file while the owner password still forbids
+                        // modification. Preferred outcome (unchanged): reopen through PdfSharpCore's
+                        // ReadOnly parser so the restriction is honoured and the UI can say so.
+                        //
+                        // Upstream v1.7.1: that retry is NOT safe on a malformed linearized file — it
+                        // reaches a broken hint table and throws an array-index error. Because the
+                        // throw happens INSIDE this catch clause, the sibling catch clauses of the same
+                        // try cannot see it: the exception escaped OpenCore entirely, the raster
+                        // recovery net never ran, and the user got "Failed to open PDF". Contain it
+                        // here so the same fallbacks every other parse failure gets still apply.
+                        try
+                        {
+                            document = PdfReader.Open(path, PdfDocumentOpenMode.ReadOnly);
+                            PreloadDocnet(path, cancellationToken);
+                            return new PdfOpenResult(document, path, path, true, wasProtected: true);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            document?.Close();
+                            document = null;   // already closed; keep the outer handler off it
+                            throw;
+                        }
+                        catch
+                        {
+                            document?.Close();
+                            document = null;
+                        }
+
+                        // PDFium's tolerant parser can rewrite the file, repairing the tables
+                        // PdfSharpCore choked on. That copy is necessarily DECRYPTED, so it is reported
+                        // as editable rather than read-only — see TryOpenViaPdfiumRepair.
+                        PdfOpenResult? unlocked = TryOpenViaPdfiumRepair(path, cancellationToken);
+                        if (unlocked is not null)
+                            return unlocked;
+
+                        // Last resort, same as any other unparseable file: rasterize through PDFium.
+                        PdfOpenResult? rasterized = TryRecoverByRaster(path, ex, cancellationToken);
+                        if (rasterized is not null)
+                            return rasterized;
+
+                        throw;   // nothing worked - surface the original owner-password error
                     }
                     catch (Exception ex) when (!IsPasswordException(ex))
                     {
@@ -273,6 +313,56 @@ namespace TDPdf.Services
             ex.Message.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0 ||
             ex.Message.IndexOf("protected", StringComparison.OrdinalIgnoreCase) >= 0 ||
             ex.Message.IndexOf("encrypted", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        /// <summary>
+        /// Opens an owner-restricted file that PdfSharpCore cannot parse, by way of a PDFium-rewritten
+        /// working copy in %TEMP% (<see cref="TryPdfiumRepair"/> — <c>FPDF_SaveWithVersion</c> with
+        /// <c>FPDF_REMOVE_SECURITY</c>, the same path CLI <c>--decrypt</c> and the post-save xref
+        /// repair use). Unlike the raster fallback this is lossless: text stays selectable.
+        /// </summary>
+        /// <remarks>
+        /// The rewritten copy carries no <c>/Encrypt</c>, so the document really is editable and is
+        /// reported that way — <c>OpenedReadOnly: false</c>. Claiming read-only here would be a lie the
+        /// save path would immediately contradict. <c>WasProtected</c> and <c>RestrictionsRemoved</c>
+        /// are both true so the UI can say the protection is gone rather than dropping it silently.
+        /// Returns <c>null</c> — never throws, except on cancellation — when PDFium cannot help either,
+        /// leaving the caller to try the raster net and then surface the original error.
+        /// </remarks>
+        private static PdfOpenResult? TryOpenViaPdfiumRepair(string path, CancellationToken cancellationToken)
+        {
+            string repairedPath = Path.Combine(Path.GetTempPath(), $"tdpdf_unlock_{Guid.NewGuid():N}.pdf");
+            PdfDocument? document = null;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TryPdfiumRepair(path, repairedPath))
+                {
+                    TryDeleteQuiet(repairedPath);
+                    return null;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                document = PdfReader.Open(repairedPath, PdfDocumentOpenMode.Modify);
+                PreloadDocnet(repairedPath, cancellationToken);
+
+                Telemetry.TrackEvent("File.OpenUnlockedByPdfium");
+
+                return new PdfOpenResult(document, path, repairedPath, openedReadOnly: false,
+                    wasProtected: true, restrictionsRemoved: true);
+            }
+            catch (OperationCanceledException)
+            {
+                document?.Close();
+                TryDeleteQuiet(repairedPath);
+                throw;
+            }
+            catch
+            {
+                document?.Close();
+                TryDeleteQuiet(repairedPath);
+                return null;
+            }
+        }
 
         /// <summary>
         /// Last-resort open path: PDFium reads the file and we re-emit each
@@ -590,7 +680,7 @@ namespace TDPdf.Services
     internal sealed class PdfOpenResult
     {
         public PdfOpenResult(PdfDocument document, string displayPath, string workingPath, bool openedReadOnly,
-            bool recoveredFromRaster = false, bool wasProtected = false)
+            bool recoveredFromRaster = false, bool wasProtected = false, bool restrictionsRemoved = false)
         {
             Document = document;
             DisplayPath = displayPath;
@@ -598,6 +688,7 @@ namespace TDPdf.Services
             OpenedReadOnly = openedReadOnly;
             RecoveredFromRaster = recoveredFromRaster;
             WasProtected = wasProtected;
+            RestrictionsRemoved = restrictionsRemoved;
         }
 
         public PdfDocument Document { get; }
@@ -621,6 +712,14 @@ namespace TDPdf.Services
         /// this to say so, and to offer File ▸ Remove Password.
         /// </summary>
         public bool WasProtected { get; }
+
+        /// <summary>
+        /// True when an owner-restricted file that PdfSharpCore could not parse was opened through a
+        /// PDFium-rewritten, decrypted working copy. The document IS editable — never report it as
+        /// read-only — but the restriction the source carried is gone, so the UI says so on open.
+        /// Lossless, unlike <see cref="RecoveredFromRaster"/>: the text layer survives.
+        /// </summary>
+        public bool RestrictionsRemoved { get; }
     }
 
     internal sealed class PdfPageSize

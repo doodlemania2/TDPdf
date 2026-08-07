@@ -221,12 +221,20 @@ namespace TDPdf
         public string OriginalContent { get; set; } = "";
         public double FontSize { get; set; } = 14;
         public string FontName { get; set; } = "Segoe UI";
+        /// <summary>
+        /// Face styling detected on the replaced PDF text (#182). PDF font resources encode bold and
+        /// italic in the font name rather than in separate metadata, so these carry that through the
+        /// edit box, the canvas preview and the saved page. Both default to false, which is also what
+        /// any data written before these existed deserializes to.
+        /// </summary>
+        public bool Bold { get; set; }
+        public bool Italic { get; set; }
 
         public override PageAnnotation Clone() => new TextEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, Position = Position,
             NewContent = NewContent, OriginalContent = OriginalContent,
-            FontSize = FontSize, FontName = FontName
+            FontSize = FontSize, FontName = FontName, Bold = Bold, Italic = Italic
         };
     }
 
