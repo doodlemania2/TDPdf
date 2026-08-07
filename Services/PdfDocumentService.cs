@@ -145,6 +145,16 @@ namespace TDPdf.Services
             }, cancellationToken);
         }
 
+        /// <summary>
+        /// Side of the square bounding box, in WPF DIPs at layout scale 1, that a page is
+        /// rasterized into for on-screen display. PDFium maps the page's LONGEST side to this and
+        /// scales the other proportionally, so the resulting tile is NOT the page at its natural
+        /// size: it is <c>RenderBoxDip * 72/96 / longestSideInPoints</c> times natural (~1.37x for
+        /// A4, ~1.45x for US Letter). <c>MainWindow.DisplayZoomFactor</c> is that ratio, and is
+        /// what converts the user-facing zoom into the layout scale applied to this tile.
+        /// </summary>
+        internal const int RenderBoxDip = 1536;
+
         public Task<PdfRenderResult> RenderPageAsync(string path, int pageIndex, int dpiX, CancellationToken cancellationToken)
         {
             return Task.Run(() =>
@@ -152,7 +162,7 @@ namespace TDPdf.Services
                 cancellationToken.ThrowIfCancellationRequested();
                 int safeDpiX = Math.Max(1, dpiX);
                 double renderScale = safeDpiX / 96.0;
-                int renderMax = Math.Max(1, (int)Math.Round(1536 * renderScale));
+                int renderMax = Math.Max(1, (int)Math.Round(RenderBoxDip * renderScale));
                 using (var docReader = DocLib.Instance.GetDocReader(path, new PageDimensions(renderMax, renderMax)))
                 using (var pageReader = docReader.GetPageReader(pageIndex))
                 {

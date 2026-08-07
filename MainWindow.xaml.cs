@@ -185,6 +185,10 @@ namespace TDPdf
 
         // Zoom fit-mode tracking (for auto-refit on window resize)
         private ZoomFitMode _zoomFitMode = ZoomFitMode.None;
+        // Vestigial re-entrancy guard around the FitToWidth / FitToPage zoom writes: set and
+        // cleared, never read (hence the CS0414 the build carries). Deliberately left alone —
+        // it is NOT the remembered-fit flag, which is the persisted Settings.DefaultFitMode, and
+        // the resize re-fit it would have guarded is already debounced by _fitResizePending.
         private bool _applyingFitZoom;
         private bool _fitResizePending;
 
@@ -1804,7 +1808,10 @@ namespace TDPdf
 
         private int GetCurrentDpiX()
         {
-            return Math.Max(1, (int)Math.Round(_currentDpiScale * Zoom.ZoomLevel * 96.0));
+            // LayoutZoomScale, not the true zoom: this sizes the RASTER, which has to match the
+            // tile's on-screen pixels 1:1. (Rendering at the true zoom would over-sample by the
+            // display factor and, at 400%, allocate a needlessly larger bitmap.)
+            return Math.Max(1, (int)Math.Round(_currentDpiScale * LayoutZoomScale * 96.0));
         }
 
         private void InvalidateRenderCache()
@@ -1889,6 +1896,17 @@ namespace TDPdf
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
                 _annotationCanvas.Height = renderedPage.DisplayHeight;
+                // #151: the page-number tooltip used to exist only on the SECONDARY tiles, so
+                // whether you got one depended on the view mode — none in Single, none in
+                // Continuous, right-hand page only in Two-Page, from page 2 in Grid. The primary
+                // tile gets it here, kept in step with the page it is showing. No "click to
+                // navigate" hint: clicking the primary tile is what draws/selects, and it is
+                // already the current page. The tooltip goes on the annotation canvas rather than
+                // PageImage because the canvas is the transparent hit-test surface on top of it.
+                _annotationCanvas.ToolTip = $"Page {pageIndex + 1}";
+                // The display factor is per page, so a document of mixed page sizes has to
+                // re-derive the transform when the primary tile changes, at the same true zoom.
+                SyncLayoutZoom();
                 ClearSelection();
                 ClearSecondaryPages();
                 RenderAllAnnotations(pageIndex);
@@ -1992,21 +2010,32 @@ namespace TDPdf
             // (Using viewportW / zoom - pad fills the viewport exactly and leaves no room.)
             double primaryPageW = _annotationCanvas.Width > 0 ? _annotationCanvas.Width : 595;
             double pageSlotW = primaryPageW + 12; // page width + right-gutter margin
-            double availablePreZoom = (viewportW - 24) / Zoom.ZoomLevel; // inner space in pre-zoom coords
-            // Two-Page always shows exactly two columns; Grid wraps to fit the viewport.
-            int pagesPerRow = twoPage ? 2 : Math.Max(1, (int)(availablePreZoom / pageSlotW));
+            // Cap how many secondary pages we render at once. Long documents otherwise
+            // allocate a (potentially multi-MB) bitmap per page on first grid display.
+            // Two-Page renders just the single page to the right of the primary.
+            int maxSecondaryPages = twoPage ? 1 : 25;
+
+            // Inner space in pre-zoom (tile-layout) coords, so it is the LAYOUT scale that divides
+            // out here, not the true zoom — primaryPageW above is a tile width.
+            double availablePreZoom = (viewportW - 24) / Math.Max(0.0001, LayoutZoomScale);
+            // Two-Page always shows exactly two columns; Grid wraps to fit the viewport, but never
+            // claims more columns than there are tiles to put in them. Without that ceiling a very
+            // small page (whose tile is many times its natural size, so its layout scale at the
+            // 5% floor is tiny) would ask the WrapPanel for a width of hundreds of thousands of
+            // DIPs to hold at most 26 pages.
+            int pagesPerRow = twoPage
+                ? 2
+                : Math.Clamp((int)(availablePreZoom / pageSlotW), 1, maxSecondaryPages + 1);
             double panelW = pagesPerRow * pageSlotW;
             if (panelW > 0) _pageContentPanel.Width = panelW;
 
             var dpiInfo = VisualTreeHelper.GetDpi(this);
             double dpiScaleX = dpiInfo.DpiScaleX;
             double dpiScaleY = dpiInfo.DpiScaleY;
-            int scaledMax = (int)(1536 * Math.Max(dpiScaleX, dpiScaleY));
-
-            // Cap how many secondary pages we render at once. Long documents otherwise
-            // allocate a (potentially multi-MB) bitmap per page on first grid display.
-            // Two-Page renders just the single page to the right of the primary.
-            int maxSecondaryPages = twoPage ? 1 : 25;
+            // Same square box as the primary tile (PdfDocumentService.RenderBoxDip), in device
+            // pixels, so grid tiles land on the same DIP size as the primary and the display
+            // factor is one number for the whole wrap panel.
+            int scaledMax = (int)(TDPdf.Services.PdfDocumentService.RenderBoxDip * Math.Max(dpiScaleX, dpiScaleY));
             int lastPage = Math.Min(_doc.PageCount - 1, primaryPageIdx + maxSecondaryPages);
             string currentFile = _currentFile;
 
@@ -2078,7 +2107,31 @@ namespace TDPdf
             }
         }
 
-        private void SetStatus(string text) => StatusText.Text = text;
+        // A "held" status briefly outranks routine ones. Scrolling the wheel over the logo to
+        // resize the app has to show "App size N%", but the chrome resize immediately re-runs the
+        // fit pipeline, whose "Page x of y - 100%" would stomp the readout on the very next
+        // layout pass. While a hold is live, plain SetStatus calls are dropped; the hold refreshes
+        // on every wheel notch and expires on its own, after which normal statuses flow again.
+        // The hold is short and covers only that stomp — the readout's own five-second lifetime is
+        // ShowScaleReadout's job (AppScale.cs). Put here rather than at the ~200 SetStatus callers
+        // because SetBusy / SetFileOperationBusy / SetWorkerStatus all funnel through this line.
+        private DateTime _statusHoldUntil = DateTime.MinValue;
+
+        private void SetStatus(string text)
+        {
+            if (DateTime.UtcNow < _statusHoldUntil) return;   // a held message is showing
+            StatusText.Text = text;
+        }
+
+        /// <summary>
+        /// Writes a status that plain <see cref="SetStatus"/> calls cannot overwrite for
+        /// <paramref name="holdMs"/> milliseconds.
+        /// </summary>
+        private void SetStatusHeld(string text, int holdMs = 1200)
+        {
+            _statusHoldUntil = DateTime.UtcNow.AddMilliseconds(holdMs);
+            StatusText.Text = text;
+        }
 
         private void SetBusy(bool isBusy, string? status = null)
         {
@@ -2260,15 +2313,26 @@ namespace TDPdf
                 primaryBorder.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
             _continuousPanel.Visibility = isContinuous ? Visibility.Visible : Visibility.Collapsed;
 
+            // A fit the user explicitly chose is a standing preference and outranks the
+            // per-view-mode default below (upstream v1.7.1): someone reading on a small screen
+            // should not have to pick Fit Page again for every manual they open.
+            ZoomFitMode preferred = ReadDefaultFitMode();
+
             if (isContinuous)
             {
+                // SetupContinuousView ends in FitToWidth, which is also Continuous's own default;
+                // only a remembered Fit Page has to override it, once the strip exists.
                 SetupContinuousView(Math.Max(0, PageList.SelectedIndex));
+                if (preferred == ZoomFitMode.Page) FitToPage();
                 return;
             }
 
-            // Single / Two-Page open fit-to-page; Grid keeps its column-fit default (fit-width
-            // is a sensible neutral starting zoom that RefreshPageView then column-snaps).
-            if (_viewMode == ViewMode.Single || _viewMode == ViewMode.TwoPage) FitToPage();
+            // Otherwise Single / Two-Page open fit-to-page and Grid keeps its column-fit default
+            // (fit-width is a sensible neutral starting zoom that RefreshPageView then
+            // column-snaps).
+            if (preferred == ZoomFitMode.Width) FitToWidth();
+            else if (preferred == ZoomFitMode.Page) FitToPage();
+            else if (_viewMode == ViewMode.Single || _viewMode == ViewMode.TwoPage) FitToPage();
             else FitToWidth();
             RefreshPageView(_viewMode == ViewMode.Grid ? 0 : Math.Max(0, PageList.SelectedIndex));
         }
@@ -2331,12 +2395,19 @@ namespace TDPdf
                     Margin = new Thickness(0, 0, 0, 12),
                     Background = BrushResource("BgPanel"),
                     Tag = i,
+                    // #151: same page-number tooltip as the wrap-panel tiles — Continuous had none
+                    // at all. Clicking a slot really does select that page, so it keeps the hint.
+                    ToolTip = $"Page {i + 1} — click to navigate",
                     Child = pageImg
                 };
                 placeholder.PreviewMouseLeftButtonDown += (_, _) => SelectContinuousPage(capturedI);
                 _continuousPanel.Children.Add(placeholder);
                 y += slotH + 12;
             }
+
+            // Entering Continuous flips the display factor to 1, so the layout scale for the zoom
+            // already in force changes even though the zoom itself has not.
+            SyncLayoutZoom();
 
             // Continuous opens fit-to-width per the open-fit rules.
             FitToWidth();
@@ -10848,16 +10919,22 @@ namespace TDPdf
             else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
                 _zoomFitMode = ZoomFitMode.None;
-                Zoom.SetZoomLevel(1.0);   // actual size
+                // Actual size — a true 100% in every view mode, because Zoom.ZoomLevel is true
+                // zoom and MainWindow converts to the tile's layout scale (DisplayZoomFactor).
+                Zoom.SetZoomLevel(1.0);
                 e.Handled = true;
             }
+            // Ctrl+2 / Ctrl+3 are an explicit fit choice, so they are remembered for the next
+            // document opened (upstream v1.7.1).
             else if (e.Key == Key.D2 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
+                SaveDefaultFitMode(ZoomFitMode.Width);
                 FitToWidth();
                 e.Handled = true;
             }
             else if (e.Key == Key.D3 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
+                SaveDefaultFitMode(ZoomFitMode.Page);
                 FitToPage();
                 e.Handled = true;
             }
@@ -13976,6 +14053,10 @@ namespace TDPdf
 
         private void ChangeZoomByCommand(ZoomChange change)
         {
+            // An explicit zoom stops the view tracking the window size, exactly as the equivalent
+            // toolbar buttons do. Without this, Ctrl+0 landed on 100% and then the next window
+            // resize snapped straight back to the fit it was on.
+            _zoomFitMode = ZoomFitMode.None;
             switch (change)
             {
                 case ZoomChange.In:
@@ -13985,6 +14066,8 @@ namespace TDPdf
                     Zoom.ZoomOut();
                     break;
                 case ZoomChange.Reset:
+                    // True 100%, in every view mode: Zoom.ZoomLevel is true zoom (see
+                    // DisplayZoomFactor), so this needs no per-view-mode conversion.
                     Zoom.Reset();
                     break;
             }
@@ -13996,13 +14079,78 @@ namespace TDPdf
 
         private void ResetZoom_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.Reset(); }
 
-        private void ApplyZoom()
+        // ============================================================
+        // True zoom vs. layout scale        (#154, upstream "true 100%")
+        // ============================================================
+        //
+        // Zoom.ZoomLevel is TRUE zoom: 1.0 = the page at natural size, 1 PDF point = 1/72".
+        // The thing the ScaleTransform actually scales, though, is the page TILE, and outside
+        // Continuous view that tile is the render-dimension bitmap, not the natural page:
+        //
+        //   PdfDocumentService.RenderPageAsync rasterizes into a square box of
+        //   RenderBoxDip * renderScale pixels, so the page's LONGEST side lands on RenderBoxDip
+        //   DIPs and the tile's DIP width is RenderBoxDip * widthPt / longestPt. The natural DIP
+        //   width is widthPt * 96/72, so
+        //
+        //       tileDip / naturalDip = RenderBoxDip * 72/96 / longestPt = 1152 / longestPt
+        //
+        //   which is ~1.37 for A4 (longest 841.89 pt) and ~1.45 for US Letter (792 pt). Note it
+        //   depends only on the LONGEST side, so a 90/270 page rotation cannot change it.
+        //
+        // Continuous view is exempt: SetupContinuousView lays its slots out against the natural
+        // width (_continuousPageW = Width.Point * 96/72), so its factor is 1 and its zoom already
+        // read as true zoom — which is why 100% used to mean two different sizes depending on the
+        // view mode. Everything user-facing (presets, the readout, the min/max clamp) lives in
+        // true zoom; only the three places that touch layout convert, via LayoutZoomScale.
+        private double DisplayZoomFactor()
+        {
+            if (_viewMode == ViewMode.Continuous || _doc is null) return 1.0;
+            // The page in the PRIMARY tile, which is what the transform is being sized against.
+            // RenderPage stamps it on PageImage.Tag; before the first render fall back to the
+            // sidebar selection.
+            int idx = PageImage.Tag is int tagged ? tagged : PageList.SelectedIndex;
+            if (idx < 0 || idx >= _doc.PageCount) return 1.0;
+            var page = _doc.Pages[idx];
+            double longestPt = Math.Max(page.Width.Point, page.Height.Point);
+            if (longestPt <= 0) return 1.0;
+            return TDPdf.Services.PdfDocumentService.RenderBoxDip * (72.0 / 96.0) / longestPt;
+        }
+
+        /// <summary>
+        /// The current true zoom expressed as the scale the page tile's layout box needs — the
+        /// value for the ScaleTransform, the render DPI, and any arithmetic in pre-zoom
+        /// (tile-layout) coordinates. Identity with <see cref="ZoomViewModel.ZoomLevel"/> in
+        /// Continuous view.
+        /// </summary>
+        private double LayoutZoomScale
+        {
+            get
+            {
+                double factor = DisplayZoomFactor();
+                return factor > 0 ? Zoom.ZoomLevel / factor : Zoom.ZoomLevel;
+            }
+        }
+
+        /// <summary>
+        /// Pushes the current true zoom onto the page transform. Separate from
+        /// <see cref="ApplyZoom"/> because the conversion depends on the page in the primary tile
+        /// and the view mode, so it also has to run when THOSE change at a constant zoom (a
+        /// document of mixed page sizes, or entering Continuous) — and unlike ApplyZoom it neither
+        /// re-renders nor persists, so RenderPage can call it without recursing.
+        /// </summary>
+        private void SyncLayoutZoom()
         {
             if (_pageContentGrid.LayoutTransform is ScaleTransform st)
             {
-                st.ScaleX = Zoom.ZoomLevel;
-                st.ScaleY = Zoom.ZoomLevel;
+                double scale = LayoutZoomScale;
+                st.ScaleX = scale;
+                st.ScaleY = scale;
             }
+        }
+
+        private void ApplyZoom()
+        {
+            SyncLayoutZoom();
             CommitActiveTextBox();
             SaveZoomSetting();
 
@@ -14032,6 +14180,12 @@ namespace TDPdf
             }
         }
 
+        // Persists TRUE zoom (see DisplayZoomFactor), which is also what the ctor restores, so the
+        // stored number means the percentage the user last saw. An older user.config holds the old
+        // layout-scale value; reinterpreting it is harmless because the two spaces share the same
+        // 5%-400% range and the layout scale was always the LARGER of the pair, so the worst an
+        // upgrade can do is open ~27-31% smaller once — and ApplyViewModeOnOpen re-fits on the
+        // first document anyway.
         private void SaveZoomSetting()
         {
             try
@@ -14048,19 +14202,53 @@ namespace TDPdf
         private void ZoomBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_zoomBox?.SelectedItem is not ZoomLevelOption option) return;
-            if (option.IsFitWidth) { FitToWidth(); return; }
-            if (option.IsFitPage) { FitToPage(); return; }
+            // Picking a fit from the dropdown is an explicit preference, so it is remembered and
+            // applied to the next document opened (upstream v1.7.1).
+            if (option.IsFitWidth) { SaveDefaultFitMode(ZoomFitMode.Width); FitToWidth(); return; }
+            if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             // User picked an explicit zoom level — stop tracking the window size.
             _zoomFitMode = ZoomFitMode.None;
             if (option.ZoomLevel is double zoom) Zoom.SetZoomLevel(zoom);
         }
 
+        // ============================================================
+        // Remembered fit mode              (upstream v1.7.1)
+        // ============================================================
+        //
+        // Only the two EXPLICIT ways to ask for a fit write this — the zoom dropdown and
+        // Ctrl+2 / Ctrl+3. The fits the app applies for you (on open, on a view-mode switch, on a
+        // window resize) deliberately do not, or the preference could never differ from whatever
+        // the last view mode happened to want.
+        private static void SaveDefaultFitMode(ZoomFitMode mode)
+        {
+            try
+            {
+                TDPdf.Properties.Settings.Default.DefaultFitMode = mode.ToString();
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            catch { /* non-critical user preference */ }
+        }
+
+        /// <summary>The remembered fit preference, or <c>None</c> when the user has never set one.</summary>
+        private static ZoomFitMode ReadDefaultFitMode()
+        {
+            try
+            {
+                return Enum.TryParse<ZoomFitMode>(TDPdf.Properties.Settings.Default.DefaultFitMode, out var mode)
+                    ? mode : ZoomFitMode.None;
+            }
+            catch { return ZoomFitMode.None; }
+        }
+
+        // The fits are computed against the LAYOUT boxes on screen (the tile, or the continuous
+        // slot) and then multiplied back through DisplayZoomFactor, because Zoom.SetZoomLevel now
+        // takes true zoom. Equivalently: viewW / naturalWidthInDips.
         private void FitToWidth()
         {
             double viewW = PagePreviewPanel.ActualWidth - 40;
             if (viewW <= 0) return;
             // Continuous view fits against the strip's natural page width (zoom-independent), not
-            // the hidden primary PageImage.
+            // the hidden primary PageImage. Its display factor is 1, so no conversion.
             if (_viewMode == ViewMode.Continuous)
             {
                 if (_continuousPageW <= 0) return;
@@ -14073,19 +14261,42 @@ namespace TDPdf
             if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
             _zoomFitMode = ZoomFitMode.Width;
             _applyingFitZoom = true;
-            try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth); }
+            try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth * DisplayZoomFactor()); }
             finally { _applyingFitZoom = false; }
         }
 
         private void FitToPage()
         {
-            if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
             double viewW = PagePreviewPanel.ActualWidth - 40;
             double viewH = PagePreviewPanel.ActualHeight - 40;
             if (viewW <= 0 || viewH <= 0) return;
+            // Continuous: the primary PageImage is collapsed there, so its ActualWidth is 0 and
+            // this used to silently do nothing (Ctrl+3 and a remembered Fit Page were both dropped
+            // in Continuous). Fit against the strip's own slot geometry instead — natural width by
+            // the current page's natural height, both already in true-zoom space.
+            if (_viewMode == ViewMode.Continuous)
+            {
+                if (_doc is null || _doc.PageCount == 0 || _continuousPageW <= 0) return;
+                int idx = Math.Clamp(PageList.SelectedIndex, 0, _doc.PageCount - 1);
+                var slotPage = _doc.Pages[idx];
+                double pw = slotPage.Width.Point, ph = slotPage.Height.Point;
+                int rot = ((slotPage.Rotate % 360) + 360) % 360;
+                if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
+                double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
+                _zoomFitMode = ZoomFitMode.Page;
+                _applyingFitZoom = true;
+                try { Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH)); }
+                finally { _applyingFitZoom = false; }
+                return;
+            }
+            if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
             _zoomFitMode = ZoomFitMode.Page;
             _applyingFitZoom = true;
-            try { Zoom.SetZoomLevel(Math.Min(viewW / PageImage.ActualWidth, viewH / PageImage.ActualHeight)); }
+            try
+            {
+                Zoom.SetZoomLevel(Math.Min(viewW / PageImage.ActualWidth, viewH / PageImage.ActualHeight)
+                                  * DisplayZoomFactor());
+            }
             finally { _applyingFitZoom = false; }
         }
 

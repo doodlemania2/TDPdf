@@ -24,12 +24,28 @@ namespace TDPdf.Properties
             set => this[nameof(UseNativeWindowFrame)] = value;
         }
 
+        // Last page zoom, as TRUE zoom (1 = the page at natural size, which is the percentage the
+        // status bar and the zoom box show). See MainWindow.DisplayZoomFactor for why that is not
+        // the same number as the ScaleTransform outside Continuous view.
         [UserScopedSetting]
         [DefaultSettingValue("1")]
         public double LastZoomLevel
         {
             get => (double)this[nameof(LastZoomLevel)];
             set => this[nameof(LastZoomLevel)] = value;
+        }
+
+        // Remembered fit preference (upstream v1.7.1). One of the ZoomFitMode enum names:
+        // "None" (default), "Width", "Page". Written only when the user explicitly picks Fit Width
+        // or Fit Page — the zoom dropdown, or Ctrl+2 / Ctrl+3 — never by a fit the app applies on
+        // its own. When set it wins over the per-view-mode open rule in ApplyViewModeOnOpen, so
+        // someone on a small screen does not have to choose Fit Page again for every document.
+        [UserScopedSetting]
+        [DefaultSettingValue("None")]
+        public string DefaultFitMode
+        {
+            get => (string)this[nameof(DefaultFitMode)];
+            set => this[nameof(DefaultFitMode)] = value;
         }
 
         // When true (default), launching TDPdf while it is already running
