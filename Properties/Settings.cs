@@ -48,6 +48,34 @@ namespace TDPdf.Properties
             set => this[nameof(DefaultFitMode)] = value;
         }
 
+        // The manual zoom the user last chose explicitly — the zoom dropdown, Ctrl+0 / Ctrl+1, the
+        // zoom buttons, or Ctrl+wheel — as TRUE zoom, or 0 when the last explicit choice was a FIT
+        // (see DefaultFitMode, which this is the other half of). Restored on open by
+        // ApplyViewModeOnOpen (upstream KillerPDF #201). Only an EXPLICIT manual zoom is ever
+        // written here: a zoom the app computed for you (a fit on open, on a view-mode switch, on a
+        // window resize) leaves it alone, so a raw number derived from a different window or monitor
+        // size can never be replayed. Values are clamped to ZoomViewModel's 5%-400% range on the way
+        // back in, so even a hand-edited user.config cannot open a document enormous or microscopic.
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public double LastManualZoom
+        {
+            get => (double)this[nameof(LastManualZoom)];
+            set => this[nameof(LastManualZoom)] = value;
+        }
+
+        // "Book layout" for Two-Page view (upstream KillerPDF #193). False (default) pairs facing
+        // pages (0,1), (2,3)…; True displays the COVER ALONE so the pairs run like a physical book —
+        // page 1 on its own, then 2-3, 4-5. Like ViewMode this is an app-wide reading preference
+        // rather than per-document, so every tab shows the same pairing.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool TwoPageBookLayout
+        {
+            get => (bool)this[nameof(TwoPageBookLayout)];
+            set => this[nameof(TwoPageBookLayout)] = value;
+        }
+
         // When true (default), launching TDPdf while it is already running
         // (e.g. double-clicking another PDF in Explorer) forwards the file to
         // the existing window as a new tab instead of opening a second window.

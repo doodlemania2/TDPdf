@@ -186,6 +186,13 @@ namespace TDPdf
 
         // Zoom fit-mode tracking (for auto-refit on window resize)
         private ZoomFitMode _zoomFitMode = ZoomFitMode.None;
+        // #201: true while the zoom on screen is one the USER asked for by hand, rather than one
+        // the app computed. Only the explicit manual paths raise it (BeginManualZoom); the two fits
+        // lower it. SaveZoomSetting persists the level as Settings.LastManualZoom only while it is
+        // up, which is what stops an app-applied fit from ever being replayed as a raw number on
+        // the next open — and what stops a remembered Fit Width being quietly overwritten when a
+        // fit early-returns and leaves _zoomFitMode reading None.
+        private bool _manualZoomIntent;
         // Vestigial re-entrancy guard around the FitToWidth / FitToPage zoom writes: set and
         // cleared, never read (hence the CS0414 the build carries). Deliberately left alone —
         // it is NOT the remembered-fit flag, which is the persisted Settings.DefaultFitMode, and
@@ -287,6 +294,10 @@ namespace TDPdf
         private Button _invertColorsBtn = null!;
         private MenuItem _invertColorsMenuItem = null!;
         private MenuItem _invertImagesMenuItem = null!;
+        private MenuItem _twoPageBookMenuItem = null!;
+        private Border _pageBadge = null!;
+        private TextBlock _pageBadgeText = null!;
+        private TranslateTransform _pageBadgeSlide = null!;
 
         // The primary page's TRUE-color bitmap, mirroring whatever RenderPage put in PageImage.
         // PageImage.Source may be the display-only inverted copy (#135), and the image-edit tool
@@ -300,6 +311,30 @@ namespace TDPdf
         // ============================================================
         private enum ViewMode { Single, Continuous, TwoPage, Grid }
         private ViewMode _viewMode = ViewMode.Grid;
+
+        // ── Two-Page "book layout" (upstream KillerPDF #193) ───────────────────────────────────
+        // Off (default) is the pairing Two-Page has always used: the primary page plus the one
+        // after it. On, the COVER displays ALONE, so paging forward runs 1 | 2-3 | 4-5 … the way a
+        // physical book falls open. App-wide reading preference, persisted like ViewMode itself.
+        private bool _twoPageBook;
+
+        /// <summary>
+        /// Index of the LEFT page of the spread containing <paramref name="page"/> under the active
+        /// Two-Page pairing. Book layout leaves the cover on its own, so its spreads start on ODD
+        /// indices; the classic pairing starts on even ones.
+        /// </summary>
+        private int SpreadStart(int page) =>
+            page <= 0 ? 0
+            : _twoPageBook ? page - ((page + 1) % 2)
+            : page - page % 2;
+
+        /// <summary>
+        /// True when the tile at <paramref name="primaryPageIdx"/> is a book layout's lone cover —
+        /// a ONE-page row with no facing page, so it must not be sized for two slots and must drop
+        /// the spread gap, or it hangs left of an empty half and reads as left-aligned.
+        /// </summary>
+        private bool IsBookCoverRow(int primaryPageIdx) =>
+            _viewMode == ViewMode.TwoPage && _twoPageBook && primaryPageIdx == 0;
 
         // Continuous-view state.
         private StackPanel _continuousPanel = null!;
@@ -410,11 +445,19 @@ namespace TDPdf
             _invertColorsBtn = (Button)FindName("InvertColorsBtn")!;
             _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
             _invertImagesMenuItem = (MenuItem)FindName("InvertImagesMenuItem")!;
+            _twoPageBookMenuItem = (MenuItem)FindName("TwoPageBookMenuItem")!;
+            _pageBadge = (Border)FindName("PageBadge")!;
+            _pageBadgeText = (TextBlock)FindName("PageBadgeText")!;
+            _pageBadgeSlide = (TranslateTransform)FindName("PageBadgeSlide")!;
             _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
             // Restore the persisted view mode (defaults to Grid, matching the original layout).
             if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
                 _viewMode = savedVm;
             _gridViewToggle.IsChecked = _viewMode == ViewMode.Grid;
+            // #193: restore the persisted Two-Page book layout and light its View-menu check.
+            try { _twoPageBook = TDPdf.Properties.Settings.Default.TwoPageBookLayout; }
+            catch { /* non-critical user preference */ }
+            _twoPageBookMenuItem.IsChecked = _twoPageBook;
             PagePreviewPanel.ScrollChanged += PagePreviewPanel_ScrollChanged;
             PreviewMouseDown += NavHistory_PreviewMouseDown;   // mouse back/forward buttons = jump history
             _zoomBox = (ComboBox)FindName("ZoomBox")!;
@@ -2031,14 +2074,9 @@ namespace TDPdf
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
                 _annotationCanvas.Height = renderedPage.DisplayHeight;
-                // #151: the page-number tooltip used to exist only on the SECONDARY tiles, so
-                // whether you got one depended on the view mode — none in Single, none in
-                // Continuous, right-hand page only in Two-Page, from page 2 in Grid. The primary
-                // tile gets it here, kept in step with the page it is showing. No "click to
-                // navigate" hint: clicking the primary tile is what draws/selects, and it is
-                // already the current page. The tooltip goes on the annotation canvas rather than
-                // PageImage because the canvas is the transparent hit-test surface on top of it.
-                _annotationCanvas.ToolTip = $"Page {pageIndex + 1}";
+                // #197: the cursor-trailing page tooltip added by #151 is gone — the viewport-corner
+                // badge announces the page instead, in one fixed place, for every view mode.
+                ShowPageBadge(pageIndex);
                 // The display factor is per page, so a document of mixed page sizes has to
                 // re-derive the transform when the primary tile changes, at the same true zoom.
                 SyncLayoutZoom();
@@ -2105,6 +2143,19 @@ namespace TDPdf
         }
 
         /// <summary>
+        /// Keeps the primary page tile's margin in step with the pairing (#193). Every mode but a
+        /// book layout's lone cover keeps the XAML default 0,0,12,12: the right 12px is the spread
+        /// gutter between the two pages of a Two-Page spread (and the column gutter in Grid), and
+        /// the bottom 12px is the row gutter. The cover has nothing to its right, so the gutter
+        /// would make it hang left of an empty half.
+        /// </summary>
+        private void SyncPrimaryTileMargin(bool bookCover)
+        {
+            if (_pageContentPanel.Children.Count > 0 && _pageContentPanel.Children[0] is Border primaryBorder)
+                primaryBorder.Margin = bookCover ? new Thickness(0, 0, 0, 12) : new Thickness(0, 0, 12, 12);
+        }
+
+        /// <summary>
         /// Renders all remaining pages as a grid that wraps based on available viewport width.
         /// The WrapPanel's Width is set to viewport/zoom so WPF handles row-breaking automatically.
         /// Each secondary page is click-to-navigate; annotation tools only work on the primary page.
@@ -2124,6 +2175,12 @@ namespace TDPdf
             // Only Grid and Two-Page render secondary tiles into the wrap panel. Single and
             // Continuous never do (Continuous uses its own ContinuousPanel).
             bool twoPage = _viewMode == ViewMode.TwoPage;
+            // #193 pairing site 1 of 4: the primary tile's own margin. Book layout's cover has no
+            // facing page, so it drops the 12px spread gap and centres like a single page instead
+            // of hanging left of an empty slot. Set before the early return below so leaving the
+            // cover (or leaving Two-Page altogether) always puts the gap back.
+            bool bookCover = IsBookCoverRow(primaryPageIdx);
+            SyncPrimaryTileMargin(bookCover);
             if (!_gridViewEnabled && !twoPage)
             {
                 _pageContentPanel.Width = double.NaN;
@@ -2144,11 +2201,16 @@ namespace TDPdf
             // Border always has room to be centered by HorizontalAlignment="Center".
             // (Using viewportW / zoom - pad fills the viewport exactly and leaves no room.)
             double primaryPageW = _annotationCanvas.Width > 0 ? _annotationCanvas.Width : 595;
-            double pageSlotW = primaryPageW + 12; // page width + right-gutter margin
+            // #193 pairing site 2 of 4: the slot width. A book cover is a ONE-page row, and its
+            // tile carries no right margin (SyncPrimaryTileMargin above), so its slot is the bare
+            // page — otherwise the 12px gutter is counted into a one-slot panel and the cover sits
+            // 6px left of centre.
+            double pageSlotW = primaryPageW + (bookCover ? 0 : 12); // page width + right-gutter margin
             // Cap how many secondary pages we render at once. Long documents otherwise
             // allocate a (potentially multi-MB) bitmap per page on first grid display.
-            // Two-Page renders just the single page to the right of the primary.
-            int maxSecondaryPages = twoPage ? 1 : 25;
+            // Two-Page renders just the single page to the right of the primary — except a book
+            // layout's cover (#193 pairing site 3 of 4), which has no partner at all.
+            int maxSecondaryPages = twoPage ? (bookCover ? 0 : 1) : 25;
 
             // Inner space in pre-zoom (tile-layout) coords, so it is the LAYOUT scale that divides
             // out here, not the true zoom — primaryPageW above is a tile width.
@@ -2158,8 +2220,11 @@ namespace TDPdf
             // small page (whose tile is many times its natural size, so its layout scale at the
             // 5% floor is tiny) would ask the WrapPanel for a width of hundreds of thousands of
             // DIPs to hold at most 26 pages.
+            // #193 pairing site 4 of 4: sizing the panel for TWO slots parks a lone book cover in
+            // the left half of a centred two-slot panel, which reads as left-aligned. One page in
+            // the row means one slot.
             int pagesPerRow = twoPage
-                ? 2
+                ? (bookCover ? 1 : 2)
                 : Math.Clamp((int)(availablePreZoom / pageSlotW), 1, maxSecondaryPages + 1);
             double panelW = pagesPerRow * pageSlotW;
             if (panelW > 0) _pageContentPanel.Width = panelW;
@@ -2231,13 +2296,18 @@ namespace TDPdf
                 var img = new Image { Source = bitmap, Stretch = Stretch.None };
                 RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
 
+                // #197: no per-tile page tooltip anymore — it trailed the cursor across the tiles
+                // and read as noise; the corner badge is the page indicator now. The name stays as
+                // an AutomationProperties value so a screen reader can still identify the tile,
+                // which is all the tooltip ever contributed to the accessibility tree.
                 var overlay = new Canvas
                 {
                     Width = w, Height = h,
                     Background = Brushes.Transparent,
-                    Cursor = Cursors.Hand,
-                    ToolTip = $"Page {pi + 1} — click to navigate"
+                    Cursor = Cursors.Hand
                 };
+                AutomationProperties.SetName(overlay, $"Page {pi + 1}");
+                AutomationProperties.SetHelpText(overlay, "Click to make this the current page.");
                 overlay.PreviewMouseLeftButtonDown += (_, _) => PageList.SelectedIndex = pi;
 
                 var pageGrid = new Grid();
@@ -2450,6 +2520,39 @@ namespace TDPdf
             });
         }
 
+        // ── Two-Page book layout (upstream KillerPDF #193) ─────────────────────────────────────
+
+        private void TwoPageBook_Click(object sender, RoutedEventArgs e) => ToggleTwoPageBook(!_twoPageBook);
+
+        /// <summary>
+        /// Turns the Two-Page book layout on or off, persists it, and re-pairs the spread that is
+        /// on screen. Available from any view mode — it is a standing preference for how Two-Page
+        /// pairs, so it can be set before switching into Two-Page — but it only changes pixels
+        /// while Two-Page is the active mode.
+        /// </summary>
+        private void ToggleTwoPageBook(bool on)
+        {
+            _twoPageBook = on;
+            _twoPageBookMenuItem.IsChecked = on;
+            try
+            {
+                TDPdf.Properties.Settings.Default.TwoPageBookLayout = on;
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            catch { /* non-critical user preference */ }
+            SetStatus(on ? "Book layout on - the cover shows alone" : "Book layout off - pages pair from the cover");
+            if (_doc is null || _viewMode != ViewMode.TwoPage) return;
+            // Re-pair what is on screen. Toggling is an explicit request about pairing, so unlike
+            // every other navigation path it is allowed to move the selection onto the new spread's
+            // left page; the selection IS the primary tile here (see NavigatePageStep).
+            int cur = Math.Max(0, PageList.SelectedIndex);
+            int start = SpreadStart(cur);
+            if (start != cur) { PageList.SelectedIndex = start; return; }   // SelectionChanged re-renders
+            RenderPage(start);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                () => RefreshPageView(start));
+        }
+
         /// <summary>
         /// Applies the persisted view mode's layout and open-fit rule when a document is first
         /// opened (the mode itself doesn't change, so SetViewMode's no-op guard would skip this).
@@ -2468,24 +2571,74 @@ namespace TDPdf
             // per-view-mode default below (upstream v1.7.1): someone reading on a small screen
             // should not have to pick Fit Page again for every manual they open.
             ZoomFitMode preferred = ReadDefaultFitMode();
+            // #201 (upstream KillerPDF): a manual zoom is just as much a standing preference as a
+            // fit, and until now every open threw it away. ReadLastManualZoom is non-zero only when
+            // the user's LAST EXPLICIT zoom decision was a manual one — picking Fit Width or Fit
+            // Page clears it (SaveDefaultFitMode) and the fits the app applies for you never write
+            // it, so the number here is always one a person typed, picked or wheeled, never one
+            // derived from a window we no longer have. That is what keeps the old "raw zoom saved
+            // at a different window or monitor size opens the document enormous or microscopic"
+            // failure from coming back: a FIT is replayed as a fit against the CURRENT window
+            // (window-relative by definition), and only a deliberate manual zoom is replayed as a
+            // number — clamped to ZoomViewModel's 5%-400% range on the way in.
+            double manualZoom = ReadLastManualZoom();
+            bool restoreManual = preferred == ZoomFitMode.None && manualZoom > 0;
 
             if (isContinuous)
             {
                 // SetupContinuousView ends in FitToWidth, which is also Continuous's own default;
-                // only a remembered Fit Page has to override it, once the strip exists.
+                // only a remembered Fit Page — or a remembered manual zoom — has to override it,
+                // once the strip exists.
                 SetupContinuousView(Math.Max(0, PageList.SelectedIndex));
                 if (preferred == ZoomFitMode.Page) FitToPage();
+                else if (restoreManual) ApplyRestoredManualZoom(manualZoom);
+                FocusDocumentSurface();
                 return;
             }
 
             // Otherwise Single / Two-Page open fit-to-page and Grid keeps its column-fit default
             // (fit-width is a sensible neutral starting zoom that RefreshPageView then
-            // column-snaps).
+            // column-snaps). Grid is excluded from the manual restore: its zoom is not a free
+            // number but a column count RefreshPageView immediately snaps back, so replaying one
+            // would only produce a fight it always loses.
             if (preferred == ZoomFitMode.Width) FitToWidth();
             else if (preferred == ZoomFitMode.Page) FitToPage();
+            else if (restoreManual && _viewMode != ViewMode.Grid) ApplyRestoredManualZoom(manualZoom);
             else if (_viewMode == ViewMode.Single || _viewMode == ViewMode.TwoPage) FitToPage();
             else FitToWidth();
             RefreshPageView(_viewMode == ViewMode.Grid ? 0 : Math.Max(0, PageList.SelectedIndex));
+            FocusDocumentSurface();
+        }
+
+        /// <summary>
+        /// Restores a remembered manual zoom (#201). Clears the fit tracking first, so the very
+        /// next window resize does not snap the restored zoom away to a fit the user never asked
+        /// for; <see cref="ZoomViewModel.SetZoomLevel"/> coerces the value into the 5%-400% range.
+        /// </summary>
+        private void ApplyRestoredManualZoom(double zoom)
+        {
+            _zoomFitMode = ZoomFitMode.None;
+            _manualZoomIntent = true;   // the restored zoom IS the standing manual preference
+            Zoom.SetZoomLevel(zoom);
+        }
+
+        /// <summary>
+        /// Puts keyboard focus on the document surface after a document opens (#196, upstream
+        /// KillerPDF). Without it focus sat on the Open button — most visibly when TDPdf was
+        /// launched from Explorer or the command line — so the ScrollViewer's OWN keyboard
+        /// scrolling (Space / Shift+Space, and the arrow keys inside a page zoomed past the
+        /// viewport) did nothing until the user clicked the page. This is narrower than it sounds:
+        /// arrow and PgUp/PgDn PAGING already worked from anywhere, because OnPreviewKeyDown claims
+        /// those at the window level. Never steals the caret from someone already typing — the find
+        /// bar, the page-jump box, a form field or the editable zoom combo all keep focus.
+        /// </summary>
+        private void FocusDocumentSurface()
+        {
+            if (_doc is null || PagePreviewPanel.Visibility != Visibility.Visible) return;
+            // Same three surfaces OnPreviewKeyDown steps aside for, in the same order: a live
+            // annotation text box, an inline bookmark rename, and any other caret-bearing control.
+            if (_activeTextBox is { IsFocused: true } || _bmRenaming || IsTypingTarget()) return;
+            PagePreviewPanel.Focus();
         }
 
         // ============================================================
@@ -2546,11 +2699,13 @@ namespace TDPdf
                     Margin = new Thickness(0, 0, 0, 12),
                     Background = BrushResource("BgPanel"),
                     Tag = i,
-                    // #151: same page-number tooltip as the wrap-panel tiles — Continuous had none
-                    // at all. Clicking a slot really does select that page, so it keeps the hint.
-                    ToolTip = $"Page {i + 1} — click to navigate",
                     Child = pageImg
                 };
+                // #197: the #151 slot tooltip is gone with the rest of them — in a continuous strip
+                // a tooltip that follows the cursor down the whole document was the worst offender.
+                // The accessible name stays so the slot is still identifiable to a screen reader.
+                AutomationProperties.SetName(placeholder, $"Page {i + 1}");
+                AutomationProperties.SetHelpText(placeholder, "Click to make this the current page.");
                 placeholder.PreviewMouseLeftButtonDown += (_, _) => SelectContinuousPage(capturedI);
                 _continuousPanel.Children.Add(placeholder);
                 y += slotH + 12;
@@ -3017,6 +3172,67 @@ namespace TDPdf
                 (Action)(() => _suppressContinuousScrollSync = false));
         }
 
+        // ── Current-page badge (upstream KillerPDF #197) ───────────────────────────────────────
+        // One "page / total" chip in the viewport's bottom-right corner, replacing the per-tile
+        // page tooltips (#151) that trailed the cursor and read as noise. It slides up on real
+        // scrolling and on a page change, then slides back down once the view has been still for a
+        // moment. Suppressed entirely for a one-page document, where it would only ever say
+        // "1 / 1". The badge lives outside the page tiles and is IsHitTestVisible="False", so it
+        // can never intercept a page click.
+        private System.Windows.Threading.DispatcherTimer? _pageBadgeTimer;
+
+        private const double PageBadgeHiddenY = 46;
+
+        private void ShowPageBadge(int page)
+        {
+            if (_doc is null || _doc.PageCount < 2) return;
+            if (page < 0 || page >= _doc.PageCount) return;
+            _pageBadgeText.Text = $"{page + 1} / {_doc.PageCount}";
+            _pageBadgeSlide.BeginAnimation(TranslateTransform.YProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(140))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                        { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut }
+                });
+            _pageBadge.BeginAnimation(OpacityProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(120)));
+            if (_pageBadgeTimer is null)
+            {
+                _pageBadgeTimer = new System.Windows.Threading.DispatcherTimer
+                    { Interval = TimeSpan.FromMilliseconds(900) };
+                _pageBadgeTimer.Tick += (_, _) =>
+                {
+                    _pageBadgeTimer?.Stop();
+                    _pageBadgeSlide.BeginAnimation(TranslateTransform.YProperty,
+                        new System.Windows.Media.Animation.DoubleAnimation(
+                            PageBadgeHiddenY, TimeSpan.FromMilliseconds(220))
+                        {
+                            EasingFunction = new System.Windows.Media.Animation.CubicEase
+                                { EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn }
+                        });
+                    _pageBadge.BeginAnimation(OpacityProperty,
+                        new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(220)));
+                };
+            }
+            _pageBadgeTimer.Stop();
+            _pageBadgeTimer.Start();
+        }
+
+        /// <summary>
+        /// Drops the badge immediately, without the slide-out. Used when the document goes away:
+        /// the idle timer would otherwise leave it hanging over the start screen for up to a
+        /// second. Clearing the animations first is what lets the plain property assignments take
+        /// effect — a running animation outranks a local value.
+        /// </summary>
+        private void HidePageBadgeNow()
+        {
+            _pageBadgeTimer?.Stop();
+            _pageBadgeSlide.BeginAnimation(TranslateTransform.YProperty, null);
+            _pageBadge.BeginAnimation(OpacityProperty, null);
+            _pageBadgeSlide.Y = PageBadgeHiddenY;
+            _pageBadge.Opacity = 0;
+        }
+
         /// <summary>
         /// Tracks scroll position in continuous view: updates the page-number box and the sidebar
         /// thumbnail selection to whichever page is nearest the viewport center.
@@ -3027,7 +3243,9 @@ namespace TDPdf
             // statusbar page counter tracks scrolling instead of pointing at the last-clicked page.
             // We update only the counter, NOT PageList.SelectedIndex — in Grid a selection change
             // scroll-jumps and re-renders (PageList_SelectionChanged), which would fight the scroll.
-            if (_viewMode == ViewMode.Grid) { UpdateGridCurrentPageCounter(); return; }
+            // #197: a real vertical scroll surfaces the corner badge too. Grid's nearest-tile search
+            // already runs here, so it reports the page rather than repeating the hunt.
+            if (_viewMode == ViewMode.Grid) { UpdateGridCurrentPageCounter(e.VerticalChange != 0); return; }
 
             if (_viewMode != ViewMode.Continuous || _continuousTops.Count == 0) return;
             // #85: once scrolling settles, sharpen the pages now in view and release the ones that
@@ -3051,6 +3269,9 @@ namespace TDPdf
                 if (dist < minDist) { minDist = dist; nearest = i; }
             }
 
+            // #197: surface the position badge on real scrolling, whichever page ends up nearest.
+            if (e.VerticalChange != 0) ShowPageBadge(nearest);
+
             if (PageList.SelectedIndex != nearest)
             {
                 _pageJumpBox.Text = (nearest + 1).ToString();
@@ -3066,7 +3287,7 @@ namespace TDPdf
         // primary PageImage tagged in RenderPage, secondaries when appended). Uses TranslatePoint on
         // both tile edges so any grid zoom transform is accounted for. Deliberately leaves
         // PageList.SelectedIndex untouched (a Grid selection change scroll-jumps and re-renders).
-        private void UpdateGridCurrentPageCounter()
+        private void UpdateGridCurrentPageCounter(bool showBadge = false)
         {
             if (_doc is null || _pageContentPanel.Children.Count == 0) return;
             double viewportCenterY = PagePreviewPanel.ViewportHeight * 0.5;
@@ -3086,7 +3307,10 @@ namespace TDPdf
                 catch { /* transform can fail mid-layout; skip this tile */ }
             }
             if (nearestPage >= 0)
+            {
                 _pageJumpBox.Text = (nearestPage + 1).ToString();
+                if (showBadge) ShowPageBadge(nearestPage);   // #197
+            }
         }
 
         // ============================================================
@@ -11289,7 +11513,7 @@ namespace TDPdf
             // stays the existing 100% reset. (Upstream v1.6.4)
             else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
-                _zoomFitMode = ZoomFitMode.None;
+                BeginManualZoom();
                 // Actual size — a true 100% in every view mode, because Zoom.ZoomLevel is true
                 // zoom and MainWindow converts to the tile's layout scale (DisplayZoomFactor).
                 Zoom.SetZoomLevel(1.0);
@@ -11355,6 +11579,21 @@ namespace TDPdf
                      && ShortcutOverlay.Visibility != Visibility.Visible)
             {
                 ToggleDocInvertImages(!_docInvertImages);
+                e.Handled = true;
+            }
+            // B toggles the Two-Page book layout (#193, upstream binds the same bare key). Verified
+            // free against TrySelectToolByKey and every other branch in this handler before taking
+            // it — our single-key space is dense (V, P, digits, T/X/I/H/K/U/S/D/E/G/C) but B was
+            // unclaimed. Same shape as the Shift+N row above: gated on a document being open, the
+            // shortcut overlay being closed, and the caret not sitting in a text surface (the
+            // unmodified-key typing guard at the top of this method already returned in that case,
+            // but the check is repeated so the branch stands on its own).
+            else if (e.Key == Key.B && Keyboard.Modifiers == ModifierKeys.None && _doc is not null
+                     && !IsTypingTarget()
+                     && Keyboard.FocusedElement is not ComboBox
+                     && ShortcutOverlay.Visibility != Visibility.Visible)
+            {
+                ToggleTwoPageBook(!_twoPageBook);
                 e.Handled = true;
             }
             // Unmodified tool keys, last so every context-sensitive key above keeps priority.
@@ -12280,6 +12519,7 @@ namespace TDPdf
                 FileNameLabel.Text = "";
                 DropZone.Visibility = Visibility.Visible;
                 PagePreviewPanel.Visibility = Visibility.Collapsed;
+                HidePageBadgeNow();   // #197: never leave the badge floating over the start screen
                 if (_closeFileBtnRef != null) _closeFileBtnRef.IsEnabled = false;
                 _gridViewToggle.IsEnabled = false;
                 _pageJumpBox.IsEnabled = false;
@@ -14369,7 +14609,7 @@ namespace TDPdf
             if (Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
-                _zoomFitMode = ZoomFitMode.None;
+                BeginManualZoom();
                 if (e.Delta > 0) Zoom.ZoomIn();
                 else Zoom.ZoomOut();
                 return;
@@ -14443,9 +14683,14 @@ namespace TDPdf
             int count = _doc.PageCount;
             if (_viewMode == ViewMode.TwoPage)
             {
-                int baseIdx = Math.Max(0, cur - cur % 2);   // left page of the current spread
-                int target = baseIdx + direction * 2;
-                if (target < 0 || target >= count) return false;
+                int baseIdx = SpreadStart(Math.Max(0, cur));   // left page of the current spread
+                // #193: book layout steps cover → 1 → 3 → 5…, because the cover is a row of its
+                // own; the classic pairing just walks the even indices two at a time.
+                int target = _twoPageBook
+                    ? (direction > 0 ? (baseIdx == 0 ? 1 : baseIdx + 2)
+                                     : (baseIdx <= 1 ? 0 : baseIdx - 2))
+                    : baseIdx + direction * 2;
+                if (target == baseIdx || target < 0 || target >= count) return false;
                 PageList.SelectedIndex = target;
                 return true;
             }
@@ -14510,12 +14755,25 @@ namespace TDPdf
                 ApplyZoom();
         }
 
+        /// <summary>
+        /// Marks the zoom about to be set as an EXPLICIT manual one (#201): it stops the view
+        /// tracking the window size, exactly as before, and tells <see cref="SaveZoomSetting"/> to
+        /// remember the resulting level so the next document opens at it. Every deliberate manual
+        /// path goes through here — the zoom dropdown's fixed levels, Ctrl+0 / Ctrl+1, Zoom In /
+        /// Out / Reset, and Ctrl+wheel.
+        /// </summary>
+        private void BeginManualZoom()
+        {
+            _zoomFitMode = ZoomFitMode.None;
+            _manualZoomIntent = true;
+        }
+
         private void ChangeZoomByCommand(ZoomChange change)
         {
             // An explicit zoom stops the view tracking the window size, exactly as the equivalent
             // toolbar buttons do. Without this, Ctrl+0 landed on 100% and then the next window
             // resize snapped straight back to the fit it was on.
-            _zoomFitMode = ZoomFitMode.None;
+            BeginManualZoom();
             switch (change)
             {
                 case ZoomChange.In:
@@ -14532,11 +14790,11 @@ namespace TDPdf
             }
         }
 
-        private void ZoomIn_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.ZoomIn(); }
+        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomIn(); }
 
-        private void ZoomOut_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.ZoomOut(); }
+        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomOut(); }
 
-        private void ResetZoom_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.Reset(); }
+        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.Reset(); }
 
         // ============================================================
         // True zoom vs. layout scale        (#154, upstream "true 100%")
@@ -14650,6 +14908,18 @@ namespace TDPdf
             try
             {
                 TDPdf.Properties.Settings.Default.LastZoomLevel = Zoom.ZoomLevel;
+                // #201: the other half of the remembered fit. _manualZoomIntent is raised only by
+                // BeginManualZoom — the zoom dropdown's fixed levels, Ctrl+0 / Ctrl+1, the zoom
+                // buttons and Ctrl+wheel — and lowered by both fits, so this records zooms a person
+                // chose and never one the app computed for a window that no longer exists.
+                // Recording it also retires any remembered fit: the last explicit zoom decision
+                // wins, whichever kind it was, which is the same single-preference model the fit
+                // side already uses (SaveDefaultFitMode clears this in return).
+                if (_manualZoomIntent)
+                {
+                    TDPdf.Properties.Settings.Default.LastManualZoom = Zoom.ZoomLevel;
+                    TDPdf.Properties.Settings.Default.DefaultFitMode = ZoomFitMode.None.ToString();
+                }
                 TDPdf.Properties.Settings.Default.Save();
             }
             catch
@@ -14666,7 +14936,7 @@ namespace TDPdf
             if (option.IsFitWidth) { SaveDefaultFitMode(ZoomFitMode.Width); FitToWidth(); return; }
             if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             // User picked an explicit zoom level — stop tracking the window size.
-            _zoomFitMode = ZoomFitMode.None;
+            BeginManualZoom();
             if (option.ZoomLevel is double zoom) Zoom.SetZoomLevel(zoom);
         }
 
@@ -14683,6 +14953,11 @@ namespace TDPdf
             try
             {
                 TDPdf.Properties.Settings.Default.DefaultFitMode = mode.ToString();
+                // #201: asking for a fit retires the remembered manual zoom. The two are one
+                // preference — "what the user last explicitly asked the zoom to be" — so exactly
+                // one of them can be live at a time, and ApplyViewModeOnOpen only reaches the
+                // manual branch when the fit side reads None.
+                TDPdf.Properties.Settings.Default.LastManualZoom = 0;
                 TDPdf.Properties.Settings.Default.Save();
             }
             catch { /* non-critical user preference */ }
@@ -14699,6 +14974,22 @@ namespace TDPdf
             catch { return ZoomFitMode.None; }
         }
 
+        /// <summary>
+        /// The remembered manual zoom (#201), or 0 when the user's last explicit zoom decision was
+        /// a fit — or when they have never made one. Out-of-range values (a hand-edited or
+        /// half-written user.config) read as 0 rather than being clamped into something plausible:
+        /// a number that was never a legal zoom is not a preference worth honouring.
+        /// </summary>
+        private static double ReadLastManualZoom()
+        {
+            try
+            {
+                double z = TDPdf.Properties.Settings.Default.LastManualZoom;
+                return z >= ZoomViewModel.MinZoomLevel && z <= ZoomViewModel.MaxZoomLevel ? z : 0;
+            }
+            catch { return 0; }
+        }
+
         // The fits are computed against the LAYOUT boxes on screen (the tile, or the continuous
         // slot) and then multiplied back through DisplayZoomFactor, because Zoom.SetZoomLevel now
         // takes true zoom. Equivalently: viewW / naturalWidthInDips.
@@ -14712,6 +15003,7 @@ namespace TDPdf
             {
                 if (_continuousPageW <= 0) return;
                 _zoomFitMode = ZoomFitMode.Width;
+                _manualZoomIntent = false;   // #201: a fit retires the remembered manual zoom
                 _applyingFitZoom = true;
                 try { Zoom.SetZoomLevel(viewW / _continuousPageW); }
                 finally { _applyingFitZoom = false; }
@@ -14719,6 +15011,7 @@ namespace TDPdf
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
             _zoomFitMode = ZoomFitMode.Width;
+            _manualZoomIntent = false;   // #201
             _applyingFitZoom = true;
             try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth * DisplayZoomFactor()); }
             finally { _applyingFitZoom = false; }
@@ -14743,6 +15036,7 @@ namespace TDPdf
                 if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
                 double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
                 _zoomFitMode = ZoomFitMode.Page;
+                _manualZoomIntent = false;   // #201
                 _applyingFitZoom = true;
                 try { Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH)); }
                 finally { _applyingFitZoom = false; }
@@ -14750,6 +15044,7 @@ namespace TDPdf
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
             _zoomFitMode = ZoomFitMode.Page;
+            _manualZoomIntent = false;   // #201
             _applyingFitZoom = true;
             try
             {
@@ -15387,6 +15682,10 @@ namespace TDPdf
                 // suppression flag avoids a feedback loop with PagePreviewPanel_ScrollChanged.
                 if (_viewMode == ViewMode.Continuous)
                 {
+                    // #197: Continuous never re-renders a primary tile, and the scroll it is about
+                    // to run is suppressed, so this is the only place a page change can raise the
+                    // badge here.
+                    ShowPageBadge(PageList.SelectedIndex);
                     if (!_suppressContinuousScrollSync)
                         ScrollContinuousToPageSuppressed(PageList.SelectedIndex);
                     return;
