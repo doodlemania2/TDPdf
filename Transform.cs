@@ -86,20 +86,22 @@ namespace TDPdf
             win.ShowDialog();
             if (!win.Applied) return;
             if (Math.Abs(win.Angle) < 0.01 && Math.Abs(win.Scale - 1.0) < 0.001 && !win.FlipH && !win.FlipV
-                && PerspectiveWarp.IsIdentity(win.PerspectiveCorners))
+                && PerspectiveWarp.IsIdentity(win.PerspectiveCorners)
+                && LevelsIdentity(win.LevelBlack, win.LevelWhite, win.LevelGamma))
             {
                 SetStatus("Transform: nothing to apply.");
                 return;
             }
 
             ApplyPageTransform(indices, win.Angle, win.Scale, win.FixedPage, win.FlipH, win.FlipV,
-                win.PerspectiveCorners);
+                win.PerspectiveCorners, win.LevelBlack, win.LevelWhite, win.LevelGamma);
         }
 
-        // Rasterizes the given pages with the chosen perspective/flip/scale/rotate and swaps each in for
-        // the original (undoable as one whole-document step).
+        // Rasterizes the given pages with the chosen perspective/flip/scale/rotate/levels and swaps each in
+        // for the original (undoable as one whole-document step).
         private void ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
-            bool flipH, bool flipV, Point[] perspectiveCorners)
+            bool flipH, bool flipV, Point[] perspectiveCorners,
+            int levelBlack = 0, int levelWhite = 255, double levelGamma = 1.0)
         {
             if (_doc is null || _currentFile is null) return;
             if (pageIndices.Count == 0) return;
@@ -131,7 +133,8 @@ namespace TDPdf
                     // nothing has been swapped into _doc at that point.
                     var perspective = PerspectiveWarp.IsIdentity(perspectiveCorners)
                         ? src : PerspectiveWarp.Apply(src, perspectiveCorners);
-                    var composed = ComposeTransform(perspective, angleDeg, scale, fixedPage, flipH, flipV);
+                    var composed = ComposeTransform(perspective, angleDeg, scale, fixedPage, flipH, flipV,
+                        levelBlack, levelWhite, levelGamma);
                     byte[] png = EncodePng(composed);
 
                     // Map rendered pixels back to page points via the page's VISIBLE size (CropBox + /Rotate
@@ -283,12 +286,80 @@ namespace TDPdf
 
         // ---- Self-contained WPF bitmap ops, shared by the window preview and full-resolution Apply ----
 
-        // Flip -> scale -> rotate. The single entry point used by both the preview compose and Apply.
-        internal static BitmapSource ComposeTransform(BitmapSource src, double angleDeg, double scale, bool fixedPage, bool flipH, bool flipV)
+        // Flip -> scale -> rotate -> levels. The single entry point used by both the preview compose and
+        // Apply, which is what keeps the Transform window WYSIWYG.
+        //
+        // #174 (upstream KillerPDF): the levels pass lives HERE, at the tail of the shared pipeline,
+        // rather than being bolted onto each caller — upstream had to apply it twice (once in the preview,
+        // once in the full-resolution apply) because its geometry helper took no levels arguments, and two
+        // copies is exactly how a preview drifts from its result. Levels is deliberately LAST: every stage
+        // above pads the new corners with pure white, and white survives the remap untouched (any white
+        // point <= 255 maps 255 -> 255), so the padding stays paper-white instead of picking up a tint.
+        internal static BitmapSource ComposeTransform(BitmapSource src, double angleDeg, double scale,
+            bool fixedPage, bool flipH, bool flipV,
+            int levelBlack = 0, int levelWhite = 255, double levelGamma = 1.0)
         {
             var flipped = ApplyFlip(src, flipH, flipV);
             var scaled  = Math.Abs(scale - 1.0) < 0.001 ? flipped : ScaleCompose(flipped, scale, fixedPage);
-            return Math.Abs(angleDeg) < 0.001 ? scaled : RotateExpand(scaled, angleDeg);
+            var rotated = Math.Abs(angleDeg) < 0.001 ? scaled : RotateExpand(scaled, angleDeg);
+            return ApplyLevels(rotated, levelBlack, levelWhite, levelGamma);
+        }
+
+        /// <summary>True when the levels settings would leave every pixel alone.</summary>
+        internal static bool LevelsIdentity(int black, int white, double gamma)
+            => black <= 0 && white >= 255 && Math.Abs(gamma - 1.0) < 0.01;
+
+        /// <summary>
+        /// #174: source-levels pass for rescuing pale scans. Remaps the input range [black..white] onto
+        /// [0..255] through a midtone gamma, per RGB channel, leaving alpha alone. This is the only
+        /// per-pixel stage in the transform pipeline; it follows the same CopyPixels -> mutate ->
+        /// WritePixels shape as the night-mode invert in DocInvert.cs. Identity settings (and anything
+        /// that would overflow a byte[]) return the source untouched.
+        /// </summary>
+        internal static BitmapSource ApplyLevels(BitmapSource src, int black, int white, double gamma)
+        {
+            if (LevelsIdentity(black, white, gamma)) return src;
+            try
+            {
+                var bgra = src.Format == PixelFormats.Bgra32
+                    ? src
+                    : new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
+
+                int w = bgra.PixelWidth, h = bgra.PixelHeight;
+                long len = (long)w * 4 * h;
+                if (w <= 0 || h <= 0 || len > int.MaxValue) return src;
+
+                int stride = w * 4;
+                var px = new byte[len];
+                bgra.CopyPixels(px, stride, 0);
+
+                // One 256-entry lookup table, then a straight byte walk: a 2200px page is ~5M pixels and
+                // Math.Pow per channel per pixel would be visible on every slider notch.
+                var lut = new byte[256];
+                double lo = black, hi = Math.Max(black + 1, white), invG = 1.0 / Math.Max(0.05, gamma);
+                for (int i = 0; i < 256; i++)
+                {
+                    double t = (i - lo) / (hi - lo);
+                    t = t < 0 ? 0 : t > 1 ? 1 : t;
+                    lut[i] = (byte)Math.Round(Math.Pow(t, invG) * 255);
+                }
+                for (int i = 0; i < px.Length; i += 4)
+                {
+                    px[i]     = lut[px[i]];       // B
+                    px[i + 1] = lut[px[i + 1]];   // G
+                    px[i + 2] = lut[px[i + 2]];   // R
+                }                                 // px[i + 3] is alpha - untouched
+
+                double dpiX = src.DpiX > 0 ? src.DpiX : 96.0;
+                double dpiY = src.DpiY > 0 ? src.DpiY : 96.0;
+                var outBmp = BitmapSource.Create(w, h, dpiX, dpiY, PixelFormats.Bgra32, null, px, stride);
+                outBmp.Freeze();
+                return outBmp;
+            }
+            catch
+            {
+                return src;   // a correction must never break the transform itself
+            }
         }
 
         private static BitmapSource ApplyFlip(BitmapSource src, bool flipH, bool flipV)

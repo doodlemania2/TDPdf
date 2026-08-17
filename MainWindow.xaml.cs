@@ -467,6 +467,12 @@ namespace TDPdf
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
             _titleBarRow = (RowDefinition)FindName("TitleBarRow")!;
             _outlineTree = (TreeView)FindName("OutlineTree")!;
+            // Expanded/Collapsed bubble from the items, which are rebuilt on every tab switch and
+            // reload — so the recorder hangs off the tree, once, rather than off the items.
+            _outlineTree.AddHandler(TreeViewItem.ExpandedEvent,
+                new RoutedEventHandler(OutlineTree_ItemExpandChanged));
+            _outlineTree.AddHandler(TreeViewItem.CollapsedEvent,
+                new RoutedEventHandler(OutlineTree_ItemExpandChanged));
             _outlineScrollViewer = (ScrollViewer)FindName("OutlineScrollViewer")!;
             _sidebarPagesTab = (RadioButton)FindName("SidebarPagesTab")!;
             _sidebarOutlinesTab = (RadioButton)FindName("SidebarOutlinesTab")!;
@@ -962,6 +968,15 @@ namespace TDPdf
             // The working path is a temp file, so Ctrl+S must route to Save As instead of
             // silently overwriting the temp copy.
             public bool IsUntitled;
+
+            // Which OUTLINES nodes this document has expanded, keyed by index path ("2/0/1", the ghost
+            // add-row excluded). Per-tab and not per-app: it dies with the tab, so it can neither leak
+            // between documents nor grow past this document's own bookmark count. Paths rather than
+            // PdfOutline references because SaveTempAndReload reopens the document and every outline
+            // object is a new instance afterwards. Seen=false means "never built a tree for this
+            // document yet", which is what makes the depth default apply exactly once.
+            public readonly HashSet<string> OutlineExpanded = new(StringComparer.Ordinal);
+            public bool OutlineExpandSeen;
 
             public readonly Dictionary<int, List<PageAnnotation>> Annotations = new();
             public readonly Dictionary<int, (int w, int h)> RenderDims = new();
@@ -1765,6 +1780,11 @@ namespace TDPdf
                 // Same reason as the identity block below: a crop reload's DisplayPath is the
                 // "<name>.crop-<guid>.pdf" working file, which must not become the tab's name.
                 if (!internalReload) SetDisplayName(System.IO.Path.GetFileName(result.DisplayPath));
+                // A genuinely different document in this tab starts from the depth default again — the
+                // sticky OUTLINES expansion belongs to the file that was open, not to the tab. An
+                // internal reload (crop's "<name>.crop-<guid>.pdf") is the SAME document, so it keeps
+                // its state, as do SaveTempAndReload and the reopen-after-save, which never come here.
+                if (!internalReload) { _ctx.OutlineExpanded.Clear(); _ctx.OutlineExpandSeen = false; }
                 _annotations.Clear();
                 ClearFormState();
                 _undoStack.Clear();
@@ -2353,6 +2373,72 @@ namespace TDPdf
             _statusHoldUntil = DateTime.UtcNow.AddMilliseconds(holdMs);
             StatusText.Text = text;
         }
+
+        // ---- Transient status readouts -------------------------------------------------------
+        // One snapshot / hold / restore for every "flash something on the status line, then put back
+        // what was there" caller: the app-scale readout (AppScale.cs) and the #status-line file size
+        // below. Whatever was showing before the FIRST flash of a burst is snapshotted and put back,
+        // but only if the readout is still the text on screen — so a real status written after the
+        // hold lapsed is never replaced by a stale one. The restore assigns StatusText directly
+        // rather than going through SetStatus: this is putting a line back, not reporting something
+        // new. Normal priority rather than DispatcherTimer's default Background, so a busy render
+        // cannot leave the readout parked on the footer.
+        private System.Windows.Threading.DispatcherTimer? _statusFlashTimer;
+        private string _statusFlashWas  = string.Empty;
+        private string _statusFlashText = string.Empty;
+
+        /// <param name="holdMs">How long plain <see cref="SetStatus"/> calls are suppressed.</param>
+        /// <param name="life">How long the readout stays on screen before the old line comes back.</param>
+        private void FlashStatus(string text, int holdMs, TimeSpan life)
+        {
+            if (_statusFlashTimer is null)
+            {
+                _statusFlashTimer = new System.Windows.Threading.DispatcherTimer(
+                    System.Windows.Threading.DispatcherPriority.Normal);
+                _statusFlashTimer.Tick += (_, _) =>
+                {
+                    _statusFlashTimer!.Stop();
+                    if (StatusText.Text == _statusFlashText) StatusText.Text = _statusFlashWas;
+                };
+            }
+
+            // Only the first flash of a burst snapshots; the rest would capture our own readout.
+            if (!_statusFlashTimer.IsEnabled) _statusFlashWas = StatusText.Text;
+            _statusFlashTimer.Stop();
+            _statusFlashTimer.Interval = life;
+            _statusFlashText = text;
+            SetStatusHeld(text, holdMs);
+            _statusFlashTimer.Start();
+        }
+
+        // Clicking the status line (or Shift+F4) flashes the open document's file size for a beat and
+        // then puts back whatever was showing — upstream KillerPDF v1.7.2. Held so page-change chatter
+        // cannot overwrite it mid-read.
+        private void StatusText_Click(object sender, MouseButtonEventArgs e) => ShowCurrentFileSize();
+
+        private void ShowCurrentFileSize()
+        {
+            // The user's real document, not the %TEMP% working copy a structural edit repoints us at;
+            // falls back to the working path for a never-saved (New / merged-on-drop) document.
+            string? path = _ctx.OriginalPath ?? _currentFile;
+            if (_doc is null || string.IsNullOrEmpty(path)) return;
+            long bytes;
+            try
+            {
+                if (!File.Exists(path)) return;
+                bytes = new FileInfo(path).Length;
+            }
+            catch { return; }   // a vanished / unreadable file is not worth a dialog
+            FlashStatus($"{System.IO.Path.GetFileName(path)} — {FormatFileSize(bytes)}",
+                        holdMs: 2500, life: TimeSpan.FromMilliseconds(2600));
+        }
+
+        /// <summary>Human-readable file size. Shared by the Document Info summary and the status-line
+        /// flash so the two never disagree about how big a document is.</summary>
+        private static string FormatFileSize(long bytes)
+            => bytes >= 1L << 20 ? $"{bytes / (double)(1 << 20):N1} MB"
+             : bytes >= 1L << 10 ? $"{bytes / (double)(1 << 10):N0} KB"
+             : $"{bytes} bytes";
 
         private void SetBusy(bool isBusy, string? status = null)
         {
@@ -4779,6 +4865,16 @@ namespace TDPdf
         /// </summary>
         private void LoadOutlines()
         {
+            // A rebuild drives IsExpanded itself; the live Expanded/Collapsed recorder must only ever
+            // hear the USER, or a rebuild would be recorded as a user choice against whichever tab
+            // happens to be active at the time.
+            _outlineRebuilding = true;
+            try { LoadOutlinesCore(); }
+            finally { _outlineRebuilding = false; }
+        }
+
+        private void LoadOutlinesCore()
+        {
             _bmExtraSel.Clear();          // outlines may be gone after a rebuild / undo
             _outlineTree.Items.Clear();
             if (_doc is null)
@@ -4807,6 +4903,10 @@ namespace TDPdf
                 _sidebarOutlinesTab.IsEnabled = true;
                 if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
                 AddOutlineItems(_outlineTree.Items, outlines);
+                // Sticky expand/collapse per tab. LoadOutlines rebuilds from scratch on every tab
+                // switch and temp-reload, which used to re-expand everything the user had folded.
+                if (_ctx.OutlineExpandSeen) ApplyOutlineExpandState();
+                else { CaptureOutlineExpandState(); _ctx.OutlineExpandSeen = true; }
             }
             catch
             {
@@ -4842,7 +4942,8 @@ namespace TDPdf
 
         /// <summary>Builds a TreeViewItem per outline (recursing into children) tied to its live
         /// PdfOutline via <see cref="OutlineNodeRef"/>.</summary>
-        private void AddOutlineItems(ItemCollection target, PdfSharpCore.Pdf.PdfOutlineCollection outlines)
+        private void AddOutlineItems(ItemCollection target, PdfSharpCore.Pdf.PdfOutlineCollection outlines,
+                                     int depth = 0)
         {
             foreach (PdfSharpCore.Pdf.PdfOutline outline in outlines)
             {
@@ -4851,7 +4952,11 @@ namespace TDPdf
                 var item = new TreeViewItem
                 {
                     Header = string.IsNullOrEmpty(title) ? "(untitled)" : title,
-                    IsExpanded = true,
+                    // Top level starts open, deeper levels start folded (the Acrobat default) — a deep
+                    // outline was otherwise a wall of text on open, since this used to expand every
+                    // node at every depth. ApplyOutlineExpandState overrides this with the user's own
+                    // choices once this tab has built its tree once.
+                    IsExpanded = depth == 0,
                     Tag = new OutlineNodeRef(outline, outlines, pageIdx),
                     ToolTip = pageIdx >= 0 ? $"Page {pageIdx + 1}" : null,
                     // Items are added as ready-made containers, so ItemContainerStyle doesn't apply;
@@ -4859,9 +4964,65 @@ namespace TDPdf
                     Style = (Style)FindResource("OutlineItemStyle"),
                 };
                 if (outline.Outlines is not null && outline.Outlines.Count > 0)
-                    AddOutlineItems(item.Items, outline.Outlines);
+                    AddOutlineItems(item.Items, outline.Outlines, depth + 1);
                 target.Add(item);
             }
+        }
+
+        // ---- Sticky OUTLINES expand/collapse (per tab; state lives on DocumentContext) ------------
+        // Nodes are keyed by index path ("2/0/1"), ghost add-row excluded, because SaveTempAndReload
+        // reopens the document and hands back brand-new PdfOutline instances — an object-keyed set
+        // would go stale on every structural edit. RefreshOutlines still keys ITS capture on the live
+        // PdfOutline objects, which survive a bookmark edit and stay correct when indices shift.
+        private bool _outlineRebuilding;
+
+        /// <summary>Walks the on-screen outline items in index order, ghost add-row skipped, handing
+        /// each one its index path. The single definition of a node's key.</summary>
+        private static void WalkOutlinePaths(ItemCollection items, string prefix,
+                                             Action<TreeViewItem, string> visit)
+        {
+            int i = 0;
+            foreach (var o in items)
+            {
+                if (o is not TreeViewItem it || it.Tag is not OutlineNodeRef) continue;
+                string path = prefix.Length == 0 ? i.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                                 : prefix + "/" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                visit(it, path);
+                WalkOutlinePaths(it.Items, path, visit);
+                i++;
+            }
+        }
+
+        /// <summary>Records which outline nodes are expanded in the tree currently on screen, against
+        /// the active tab. Runs once per tab, right after its first tree is built, so the depth
+        /// defaults become the baseline the live recorder then edits.</summary>
+        private void CaptureOutlineExpandState()
+        {
+            var expanded = _ctx.OutlineExpanded;
+            expanded.Clear();
+            WalkOutlinePaths(_outlineTree.Items, "", (it, path) => { if (it.IsExpanded) expanded.Add(path); });
+        }
+
+        /// <summary>Restores this tab's recorded expand/collapse state onto a freshly built tree.</summary>
+        private void ApplyOutlineExpandState()
+        {
+            var expanded = _ctx.OutlineExpanded;
+            WalkOutlinePaths(_outlineTree.Items, "", (it, path) => it.IsExpanded = expanded.Contains(path));
+        }
+
+        /// <summary>Live recorder for the user's own expand/collapse clicks, attached once to the tree
+        /// (the items themselves are thrown away and rebuilt constantly). Keeps the state current no
+        /// matter which of the many LoadOutlines callers rebuilds next, so nothing has to remember to
+        /// capture first.</summary>
+        private void OutlineTree_ItemExpandChanged(object sender, RoutedEventArgs e)
+        {
+            if (_outlineRebuilding || e.OriginalSource is not TreeViewItem it
+                || it.Tag is not OutlineNodeRef) return;
+            string? path = null;
+            WalkOutlinePaths(_outlineTree.Items, "", (node, p) => { if (ReferenceEquals(node, it)) path = p; });
+            if (path is null) return;
+            if (it.IsExpanded) _ctx.OutlineExpanded.Add(path);
+            else               _ctx.OutlineExpanded.Remove(path);
         }
 
         /// <summary>Resolves an outline's 0-based target page. Prefers PdfSharpCore's parsed
@@ -5359,16 +5520,22 @@ namespace TDPdf
             }
             Capture(_outlineTree.Items);
             LoadOutlines();
-            if (collapsed.Count == 0) return;
-            void Restore(ItemCollection items)
+            if (collapsed.Count > 0)
             {
-                foreach (TreeViewItem it in items)
+                void Restore(ItemCollection items)
                 {
-                    if (it.Tag is OutlineNodeRef r && collapsed.Contains(r.Outline)) it.IsExpanded = false;
-                    Restore(it.Items);
+                    foreach (TreeViewItem it in items)
+                    {
+                        if (it.Tag is OutlineNodeRef r && collapsed.Contains(r.Outline)) it.IsExpanded = false;
+                        Restore(it.Items);
+                    }
                 }
+                Restore(_outlineTree.Items);
             }
-            Restore(_outlineTree.Items);
+            // A bookmark edit shifts index paths, so the object-keyed restore above is the authority
+            // here — re-baseline the path-keyed session state from the tree it just produced, or the
+            // next tab switch would replay stale paths over the edited outline.
+            CaptureOutlineExpandState();
         }
 
         /// <summary>Right-click on the outline panel: bookmark menu for the item under the cursor, or
@@ -5769,6 +5936,9 @@ namespace TDPdf
             var vis = hasDoc ? Visibility.Visible : Visibility.Collapsed;
             _pageJumpBox.Visibility = vis;
             _pageTotalLabel.Visibility = vis;
+            // The status line only does something (flash the file size) with a document open, so it only
+            // looks clickable then — an empty workspace keeps the plain arrow.
+            StatusText.Cursor = hasDoc ? Cursors.Hand : null;
         }
 
         private void ToolSelect_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Select);
@@ -11441,6 +11611,14 @@ namespace TDPdf
                 e.Handled = true;
                 return;
             }
+            // Shift+F4: same file-size flash as clicking the status line (upstream KillerPDF v1.7.2).
+            // Bare F4 is left free, and Alt+F4 never reaches here — Alt arrives as Key.System.
+            if (e.Key == Key.F4 && Keyboard.Modifiers == ModifierKeys.Shift)
+            {
+                ShowCurrentFileSize();
+                e.Handled = true;
+                return;
+            }
 
             if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
             {
@@ -12872,22 +13050,7 @@ namespace TDPdf
             try
             {
                 foreach (var file in dlg.FileNames)
-                {
-                    int pageOffset = doc.PageCount;
-
-                    // Open twice: Import mode for AddPage, ReadOnly for catalog access.
-                    using var srcRead = PdfReader.Open(file, PdfDocumentOpenMode.ReadOnly);
-                    var namedDestMap = BuildNamedDestMap(srcRead);
-
-                    using var src = PdfReader.Open(file, PdfDocumentOpenMode.Import);
-                    for (int i = 0; i < src.PageCount; i++)
-                        doc.AddPage(src.Pages[i]);
-
-                    // Rewrite named-destination links in the newly added pages so they
-                    // resolve correctly after the catalog is not imported.
-                    if (namedDestMap.Count > 0)
-                        RewriteNamedDestLinks(doc, pageOffset, namedDestMap);
-                }
+                    AppendPdfFileToDoc(doc, file);
                 SaveTempAndReload();
                 SetStatus($"Merged {dlg.FileNames.Length} file(s) - {_doc?.PageCount} total pages");
             }
@@ -12895,6 +13058,30 @@ namespace TDPdf
             {
                 TdpDialog.Show(this, $"Merge failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        /// <summary>
+        /// Appends every page of <paramref name="file"/> to <paramref name="doc"/>, carrying its
+        /// named-destination links across. Shared by File ▸ Merge and the #172 Pages-sidebar file drop, so
+        /// there is exactly one PDF-append path and both get the link rewriting. Throws on an unreadable /
+        /// encrypted source; callers decide whether that aborts the batch or just skips the file.
+        /// </summary>
+        private void AppendPdfFileToDoc(PdfDocument doc, string file)
+        {
+            int pageOffset = doc.PageCount;
+
+            // Open twice: Import mode for AddPage, ReadOnly for catalog access.
+            using var srcRead = PdfReader.Open(file, PdfDocumentOpenMode.ReadOnly);
+            var namedDestMap = BuildNamedDestMap(srcRead);
+
+            using var src = PdfReader.Open(file, PdfDocumentOpenMode.Import);
+            for (int i = 0; i < src.PageCount; i++)
+                doc.AddPage(src.Pages[i]);
+
+            // Rewrite named-destination links in the newly added pages so they
+            // resolve correctly after the catalog is not imported.
+            if (namedDestMap.Count > 0)
+                RewriteNamedDestLinks(doc, pageOffset, namedDestMap);
         }
 
         /// <summary>
@@ -13435,7 +13622,7 @@ namespace TDPdf
             parts.Add($"{doc.PageCount} pages");
             parts.Add($"PDF {doc.Version / 10}.{doc.Version % 10}");
             try { var d = doc.Info.CreationDate; if (d != default) parts.Add($"created {d:yyyy-MM-dd HH:mm}"); } catch { }
-            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) parts.Add($"{new FileInfo(filePath).Length / 1024.0:N0} KB"); } catch { }
+            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) parts.Add(FormatFileSize(new FileInfo(filePath).Length)); } catch { }
             return string.Join("\n", parts);
         }
 
@@ -15625,12 +15812,73 @@ namespace TDPdf
 
         private void PageList_DragOver(object sender, DragEventArgs e)
         {
-            e.Effects = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None;
+            // #172 (upstream KillerPDF): the sidebar takes a FileDrop of PDFs/images as well as its own
+            // page-reorder payload. The internal payload keeps first refusal so a page drag is never
+            // mistaken for a file drop.
+            if (e.Data.GetDataPresent(typeof(int)))
+                e.Effects = DragDropEffects.Move;
+            else if (_doc is not null && DroppedOpenablePaths(e).Length > 0)
+                e.Effects = DragDropEffects.Copy;
+            else
+                e.Effects = DragDropEffects.None;
             e.Handled = true;
+        }
+
+        /// <summary>The dropped FileDrop paths this sidebar can append, using the same PDF/image
+        /// classification as the start-screen drop zone (<see cref="IsOpenablePath"/>). Folders and .zip
+        /// archives are deliberately NOT expanded here — that is the start screen's open flow, which asks
+        /// merge-vs-separate; a drop onto an open document's page list only ever appends.</summary>
+        private static string[] DroppedOpenablePaths(DragEventArgs e)
+            => e.Data.GetDataPresent(DataFormats.FileDrop)
+               && e.Data.GetData(DataFormats.FileDrop) is string[] paths
+                ? paths.Where(IsOpenablePath).ToArray()
+                : Array.Empty<string>();
+
+        /// <summary>
+        /// #172: appends the dropped files' pages to the open document. Upstream appends rather than
+        /// inserting at the drop point on purpose — appending leaves every existing page index untouched,
+        /// so annotations, rotations and the undo stack need no remapping. Reuses the two importers we
+        /// already have: <see cref="AppendPdfFileToDoc"/> (File ▸ Merge, including named-destination link
+        /// rewriting) and <see cref="AddImagePagesFromFile"/> (one page per image frame).
+        /// </summary>
+        private void AppendFilesToCurrentDoc(string[] files)
+        {
+            if (_doc is null) return;
+            CommitActiveTextBox();
+            var doc = _doc;
+            int before = doc.PageCount;
+            foreach (var f in files)
+            {
+                // A single bad file skips rather than aborting the drop: a folder-full drag routinely
+                // carries one encrypted or truncated file and the rest are still worth appending.
+                try
+                {
+                    if (IsPdfPath(f)) AppendPdfFileToDoc(doc, f);
+                    else              AddImagePagesFromFile(doc, f);
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Sidebar drop skipped {f}: {ex}"); }
+            }
+            if (doc.PageCount == before)
+            {
+                SetStatus("Nothing could be appended — the dropped files could not be read.");
+                return;
+            }
+            int added = doc.PageCount - before;
+            // Same persist-and-repaint path as the page reorder below; it marks the document dirty.
+            SaveTempAndReload();
+            SetStatus($"Appended {added} page{(added == 1 ? "" : "s")} from {files.Length} file{(files.Length == 1 ? "" : "s")}");
         }
 
         private void PageList_Drop(object sender, DragEventArgs e)
         {
+            // #172: a FileDrop appends; anything carrying the internal page-index payload falls through to
+            // the reorder below, unchanged.
+            if (_doc is not null && !e.Data.GetDataPresent(typeof(int)))
+            {
+                var files = DroppedOpenablePaths(e);
+                if (files.Length > 0) { AppendFilesToCurrentDoc(files); e.Handled = true; }
+                return;
+            }
             if (_doc is null || !e.Data.GetDataPresent(typeof(int))) return;
             var doc = _doc;
             int fromIdx = (int)e.Data.GetData(typeof(int))!;

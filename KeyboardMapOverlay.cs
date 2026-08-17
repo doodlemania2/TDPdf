@@ -111,6 +111,7 @@ namespace TDPdf
             [KbLayer.Shift] = new()
             {
                 ["F10"] = ("Edit", "Context menu"),
+                ["F4"] = ("File", "Show file size"),
                 ["Enter"] = ("Search", "Previous result"),
                 // Pairs with Ctrl+I: whether night mode inverts pictures too (needed on a scan).
                 ["N"] = ("View", "Invert images too"),
