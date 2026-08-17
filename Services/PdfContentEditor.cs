@@ -60,9 +60,16 @@ namespace TDPdf
 
             var textRuns = page.GetWords()
                 .GroupBy(w => Math.Round((renderHeight - (w.BoundingBox.Top * sy)) / 4.0))
-                .Select(g =>
+                // #185: a Y bucket spans the whole page, so on a two-column layout one "line" held
+                // both columns — double-clicking to edit picked up a run whose text was the left
+                // and right columns space-joined and whose box straddled the gutter. Splitting each
+                // bucket at column-gutter-sized gaps (the same helper the selection geometry uses)
+                // gives one editable run per column, and per cell on a table row. Ordinary
+                // single-column prose has no such gap and comes back as a single segment, i.e.
+                // exactly the runs this produced before. SplitAtColumnGaps sorts left-to-right.
+                .SelectMany(g => TextRunService.SplitAtColumnGaps(g.ToList()))
+                .Select(words =>
                 {
-                    var words = g.OrderBy(w => w.BoundingBox.Left).ToList();
                     double left = words.Min(w => w.BoundingBox.Left) * sx;
                     double top = renderHeight - (words.Max(w => w.BoundingBox.Top) * sy);
                     double right = words.Max(w => w.BoundingBox.Right) * sx;

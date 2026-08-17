@@ -10064,6 +10064,13 @@ namespace TDPdf
         /// Sorts top-to-bottom then left-to-right, groups into lines using a
         /// dynamic threshold (~40% of average word height) so words at slightly
         /// different baselines still land on the correct line.
+        ///
+        /// Deliberately NOT column-aware, unlike the flowing selection (#185). This serves the
+        /// rectangle marquee, where the user has already drawn the region by hand: the words are an
+        /// arbitrary geometric subset, so there is no page text width to measure "spans most of the
+        /// width" against and no way to tell a marquee that deliberately crossed a gutter from one
+        /// that did not. Drag inside a single column and a pure row sweep is already the right
+        /// answer; to read a whole two-column page in order, use the flowing selection instead.
         /// </summary>
         private static string WordsToText(IEnumerable<UglyToad.PdfPig.Content.Word> source)
         {

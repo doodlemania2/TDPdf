@@ -75,9 +75,12 @@ namespace TDPdf.Services
     /// too slow to do on every mouse-move. Everything is therefore cached per page, keyed by the
     /// working file's path AND its last-write timestamp — see <see cref="GetPage"/>.
     ///
+    /// Multi-column pages are handled: the raw vertical bands are re-ordered column-aware before the
+    /// characters are flattened, so a drag down the left column of a two-column page no longer sweeps
+    /// its right-hand neighbour and the copied text comes out column by column (#185).
+    ///
     /// Known limitations, shared with the search highlights this deliberately mirrors:
     /// • In-memory page rotation is not applied to the boxes.
-    /// • Line grouping is by vertical band, so side-by-side columns merge into one line.
     /// </summary>
     internal sealed class TextRunService
     {
@@ -122,6 +125,186 @@ namespace TDPdf.Services
             return runs;
         }
 
+        /// <summary>
+        /// Splits one vertical band's words into horizontal segments at column-gutter-sized gaps
+        /// (#185). The threshold is derived from the band's own average character width — roughly
+        /// three characters — with a 10pt floor, which sits well past a word space (~0.25em) but
+        /// below any real column gutter, so ordinary prose comes back as a single segment.
+        /// </summary>
+        /// <param name="words">The band's words. Sorted left-to-right in place by this method.</param>
+        internal static List<List<UglyToad.PdfPig.Content.Word>> SplitAtColumnGaps(
+            List<UglyToad.PdfPig.Content.Word> words)
+        {
+            var segments = new List<List<UglyToad.PdfPig.Content.Word>>();
+            if (words.Count == 0) return segments;
+
+            words.Sort((a, b) => LeftOf(a.BoundingBox).CompareTo(LeftOf(b.BoundingBox)));
+
+            double totalWidth = 0;
+            int totalChars = 0;
+            foreach (var w in words)
+            {
+                totalWidth += RightOf(w.BoundingBox) - LeftOf(w.BoundingBox);
+                totalChars += Math.Max(1, w.Text.Length);
+            }
+            double gapThreshold = Math.Max(10, (totalChars > 0 ? totalWidth / totalChars : 5) * 3);
+
+            segments.Add([words[0]]);
+            for (int i = 1; i < words.Count; i++)
+            {
+                if (LeftOf(words[i].BoundingBox) - RightOf(words[i - 1].BoundingBox) > gapThreshold)
+                    segments.Add([]);
+                segments[^1].Add(words[i]);
+            }
+            return segments;
+        }
+
+        /// <summary>
+        /// Re-orders the vertical bands into column reading order (#185); see the call site comment
+        /// in <see cref="Build"/> for what the ordering is for. Bands arrive top-to-bottom and the
+        /// result is the same tuple shape, reordered so the flattened character list reads one
+        /// column at a time.
+        /// </summary>
+        private static List<(List<UglyToad.PdfPig.Content.Word> Words, double Top, double Bottom)>
+            OrderColumnAware(List<(List<UglyToad.PdfPig.Content.Word> Words, double Top, double Bottom)> bands)
+        {
+            if (bands.Count < 2) return bands;
+
+            // The horizontal extent of everything on the page, which is what "spans most of the
+            // width" is measured against — a page-relative threshold would misfire on a document
+            // with generous margins.
+            double textL = double.MaxValue, textR = double.MinValue;
+            foreach (var (ws, _, _) in bands)
+                foreach (var w in ws)
+                {
+                    if (LeftOf(w.BoundingBox) < textL) textL = LeftOf(w.BoundingBox);
+                    if (RightOf(w.BoundingBox) > textR) textR = RightOf(w.BoundingBox);
+                }
+            double wideW = (textR - textL) * 0.62;   // spans most of the text width = not a column line
+
+            var reordered = new List<(List<UglyToad.PdfPig.Content.Word>, double, double)>();
+            // Segments waiting to be grouped into columns: everything since the last wide segment.
+            var pending = new List<(List<UglyToad.PdfPig.Content.Word> Words, double Top, double Bottom, double L, double R, int Band)>();
+            // How many bands in the open group actually held two or more side-by-side segments —
+            // the only direct evidence that a gutter exists. See the guard inside Flush.
+            int gutterBands = 0;
+
+            // The "this group is not columns after all" exit: hand the pending segments back as the
+            // bands they were cut from, so a rejected group is byte-for-byte what pre-#185 built.
+            // Segments of one band are always consecutive in pending, and merging them left-to-right
+            // rebuilds the band's word order and its Top/Bottom exactly.
+            void EmitAsBands()
+            {
+                int i = 0;
+                while (i < pending.Count)
+                {
+                    int band = pending[i].Band;
+                    var merged = pending[i].Words;   // a fresh list from SplitAtColumnGaps, safe to grow
+                    double top = pending[i].Top, bottom = pending[i].Bottom;
+                    int j = i + 1;
+                    while (j < pending.Count && pending[j].Band == band)
+                    {
+                        merged.AddRange(pending[j].Words);
+                        if (pending[j].Top > top) top = pending[j].Top;
+                        if (pending[j].Bottom < bottom) bottom = pending[j].Bottom;
+                        j++;
+                    }
+                    reordered.Add((merged, top, bottom));
+                    i = j;
+                }
+                pending.Clear();
+                gutterBands = 0;
+            }
+
+            void Flush()
+            {
+                if (pending.Count == 0) return;
+
+                // DELIBERATE DIVERGENCE from upstream, which clusters unconditionally. Clustering
+                // narrow segments that came from bands with no gutter in them reorders perfectly
+                // ordinary single-column pages: a letter whose head is a right-aligned date, a
+                // centred title and a short salutation has three narrow lines that overlap each
+                // other in X not at all, so they cluster as three "columns" and come back out
+                // left-to-right as salutation / title / date. Nothing on such a page is a column,
+                // and the words themselves say so — no band was ever split. Require two bands with
+                // a real gutter before believing in columns; one stray split (a form row, a header
+                // with a right-aligned date) is not a layout. Below that bar the group goes back out
+                // as the bands it came in as, i.e. exactly the pre-#185 result.
+                if (gutterBands < 2) { EmitAsBands(); return; }
+
+                // Cluster the pending segments into columns by X-interval overlap (at least half the
+                // narrower range). Walking left-to-right means a cluster only ever grows rightward,
+                // so a slightly ragged column still collects into one entry.
+                var cols = new List<(double L, double R, List<int> Idx)>();
+                var byLeft = Enumerable.Range(0, pending.Count).OrderBy(i => pending[i].L).ToList();
+                foreach (int i in byLeft)
+                {
+                    var seg = pending[i];
+                    int hit = -1;
+                    for (int c = 0; c < cols.Count && hit < 0; c++)
+                    {
+                        double ov = Math.Min(cols[c].R, seg.R) - Math.Max(cols[c].L, seg.L);
+                        double minW = Math.Min(cols[c].R - cols[c].L, seg.R - seg.L);
+                        if (minW > 0 && ov >= minW * 0.5) hit = c;
+                    }
+                    if (hit < 0) cols.Add((seg.L, seg.R, [i]));
+                    else
+                    {
+                        var c0 = cols[hit];
+                        c0.Idx.Add(i);
+                        cols[hit] = (Math.Min(c0.L, seg.L), Math.Max(c0.R, seg.R), c0.Idx);
+                    }
+                }
+                // Second guard, also a divergence from upstream: a table row splits at its cell
+                // gaps exactly like a column gutter, and reading an invoice column-major ("every
+                // name, then every quantity, then every price") is far worse than the row-major
+                // order this started with. Real text columns are WIDE — half the text width in a
+                // two-column layout, a third in a three-column one — while grid cells are not. If
+                // the widest cluster does not reach a quarter of the text width, this is a grid,
+                // so leave the rows alone. Being wrong here only ever falls back to the pre-#185
+                // order, never to something new.
+                double widest = 0;
+                foreach (var c in cols) if (c.R - c.L > widest) widest = c.R - c.L;
+                if (widest < (textR - textL) * 0.25) { EmitAsBands(); return; }
+
+                // Whole columns left-to-right, top-to-bottom inside each. OrderByDescending is a
+                // stable sort, so segments that share a Top keep the order the band sort gave them —
+                // which is what makes a single-column page come back byte-for-byte unchanged.
+                foreach (var col in cols.OrderBy(c => c.L))
+                    foreach (int i in col.Idx.OrderByDescending(i => pending[i].Top))
+                        reordered.Add((pending[i].Words, pending[i].Top, pending[i].Bottom));
+                pending.Clear();
+                gutterBands = 0;
+            }
+
+            for (int bi = 0; bi < bands.Count; bi++)
+            {
+                var segments = SplitAtColumnGaps(bands[bi].Words);
+                foreach (var sws in segments)
+                {
+                    double sT = double.MinValue, sB = double.MaxValue, sL = double.MaxValue, sR = double.MinValue;
+                    foreach (var w in sws)
+                    {
+                        var bb = w.BoundingBox;
+                        if (bb.Top > sT) sT = bb.Top;
+                        if (bb.Bottom < sB) sB = bb.Bottom;
+                        if (LeftOf(bb) < sL) sL = LeftOf(bb);
+                        if (RightOf(bb) > sR) sR = RightOf(bb);
+                    }
+                    // A wide segment is a title, a full-measure line of body text or a footer: it closes the
+                    // open column section and emits in place, so the sections above and below a
+                    // two-column block never get interleaved with it.
+                    if (sR - sL >= wideW) { Flush(); reordered.Add((sws, sT, sB)); }
+                    else pending.Add((sws, sT, sB, sL, sR, bi));
+                }
+                // Credited after the band's segments, so a band whose wide segment closed the
+                // previous group counts toward the group its narrow remainder landed in.
+                if (segments.Count > 1) gutterBands++;
+            }
+            Flush();
+            return reordered;
+        }
+
         private static PageTextRuns Build(UglyToad.PdfPig.Content.Page page)
         {
             var result = new PageTextRuns { PdfWidth = page.Width, PdfHeight = page.Height };
@@ -160,6 +343,24 @@ namespace TDPdf.Services
             // line then picks its own horizontal direction, so a page mixing Latin and Hebrew /
             // Arabic paragraphs gets both right without a document-wide setting (#170).
             lineWords.Sort((a, b) => b.Top.CompareTo(a.Top));
+
+            // ---- #185: column-aware reading order ----------------------------------------------
+            // A Y band spans the whole page, so on a two-column layout every "line" mixed both
+            // columns: a drag down the left column swept its right-hand neighbour, and the copied
+            // text came out row-interleaved instead of column by column. Split each band into
+            // segments at column-gutter-sized gaps, cluster the narrow segments into columns by X
+            // overlap, and emit whole columns left-to-right (top-to-bottom inside each). Wide
+            // segments — titles and footers spanning the text width — close the open column
+            // section, so a title / two columns / footer page keeps a sane order.
+            //
+            // Nothing that is not demonstrably a column layout is touched, because a wrong reorder
+            // on the single-column pages that are most of what anyone opens would be far worse than
+            // the bug: prose bands never split (no gutter-sized gaps), and the two guards inside
+            // OrderColumnAware hand a group back unchanged unless at least two of its bands really
+            // did hold side-by-side segments AND the resulting columns are column-wide rather than
+            // table-cell-wide. Verified against a plain page, a ragged letter head, a
+            // title/two-column/footer paper, a three-column layout and an invoice table.
+            lineWords = OrderColumnAware(lineWords);
 
             int wordOrdinal = 0;
             for (int li = 0; li < lineWords.Count; li++)
@@ -266,14 +467,34 @@ namespace TDPdf.Services
         {
             if (runs.Lines.Count == 0) return 0;
 
-            RunLine? target = null;
-            double best = double.MaxValue;
+            // Since #185 several lines can share a Y band — that is exactly what a two-column page
+            // is — so a vertical hit is no longer enough to identify the line: the first match in
+            // reading order is always the LEFT column's, and a click in the right column would
+            // otherwise land at the end of the left column's line. Among the lines that contain y,
+            // take the one nearest in x (0 when the point is inside its horizontal extent, which
+            // short-circuits). On a single-column page at most one line contains y, so this picks
+            // the same line the plain break did.
+            RunLine? onLine = null;
+            double bestDx = double.MaxValue;
+            RunLine? nearLine = null;
+            double bestDy = double.MaxValue;
             foreach (var line in runs.Lines)
             {
-                if (y <= line.Top && y >= line.Bottom) { target = line; break; }
-                double d = y > line.Top ? y - line.Top : line.Bottom - y;
-                if (d < best) { best = d; target = line; }
+                if (y <= line.Top && y >= line.Bottom)
+                {
+                    double dx = x < line.Left ? line.Left - x : (x > line.Right ? x - line.Right : 0);
+                    if (dx < bestDx) { bestDx = dx; onLine = line; }
+                    if (dx <= 0) break;
+                }
+                else if (onLine is null)
+                {
+                    // Vertical near-misses only matter while nothing has contained y yet, which
+                    // keeps the "snap to the closer line" behaviour for clicks between lines.
+                    double d = y > line.Top ? y - line.Top : line.Bottom - y;
+                    if (d < bestDy) { bestDy = d; nearLine = line; }
+                }
             }
+            RunLine? target = onLine ?? nearLine;
             if (target is null) return 0;
 
             // Entirely above the first line -> page start; entirely below the last -> page end.
