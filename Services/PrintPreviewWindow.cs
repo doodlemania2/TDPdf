@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Printing;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -69,6 +70,24 @@ namespace TDPdf.Services
         private readonly TextBlock _pageLabel = new();
         private ComboBox _printerCombo = null!;
         private ComboBox _duplexCombo  = null!;
+
+        // Manual paper pick (upstream KillerPDF #186). Index 0 is "Match document" — the automatic
+        // behavior we've always had, where the driver's own default media decides the sheet and the
+        // ticket is left untouched. Anything below it is a size the selected driver reported, and it
+        // overrides BOTH the preview sheet (via RefreshArea) and the spooled ticket (via DoPrint).
+        // The list belongs to the driver, so it is rebuilt whenever the printer changes.
+        private ComboBox _paperCombo = null!;
+        private readonly List<PageMediaSize> _paperSizes = [];   // parallel to _paperCombo items 1..n
+        private PageMediaSize? _paperOverride;                   // null = match document
+
+        // Paper source / input tray (upstream KillerPDF #186 follow-up). Index 0 is "Printer default"
+        // and leaves the ticket alone; the rest are the driver's reported input bins. WPF's InputBin
+        // enum is deliberately coarse (AutoSelect / Cassette / Tractor / AutoSheetFeeder / Manual) —
+        // reaching an actual named tray ("Tray 3", "Envelope feeder") would mean hand-writing raw
+        // PrintTicket PrintCapabilities XML per driver, which is driver roulette for very little gain.
+        private ComboBox _sourceCombo = null!;
+        private readonly List<InputBin> _sourceBins = [];        // parallel to _sourceCombo items 1..n
+        private InputBin? _sourceOverride;                       // null = printer default
         private TextBox _copiesBox = null!;
         private TextBox _scaleBox  = null!;
         private TextBox _pagesBox  = null!;
@@ -78,6 +97,11 @@ namespace TDPdf.Services
 
         // Segoe MDL2 Assets close glyph, matching the main window chrome close button.
         private const string CloseGlyph = "";
+
+        // Segoe MDL2 Assets chevrons for the collapsible settings sections, same pair
+        // TransformWindow uses for its section headers (E70D / E76C).
+        private const string ChevronDown  = "";
+        private const string ChevronRight = "";
 
         /// <summary>Number of pages sent to the printer (set when the user prints).</summary>
         public int PrintedPageCount { get; private set; }
@@ -325,7 +349,15 @@ namespace TDPdf.Services
             // controls never pushes Print/Cancel off the bottom on a short window.
             var panel = new StackPanel { Margin = new Thickness(16, 12, 12, 6) };
 
-            // --- Device ---------------------------------------------------------
+            // The controls below are added flat and then retro-wrapped into three collapsible
+            // sections by WrapSection (the TransformWindow pattern), so each section's body still
+            // reads top-to-bottom in source order. PRINTER and OUTPUT open; LAYOUT starts folded
+            // because its geometry options are set-and-forget for most jobs, and folding it keeps
+            // the 268px column short enough that Copies/Pages are visible without scrolling.
+
+            // --- PRINTER: which device, what paper, which tray ------------------
+            int secPrinter = panel.Children.Count;
+
             panel.Children.Add(Label("Printer"));
             var printerCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
             ApplyComboStyle(printerCombo);
@@ -335,6 +367,12 @@ namespace TDPdf.Services
                 if (i >= 0 && i < _queues.Count)
                 {
                     _queue = _queues[i];
+                    // A different driver reports a different paper list and different input bins, so
+                    // both combos are rebuilt (and reset to their automatic entry) before the preview
+                    // recomputes. Both fields are assigned a few lines below, and the first selection
+                    // change can only happen later, from LoadPrinters().
+                    PopulatePaperSizes();
+                    PopulatePaperSources();
                     RefreshArea();
                     UpdateDuplexAvailability();
                     UpdatePreview();
@@ -342,6 +380,43 @@ namespace TDPdf.Services
             };
             _printerCombo = printerCombo;
             panel.Children.Add(printerCombo);
+
+            // Paper size. "Match document" keeps today's automatic behavior (driver default media);
+            // any other choice drives both the preview sheet and the spooled ticket.
+            panel.Children.Add(Label("Paper size"));
+            var paper = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(paper);
+            _paperCombo = paper;
+            PopulatePaperSizes();
+            paper.SelectionChanged += (s, _) =>
+            {
+                int i = ((ComboBox)s).SelectedIndex;
+                _paperOverride = i > 0 && i - 1 < _paperSizes.Count ? _paperSizes[i - 1] : null;
+                // Same path a printer change takes, so the preview sheet always shows the paper the
+                // job will actually land on.
+                RefreshArea();
+                UpdatePreview();
+            };
+            panel.Children.Add(paper);
+
+            // Paper source / input tray. Nothing here affects the preview — the sheet is the same
+            // size whichever bin it is pulled from — so this only rides along on the print ticket.
+            panel.Children.Add(Label("Paper source"));
+            var source = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(source);
+            _sourceCombo = source;
+            PopulatePaperSources();
+            source.SelectionChanged += (s, _) =>
+            {
+                int i = ((ComboBox)s).SelectedIndex;
+                _sourceOverride = i > 0 && i - 1 < _sourceBins.Count ? _sourceBins[i - 1] : null;
+            };
+            panel.Children.Add(source);
+
+            WrapSection(panel, secPrinter, "PRINTER", expanded: true);
+
+            // --- LAYOUT: how the pages sit on the sheet -------------------------
+            int secLayout = panel.Children.Count;
 
             panel.Children.Add(Label("Orientation"));
             var orient = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
@@ -358,31 +433,6 @@ namespace TDPdf.Services
             };
             panel.Children.Add(orient);
 
-            // Color vs black & white. Sent on the print ticket so color-restricted print policies
-            // see the job correctly instead of treating a B&W job as color.
-            panel.Children.Add(Label("Color"));
-            var colorMode = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
-            ApplyComboStyle(colorMode);
-            colorMode.Items.Add("Color");
-            colorMode.Items.Add("Black and white");
-            _grayscale = TDPdf.Properties.Settings.Default.PrintColor == "Grayscale";
-            colorMode.SelectedIndex = _grayscale ? 1 : 0;
-            colorMode.SelectionChanged += (s, _) => _grayscale = ((ComboBox)s).SelectedIndex == 1;
-            panel.Children.Add(colorMode);
-
-            // Two-sided: the printer does the flipping; we just set the ticket when it's supported.
-            panel.Children.Add(Label("Two-sided"));
-            var duplex = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
-            ApplyComboStyle(duplex);
-            duplex.Items.Add("One-sided");
-            duplex.Items.Add("Two-sided (long edge)");
-            _duplex = TDPdf.Properties.Settings.Default.PrintDuplex;
-            duplex.SelectedIndex = _duplex ? 1 : 0;
-            duplex.SelectionChanged += (s, _) => _duplex = ((ComboBox)s).SelectedIndex == 1;
-            _duplexCombo = duplex;
-            panel.Children.Add(duplex);
-
-            // --- Layout ---------------------------------------------------------
             panel.Children.Add(Label("Scale"));
             var scale = new ComboBox { Margin = new Thickness(0, 4, 0, 6), Height = 26 };
             ApplyComboStyle(scale);
@@ -489,7 +539,35 @@ namespace TDPdf.Services
             };
             panel.Children.Add(nup);
 
-            // --- Quantity -------------------------------------------------------
+            WrapSection(panel, secLayout, "LAYOUT", expanded: false);
+
+            // --- OUTPUT: what comes out of the machine, and how much of it ------
+            int secOutput = panel.Children.Count;
+
+            // Color vs black & white. Sent on the print ticket so color-restricted print policies
+            // see the job correctly instead of treating a B&W job as color.
+            panel.Children.Add(Label("Color"));
+            var colorMode = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(colorMode);
+            colorMode.Items.Add("Color");
+            colorMode.Items.Add("Black and white");
+            _grayscale = TDPdf.Properties.Settings.Default.PrintColor == "Grayscale";
+            colorMode.SelectedIndex = _grayscale ? 1 : 0;
+            colorMode.SelectionChanged += (s, _) => _grayscale = ((ComboBox)s).SelectedIndex == 1;
+            panel.Children.Add(colorMode);
+
+            // Two-sided: the printer does the flipping; we just set the ticket when it's supported.
+            panel.Children.Add(Label("Two-sided"));
+            var duplex = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(duplex);
+            duplex.Items.Add("One-sided");
+            duplex.Items.Add("Two-sided (long edge)");
+            _duplex = TDPdf.Properties.Settings.Default.PrintDuplex;
+            duplex.SelectedIndex = _duplex ? 1 : 0;
+            duplex.SelectionChanged += (s, _) => _duplex = ((ComboBox)s).SelectedIndex == 1;
+            _duplexCombo = duplex;
+            panel.Children.Add(duplex);
+
             panel.Children.Add(Label("Copies"));
             _copiesBox = MakeTextBox("1");
             _copiesBox.Margin = new Thickness(0);
@@ -535,6 +613,8 @@ namespace TDPdf.Services
                 UpdatePreview();
             };
             panel.Children.Add(subset);
+
+            WrapSection(panel, secOutput, "OUTPUT", expanded: true);
 
             // Buttons pinned below the scroller so they stay visible on a short window.
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
@@ -628,6 +708,65 @@ namespace TDPdf.Services
             FontWeight = FontWeights.SemiBold
         };
 
+        // Small dimmed all-caps heading for a collapsible section, matching TransformWindow's.
+        private static TextBlock SectionHeader(string text) => new()
+        {
+            Text       = text,
+            Foreground = R("TextSecondary"),
+            FontSize   = 10,
+            FontWeight = FontWeights.SemiBold,
+            Margin     = new Thickness(0, 6, 0, 4)
+        };
+
+        /// <summary>
+        /// Retro-wraps the children already appended to <paramref name="host"/> from index
+        /// <paramref name="start"/> onward into a collapsible body under a clickable chevron header.
+        /// Building each section flat and wrapping afterwards keeps the section bodies readable in
+        /// source order instead of nesting every control inside a panel declaration. Mirrors
+        /// <c>TransformWindow.WrapSection</c> so the two dialogs collapse identically.
+        /// </summary>
+        private static void WrapSection(StackPanel host, int start, string title, bool expanded)
+        {
+            var children = host.Children.Cast<UIElement>().Skip(start).ToList();
+            while (host.Children.Count > start) host.Children.RemoveAt(start);
+
+            var body = new StackPanel { Visibility = expanded ? Visibility.Visible : Visibility.Collapsed };
+            foreach (var child in children) body.Children.Add(child);
+
+            var chevron = new TextBlock
+            {
+                Text       = expanded ? ChevronDown : ChevronRight,
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize   = 9,
+                Width      = 16,
+                Foreground = R("TextSecondary"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var label = SectionHeader(title);
+            label.Margin = new Thickness(0);
+
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            row.Children.Add(chevron);
+            row.Children.Add(label);
+
+            var header = new Border
+            {
+                Background = Brushes.Transparent,   // hit-testable across the whole row
+                Cursor     = Cursors.Hand,
+                Padding    = new Thickness(0, 5, 0, 5),
+                Child      = row
+            };
+            header.MouseLeftButtonUp += (_, _2) =>
+            {
+                bool open = body.Visibility != Visibility.Visible;
+                body.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+                chevron.Text = open ? ChevronDown : ChevronRight;
+            };
+
+            host.Children.Add(header);
+            host.Children.Add(body);
+        }
+
         // ---- Behavior --------------------------------------------------------
 
         private void LoadPrinters()
@@ -680,6 +819,80 @@ namespace TDPdf.Services
             if (!ok) { _duplexCombo.SelectedIndex = 0; _duplex = false; }
         }
 
+        // Fills the paper combo from the current queue's capabilities. Index 0 is always the
+        // automatic "Match document" entry; a driver that reports nothing usable leaves only that.
+        // Called once while the combo is built and again on every printer change, so the selection
+        // resets to automatic rather than pointing at a size the new driver may not stock.
+        private void PopulatePaperSizes()
+        {
+            _paperSizes.Clear();
+            _paperCombo.Items.Clear();
+            _paperCombo.Items.Add("Match document");
+            try
+            {
+                // Same defensive shape as UpdateDuplexAvailability: the capability query throws on
+                // some drivers, and a size with no reported dimensions can't drive a preview sheet.
+                if (_queue?.GetPrintCapabilities().PageMediaSizeCapability is { } sizes)
+                {
+                    foreach (var ms in sizes)
+                    {
+                        if (ms is null || !ms.Width.HasValue || !ms.Height.HasValue) continue;
+                        _paperSizes.Add(ms);
+                        _paperCombo.Items.Add(PaperDisplayName(ms));
+                    }
+                }
+            }
+            catch { /* driver quirk - automatic entry only */ }
+            _paperCombo.SelectedIndex = 0;
+            _paperOverride = null;
+        }
+
+        // Fills the paper-source combo from the driver's reported input bins. "Unknown" bins are
+        // noise (they can't be requested meaningfully) and are dropped.
+        private void PopulatePaperSources()
+        {
+            _sourceBins.Clear();
+            _sourceCombo.Items.Clear();
+            _sourceCombo.Items.Add("Printer default");
+            try
+            {
+                if (_queue?.GetPrintCapabilities().InputBinCapability is { } bins)
+                {
+                    foreach (var bin in bins)
+                    {
+                        if (bin == InputBin.Unknown) continue;
+                        _sourceBins.Add(bin);
+                        // "AutoSheetFeeder" -> "Auto Sheet Feeder".
+                        _sourceCombo.Items.Add(Regex.Replace(bin.ToString(), "(?<=[a-z])(?=[A-Z])", " "));
+                    }
+                }
+            }
+            catch { /* driver quirk - default entry only */ }
+            _sourceCombo.SelectedIndex = 0;
+            _sourceOverride = null;
+        }
+
+        // Turns a PageMediaSizeName into something readable: "NorthAmericaLetter" becomes
+        // "North America Letter (8.5 x 11 in)" and "ISOA4" becomes "ISO A4 (210 x 297 mm)".
+        // North American stocks are shown in inches, everything else in millimeters. Custom sizes
+        // report no name at all, so those fall back to the dimensions alone.
+        private static string PaperDisplayName(PageMediaSize ms)
+        {
+            string raw  = ms.PageMediaSizeName?.ToString() ?? "";
+            string name = raw;
+            if (name.StartsWith("ISO", StringComparison.Ordinal))      name = "ISO " + name[3..];
+            else if (name.StartsWith("JIS", StringComparison.Ordinal)) name = "JIS " + name[3..];
+            // Split camel case, and also before a capital that follows a digit ("A4Rotated").
+            name = Regex.Replace(name, @"(?<=[a-z])(?=[A-Z])|(?<=\d)(?=[A-Z])", " ");
+
+            // PageMediaSize dimensions are in DIPs (1/96 inch), same unit as the printable area.
+            double wDip = ms.Width ?? 0, hDip = ms.Height ?? 0;
+            string dims = raw.StartsWith("NorthAmerica", StringComparison.Ordinal)
+                ? $"{wDip / DipPerInch:0.##} x {hDip / DipPerInch:0.##} in"
+                : $"{wDip / DipPerInch * 25.4:0} x {hDip / DipPerInch * 25.4:0} mm";
+            return name.Length > 0 ? $"{name} ({dims})" : dims;
+        }
+
         private void RefreshArea()
         {
             double w = 816, h = 1056;   // Letter portrait fallback
@@ -688,6 +901,17 @@ namespace TDPdf.Services
                 if (_queue != null)
                 {
                     var pd = new PrintDialog { PrintQueue = _queue };
+                    // A manual paper pick has to reach the preview too, not just the spooled job:
+                    // pushing it onto the ticket makes PrintableAreaWidth/Height report that stock's
+                    // imageable area, which is what the preview sheet is sized from below. With no
+                    // pick the ticket is left alone and the driver's default media decides, exactly
+                    // as it did before the paper combo existed.
+                    if (_paperOverride != null)
+                    {
+                        var t = pd.PrintTicket;
+                        t.PageMediaSize = _paperOverride;
+                        pd.PrintTicket  = t;
+                    }
                     if (pd.PrintableAreaWidth > 0 && pd.PrintableAreaHeight > 0)
                     {
                         w = pd.PrintableAreaWidth;
@@ -973,6 +1197,13 @@ namespace TDPdf.Services
                 ticket.PageOrientation = _landscape ? PageOrientation.Landscape : PageOrientation.Portrait;
                 ticket.OutputColor     = _grayscale ? OutputColor.Grayscale : OutputColor.Color;
                 ticket.Duplexing       = _duplex ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
+                // Paper size and input tray, when the user picked something other than the automatic
+                // entry. Both are left off the ticket otherwise so the driver's own defaults stand.
+                // The paper size must go on before PrintableArea* is read below, so the sheet we
+                // compose matches the stock the job prints on — the same coupling RefreshArea relies
+                // on for the preview. (upstream KillerPDF #186)
+                if (_paperOverride != null) ticket.PageMediaSize = _paperOverride;
+                if (_sourceOverride is { } bin) ticket.InputBin  = bin;
                 pd.PrintTicket = ticket;
 
                 double aw = pd.PrintableAreaWidth, ah = pd.PrintableAreaHeight;

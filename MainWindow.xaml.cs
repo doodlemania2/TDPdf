@@ -186,6 +186,13 @@ namespace TDPdf
 
         // Zoom fit-mode tracking (for auto-refit on window resize)
         private ZoomFitMode _zoomFitMode = ZoomFitMode.None;
+        // #201: true while the zoom on screen is one the USER asked for by hand, rather than one
+        // the app computed. Only the explicit manual paths raise it (BeginManualZoom); the two fits
+        // lower it. SaveZoomSetting persists the level as Settings.LastManualZoom only while it is
+        // up, which is what stops an app-applied fit from ever being replayed as a raw number on
+        // the next open — and what stops a remembered Fit Width being quietly overwritten when a
+        // fit early-returns and leaves _zoomFitMode reading None.
+        private bool _manualZoomIntent;
         // Vestigial re-entrancy guard around the FitToWidth / FitToPage zoom writes: set and
         // cleared, never read (hence the CS0414 the build carries). Deliberately left alone —
         // it is NOT the remembered-fit flag, which is the persisted Settings.DefaultFitMode, and
@@ -287,6 +294,10 @@ namespace TDPdf
         private Button _invertColorsBtn = null!;
         private MenuItem _invertColorsMenuItem = null!;
         private MenuItem _invertImagesMenuItem = null!;
+        private MenuItem _twoPageBookMenuItem = null!;
+        private Border _pageBadge = null!;
+        private TextBlock _pageBadgeText = null!;
+        private TranslateTransform _pageBadgeSlide = null!;
 
         // The primary page's TRUE-color bitmap, mirroring whatever RenderPage put in PageImage.
         // PageImage.Source may be the display-only inverted copy (#135), and the image-edit tool
@@ -300,6 +311,30 @@ namespace TDPdf
         // ============================================================
         private enum ViewMode { Single, Continuous, TwoPage, Grid }
         private ViewMode _viewMode = ViewMode.Grid;
+
+        // ── Two-Page "book layout" (upstream KillerPDF #193) ───────────────────────────────────
+        // Off (default) is the pairing Two-Page has always used: the primary page plus the one
+        // after it. On, the COVER displays ALONE, so paging forward runs 1 | 2-3 | 4-5 … the way a
+        // physical book falls open. App-wide reading preference, persisted like ViewMode itself.
+        private bool _twoPageBook;
+
+        /// <summary>
+        /// Index of the LEFT page of the spread containing <paramref name="page"/> under the active
+        /// Two-Page pairing. Book layout leaves the cover on its own, so its spreads start on ODD
+        /// indices; the classic pairing starts on even ones.
+        /// </summary>
+        private int SpreadStart(int page) =>
+            page <= 0 ? 0
+            : _twoPageBook ? page - ((page + 1) % 2)
+            : page - page % 2;
+
+        /// <summary>
+        /// True when the tile at <paramref name="primaryPageIdx"/> is a book layout's lone cover —
+        /// a ONE-page row with no facing page, so it must not be sized for two slots and must drop
+        /// the spread gap, or it hangs left of an empty half and reads as left-aligned.
+        /// </summary>
+        private bool IsBookCoverRow(int primaryPageIdx) =>
+            _viewMode == ViewMode.TwoPage && _twoPageBook && primaryPageIdx == 0;
 
         // Continuous-view state.
         private StackPanel _continuousPanel = null!;
@@ -410,11 +445,19 @@ namespace TDPdf
             _invertColorsBtn = (Button)FindName("InvertColorsBtn")!;
             _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
             _invertImagesMenuItem = (MenuItem)FindName("InvertImagesMenuItem")!;
+            _twoPageBookMenuItem = (MenuItem)FindName("TwoPageBookMenuItem")!;
+            _pageBadge = (Border)FindName("PageBadge")!;
+            _pageBadgeText = (TextBlock)FindName("PageBadgeText")!;
+            _pageBadgeSlide = (TranslateTransform)FindName("PageBadgeSlide")!;
             _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
             // Restore the persisted view mode (defaults to Grid, matching the original layout).
             if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
                 _viewMode = savedVm;
             _gridViewToggle.IsChecked = _viewMode == ViewMode.Grid;
+            // #193: restore the persisted Two-Page book layout and light its View-menu check.
+            try { _twoPageBook = TDPdf.Properties.Settings.Default.TwoPageBookLayout; }
+            catch { /* non-critical user preference */ }
+            _twoPageBookMenuItem.IsChecked = _twoPageBook;
             PagePreviewPanel.ScrollChanged += PagePreviewPanel_ScrollChanged;
             PreviewMouseDown += NavHistory_PreviewMouseDown;   // mouse back/forward buttons = jump history
             _zoomBox = (ComboBox)FindName("ZoomBox")!;
@@ -424,6 +467,12 @@ namespace TDPdf
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
             _titleBarRow = (RowDefinition)FindName("TitleBarRow")!;
             _outlineTree = (TreeView)FindName("OutlineTree")!;
+            // Expanded/Collapsed bubble from the items, which are rebuilt on every tab switch and
+            // reload — so the recorder hangs off the tree, once, rather than off the items.
+            _outlineTree.AddHandler(TreeViewItem.ExpandedEvent,
+                new RoutedEventHandler(OutlineTree_ItemExpandChanged));
+            _outlineTree.AddHandler(TreeViewItem.CollapsedEvent,
+                new RoutedEventHandler(OutlineTree_ItemExpandChanged));
             _outlineScrollViewer = (ScrollViewer)FindName("OutlineScrollViewer")!;
             _sidebarPagesTab = (RadioButton)FindName("SidebarPagesTab")!;
             _sidebarOutlinesTab = (RadioButton)FindName("SidebarOutlinesTab")!;
@@ -456,6 +505,12 @@ namespace TDPdf
             SetTool(EditTool.Select);
             ApplyGrainTexture();
             SourceInitialized += MainWindow_SourceInitialized;
+            // NOTE (#189): this does not currently fire. WndProc claims WM_DPICHANGED with
+            // handled = true so it can apply Windows' suggested rect against the custom chrome, and
+            // public HwndSource hooks run before WPF's internal HwndTarget hook, so WPF never gets
+            // the message and never raises DpiChanged. WmDpiChanged is the live DPI-change path and
+            // does the re-render itself. Left in place rather than deleted because it is harmless
+            // and idempotent, and it is the correct response if WPF ever does raise the event.
             DpiChanged += (_, _) => ApplyZoom();
 
             // Open a file passed via command-line / file association (e.g. double-clicking a .pdf)
@@ -640,7 +695,30 @@ namespace TDPdf
             int dpiX = wParam.ToInt32() & 0xFFFF;
             _currentDpiScale = dpiX > 0 ? dpiX / 96.0 : GetCurrentDpiScaleFromVisual();
             InvalidateRenderCache();
-            RerenderCurrentPage();
+
+            // #189 (upstream KillerPDF commit "Re-render on DPI change"): every raster budget is
+            // measured in DEVICE pixels, so moving the window to a monitor at a different scale
+            // factor changes how many pixels a page needs WITHOUT changing its size in DIPs. In a
+            // fit mode the move also changes the window's DIP size, so the resize path re-fits and
+            // re-renders; at a manual zoom nothing else fires and the page would sit upscaled from
+            // the old monitor's render. That was survivable while the re-sharpen budget carried a 2×
+            // supersample, which happened to cover a 100% → 200% jump; at the device-native budget
+            // this cluster introduces there is no headroom left.
+            //
+            // Upstream overrides OnDpiChanged for this; here that would be dead code, because the
+            // WndProc above claims WM_DPICHANGED (handled = true) and so WPF's DpiChanged never
+            // fires (see CurrentRenderDpiScale). This IS our DPI-change entry point, so it owns the
+            // re-render. RerenderCurrentPage repaints the primary tile at the new GetCurrentDpiX and
+            // refills _renderDims (which the crop / annotation / form paths key off, and which
+            // InvalidateRenderCache just dropped); it then ends in ApplyZoom, the single fan-out to
+            // the per-mode render paths — StartContinuousResharpen for Continuous, and the deferred
+            // RefreshPageView → RenderAdditionalPages that re-rasterizes the Grid / Two-Page tiles.
+            //
+            // Deferred to DispatcherPriority.Loaded so the SetWindowPos above has been laid out
+            // first: the tile pass measures PagePreviewPanel.ActualWidth and _annotationCanvas.Width,
+            // which are still the pre-move values while we are on the WndProc stack.
+            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                (Action)(() => { if (_doc is not null) RerenderCurrentPage(); }));
         }
 
         private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam)
@@ -890,6 +968,15 @@ namespace TDPdf
             // The working path is a temp file, so Ctrl+S must route to Save As instead of
             // silently overwriting the temp copy.
             public bool IsUntitled;
+
+            // Which OUTLINES nodes this document has expanded, keyed by index path ("2/0/1", the ghost
+            // add-row excluded). Per-tab and not per-app: it dies with the tab, so it can neither leak
+            // between documents nor grow past this document's own bookmark count. Paths rather than
+            // PdfOutline references because SaveTempAndReload reopens the document and every outline
+            // object is a new instance afterwards. Seen=false means "never built a tree for this
+            // document yet", which is what makes the depth default apply exactly once.
+            public readonly HashSet<string> OutlineExpanded = new(StringComparer.Ordinal);
+            public bool OutlineExpandSeen;
 
             public readonly Dictionary<int, List<PageAnnotation>> Annotations = new();
             public readonly Dictionary<int, (int w, int h)> RenderDims = new();
@@ -1693,6 +1780,11 @@ namespace TDPdf
                 // Same reason as the identity block below: a crop reload's DisplayPath is the
                 // "<name>.crop-<guid>.pdf" working file, which must not become the tab's name.
                 if (!internalReload) SetDisplayName(System.IO.Path.GetFileName(result.DisplayPath));
+                // A genuinely different document in this tab starts from the depth default again — the
+                // sticky OUTLINES expansion belongs to the file that was open, not to the tab. An
+                // internal reload (crop's "<name>.crop-<guid>.pdf") is the SAME document, so it keeps
+                // its state, as do SaveTempAndReload and the reopen-after-save, which never come here.
+                if (!internalReload) { _ctx.OutlineExpanded.Clear(); _ctx.OutlineExpandSeen = false; }
                 _annotations.Clear();
                 ClearFormState();
                 _undoStack.Clear();
@@ -1855,6 +1947,20 @@ namespace TDPdf
             return Math.Max(1, (int)Math.Round(_currentDpiScale * LayoutZoomScale * 96.0));
         }
 
+        // #189 (upstream KillerPDF PR #194): the one device scale every RASTER budget is measured
+        // against. It has to be _currentDpiScale and not VisualTreeHelper.GetDpi(this): both
+        // GetDpi and CompositionTarget.TransformToDevice read WPF's HwndTarget.CurrentDpiScale,
+        // which is only refreshed when WPF's own internal hook processes WM_DPICHANGED — and our
+        // WndProc claims that message (handled = true) so it can apply Windows' suggested rect
+        // against the custom chrome. Public HwndSource hooks run BEFORE the internal HwndTarget
+        // hook, so handling it there ends the chain and WPF's DPI state never moves. _currentDpiScale
+        // is seeded from the visual at SourceInitialized and then taken straight from the message's
+        // own wParam in WmDpiChanged, so it is the one value that is right after a monitor move.
+        // GetCurrentDpiX (the primary tile) already reads it; the continuous re-sharpen budget and
+        // the Grid / Two-Page tile budget go through here so all three rasterize at one density.
+        // Windows per-monitor DPI is isotropic, so collapsing X/Y to a single scalar loses nothing.
+        private double CurrentRenderDpiScale() => _currentDpiScale > 0 ? _currentDpiScale : 1.0;
+
         private void InvalidateRenderCache()
         {
             _renderCache.Clear();
@@ -1870,15 +1976,54 @@ namespace TDPdf
         // bitmap per page. Cap it and, when over, drop the entries whose page is FARTHEST from the one
         // just rendered: renders cluster around the viewport, so the farthest are least likely next.
         private const int RenderCachePageCap = 48;
+
+        // #189 (upstream KillerPDF v1.7.2): the count cap alone was not enough. An entry's size
+        // scales with the page and the render budget, so 48 cached Letter pages can hold ~630 MB in
+        // ONE tab — and every open tab keeps its own cache. Budget the cache in BYTES as well, with
+        // a floor of nearby pages so the moving window around the viewport still serves instantly.
+        private const long RenderCacheByteBudget = 160L << 20;   // ~160 MB per tab
+        private const int RenderCacheMinPages = 6;
+
+        // Bytes held by this tab's cached page bitmaps.
+        //
+        // Upstream needs a parallel size dictionary written on the producing thread, because ITS
+        // cache is a ConcurrentDictionary filled from background render threads and reading
+        // bmp.PixelWidth during eviction was a cross-thread touch on the BitmapSource. We do NOT
+        // have that problem: _renderCache is a plain Dictionary written only from RenderPage, whose
+        // awaits resume on the UI thread, and our RenderedPage record already carries PixelWidth /
+        // PixelHeight as plain ints captured at render time. So measure straight off the record and
+        // never touch the BitmapSource — do not "restore" upstream's parallel dictionary here.
+        private long RenderCacheBytes()
+        {
+            long total = 0;
+            foreach (var entry in _renderCache.Values)
+                total += 4L * entry.PixelWidth * entry.PixelHeight;   // Bgra32
+            return total;
+        }
+
+        private bool OverRenderCacheBudget()
+        {
+            int count = _renderCache.Count;
+            if (count > RenderCachePageCap) return true;
+            return count > RenderCacheMinPages && RenderCacheBytes() > RenderCacheByteBudget;
+        }
+
         private void CapRenderCache(int aroundPage)
         {
-            if (_renderCache.Count <= RenderCachePageCap) return;
+            if (!OverRenderCacheBudget()) return;
             var keys = _renderCache.Keys.ToList();
             // Farthest page first.
             keys.Sort((a, b) => Math.Abs(b.pageIndex - aroundPage).CompareTo(Math.Abs(a.pageIndex - aroundPage)));
             foreach (var k in keys)
             {
-                if (_renderCache.Count <= RenderCachePageCap) break;
+                if (!OverRenderCacheBudget()) break;
+                // Distance 0: this is the page we just rendered (the cache is keyed by DPI bucket
+                // too, so it can hold more than one entry for it) and, because the sort put the
+                // farthest first, so is every key after it. Nothing sane left to evict. Upstream
+                // guards its rescanning eviction loop the same way with `if (bestDist <= 0) break`;
+                // ours walks a fixed sorted list, so it terminates whatever the budgets say — this
+                // only stops it throwing away the page on screen to chase a budget it cannot meet.
+                if (k.pageIndex == aroundPage) break;
                 _renderCache.Remove(k);
             }
         }
@@ -1949,14 +2094,9 @@ namespace TDPdf
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
                 _annotationCanvas.Height = renderedPage.DisplayHeight;
-                // #151: the page-number tooltip used to exist only on the SECONDARY tiles, so
-                // whether you got one depended on the view mode — none in Single, none in
-                // Continuous, right-hand page only in Two-Page, from page 2 in Grid. The primary
-                // tile gets it here, kept in step with the page it is showing. No "click to
-                // navigate" hint: clicking the primary tile is what draws/selects, and it is
-                // already the current page. The tooltip goes on the annotation canvas rather than
-                // PageImage because the canvas is the transparent hit-test surface on top of it.
-                _annotationCanvas.ToolTip = $"Page {pageIndex + 1}";
+                // #197: the cursor-trailing page tooltip added by #151 is gone — the viewport-corner
+                // badge announces the page instead, in one fixed place, for every view mode.
+                ShowPageBadge(pageIndex);
                 // The display factor is per page, so a document of mixed page sizes has to
                 // re-derive the transform when the primary tile changes, at the same true zoom.
                 SyncLayoutZoom();
@@ -2023,6 +2163,19 @@ namespace TDPdf
         }
 
         /// <summary>
+        /// Keeps the primary page tile's margin in step with the pairing (#193). Every mode but a
+        /// book layout's lone cover keeps the XAML default 0,0,12,12: the right 12px is the spread
+        /// gutter between the two pages of a Two-Page spread (and the column gutter in Grid), and
+        /// the bottom 12px is the row gutter. The cover has nothing to its right, so the gutter
+        /// would make it hang left of an empty half.
+        /// </summary>
+        private void SyncPrimaryTileMargin(bool bookCover)
+        {
+            if (_pageContentPanel.Children.Count > 0 && _pageContentPanel.Children[0] is Border primaryBorder)
+                primaryBorder.Margin = bookCover ? new Thickness(0, 0, 0, 12) : new Thickness(0, 0, 12, 12);
+        }
+
+        /// <summary>
         /// Renders all remaining pages as a grid that wraps based on available viewport width.
         /// The WrapPanel's Width is set to viewport/zoom so WPF handles row-breaking automatically.
         /// Each secondary page is click-to-navigate; annotation tools only work on the primary page.
@@ -2042,6 +2195,12 @@ namespace TDPdf
             // Only Grid and Two-Page render secondary tiles into the wrap panel. Single and
             // Continuous never do (Continuous uses its own ContinuousPanel).
             bool twoPage = _viewMode == ViewMode.TwoPage;
+            // #193 pairing site 1 of 4: the primary tile's own margin. Book layout's cover has no
+            // facing page, so it drops the 12px spread gap and centres like a single page instead
+            // of hanging left of an empty slot. Set before the early return below so leaving the
+            // cover (or leaving Two-Page altogether) always puts the gap back.
+            bool bookCover = IsBookCoverRow(primaryPageIdx);
+            SyncPrimaryTileMargin(bookCover);
             if (!_gridViewEnabled && !twoPage)
             {
                 _pageContentPanel.Width = double.NaN;
@@ -2062,11 +2221,16 @@ namespace TDPdf
             // Border always has room to be centered by HorizontalAlignment="Center".
             // (Using viewportW / zoom - pad fills the viewport exactly and leaves no room.)
             double primaryPageW = _annotationCanvas.Width > 0 ? _annotationCanvas.Width : 595;
-            double pageSlotW = primaryPageW + 12; // page width + right-gutter margin
+            // #193 pairing site 2 of 4: the slot width. A book cover is a ONE-page row, and its
+            // tile carries no right margin (SyncPrimaryTileMargin above), so its slot is the bare
+            // page — otherwise the 12px gutter is counted into a one-slot panel and the cover sits
+            // 6px left of centre.
+            double pageSlotW = primaryPageW + (bookCover ? 0 : 12); // page width + right-gutter margin
             // Cap how many secondary pages we render at once. Long documents otherwise
             // allocate a (potentially multi-MB) bitmap per page on first grid display.
-            // Two-Page renders just the single page to the right of the primary.
-            int maxSecondaryPages = twoPage ? 1 : 25;
+            // Two-Page renders just the single page to the right of the primary — except a book
+            // layout's cover (#193 pairing site 3 of 4), which has no partner at all.
+            int maxSecondaryPages = twoPage ? (bookCover ? 0 : 1) : 25;
 
             // Inner space in pre-zoom (tile-layout) coords, so it is the LAYOUT scale that divides
             // out here, not the true zoom — primaryPageW above is a tile width.
@@ -2076,15 +2240,24 @@ namespace TDPdf
             // small page (whose tile is many times its natural size, so its layout scale at the
             // 5% floor is tiny) would ask the WrapPanel for a width of hundreds of thousands of
             // DIPs to hold at most 26 pages.
+            // #193 pairing site 4 of 4: sizing the panel for TWO slots parks a lone book cover in
+            // the left half of a centred two-slot panel, which reads as left-aligned. One page in
+            // the row means one slot.
             int pagesPerRow = twoPage
-                ? 2
+                ? (bookCover ? 1 : 2)
                 : Math.Clamp((int)(availablePreZoom / pageSlotW), 1, maxSecondaryPages + 1);
             double panelW = pagesPerRow * pageSlotW;
             if (panelW > 0) _pageContentPanel.Width = panelW;
 
-            var dpiInfo = VisualTreeHelper.GetDpi(this);
-            double dpiScaleX = dpiInfo.DpiScaleX;
-            double dpiScaleY = dpiInfo.DpiScaleY;
+            // #189: one authoritative device scale (see CurrentRenderDpiScale) rather than
+            // VisualTreeHelper.GetDpi, which does not survive a monitor move here. Both the box
+            // below and the bitmap DPI further down have to use the SAME number — scaledMax scales
+            // the pixel width up by it and the bitmap DPI divides it back out, so a mismatch would
+            // resize the tiles rather than just re-sharpen them. This is density-only: the tile's
+            // DIP width works out to RenderBoxDip either way, matching the primary tile, which
+            // already sizes its raster off _currentDpiScale via GetCurrentDpiX.
+            double dpiScaleX = CurrentRenderDpiScale();
+            double dpiScaleY = dpiScaleX;
             // Same square box as the primary tile (PdfDocumentService.RenderBoxDip), in device
             // pixels, so grid tiles land on the same DIP size as the primary and the display
             // factor is one number for the whole wrap panel.
@@ -2109,6 +2282,10 @@ namespace TDPdf
                         int w = pageReader.GetPageWidth();
                         int h = pageReader.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var rawBytes = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
                                        ?? pageReader.GetImage();
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
@@ -2139,13 +2316,18 @@ namespace TDPdf
                 var img = new Image { Source = bitmap, Stretch = Stretch.None };
                 RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
 
+                // #197: no per-tile page tooltip anymore — it trailed the cursor across the tiles
+                // and read as noise; the corner badge is the page indicator now. The name stays as
+                // an AutomationProperties value so a screen reader can still identify the tile,
+                // which is all the tooltip ever contributed to the accessibility tree.
                 var overlay = new Canvas
                 {
                     Width = w, Height = h,
                     Background = Brushes.Transparent,
-                    Cursor = Cursors.Hand,
-                    ToolTip = $"Page {pi + 1} — click to navigate"
+                    Cursor = Cursors.Hand
                 };
+                AutomationProperties.SetName(overlay, $"Page {pi + 1}");
+                AutomationProperties.SetHelpText(overlay, "Click to make this the current page.");
                 overlay.PreviewMouseLeftButtonDown += (_, _) => PageList.SelectedIndex = pi;
 
                 var pageGrid = new Grid();
@@ -2191,6 +2373,72 @@ namespace TDPdf
             _statusHoldUntil = DateTime.UtcNow.AddMilliseconds(holdMs);
             StatusText.Text = text;
         }
+
+        // ---- Transient status readouts -------------------------------------------------------
+        // One snapshot / hold / restore for every "flash something on the status line, then put back
+        // what was there" caller: the app-scale readout (AppScale.cs) and the #status-line file size
+        // below. Whatever was showing before the FIRST flash of a burst is snapshotted and put back,
+        // but only if the readout is still the text on screen — so a real status written after the
+        // hold lapsed is never replaced by a stale one. The restore assigns StatusText directly
+        // rather than going through SetStatus: this is putting a line back, not reporting something
+        // new. Normal priority rather than DispatcherTimer's default Background, so a busy render
+        // cannot leave the readout parked on the footer.
+        private System.Windows.Threading.DispatcherTimer? _statusFlashTimer;
+        private string _statusFlashWas  = string.Empty;
+        private string _statusFlashText = string.Empty;
+
+        /// <param name="holdMs">How long plain <see cref="SetStatus"/> calls are suppressed.</param>
+        /// <param name="life">How long the readout stays on screen before the old line comes back.</param>
+        private void FlashStatus(string text, int holdMs, TimeSpan life)
+        {
+            if (_statusFlashTimer is null)
+            {
+                _statusFlashTimer = new System.Windows.Threading.DispatcherTimer(
+                    System.Windows.Threading.DispatcherPriority.Normal);
+                _statusFlashTimer.Tick += (_, _) =>
+                {
+                    _statusFlashTimer!.Stop();
+                    if (StatusText.Text == _statusFlashText) StatusText.Text = _statusFlashWas;
+                };
+            }
+
+            // Only the first flash of a burst snapshots; the rest would capture our own readout.
+            if (!_statusFlashTimer.IsEnabled) _statusFlashWas = StatusText.Text;
+            _statusFlashTimer.Stop();
+            _statusFlashTimer.Interval = life;
+            _statusFlashText = text;
+            SetStatusHeld(text, holdMs);
+            _statusFlashTimer.Start();
+        }
+
+        // Clicking the status line (or Shift+F4) flashes the open document's file size for a beat and
+        // then puts back whatever was showing — upstream KillerPDF v1.7.2. Held so page-change chatter
+        // cannot overwrite it mid-read.
+        private void StatusText_Click(object sender, MouseButtonEventArgs e) => ShowCurrentFileSize();
+
+        private void ShowCurrentFileSize()
+        {
+            // The user's real document, not the %TEMP% working copy a structural edit repoints us at;
+            // falls back to the working path for a never-saved (New / merged-on-drop) document.
+            string? path = _ctx.OriginalPath ?? _currentFile;
+            if (_doc is null || string.IsNullOrEmpty(path)) return;
+            long bytes;
+            try
+            {
+                if (!File.Exists(path)) return;
+                bytes = new FileInfo(path).Length;
+            }
+            catch { return; }   // a vanished / unreadable file is not worth a dialog
+            FlashStatus($"{System.IO.Path.GetFileName(path)} — {FormatFileSize(bytes)}",
+                        holdMs: 2500, life: TimeSpan.FromMilliseconds(2600));
+        }
+
+        /// <summary>Human-readable file size. Shared by the Document Info summary and the status-line
+        /// flash so the two never disagree about how big a document is.</summary>
+        private static string FormatFileSize(long bytes)
+            => bytes >= 1L << 20 ? $"{bytes / (double)(1 << 20):N1} MB"
+             : bytes >= 1L << 10 ? $"{bytes / (double)(1 << 10):N0} KB"
+             : $"{bytes} bytes";
 
         private void SetBusy(bool isBusy, string? status = null)
         {
@@ -2358,6 +2606,39 @@ namespace TDPdf
             });
         }
 
+        // ── Two-Page book layout (upstream KillerPDF #193) ─────────────────────────────────────
+
+        private void TwoPageBook_Click(object sender, RoutedEventArgs e) => ToggleTwoPageBook(!_twoPageBook);
+
+        /// <summary>
+        /// Turns the Two-Page book layout on or off, persists it, and re-pairs the spread that is
+        /// on screen. Available from any view mode — it is a standing preference for how Two-Page
+        /// pairs, so it can be set before switching into Two-Page — but it only changes pixels
+        /// while Two-Page is the active mode.
+        /// </summary>
+        private void ToggleTwoPageBook(bool on)
+        {
+            _twoPageBook = on;
+            _twoPageBookMenuItem.IsChecked = on;
+            try
+            {
+                TDPdf.Properties.Settings.Default.TwoPageBookLayout = on;
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            catch { /* non-critical user preference */ }
+            SetStatus(on ? "Book layout on - the cover shows alone" : "Book layout off - pages pair from the cover");
+            if (_doc is null || _viewMode != ViewMode.TwoPage) return;
+            // Re-pair what is on screen. Toggling is an explicit request about pairing, so unlike
+            // every other navigation path it is allowed to move the selection onto the new spread's
+            // left page; the selection IS the primary tile here (see NavigatePageStep).
+            int cur = Math.Max(0, PageList.SelectedIndex);
+            int start = SpreadStart(cur);
+            if (start != cur) { PageList.SelectedIndex = start; return; }   // SelectionChanged re-renders
+            RenderPage(start);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                () => RefreshPageView(start));
+        }
+
         /// <summary>
         /// Applies the persisted view mode's layout and open-fit rule when a document is first
         /// opened (the mode itself doesn't change, so SetViewMode's no-op guard would skip this).
@@ -2376,24 +2657,74 @@ namespace TDPdf
             // per-view-mode default below (upstream v1.7.1): someone reading on a small screen
             // should not have to pick Fit Page again for every manual they open.
             ZoomFitMode preferred = ReadDefaultFitMode();
+            // #201 (upstream KillerPDF): a manual zoom is just as much a standing preference as a
+            // fit, and until now every open threw it away. ReadLastManualZoom is non-zero only when
+            // the user's LAST EXPLICIT zoom decision was a manual one — picking Fit Width or Fit
+            // Page clears it (SaveDefaultFitMode) and the fits the app applies for you never write
+            // it, so the number here is always one a person typed, picked or wheeled, never one
+            // derived from a window we no longer have. That is what keeps the old "raw zoom saved
+            // at a different window or monitor size opens the document enormous or microscopic"
+            // failure from coming back: a FIT is replayed as a fit against the CURRENT window
+            // (window-relative by definition), and only a deliberate manual zoom is replayed as a
+            // number — clamped to ZoomViewModel's 5%-400% range on the way in.
+            double manualZoom = ReadLastManualZoom();
+            bool restoreManual = preferred == ZoomFitMode.None && manualZoom > 0;
 
             if (isContinuous)
             {
                 // SetupContinuousView ends in FitToWidth, which is also Continuous's own default;
-                // only a remembered Fit Page has to override it, once the strip exists.
+                // only a remembered Fit Page — or a remembered manual zoom — has to override it,
+                // once the strip exists.
                 SetupContinuousView(Math.Max(0, PageList.SelectedIndex));
                 if (preferred == ZoomFitMode.Page) FitToPage();
+                else if (restoreManual) ApplyRestoredManualZoom(manualZoom);
+                FocusDocumentSurface();
                 return;
             }
 
             // Otherwise Single / Two-Page open fit-to-page and Grid keeps its column-fit default
             // (fit-width is a sensible neutral starting zoom that RefreshPageView then
-            // column-snaps).
+            // column-snaps). Grid is excluded from the manual restore: its zoom is not a free
+            // number but a column count RefreshPageView immediately snaps back, so replaying one
+            // would only produce a fight it always loses.
             if (preferred == ZoomFitMode.Width) FitToWidth();
             else if (preferred == ZoomFitMode.Page) FitToPage();
+            else if (restoreManual && _viewMode != ViewMode.Grid) ApplyRestoredManualZoom(manualZoom);
             else if (_viewMode == ViewMode.Single || _viewMode == ViewMode.TwoPage) FitToPage();
             else FitToWidth();
             RefreshPageView(_viewMode == ViewMode.Grid ? 0 : Math.Max(0, PageList.SelectedIndex));
+            FocusDocumentSurface();
+        }
+
+        /// <summary>
+        /// Restores a remembered manual zoom (#201). Clears the fit tracking first, so the very
+        /// next window resize does not snap the restored zoom away to a fit the user never asked
+        /// for; <see cref="ZoomViewModel.SetZoomLevel"/> coerces the value into the 5%-400% range.
+        /// </summary>
+        private void ApplyRestoredManualZoom(double zoom)
+        {
+            _zoomFitMode = ZoomFitMode.None;
+            _manualZoomIntent = true;   // the restored zoom IS the standing manual preference
+            Zoom.SetZoomLevel(zoom);
+        }
+
+        /// <summary>
+        /// Puts keyboard focus on the document surface after a document opens (#196, upstream
+        /// KillerPDF). Without it focus sat on the Open button — most visibly when TDPdf was
+        /// launched from Explorer or the command line — so the ScrollViewer's OWN keyboard
+        /// scrolling (Space / Shift+Space, and the arrow keys inside a page zoomed past the
+        /// viewport) did nothing until the user clicked the page. This is narrower than it sounds:
+        /// arrow and PgUp/PgDn PAGING already worked from anywhere, because OnPreviewKeyDown claims
+        /// those at the window level. Never steals the caret from someone already typing — the find
+        /// bar, the page-jump box, a form field or the editable zoom combo all keep focus.
+        /// </summary>
+        private void FocusDocumentSurface()
+        {
+            if (_doc is null || PagePreviewPanel.Visibility != Visibility.Visible) return;
+            // Same three surfaces OnPreviewKeyDown steps aside for, in the same order: a live
+            // annotation text box, an inline bookmark rename, and any other caret-bearing control.
+            if (_activeTextBox is { IsFocused: true } || _bmRenaming || IsTypingTarget()) return;
+            PagePreviewPanel.Focus();
         }
 
         // ============================================================
@@ -2454,11 +2785,13 @@ namespace TDPdf
                     Margin = new Thickness(0, 0, 0, 12),
                     Background = BrushResource("BgPanel"),
                     Tag = i,
-                    // #151: same page-number tooltip as the wrap-panel tiles — Continuous had none
-                    // at all. Clicking a slot really does select that page, so it keeps the hint.
-                    ToolTip = $"Page {i + 1} — click to navigate",
                     Child = pageImg
                 };
+                // #197: the #151 slot tooltip is gone with the rest of them — in a continuous strip
+                // a tooltip that follows the cursor down the whole document was the worst offender.
+                // The accessible name stays so the slot is still identifiable to a screen reader.
+                AutomationProperties.SetName(placeholder, $"Page {i + 1}");
+                AutomationProperties.SetHelpText(placeholder, "Click to make this the current page.");
                 placeholder.PreviewMouseLeftButtonDown += (_, _) => SelectContinuousPage(capturedI);
                 _continuousPanel.Children.Add(placeholder);
                 y += slotH + 12;
@@ -2537,6 +2870,10 @@ namespace TDPdf
                         int w = pr.GetPageWidth();
                         int h = pr.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
                                   ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
@@ -2643,9 +2980,16 @@ namespace TDPdf
             double zoom = Zoom.ZoomLevel;
             double targetW = _continuousPageW;
             int baseW = Math.Max(800, Math.Min(2048, (int)(targetW * 2)));   // same budget as RenderContinuousPages
-            var dpiInfo = VisualTreeHelper.GetDpi(this);
-            double dpiScale = Math.Max(dpiInfo.DpiScaleX, dpiInfo.DpiScaleY);
-            int hiW = (int)Math.Min(4096, targetW * 2 * dpiScale * Math.Max(1.0, zoom));
+            // #189 (upstream KillerPDF PR #194): targetW * zoom * dpiScale already IS the page's
+            // on-screen size in device pixels, so the extra * 2 this used to carry was a 2× linear
+            // supersample on top of an already-correct budget — 4× the pixels and 4× the bytes for
+            // detail the display cannot resolve. Because fit-width zoom is viewportW / targetW,
+            // targetW cancels and the old hiW reduced to twice the viewport width, which is why the
+            // cost tracked window size and display resolution rather than anything about the file.
+            // Render at the size we actually draw at. (baseW above is the BASE render budget and is
+            // deliberately left alone — upstream did not change it either.)
+            double dpiScale = CurrentRenderDpiScale();
+            int hiW = (int)Math.Min(4096, targetW * dpiScale * Math.Max(1.0, zoom));
 
             // Visible slot range. Slot space is zoom-independent (the shared ScaleTransform supplies
             // the zoom), so divide the scroll offsets back down — the same mapping ScrollChanged uses.
@@ -2666,8 +3010,12 @@ namespace TDPdf
                 if (visible[^1] < _continuousTops.Count - 1) visible.Add(visible[^1] + 1);
             }
 
-            // Below ~1.25× the base budget the re-raster isn't visibly sharper: restore-only pass.
-            bool wantHi = hiW >= (int)(baseW * 1.25);
+            // #189: hiW is now a true device-pixel width, so the trigger is simply "has the base
+            // render run out of pixels for the size we are drawing it at". The old 1.25× margin was
+            // calibrated against a hiW that was inflated 2×; leaving it here would stop the pass
+            // firing where it is still needed and pages would be upscaled from the base render.
+            // 1.05 is hysteresis only, so a page sitting on the boundary doesn't re-raster on a nudge.
+            bool wantHi = hiW >= (int)(baseW * 1.05);
 
             _continuousSharpenCts?.Cancel();
             _continuousSharpenCts = new CancellationTokenSource();
@@ -2704,6 +3052,10 @@ namespace TDPdf
                         using var pr = docReader.GetPageReader(p);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, p, w, h)
                                   ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
@@ -2840,6 +3192,10 @@ namespace TDPdf
                         using var pr = docReader.GetPageReader(i);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
                                   ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
@@ -2902,6 +3258,67 @@ namespace TDPdf
                 (Action)(() => _suppressContinuousScrollSync = false));
         }
 
+        // ── Current-page badge (upstream KillerPDF #197) ───────────────────────────────────────
+        // One "page / total" chip in the viewport's bottom-right corner, replacing the per-tile
+        // page tooltips (#151) that trailed the cursor and read as noise. It slides up on real
+        // scrolling and on a page change, then slides back down once the view has been still for a
+        // moment. Suppressed entirely for a one-page document, where it would only ever say
+        // "1 / 1". The badge lives outside the page tiles and is IsHitTestVisible="False", so it
+        // can never intercept a page click.
+        private System.Windows.Threading.DispatcherTimer? _pageBadgeTimer;
+
+        private const double PageBadgeHiddenY = 46;
+
+        private void ShowPageBadge(int page)
+        {
+            if (_doc is null || _doc.PageCount < 2) return;
+            if (page < 0 || page >= _doc.PageCount) return;
+            _pageBadgeText.Text = $"{page + 1} / {_doc.PageCount}";
+            _pageBadgeSlide.BeginAnimation(TranslateTransform.YProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(140))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                        { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut }
+                });
+            _pageBadge.BeginAnimation(OpacityProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(120)));
+            if (_pageBadgeTimer is null)
+            {
+                _pageBadgeTimer = new System.Windows.Threading.DispatcherTimer
+                    { Interval = TimeSpan.FromMilliseconds(900) };
+                _pageBadgeTimer.Tick += (_, _) =>
+                {
+                    _pageBadgeTimer?.Stop();
+                    _pageBadgeSlide.BeginAnimation(TranslateTransform.YProperty,
+                        new System.Windows.Media.Animation.DoubleAnimation(
+                            PageBadgeHiddenY, TimeSpan.FromMilliseconds(220))
+                        {
+                            EasingFunction = new System.Windows.Media.Animation.CubicEase
+                                { EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn }
+                        });
+                    _pageBadge.BeginAnimation(OpacityProperty,
+                        new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(220)));
+                };
+            }
+            _pageBadgeTimer.Stop();
+            _pageBadgeTimer.Start();
+        }
+
+        /// <summary>
+        /// Drops the badge immediately, without the slide-out. Used when the document goes away:
+        /// the idle timer would otherwise leave it hanging over the start screen for up to a
+        /// second. Clearing the animations first is what lets the plain property assignments take
+        /// effect — a running animation outranks a local value.
+        /// </summary>
+        private void HidePageBadgeNow()
+        {
+            _pageBadgeTimer?.Stop();
+            _pageBadgeSlide.BeginAnimation(TranslateTransform.YProperty, null);
+            _pageBadge.BeginAnimation(OpacityProperty, null);
+            _pageBadgeSlide.Y = PageBadgeHiddenY;
+            _pageBadge.Opacity = 0;
+        }
+
         /// <summary>
         /// Tracks scroll position in continuous view: updates the page-number box and the sidebar
         /// thumbnail selection to whichever page is nearest the viewport center.
@@ -2912,7 +3329,9 @@ namespace TDPdf
             // statusbar page counter tracks scrolling instead of pointing at the last-clicked page.
             // We update only the counter, NOT PageList.SelectedIndex — in Grid a selection change
             // scroll-jumps and re-renders (PageList_SelectionChanged), which would fight the scroll.
-            if (_viewMode == ViewMode.Grid) { UpdateGridCurrentPageCounter(); return; }
+            // #197: a real vertical scroll surfaces the corner badge too. Grid's nearest-tile search
+            // already runs here, so it reports the page rather than repeating the hunt.
+            if (_viewMode == ViewMode.Grid) { UpdateGridCurrentPageCounter(e.VerticalChange != 0); return; }
 
             if (_viewMode != ViewMode.Continuous || _continuousTops.Count == 0) return;
             // #85: once scrolling settles, sharpen the pages now in view and release the ones that
@@ -2936,6 +3355,9 @@ namespace TDPdf
                 if (dist < minDist) { minDist = dist; nearest = i; }
             }
 
+            // #197: surface the position badge on real scrolling, whichever page ends up nearest.
+            if (e.VerticalChange != 0) ShowPageBadge(nearest);
+
             if (PageList.SelectedIndex != nearest)
             {
                 _pageJumpBox.Text = (nearest + 1).ToString();
@@ -2951,7 +3373,7 @@ namespace TDPdf
         // primary PageImage tagged in RenderPage, secondaries when appended). Uses TranslatePoint on
         // both tile edges so any grid zoom transform is accounted for. Deliberately leaves
         // PageList.SelectedIndex untouched (a Grid selection change scroll-jumps and re-renders).
-        private void UpdateGridCurrentPageCounter()
+        private void UpdateGridCurrentPageCounter(bool showBadge = false)
         {
             if (_doc is null || _pageContentPanel.Children.Count == 0) return;
             double viewportCenterY = PagePreviewPanel.ViewportHeight * 0.5;
@@ -2971,7 +3393,10 @@ namespace TDPdf
                 catch { /* transform can fail mid-layout; skip this tile */ }
             }
             if (nearestPage >= 0)
+            {
                 _pageJumpBox.Text = (nearestPage + 1).ToString();
+                if (showBadge) ShowPageBadge(nearestPage);   // #197
+            }
         }
 
         // ============================================================
@@ -3507,7 +3932,14 @@ namespace TDPdf
             string OnValue,       // radio/checkbox on-state value (e.g. "/Yes")
             bool   IsReadOnly,
             double Cx, double Cy, double Cw, double Ch,
-            List<string> Options);
+            List<string> Options,
+            // Upstream KillerPDF #158: a comb field is /Tx with the Comb flag (/Ff bit 25) AND a
+            // /MaxLen — the printed row of equal-width boxes forms are so fond of. GetPageFormFields
+            // only ever sets IsComb together with MaxLen > 0 (and never with IsMultiLine, which the
+            // spec makes mutually exclusive), so anything downstream may divide by MaxLen whenever
+            // IsComb is true. MaxLen is also the typing cap.
+            bool   IsComb,
+            int    MaxLen);
 
         /// <summary>
         /// Scans the current page's /Annots for Widget subtypes and overlays interactive
@@ -3556,12 +3988,23 @@ namespace TDPdf
                     double fieldShort = Math.Min(f.Cw, f.Ch);
                     double fontSize = f.IsMultiLine ? fieldShort * 0.18 : fieldShort * 0.65;
                     fontSize = Math.Max(10, fontSize);
+                    // #158: a comb field types one character per printed cell. WPF has no comb
+                    // TextBox, so the overlay approximates the cell walk: a monospace face (Consolas'
+                    // advance is ~0.55em) sized so one advance is at most one cell wide, capped at
+                    // MaxLen characters, and left-padded by half a cell minus half a glyph so the
+                    // first character lands in the middle of cell 0 rather than against its left
+                    // wall. It is an approximation on screen only — the SAVED appearance stream
+                    // below places each glyph exactly at its cell centre. IsComb guarantees
+                    // MaxLen > 0 (see FormFieldInfo), so the division is safe.
+                    double combCellW = f.IsComb ? f.Cw / f.MaxLen : 0;
+                    if (f.IsComb) fontSize = Math.Max(9, Math.Min(fontSize, combCellW / 0.55));
                     var tb = new TextBox
                     {
                         Tag             = FormOverlayTag,
                         Width           = f.Cw,
                         Height          = f.Ch,
                         Text            = cur,
+                        MaxLength       = f.IsComb ? f.MaxLen : 0,   // 0 = unlimited (WPF default)
                         IsReadOnly      = f.IsReadOnly,
                         AcceptsReturn   = f.IsMultiLine,
                         TextWrapping    = f.IsMultiLine ? TextWrapping.Wrap : TextWrapping.NoWrap,
@@ -3572,10 +4015,13 @@ namespace TDPdf
                         BorderBrush     = greenBrush,
                         BorderThickness = new Thickness(1),
                         FontSize        = fontSize,
-                        Padding         = new Thickness(3, 0, 3, 0),
+                        Padding         = f.IsComb
+                            ? new Thickness(Math.Max(0, combCellW / 2 - fontSize * 0.275), 0, 0, 0)
+                            : new Thickness(3, 0, 3, 0),
                         VerticalContentAlignment = f.IsMultiLine ? VerticalAlignment.Top : VerticalAlignment.Center,
                         ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
                     };
+                    if (f.IsComb) tb.FontFamily = new FontFamily("Consolas");
                     tb.GotFocus  += (_, _) => tb.BorderBrush = focusBrush;
                     tb.LostFocus += (_, _) => tb.BorderBrush = greenBrush;
                     int capturedKey = f.ObjNum;
@@ -3802,6 +4248,7 @@ namespace TDPdf
                     // Walk the parent chain to resolve inherited attributes.
                     string ft = "", name = "", curVal = "";
                     int flags = 0;
+                    int maxLen = 0;   // #158: /MaxLen, the comb cell count
                     var options = new List<string>();
 
                     PdfDictionary? node = ann;
@@ -3818,6 +4265,11 @@ namespace TDPdf
                         }
                         if (flags == 0 && node.Elements["/Ff"] is PdfInteger fi)
                             flags = fi.Value;
+                        // #158: /MaxLen is inheritable exactly like /Ff, so it gets the same
+                        // parent-chain walk — a comb field very often carries its /Ff and /MaxLen on
+                        // the parent field node and only the /Rect on the widget.
+                        if (maxLen == 0 && node.Elements["/MaxLen"] is PdfInteger ml)
+                            maxLen = ml.Value;
                         if (options.Count == 0 && node.Elements.GetArray("/Opt") is PdfArray optArr)
                         {
                             for (int j = 0; j < optArr.Elements.Count; j++)
@@ -3838,6 +4290,12 @@ namespace TDPdf
 
                     bool isReadOnly  = (flags & 1) != 0;
                     bool isMultiLine = ft.Contains("Tx") && (flags & 4096) != 0;
+                    // #158: Comb is /Ff bit 25 (1 << 24) and only means anything on a /Tx field that
+                    // also declares how many cells it has. The spec makes comb and multiline mutually
+                    // exclusive, so a field that (wrongly) sets both stays on the ordinary multiline
+                    // path. Requiring maxLen > 0 here is what lets every consumer divide by MaxLen.
+                    bool isComb      = ft.Contains("Tx") && (flags & (1 << 24)) != 0
+                                       && maxLen > 0 && !isMultiLine;
                     bool isPushBtn   = ft.Contains("Btn") && (flags & (1 << 16)) != 0;
                     bool isRadio     = ft.Contains("Btn") && !isPushBtn && (flags & (1 << 15)) != 0;
                     bool isCheckBox  = ft.Contains("Btn") && !isPushBtn && !isRadio;
@@ -3860,7 +4318,8 @@ namespace TDPdf
                         objNum = -(pageIndex * 10000 + i); // synthetic key for inline dicts
 
                     result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
-                        name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options));
+                        name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options,
+                        isComb, maxLen));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
@@ -3937,11 +4396,19 @@ namespace TDPdf
                         // but the appearance writer never saw it: a multiline field has to lay its
                         // value out in lines from the top of the box, a single-line one draws one
                         // vertically centred line.
+                        //
+                        // #158: /MaxLen rides along on the same walk — it is inheritable in exactly
+                        // the same way, and a comb field's appearance needs both it and bit 25.
+                        // The loop now stops only once BOTH have been found (or the chain runs out);
+                        // the per-value `== 0` guards mean the extra iterations can never change
+                        // which /Ff wins, so non-comb fields resolve identically to before.
                         int fieldFlags = 0;
+                        int combLen = 0;
                         node = ann;
-                        while (node is not null && fieldFlags == 0)
+                        while (node is not null && (fieldFlags == 0 || combLen == 0))
                         {
-                            if (node.Elements["/Ff"] is PdfInteger fi) fieldFlags = fi.Value;
+                            if (fieldFlags == 0 && node.Elements["/Ff"] is PdfInteger fi) fieldFlags = fi.Value;
+                            if (combLen == 0 && node.Elements["/MaxLen"] is PdfInteger ml) combLen = ml.Value;
                             var pi = node.Elements["/Parent"];
                             if (pi is null) break;
                             node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
@@ -3952,11 +4419,16 @@ namespace TDPdf
                         string ffType = fieldDict?.Elements["/FT"]?.ToString() ?? "";
                         if (string.IsNullOrEmpty(ffType)) ffType = "/Tx";
                         bool isMultiLine = ffType.Contains("Tx") && (fieldFlags & 4096) != 0;
+                        // #158: same gating as GetPageFormFields — /Tx only, needs a positive
+                        // /MaxLen, and never together with multiline.
+                        bool isComb = ffType.Contains("Tx") && (fieldFlags & (1 << 24)) != 0
+                                      && combLen > 0 && !isMultiLine;
 
                         if (_formTextValues.TryGetValue(objNum, out var textVal) && fieldDict is not null)
                         {
                             fieldDict.Elements["/V"] = new PdfString(textVal);
-                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine);
+                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine,
+                                isComb ? combLen : 0);
                         }
                         else if (_formCheckValues.TryGetValue(objNum, out var checkVal) && fieldDict is not null)
                         {
@@ -4023,7 +4495,14 @@ namespace TDPdf
         /// Generates a /AP /N form XObject appearance stream for a text field and sets it
         /// on the widget annotation, so the typed value shows in other viewers.
         /// </summary>
-        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH, bool isMultiLine)
+        /// <param name="combLen">
+        /// Upstream KillerPDF #158. Cell count of a comb field (/Ff bit 25 with a /MaxLen), which
+        /// draws one character per evenly-spaced cell instead of one continuous run. 0 — the default
+        /// every existing caller keeps — means "not a comb field" and leaves the ordinary
+        /// single-line / multiline path below completely untouched.
+        /// </param>
+        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH, bool isMultiLine,
+            int combLen = 0)
         {
             try
             {
@@ -4036,6 +4515,44 @@ namespace TDPdf
                 // blows the text up to the height of the whole box.
                 fontSize = isMultiLine ? Math.Max(6, fontSize)
                                        : Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
+
+                // #158: comb — one character per evenly-spaced cell, the way Acrobat fills the
+                // printed boxes. Each glyph gets its OWN text matrix placing it at its cell's
+                // centre: Tm sets the absolute position, so no leading/advance accumulates between
+                // them and the run cannot drift out of the cells. The horizontal offset backs off
+                // half a glyph from the cell centre (Helvetica-class average advance is ~0.55em, so
+                // half is ~0.275em), and the width cap keeps a wide glyph from spilling into its
+                // neighbour. Spaces are skipped: they paint nothing and would only cost operators.
+                // The shared single-run path below cannot express this — it would bunch the whole
+                // value into the left of cell 0. Note this returns before that path, and every
+                // non-comb caller passes combLen == 0, so nothing here can affect them.
+                if (combLen > 0)
+                {
+                    double cellW = fieldW / combLen;
+                    fontSize = Math.Max(6, Math.Min(fontSize, Math.Min(fieldH * 0.85, cellW * 1.4)));
+                    string oneLine = text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
+                    if (oneLine.Length > combLen) oneLine = oneLine[..combLen];
+                    double combY = (fieldH - fontSize) / 2 + fontSize * 0.2;
+                    if (combY < 1) combY = 1;
+
+                    var csb = new System.Text.StringBuilder();
+                    csb.Append($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n");
+                    csb.Append($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n");
+                    for (int i = 0; i < oneLine.Length; i++)
+                    {
+                        if (oneLine[i] == ' ') continue;
+                        double gx = i * cellW + cellW / 2 - fontSize * 0.275;
+                        // Same EscapePdfString the run path uses, so WinAnsi folding and (, ), \
+                        // escaping are identical for a comb cell and an ordinary field.
+                        csb.Append($"1 0 0 1 {gx:F2} {combY:F2} Tm\n({EscapePdfString(oneLine[i].ToString())}) Tj\n");
+                    }
+                    csb.Append("ET\nQ\nEMC");
+
+                    var combXobj = BuildFormXObject(fontName, fieldW, fieldH, csb.ToString());
+                    if (combXobj is null) return;
+                    AttachAppearance(widgetAnn, combXobj);
+                    return;
+                }
 
                 // Tj shows a string; it has no concept of a line break, so a value with newlines
                 // in it drew as one run with the breaks swallowed (they survived into the literal
@@ -4348,6 +4865,16 @@ namespace TDPdf
         /// </summary>
         private void LoadOutlines()
         {
+            // A rebuild drives IsExpanded itself; the live Expanded/Collapsed recorder must only ever
+            // hear the USER, or a rebuild would be recorded as a user choice against whichever tab
+            // happens to be active at the time.
+            _outlineRebuilding = true;
+            try { LoadOutlinesCore(); }
+            finally { _outlineRebuilding = false; }
+        }
+
+        private void LoadOutlinesCore()
+        {
             _bmExtraSel.Clear();          // outlines may be gone after a rebuild / undo
             _outlineTree.Items.Clear();
             if (_doc is null)
@@ -4376,6 +4903,10 @@ namespace TDPdf
                 _sidebarOutlinesTab.IsEnabled = true;
                 if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
                 AddOutlineItems(_outlineTree.Items, outlines);
+                // Sticky expand/collapse per tab. LoadOutlines rebuilds from scratch on every tab
+                // switch and temp-reload, which used to re-expand everything the user had folded.
+                if (_ctx.OutlineExpandSeen) ApplyOutlineExpandState();
+                else { CaptureOutlineExpandState(); _ctx.OutlineExpandSeen = true; }
             }
             catch
             {
@@ -4411,7 +4942,8 @@ namespace TDPdf
 
         /// <summary>Builds a TreeViewItem per outline (recursing into children) tied to its live
         /// PdfOutline via <see cref="OutlineNodeRef"/>.</summary>
-        private void AddOutlineItems(ItemCollection target, PdfSharpCore.Pdf.PdfOutlineCollection outlines)
+        private void AddOutlineItems(ItemCollection target, PdfSharpCore.Pdf.PdfOutlineCollection outlines,
+                                     int depth = 0)
         {
             foreach (PdfSharpCore.Pdf.PdfOutline outline in outlines)
             {
@@ -4420,7 +4952,11 @@ namespace TDPdf
                 var item = new TreeViewItem
                 {
                     Header = string.IsNullOrEmpty(title) ? "(untitled)" : title,
-                    IsExpanded = true,
+                    // Top level starts open, deeper levels start folded (the Acrobat default) — a deep
+                    // outline was otherwise a wall of text on open, since this used to expand every
+                    // node at every depth. ApplyOutlineExpandState overrides this with the user's own
+                    // choices once this tab has built its tree once.
+                    IsExpanded = depth == 0,
                     Tag = new OutlineNodeRef(outline, outlines, pageIdx),
                     ToolTip = pageIdx >= 0 ? $"Page {pageIdx + 1}" : null,
                     // Items are added as ready-made containers, so ItemContainerStyle doesn't apply;
@@ -4428,9 +4964,65 @@ namespace TDPdf
                     Style = (Style)FindResource("OutlineItemStyle"),
                 };
                 if (outline.Outlines is not null && outline.Outlines.Count > 0)
-                    AddOutlineItems(item.Items, outline.Outlines);
+                    AddOutlineItems(item.Items, outline.Outlines, depth + 1);
                 target.Add(item);
             }
+        }
+
+        // ---- Sticky OUTLINES expand/collapse (per tab; state lives on DocumentContext) ------------
+        // Nodes are keyed by index path ("2/0/1"), ghost add-row excluded, because SaveTempAndReload
+        // reopens the document and hands back brand-new PdfOutline instances — an object-keyed set
+        // would go stale on every structural edit. RefreshOutlines still keys ITS capture on the live
+        // PdfOutline objects, which survive a bookmark edit and stay correct when indices shift.
+        private bool _outlineRebuilding;
+
+        /// <summary>Walks the on-screen outline items in index order, ghost add-row skipped, handing
+        /// each one its index path. The single definition of a node's key.</summary>
+        private static void WalkOutlinePaths(ItemCollection items, string prefix,
+                                             Action<TreeViewItem, string> visit)
+        {
+            int i = 0;
+            foreach (var o in items)
+            {
+                if (o is not TreeViewItem it || it.Tag is not OutlineNodeRef) continue;
+                string path = prefix.Length == 0 ? i.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                                 : prefix + "/" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                visit(it, path);
+                WalkOutlinePaths(it.Items, path, visit);
+                i++;
+            }
+        }
+
+        /// <summary>Records which outline nodes are expanded in the tree currently on screen, against
+        /// the active tab. Runs once per tab, right after its first tree is built, so the depth
+        /// defaults become the baseline the live recorder then edits.</summary>
+        private void CaptureOutlineExpandState()
+        {
+            var expanded = _ctx.OutlineExpanded;
+            expanded.Clear();
+            WalkOutlinePaths(_outlineTree.Items, "", (it, path) => { if (it.IsExpanded) expanded.Add(path); });
+        }
+
+        /// <summary>Restores this tab's recorded expand/collapse state onto a freshly built tree.</summary>
+        private void ApplyOutlineExpandState()
+        {
+            var expanded = _ctx.OutlineExpanded;
+            WalkOutlinePaths(_outlineTree.Items, "", (it, path) => it.IsExpanded = expanded.Contains(path));
+        }
+
+        /// <summary>Live recorder for the user's own expand/collapse clicks, attached once to the tree
+        /// (the items themselves are thrown away and rebuilt constantly). Keeps the state current no
+        /// matter which of the many LoadOutlines callers rebuilds next, so nothing has to remember to
+        /// capture first.</summary>
+        private void OutlineTree_ItemExpandChanged(object sender, RoutedEventArgs e)
+        {
+            if (_outlineRebuilding || e.OriginalSource is not TreeViewItem it
+                || it.Tag is not OutlineNodeRef) return;
+            string? path = null;
+            WalkOutlinePaths(_outlineTree.Items, "", (node, p) => { if (ReferenceEquals(node, it)) path = p; });
+            if (path is null) return;
+            if (it.IsExpanded) _ctx.OutlineExpanded.Add(path);
+            else               _ctx.OutlineExpanded.Remove(path);
         }
 
         /// <summary>Resolves an outline's 0-based target page. Prefers PdfSharpCore's parsed
@@ -4928,16 +5520,22 @@ namespace TDPdf
             }
             Capture(_outlineTree.Items);
             LoadOutlines();
-            if (collapsed.Count == 0) return;
-            void Restore(ItemCollection items)
+            if (collapsed.Count > 0)
             {
-                foreach (TreeViewItem it in items)
+                void Restore(ItemCollection items)
                 {
-                    if (it.Tag is OutlineNodeRef r && collapsed.Contains(r.Outline)) it.IsExpanded = false;
-                    Restore(it.Items);
+                    foreach (TreeViewItem it in items)
+                    {
+                        if (it.Tag is OutlineNodeRef r && collapsed.Contains(r.Outline)) it.IsExpanded = false;
+                        Restore(it.Items);
+                    }
                 }
+                Restore(_outlineTree.Items);
             }
-            Restore(_outlineTree.Items);
+            // A bookmark edit shifts index paths, so the object-keyed restore above is the authority
+            // here — re-baseline the path-keyed session state from the tree it just produced, or the
+            // next tab switch would replay stale paths over the edited outline.
+            CaptureOutlineExpandState();
         }
 
         /// <summary>Right-click on the outline panel: bookmark menu for the item under the cursor, or
@@ -5338,6 +5936,9 @@ namespace TDPdf
             var vis = hasDoc ? Visibility.Visible : Visibility.Collapsed;
             _pageJumpBox.Visibility = vis;
             _pageTotalLabel.Visibility = vis;
+            // The status line only does something (flash the file size) with a document open, so it only
+            // looks clickable then — an empty workspace keeps the plain arrow.
+            StatusText.Cursor = hasDoc ? Cursors.Hand : null;
         }
 
         private void ToolSelect_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Select);
@@ -9857,6 +10458,13 @@ namespace TDPdf
         /// Sorts top-to-bottom then left-to-right, groups into lines using a
         /// dynamic threshold (~40% of average word height) so words at slightly
         /// different baselines still land on the correct line.
+        ///
+        /// Deliberately NOT column-aware, unlike the flowing selection (#185). This serves the
+        /// rectangle marquee, where the user has already drawn the region by hand: the words are an
+        /// arbitrary geometric subset, so there is no page text width to measure "spans most of the
+        /// width" against and no way to tell a marquee that deliberately crossed a gutter from one
+        /// that did not. Drag inside a single column and a pure row sweep is already the right
+        /// answer; to read a whole two-column page in order, use the flowing selection instead.
         /// </summary>
         private static string WordsToText(IEnumerable<UglyToad.PdfPig.Content.Word> source)
         {
@@ -11003,6 +11611,14 @@ namespace TDPdf
                 e.Handled = true;
                 return;
             }
+            // Shift+F4: same file-size flash as clicking the status line (upstream KillerPDF v1.7.2).
+            // Bare F4 is left free, and Alt+F4 never reaches here — Alt arrives as Key.System.
+            if (e.Key == Key.F4 && Keyboard.Modifiers == ModifierKeys.Shift)
+            {
+                ShowCurrentFileSize();
+                e.Handled = true;
+                return;
+            }
 
             if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
             {
@@ -11075,7 +11691,7 @@ namespace TDPdf
             // stays the existing 100% reset. (Upstream v1.6.4)
             else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
-                _zoomFitMode = ZoomFitMode.None;
+                BeginManualZoom();
                 // Actual size — a true 100% in every view mode, because Zoom.ZoomLevel is true
                 // zoom and MainWindow converts to the tile's layout scale (DisplayZoomFactor).
                 Zoom.SetZoomLevel(1.0);
@@ -11141,6 +11757,21 @@ namespace TDPdf
                      && ShortcutOverlay.Visibility != Visibility.Visible)
             {
                 ToggleDocInvertImages(!_docInvertImages);
+                e.Handled = true;
+            }
+            // B toggles the Two-Page book layout (#193, upstream binds the same bare key). Verified
+            // free against TrySelectToolByKey and every other branch in this handler before taking
+            // it — our single-key space is dense (V, P, digits, T/X/I/H/K/U/S/D/E/G/C) but B was
+            // unclaimed. Same shape as the Shift+N row above: gated on a document being open, the
+            // shortcut overlay being closed, and the caret not sitting in a text surface (the
+            // unmodified-key typing guard at the top of this method already returned in that case,
+            // but the check is repeated so the branch stands on its own).
+            else if (e.Key == Key.B && Keyboard.Modifiers == ModifierKeys.None && _doc is not null
+                     && !IsTypingTarget()
+                     && Keyboard.FocusedElement is not ComboBox
+                     && ShortcutOverlay.Visibility != Visibility.Visible)
+            {
+                ToggleTwoPageBook(!_twoPageBook);
                 e.Handled = true;
             }
             // Unmodified tool keys, last so every context-sensitive key above keeps priority.
@@ -12066,6 +12697,7 @@ namespace TDPdf
                 FileNameLabel.Text = "";
                 DropZone.Visibility = Visibility.Visible;
                 PagePreviewPanel.Visibility = Visibility.Collapsed;
+                HidePageBadgeNow();   // #197: never leave the badge floating over the start screen
                 if (_closeFileBtnRef != null) _closeFileBtnRef.IsEnabled = false;
                 _gridViewToggle.IsEnabled = false;
                 _pageJumpBox.IsEnabled = false;
@@ -12418,22 +13050,7 @@ namespace TDPdf
             try
             {
                 foreach (var file in dlg.FileNames)
-                {
-                    int pageOffset = doc.PageCount;
-
-                    // Open twice: Import mode for AddPage, ReadOnly for catalog access.
-                    using var srcRead = PdfReader.Open(file, PdfDocumentOpenMode.ReadOnly);
-                    var namedDestMap = BuildNamedDestMap(srcRead);
-
-                    using var src = PdfReader.Open(file, PdfDocumentOpenMode.Import);
-                    for (int i = 0; i < src.PageCount; i++)
-                        doc.AddPage(src.Pages[i]);
-
-                    // Rewrite named-destination links in the newly added pages so they
-                    // resolve correctly after the catalog is not imported.
-                    if (namedDestMap.Count > 0)
-                        RewriteNamedDestLinks(doc, pageOffset, namedDestMap);
-                }
+                    AppendPdfFileToDoc(doc, file);
                 SaveTempAndReload();
                 SetStatus($"Merged {dlg.FileNames.Length} file(s) - {_doc?.PageCount} total pages");
             }
@@ -12441,6 +13058,30 @@ namespace TDPdf
             {
                 TdpDialog.Show(this, $"Merge failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        /// <summary>
+        /// Appends every page of <paramref name="file"/> to <paramref name="doc"/>, carrying its
+        /// named-destination links across. Shared by File ▸ Merge and the #172 Pages-sidebar file drop, so
+        /// there is exactly one PDF-append path and both get the link rewriting. Throws on an unreadable /
+        /// encrypted source; callers decide whether that aborts the batch or just skips the file.
+        /// </summary>
+        private void AppendPdfFileToDoc(PdfDocument doc, string file)
+        {
+            int pageOffset = doc.PageCount;
+
+            // Open twice: Import mode for AddPage, ReadOnly for catalog access.
+            using var srcRead = PdfReader.Open(file, PdfDocumentOpenMode.ReadOnly);
+            var namedDestMap = BuildNamedDestMap(srcRead);
+
+            using var src = PdfReader.Open(file, PdfDocumentOpenMode.Import);
+            for (int i = 0; i < src.PageCount; i++)
+                doc.AddPage(src.Pages[i]);
+
+            // Rewrite named-destination links in the newly added pages so they
+            // resolve correctly after the catalog is not imported.
+            if (namedDestMap.Count > 0)
+                RewriteNamedDestLinks(doc, pageOffset, namedDestMap);
         }
 
         /// <summary>
@@ -12981,7 +13622,7 @@ namespace TDPdf
             parts.Add($"{doc.PageCount} pages");
             parts.Add($"PDF {doc.Version / 10}.{doc.Version % 10}");
             try { var d = doc.Info.CreationDate; if (d != default) parts.Add($"created {d:yyyy-MM-dd HH:mm}"); } catch { }
-            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) parts.Add($"{new FileInfo(filePath).Length / 1024.0:N0} KB"); } catch { }
+            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) parts.Add(FormatFileSize(new FileInfo(filePath).Length)); } catch { }
             return string.Join("\n", parts);
         }
 
@@ -13850,19 +14491,52 @@ namespace TDPdf
                         {
                             var mkc = mk.GetColor();
                             var mkBrush = new XSolidBrush(XColor.FromArgb(mkc.A, mkc.R, mkc.G, mkc.B));
-                            foreach (var pr in mk.PaintRects())
-                                gfx.DrawRectangle(mkBrush,
-                                    pr.X * sx, pr.Y * sy, pr.Width * sx, pr.Height * sy);
+                            // TDPdf patch (#200, from upstream KillerPDF): a highlight burns with the
+                            // Multiply blend mode so the colour darkens the paper and the text under
+                            // it stays crisp instead of being washed out by an opaque overlay.
+                            // Strikethrough and underline stay normal draws — a thin dark band
+                            // multiplied over text would disappear.
+                            XGraphicsState? mkState = null;
+                            if (mk.Style == MarkupStyle.Highlight)
+                            {
+                                mkState = gfx.Save();
+                                gfx.SetPdfBlendMode("Multiply");
+                            }
+                            try
+                            {
+                                foreach (var pr in mk.PaintRects())
+                                    gfx.DrawRectangle(mkBrush,
+                                        pr.X * sx, pr.Y * sy, pr.Width * sx, pr.Height * sy);
+                            }
+                            finally
+                            {
+                                // The grestore returns the blend mode to Normal.
+                                if (mkState is not null) gfx.Restore(mkState);
+                            }
                             break;
                         }
 
                         case HighlightAnnotation ha:
+                        {
                             var hc = ha.GetColor();
                             var hBrush = new XSolidBrush(XColor.FromArgb(hc.A, hc.R, hc.G, hc.B));
-                            gfx.DrawRectangle(hBrush,
-                                ha.Bounds.X * sx, ha.Bounds.Y * sy,
-                                ha.Bounds.Width * sx, ha.Bounds.Height * sy);
+                            // TDPdf patch (#200, from upstream KillerPDF): burn with Multiply so the
+                            // highlight darkens the paper rather than covering the text.
+                            var hState = gfx.Save();
+                            gfx.SetPdfBlendMode("Multiply");
+                            try
+                            {
+                                gfx.DrawRectangle(hBrush,
+                                    ha.Bounds.X * sx, ha.Bounds.Y * sy,
+                                    ha.Bounds.Width * sx, ha.Bounds.Height * sy);
+                            }
+                            finally
+                            {
+                                // The grestore returns the blend mode to Normal.
+                                gfx.Restore(hState);
+                            }
                             break;
+                        }
 
                         case ShapeAnnotation shp:
                         {
@@ -14122,7 +14796,7 @@ namespace TDPdf
             if (Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
-                _zoomFitMode = ZoomFitMode.None;
+                BeginManualZoom();
                 if (e.Delta > 0) Zoom.ZoomIn();
                 else Zoom.ZoomOut();
                 return;
@@ -14196,9 +14870,14 @@ namespace TDPdf
             int count = _doc.PageCount;
             if (_viewMode == ViewMode.TwoPage)
             {
-                int baseIdx = Math.Max(0, cur - cur % 2);   // left page of the current spread
-                int target = baseIdx + direction * 2;
-                if (target < 0 || target >= count) return false;
+                int baseIdx = SpreadStart(Math.Max(0, cur));   // left page of the current spread
+                // #193: book layout steps cover → 1 → 3 → 5…, because the cover is a row of its
+                // own; the classic pairing just walks the even indices two at a time.
+                int target = _twoPageBook
+                    ? (direction > 0 ? (baseIdx == 0 ? 1 : baseIdx + 2)
+                                     : (baseIdx <= 1 ? 0 : baseIdx - 2))
+                    : baseIdx + direction * 2;
+                if (target == baseIdx || target < 0 || target >= count) return false;
                 PageList.SelectedIndex = target;
                 return true;
             }
@@ -14263,12 +14942,25 @@ namespace TDPdf
                 ApplyZoom();
         }
 
+        /// <summary>
+        /// Marks the zoom about to be set as an EXPLICIT manual one (#201): it stops the view
+        /// tracking the window size, exactly as before, and tells <see cref="SaveZoomSetting"/> to
+        /// remember the resulting level so the next document opens at it. Every deliberate manual
+        /// path goes through here — the zoom dropdown's fixed levels, Ctrl+0 / Ctrl+1, Zoom In /
+        /// Out / Reset, and Ctrl+wheel.
+        /// </summary>
+        private void BeginManualZoom()
+        {
+            _zoomFitMode = ZoomFitMode.None;
+            _manualZoomIntent = true;
+        }
+
         private void ChangeZoomByCommand(ZoomChange change)
         {
             // An explicit zoom stops the view tracking the window size, exactly as the equivalent
             // toolbar buttons do. Without this, Ctrl+0 landed on 100% and then the next window
             // resize snapped straight back to the fit it was on.
-            _zoomFitMode = ZoomFitMode.None;
+            BeginManualZoom();
             switch (change)
             {
                 case ZoomChange.In:
@@ -14285,11 +14977,11 @@ namespace TDPdf
             }
         }
 
-        private void ZoomIn_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.ZoomIn(); }
+        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomIn(); }
 
-        private void ZoomOut_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.ZoomOut(); }
+        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomOut(); }
 
-        private void ResetZoom_Click(object sender, RoutedEventArgs e) { _zoomFitMode = ZoomFitMode.None; Zoom.Reset(); }
+        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.Reset(); }
 
         // ============================================================
         // True zoom vs. layout scale        (#154, upstream "true 100%")
@@ -14403,6 +15095,18 @@ namespace TDPdf
             try
             {
                 TDPdf.Properties.Settings.Default.LastZoomLevel = Zoom.ZoomLevel;
+                // #201: the other half of the remembered fit. _manualZoomIntent is raised only by
+                // BeginManualZoom — the zoom dropdown's fixed levels, Ctrl+0 / Ctrl+1, the zoom
+                // buttons and Ctrl+wheel — and lowered by both fits, so this records zooms a person
+                // chose and never one the app computed for a window that no longer exists.
+                // Recording it also retires any remembered fit: the last explicit zoom decision
+                // wins, whichever kind it was, which is the same single-preference model the fit
+                // side already uses (SaveDefaultFitMode clears this in return).
+                if (_manualZoomIntent)
+                {
+                    TDPdf.Properties.Settings.Default.LastManualZoom = Zoom.ZoomLevel;
+                    TDPdf.Properties.Settings.Default.DefaultFitMode = ZoomFitMode.None.ToString();
+                }
                 TDPdf.Properties.Settings.Default.Save();
             }
             catch
@@ -14419,7 +15123,7 @@ namespace TDPdf
             if (option.IsFitWidth) { SaveDefaultFitMode(ZoomFitMode.Width); FitToWidth(); return; }
             if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             // User picked an explicit zoom level — stop tracking the window size.
-            _zoomFitMode = ZoomFitMode.None;
+            BeginManualZoom();
             if (option.ZoomLevel is double zoom) Zoom.SetZoomLevel(zoom);
         }
 
@@ -14436,6 +15140,11 @@ namespace TDPdf
             try
             {
                 TDPdf.Properties.Settings.Default.DefaultFitMode = mode.ToString();
+                // #201: asking for a fit retires the remembered manual zoom. The two are one
+                // preference — "what the user last explicitly asked the zoom to be" — so exactly
+                // one of them can be live at a time, and ApplyViewModeOnOpen only reaches the
+                // manual branch when the fit side reads None.
+                TDPdf.Properties.Settings.Default.LastManualZoom = 0;
                 TDPdf.Properties.Settings.Default.Save();
             }
             catch { /* non-critical user preference */ }
@@ -14452,6 +15161,22 @@ namespace TDPdf
             catch { return ZoomFitMode.None; }
         }
 
+        /// <summary>
+        /// The remembered manual zoom (#201), or 0 when the user's last explicit zoom decision was
+        /// a fit — or when they have never made one. Out-of-range values (a hand-edited or
+        /// half-written user.config) read as 0 rather than being clamped into something plausible:
+        /// a number that was never a legal zoom is not a preference worth honouring.
+        /// </summary>
+        private static double ReadLastManualZoom()
+        {
+            try
+            {
+                double z = TDPdf.Properties.Settings.Default.LastManualZoom;
+                return z >= ZoomViewModel.MinZoomLevel && z <= ZoomViewModel.MaxZoomLevel ? z : 0;
+            }
+            catch { return 0; }
+        }
+
         // The fits are computed against the LAYOUT boxes on screen (the tile, or the continuous
         // slot) and then multiplied back through DisplayZoomFactor, because Zoom.SetZoomLevel now
         // takes true zoom. Equivalently: viewW / naturalWidthInDips.
@@ -14465,6 +15190,7 @@ namespace TDPdf
             {
                 if (_continuousPageW <= 0) return;
                 _zoomFitMode = ZoomFitMode.Width;
+                _manualZoomIntent = false;   // #201: a fit retires the remembered manual zoom
                 _applyingFitZoom = true;
                 try { Zoom.SetZoomLevel(viewW / _continuousPageW); }
                 finally { _applyingFitZoom = false; }
@@ -14472,6 +15198,7 @@ namespace TDPdf
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
             _zoomFitMode = ZoomFitMode.Width;
+            _manualZoomIntent = false;   // #201
             _applyingFitZoom = true;
             try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth * DisplayZoomFactor()); }
             finally { _applyingFitZoom = false; }
@@ -14496,6 +15223,7 @@ namespace TDPdf
                 if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
                 double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
                 _zoomFitMode = ZoomFitMode.Page;
+                _manualZoomIntent = false;   // #201
                 _applyingFitZoom = true;
                 try { Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH)); }
                 finally { _applyingFitZoom = false; }
@@ -14503,6 +15231,7 @@ namespace TDPdf
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
             _zoomFitMode = ZoomFitMode.Page;
+            _manualZoomIntent = false;   // #201
             _applyingFitZoom = true;
             try
             {
@@ -15083,12 +15812,73 @@ namespace TDPdf
 
         private void PageList_DragOver(object sender, DragEventArgs e)
         {
-            e.Effects = e.Data.GetDataPresent(typeof(int)) ? DragDropEffects.Move : DragDropEffects.None;
+            // #172 (upstream KillerPDF): the sidebar takes a FileDrop of PDFs/images as well as its own
+            // page-reorder payload. The internal payload keeps first refusal so a page drag is never
+            // mistaken for a file drop.
+            if (e.Data.GetDataPresent(typeof(int)))
+                e.Effects = DragDropEffects.Move;
+            else if (_doc is not null && DroppedOpenablePaths(e).Length > 0)
+                e.Effects = DragDropEffects.Copy;
+            else
+                e.Effects = DragDropEffects.None;
             e.Handled = true;
+        }
+
+        /// <summary>The dropped FileDrop paths this sidebar can append, using the same PDF/image
+        /// classification as the start-screen drop zone (<see cref="IsOpenablePath"/>). Folders and .zip
+        /// archives are deliberately NOT expanded here — that is the start screen's open flow, which asks
+        /// merge-vs-separate; a drop onto an open document's page list only ever appends.</summary>
+        private static string[] DroppedOpenablePaths(DragEventArgs e)
+            => e.Data.GetDataPresent(DataFormats.FileDrop)
+               && e.Data.GetData(DataFormats.FileDrop) is string[] paths
+                ? paths.Where(IsOpenablePath).ToArray()
+                : Array.Empty<string>();
+
+        /// <summary>
+        /// #172: appends the dropped files' pages to the open document. Upstream appends rather than
+        /// inserting at the drop point on purpose — appending leaves every existing page index untouched,
+        /// so annotations, rotations and the undo stack need no remapping. Reuses the two importers we
+        /// already have: <see cref="AppendPdfFileToDoc"/> (File ▸ Merge, including named-destination link
+        /// rewriting) and <see cref="AddImagePagesFromFile"/> (one page per image frame).
+        /// </summary>
+        private void AppendFilesToCurrentDoc(string[] files)
+        {
+            if (_doc is null) return;
+            CommitActiveTextBox();
+            var doc = _doc;
+            int before = doc.PageCount;
+            foreach (var f in files)
+            {
+                // A single bad file skips rather than aborting the drop: a folder-full drag routinely
+                // carries one encrypted or truncated file and the rest are still worth appending.
+                try
+                {
+                    if (IsPdfPath(f)) AppendPdfFileToDoc(doc, f);
+                    else              AddImagePagesFromFile(doc, f);
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Sidebar drop skipped {f}: {ex}"); }
+            }
+            if (doc.PageCount == before)
+            {
+                SetStatus("Nothing could be appended — the dropped files could not be read.");
+                return;
+            }
+            int added = doc.PageCount - before;
+            // Same persist-and-repaint path as the page reorder below; it marks the document dirty.
+            SaveTempAndReload();
+            SetStatus($"Appended {added} page{(added == 1 ? "" : "s")} from {files.Length} file{(files.Length == 1 ? "" : "s")}");
         }
 
         private void PageList_Drop(object sender, DragEventArgs e)
         {
+            // #172: a FileDrop appends; anything carrying the internal page-index payload falls through to
+            // the reorder below, unchanged.
+            if (_doc is not null && !e.Data.GetDataPresent(typeof(int)))
+            {
+                var files = DroppedOpenablePaths(e);
+                if (files.Length > 0) { AppendFilesToCurrentDoc(files); e.Handled = true; }
+                return;
+            }
             if (_doc is null || !e.Data.GetDataPresent(typeof(int))) return;
             var doc = _doc;
             int fromIdx = (int)e.Data.GetData(typeof(int))!;
@@ -15140,6 +15930,10 @@ namespace TDPdf
                 // suppression flag avoids a feedback loop with PagePreviewPanel_ScrollChanged.
                 if (_viewMode == ViewMode.Continuous)
                 {
+                    // #197: Continuous never re-renders a primary tile, and the scroll it is about
+                    // to run is suppressed, so this is the only place a page change can raise the
+                    // badge here.
+                    ShowPageBadge(PageList.SelectedIndex);
                     if (!_suppressContinuousScrollSync)
                         ScrollContinuousToPageSuppressed(PageList.SelectedIndex);
                     return;

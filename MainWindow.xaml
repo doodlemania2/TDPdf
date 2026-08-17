@@ -1079,6 +1079,15 @@
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE700;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
+                <!-- Upstream KillerPDF #193: in Two-Page view the cover displays ALONE, so facing
+                     pages pair 2-3, 4-5 like a physical book instead of 1-2, 3-4. Checkable row
+                     (SyncTwoPageBookUi sets IsChecked); only meaningful in Two-Page view, which is
+                     why the row says so rather than hiding itself. -->
+                <MenuItem x:Name="TwoPageBookMenuItem"
+                          Header="_Book Layout (Two-Page)" InputGestureText="B"      Click="TwoPageBook_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8F1;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
                 <!-- App size scales the CHROME only (menu, toolbar, tab strip, sidebar); the page
                      keeps its own zoom above. Also driven by the wheel over the title-bar logo. -->
                 <MenuItem x:Name="AppSizeLargerMenuItem"
@@ -1505,6 +1514,26 @@
                             </Grid>
                         </Border>
                     </ScrollViewer>
+
+                    <!-- Current-page badge (upstream KillerPDF #197). Replaces the per-tile,
+                         cursor-following page tooltips: one "page / total" chip in the viewport
+                         corner that slides up on scroll and on page changes and slides back down
+                         once the view settles (ShowPageBadge in MainWindow.xaml.cs). It is a
+                         sibling of PagePreviewPanel, NOT a child of the primary page Border, so it
+                         floats over the whole viewport rather than the current tile. Never
+                         hit-testable, so it can never swallow a page click; the 26px right margin
+                         clears the vertical scrollbar. -->
+                    <Border x:Name="PageBadge" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                            Margin="0,0,26,14" Panel.ZIndex="40" IsHitTestVisible="False" Opacity="0"
+                            Background="{DynamicResource BgPanel}"
+                            BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
+                            CornerRadius="3" Padding="9,3">
+                        <Border.RenderTransform>
+                            <TranslateTransform x:Name="PageBadgeSlide" Y="46"/>
+                        </Border.RenderTransform>
+                        <TextBlock x:Name="PageBadgeText" FontFamily="Consolas" FontSize="12"
+                                   Foreground="{DynamicResource TextPrimary}"/>
+                    </Border>
                 </Grid>
             </Border>
         </Grid>
@@ -1512,7 +1541,11 @@
         <!-- Status bar -->
         <Border x:Name="StatusBarBorder" Grid.Row="5" Background="{DynamicResource StatusBarBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,1,0,0">
             <Grid Margin="16,0" KeyboardNavigation.TabNavigation="Continue">
-                <TextBlock x:Name="StatusText" Text="Ready" Foreground="{DynamicResource TextSecondary}" FontFamily="Segoe UI" FontSize="11" VerticalAlignment="Center" AutomationProperties.Name="Status" AutomationProperties.HelpText="Current application status" AutomationProperties.LiveSetting="Polite"/>
+                <!-- Background="Transparent" makes the whole strip hit-testable (a bare TextBlock only
+                     answers on its glyphs). It is the first child, so every other footer control sits
+                     above it in z-order and keeps its own clicks. The Hand cursor is set from code
+                     (UpdatePageControlsForDoc) only while a document is open. -->
+                <TextBlock x:Name="StatusText" Text="Ready" Background="Transparent" Foreground="{DynamicResource TextSecondary}" FontFamily="Segoe UI" FontSize="11" VerticalAlignment="Center" MouseLeftButtonUp="StatusText_Click" ToolTip="Click to show this document's file size (Shift+F4)" AutomationProperties.Name="Status" AutomationProperties.HelpText="Current application status. Click to show the open document's file size." AutomationProperties.LiveSetting="Polite"/>
                 <!-- Portable mode indicator (hidden when installed) -->
                 <StackPanel x:Name="PortableBadge" Orientation="Horizontal"
                             HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -1699,6 +1732,7 @@
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+I"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Invert colors (display only)"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Shift+N"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Invert images too (for scans)"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="B"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Book layout (Two-Page)"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock x:Name="KsAppSizeKeys" Style="{StaticResource KsKeys}" Text="Ctrl+Shift++ / -"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="App size larger / smaller"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+0"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Reset app size"/></Grid>
                             <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Scroll on logo"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="App size (chrome only)"/></Grid>

@@ -86,12 +86,71 @@ namespace TDPdf.Services
             IntPtr formHandle, IntPtr bitmap, IntPtr page, int startX, int startY,
             int sizeX, int sizeY, int rotate, int flags);
 
+        // ---- Annotation inspection (upstream KillerPDF 1.7.2) --------------------------------
+        // Only used by HideWidgetAnnotations below, which already runs inside the PdfiumLock the
+        // render path takes — hence no lock-holding wrappers here. Nothing else may call these.
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPage_GetAnnotCount", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFPage_GetAnnotCountRaw(IntPtr page);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPage_GetAnnot", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr FPDFPage_GetAnnotRaw(IntPtr page, int index);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPage_CloseAnnot", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void FPDFPage_CloseAnnotRaw(IntPtr annot);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFAnnot_GetSubtype", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFAnnot_GetSubtypeRaw(IntPtr annot);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFAnnot_GetFlags", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFAnnot_GetFlagsRaw(IntPtr annot);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFAnnot_SetFlags", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFAnnot_SetFlagsRaw(IntPtr annot, int flags);
+
         private const int FPDFBitmapBgra = 4;   // FPDFBitmap_BGRA — the layout Docnet's GetImage returns
         private const int FpdfAnnot = 0x01;     // paint the annotation appearance streams the file carries
         private const int FpdfLcdText = 0x02;   // subpixel text antialiasing
+        private const int FpdfAnnotSubtypeWidget = 20;   // fpdf_annot.h FPDF_ANNOT_WIDGET
+        private const int FpdfAnnotFlagHidden = 1 << 1;  // fpdf_annot.h FPDF_ANNOT_FLAG_HIDDEN
 
         private const uint OpaqueWhite = 0xFFFFFFFFu;
         private const uint FullyTransparent = 0x00000000u;
+
+        /// <summary>
+        /// Marks every WIDGET (form-field) annotation on the loaded page hidden, so that neither the
+        /// FPDF_ANNOT render pass nor FFLDraw paints a field appearance into the bitmap.
+        /// </summary>
+        /// <remarks>
+        /// In-memory only, and safe because of it: this renderer's document is a one-shot load that
+        /// is closed immediately afterwards and is never saved, so the flag never reaches the file.
+        /// Called from inside the <c>PdfiumLock</c> section of
+        /// <see cref="RenderPageWithAnnotations"/> — do NOT call it from anywhere that does not
+        /// already hold the lock. Every annot handle opened here is closed in a <c>finally</c>, in
+        /// the same "release what you opened, innermost first" discipline the rest of this file
+        /// follows; a leaked annot handle would keep page objects alive past FPDF_ClosePage.
+        /// An <c>EntryPointNotFoundException</c> (an older bundled PDFium with no annot API) is
+        /// swallowed so the render degrades to leaving the fields baked in rather than crashing.
+        /// </remarks>
+        private static void HideWidgetAnnotations(IntPtr page)
+        {
+            try
+            {
+                int count = FPDFPage_GetAnnotCountRaw(page);
+                for (int i = 0; i < count; i++)
+                {
+                    IntPtr annot = FPDFPage_GetAnnotRaw(page, i);
+                    if (annot == IntPtr.Zero) continue;
+                    try
+                    {
+                        if (FPDFAnnot_GetSubtypeRaw(annot) == FpdfAnnotSubtypeWidget)
+                            FPDFAnnot_SetFlagsRaw(annot, FPDFAnnot_GetFlagsRaw(annot) | FpdfAnnotFlagHidden);
+                    }
+                    finally { FPDFPage_CloseAnnotRaw(annot); }
+                }
+            }
+            catch { /* annot API unavailable: fields stay baked, no crash */ }
+        }
 
         /// <summary>
         /// Renders one page of <paramref name="sourcePath"/> to a BGRA buffer with the annotation
@@ -104,6 +163,16 @@ namespace TDPdf.Services
         /// Keep PDFium's unpainted background as BGRA 0,0,0,0 instead of compositing over opaque
         /// white. Only the CLI's <c>--to-image --transparent</c> (PNG) wants this; everything else
         /// wants white — see the fill comment below.
+        /// </param>
+        /// <param name="includeFormFields">
+        /// Upstream KillerPDF 1.7.2. False for the one tile that carries the live WPF form-field
+        /// overlays (the primary page): those overlays already show the field values, and their
+        /// backgrounds are only partly opaque, so a baked appearance underneath showed through as a
+        /// second, slightly offset copy of the same text — a "drop shadow" ghost. True everywhere
+        /// the pixels ARE the output (print, flatten, image export, page transforms, raster
+        /// recovery) and on every on-screen surface that has no live overlay of its own (the
+        /// Grid/Two-Page secondary tiles and the Continuous strip), where dropping the baked
+        /// appearance would simply erase the filled-in values.
         /// </param>
         /// <remarks>
         /// One-shot by design: owning the whole document → form → page lifetime here is what makes
@@ -118,7 +187,7 @@ namespace TDPdf.Services
         /// </remarks>
         internal static byte[]? RenderPageWithAnnotations(
             string sourcePath, int pageIndex, int width, int height,
-            bool transparentBackground = false)
+            bool transparentBackground = false, bool includeFormFields = true)
         {
             if (width <= 0 || height <= 0) return null;
             try
@@ -160,6 +229,9 @@ namespace TDPdf.Services
                             if (page == IntPtr.Zero) return null;
                             try
                             {
+                                // Must happen after the page loads and before either draw call: both
+                                // the FPDF_ANNOT pass and FFLDraw honour the hidden flag.
+                                if (!includeFormFields) HideWidgetAnnotations(page);
                                 IntPtr bitmap = FPDFBitmap_CreateExRaw(
                                     width, height, FPDFBitmapBgra, pinned.AddrOfPinnedObject(), stride);
                                 if (bitmap == IntPtr.Zero) return null;
@@ -179,7 +251,10 @@ namespace TDPdf.Services
                                     FPDF_RenderPageBitmapRaw(bitmap, page, 0, 0, width, height, 0,
                                         FpdfAnnot | FpdfLcdText);
                                     // Widget (form field) appearances live in the form-fill layer.
-                                    if (form != IntPtr.Zero)
+                                    // Skipped entirely when the caller does not want them: the
+                                    // hidden flag set above already suppresses them, but FFLDraw is
+                                    // then pure cost with nothing left to paint.
+                                    if (includeFormFields && form != IntPtr.Zero)
                                         FPDF_FFLDrawRaw(form, bitmap, page, 0, 0, width, height, 0,
                                             FpdfAnnot | FpdfLcdText);
                                 }

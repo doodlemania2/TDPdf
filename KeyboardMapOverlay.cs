@@ -68,6 +68,8 @@ namespace TDPdf
                 ["Enter"] = ("Edit", "Confirm"),
                 ["Esc"] = ("Edit", "Cancel / back to Select"),
                 ["Menu"] = ("Edit", "Context menu"),
+                // #193: the only bare letter outside the tool set — B was the one still unclaimed.
+                ["B"] = ("View", "Book layout (Two-Page)"),
                 // Tool keys (1.19). Digits mirror the toolbar left to right across the ten
                 // mark-making tools; Select / Pan / Signature / Crop are letter-only. Every id here
                 // must also exist in KbRows below or the keycap silently never lights.
@@ -109,6 +111,7 @@ namespace TDPdf
             [KbLayer.Shift] = new()
             {
                 ["F10"] = ("Edit", "Context menu"),
+                ["F4"] = ("File", "Show file size"),
                 ["Enter"] = ("Search", "Previous result"),
                 // Pairs with Ctrl+I: whether night mode inverts pictures too (needed on a scan).
                 ["N"] = ("View", "Invert images too"),

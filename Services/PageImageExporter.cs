@@ -86,12 +86,20 @@ namespace TDPdf.Services
         /// over white in place and described to WIC as Bgr32 — same 4-byte layout, alpha channel
         /// ignored — so the encoded image carries no alpha at all. Mutates
         /// <paramref name="bgra"/> when <paramref name="transparent"/> is false.
+        ///
+        /// TDPdf patch (#188, from upstream KillerPDF): <paramref name="dpi"/> is written into the
+        /// file's resolution metadata (PNG pHYs / JPEG JFIF density), so an image exported at, say,
+        /// 300 dpi no longer claims 96 dpi and prints or places at the wrong physical size. It does
+        /// not change the pixel dimensions — the caller already rendered at that resolution. The
+        /// 96 default keeps non-export callers (the CLI flatten, which redraws the PNG at an
+        /// explicit point size) byte-identical.
         /// </remarks>
-        internal static byte[] Encode(byte[] bgra, int width, int height, string format, bool transparent)
+        internal static byte[] Encode(byte[] bgra, int width, int height, string format, bool transparent,
+            double dpi = 96)
         {
             if (!transparent) PdfDocumentService.CompositeBgraOverWhite(bgra);
 
-            var bmp = BitmapSource.Create(width, height, 96, 96,
+            var bmp = BitmapSource.Create(width, height, dpi, dpi,
                 transparent ? PixelFormats.Bgra32 : PixelFormats.Bgr32, null, bgra, width * 4);
             BitmapEncoder encoder = format == JpgFormat
                 ? new JpegBitmapEncoder { QualityLevel = 90 }
@@ -160,7 +168,7 @@ namespace TDPdf.Services
                 }
                 if (raw is null || raw.Length == 0 || w <= 0 || h <= 0) continue;
 
-                var bytes = Encode(raw, w, h, format, transparent);
+                var bytes = Encode(raw, w, h, format, transparent, dpi);
                 File.WriteAllBytes(Path.Combine(outputDir, PageFileName(baseName, idx, digits, format)), bytes);
                 written++;
             }

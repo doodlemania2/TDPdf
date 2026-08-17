@@ -89,7 +89,25 @@ namespace PdfSharpCore.Pdf.Advanced
             return extGState;
         }
 
+        /// <summary>
+        /// TDPdf patch (#200, from upstream KillerPDF): gets a PdfExtGState carrying only the /BM
+        /// blend mode (e.g. "Multiply"), cached per mode. Alpha is not touched here - the color
+        /// realizer's own CA/ca states compose with it.
+        /// </summary>
+        public PdfExtGState GetExtGStateBlend(string blendMode)
+        {
+            PdfExtGState extGState;
+            if (!_blendStates.TryGetValue(blendMode, out extGState))
+            {
+                extGState = new PdfExtGState(Owner);
+                extGState.Elements.SetName(PdfExtGState.Keys.BM, "/" + blendMode);
+                _blendStates[blendMode] = extGState;
+            }
+            return extGState;
+        }
+
         readonly Dictionary<string, PdfExtGState> _strokeAlphaValues = new Dictionary<string, PdfExtGState>();
         readonly Dictionary<string, PdfExtGState> _nonStrokeStates = new Dictionary<string, PdfExtGState>();
+        readonly Dictionary<string, PdfExtGState> _blendStates = new Dictionary<string, PdfExtGState>();
     }
 }

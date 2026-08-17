@@ -13,8 +13,9 @@ namespace TDPdf.Services
 {
     /// <summary>
     /// TDPdf's themed "Transform" dialog. Renders the current page on its own preview canvas (so the
-    /// main view mode is irrelevant) and lets the user apply an arbitrary fine rotation, scale, flip and
-    /// straighten-by-line, with a live preview on the left and the controls in a right-hand column — the
+    /// main view mode is irrelevant) and lets the user apply an arbitrary fine rotation, scale, flip,
+    /// straighten-by-line, perspective correction and source levels, with a live preview on the left and
+    /// the controls in a right-hand column — the
     /// mirror of <see cref="PrintPreviewWindow"/>. Apply hands the chosen angle / scale / flip / page-mode
     /// back to the caller (MainWindow.ApplyPageTransform), which rasterizes the page at full resolution.
     ///
@@ -30,6 +31,12 @@ namespace TDPdf.Services
         public bool FixedPage { get; private set; }     // true = keep the page box; false = grow/shrink the page
         public bool FlipH { get; private set; }
         public bool FlipV { get; private set; }
+
+        // #174 (upstream KillerPDF): source levels — black point, white point, midtone gamma.
+        // 0 / 255 / 1.0 leaves the page untouched.
+        public int    LevelBlack { get; private set; }
+        public int    LevelWhite { get; private set; } = 255;
+        public double LevelGamma { get; private set; } = 1.0;
 
         /// <summary>
         /// The four page corners the user traced on the preview, NORMALIZED to the preview image box
@@ -82,6 +89,12 @@ namespace TDPdf.Services
         private CheckBox _deskewCheck = null!;
         private TextBlock _lineCoords = null!;
         private CheckBox _perspectiveCheck = null!;
+        private Slider _lvlBlack = null!;      // #174
+        private Slider _lvlWhite = null!;
+        private Slider _lvlGamma = null!;
+        private TextBlock _lvlBlackLabel = null!;
+        private TextBlock _lvlWhiteLabel = null!;
+        private TextBlock _lvlGammaLabel = null!;
 
         // Straighten-by-line overlay.
         private Canvas _lineCanvas = null!;
@@ -585,6 +598,63 @@ namespace TDPdf.Services
             }
 
             WrapSection(panel, perspectiveStart, "PERSPECTIVE", expanded: false);
+            panel.Children.Add(Divider());
+
+            // ---- Levels (upstream KillerPDF #174) ----
+            // FineReader-style source levels for rescuing a pale, low-contrast scan: pull the black point
+            // up to whatever the darkest ink actually is, the white point down to the paper, and bend the
+            // midtones with a gamma. Page-independent (unlike PERSPECTIVE above), so it applies to every
+            // selected page without any single-page restriction.
+            int levelsStart = panel.Children.Count;
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Darken the ink and blow the paper out to white on a pale scan.",
+                Foreground = R("TextSecondary"), FontSize = 10, TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 2)
+            });
+
+            _lvlBlackLabel = SliderLabel("Black point   0");
+            panel.Children.Add(_lvlBlackLabel);
+            _lvlBlack = MakeLevelSlider(0, 200, 0);
+            _lvlBlack.ValueChanged += (_, ev) =>
+            {
+                LevelBlack = (int)Math.Round(ev.NewValue);
+                _lvlBlackLabel.Text = $"Black point   {LevelBlack}";
+                SchedulePreview();
+            };
+            panel.Children.Add(_lvlBlack);
+
+            _lvlWhiteLabel = SliderLabel("White point   255");
+            panel.Children.Add(_lvlWhiteLabel);
+            _lvlWhite = MakeLevelSlider(55, 255, 255);
+            _lvlWhite.ValueChanged += (_, ev) =>
+            {
+                LevelWhite = (int)Math.Round(ev.NewValue);
+                _lvlWhiteLabel.Text = $"White point   {LevelWhite}";
+                SchedulePreview();
+            };
+            panel.Children.Add(_lvlWhite);
+
+            _lvlGammaLabel = SliderLabel("Midtone gamma   1.00");
+            panel.Children.Add(_lvlGammaLabel);
+            _lvlGamma = MakeLevelSlider(0.2, 2.5, 1.0, tick: 0.05, small: 0.05, large: 0.2);
+            _lvlGamma.ValueChanged += (_, ev) =>
+            {
+                LevelGamma = Math.Round(ev.NewValue, 2);
+                _lvlGammaLabel.Text = $"Midtone gamma   {LevelGamma.ToString("0.00", CultureInfo.InvariantCulture)}";
+                SchedulePreview();
+            };
+            panel.Children.Add(_lvlGamma);
+
+            var levelsReset = MakeButton("Reset levels", false);
+            levelsReset.Margin = new Thickness(0, 8, 0, 0);
+            levelsReset.HorizontalAlignment = HorizontalAlignment.Left;
+            levelsReset.Padding = new Thickness(8, 2, 8, 2);
+            levelsReset.FontSize = 11;
+            levelsReset.Click += (_, _2) => ResetLevels();
+            panel.Children.Add(levelsReset);
+
+            WrapSection(panel, levelsStart, "LEVELS", expanded: false);
 
             // ---- Buttons pinned below the scroller ----
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
@@ -595,6 +665,7 @@ namespace TDPdf.Services
                 _quarter = 0; _rotSlider.Value = 0; _scaleSlider.Value = 100;
                 _expandRadio.IsChecked = true; _flipHCheck.IsChecked = false; _flipVCheck.IsChecked = false;
                 ResetPerspective();
+                ResetLevels();   // #174
                 UpdatePreview();
             };
             var cancel = MakeButton("Cancel", false);
@@ -639,6 +710,26 @@ namespace TDPdf.Services
             // Hand back a copy: the live array is what the (still-alive) drag handlers write into.
             PerspectiveCorners = PerspectiveCorners.ToArray();
             Close();
+        }
+
+        // ---- Levels (#174) ----
+
+        private Slider MakeLevelSlider(double min, double max, double value,
+                                       double tick = 5, double small = 1, double large = 10) => new()
+        {
+            Minimum = min, Maximum = max, Value = value,
+            TickFrequency = tick, SmallChange = small, LargeChange = large,
+            Margin = new Thickness(0, 2, 0, 2),
+            Foreground = R("AccentGreen")
+        };
+
+        private void ResetLevels()
+        {
+            // Assigning the sliders drives the ValueChanged handlers, which own the readouts and the
+            // LevelXxx properties — so there is one place that knows how a level becomes a value.
+            _lvlBlack.Value = 0;
+            _lvlWhite.Value = 255;
+            _lvlGamma.Value = 1.0;
         }
 
         // ---- Perspective correction: drag the four page corners over the preview ----
@@ -774,9 +865,15 @@ namespace TDPdf.Services
         {
             double total = Total;
             _rotReadout.Text = $"{total:0.0}°";
-            _preview.Source = (total == 0 && Math.Abs(_scale - 1.0) < 0.001 && !_flipH && !_flipV)
+            // #174: the levels pass is the tail of ComposeTransform, so the preview gets it from exactly
+            // the same code path as the full-resolution Apply — nothing to keep in sync here. The
+            // shortcut back to the untouched source therefore has to check the levels too.
+            bool untouched = total == 0 && Math.Abs(_scale - 1.0) < 0.001 && !_flipH && !_flipV
+                             && TDPdf.MainWindow.LevelsIdentity(LevelBlack, LevelWhite, LevelGamma);
+            _preview.Source = untouched
                 ? _src
-                : TDPdf.MainWindow.ComposeTransform(_src, total, _scale, _fixedPage, _flipH, _flipV);
+                : TDPdf.MainWindow.ComposeTransform(_src, total, _scale, _fixedPage, _flipH, _flipV,
+                                                    LevelBlack, LevelWhite, LevelGamma);
 
             if (_preview.Source is BitmapSource b && _srcW > 0 && _srcH > 0 && _pageWpt > 0)
             {
@@ -807,6 +904,12 @@ namespace TDPdf.Services
         }
 
         // ---- Small themed control factory ------------------------------------
+
+        private TextBlock SliderLabel(string text) => new()
+        {
+            Text = text, Foreground = R("TextSecondary"), FontFamily = new FontFamily("Consolas"),
+            FontSize = 11, Margin = new Thickness(0, 8, 0, 0)
+        };
 
         private TextBlock SectionHeader(string text) => new()
         {
