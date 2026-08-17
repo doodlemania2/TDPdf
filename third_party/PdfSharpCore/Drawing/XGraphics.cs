@@ -1442,6 +1442,17 @@ namespace PdfSharpCore.Drawing  // #??? aufräumen
         }
 
         /// <summary>
+        /// TDPdf patch (#200, from upstream KillerPDF): sets a PDF blend mode (e.g. "Multiply")
+        /// for subsequent fills and strokes on a PDF render target. No-op on other targets.
+        /// Scope it with Save()/Restore() - the grestore returns the blend mode to Normal.
+        /// </summary>
+        public void SetPdfBlendMode(string blendMode)
+        {
+            if (_renderer is PdfSharpCore.Drawing.Pdf.XGraphicsPdfRenderer pdfRenderer)
+                pdfRenderer.SetBlendMode(blendMode);
+        }
+
+        /// <summary>
         /// Restores the state of this XGraphics object to the state represented by the specified 
         /// XGraphicsState object.
         /// </summary>

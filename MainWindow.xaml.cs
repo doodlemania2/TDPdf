@@ -456,6 +456,12 @@ namespace TDPdf
             SetTool(EditTool.Select);
             ApplyGrainTexture();
             SourceInitialized += MainWindow_SourceInitialized;
+            // NOTE (#189): this does not currently fire. WndProc claims WM_DPICHANGED with
+            // handled = true so it can apply Windows' suggested rect against the custom chrome, and
+            // public HwndSource hooks run before WPF's internal HwndTarget hook, so WPF never gets
+            // the message and never raises DpiChanged. WmDpiChanged is the live DPI-change path and
+            // does the re-render itself. Left in place rather than deleted because it is harmless
+            // and idempotent, and it is the correct response if WPF ever does raise the event.
             DpiChanged += (_, _) => ApplyZoom();
 
             // Open a file passed via command-line / file association (e.g. double-clicking a .pdf)
@@ -640,7 +646,30 @@ namespace TDPdf
             int dpiX = wParam.ToInt32() & 0xFFFF;
             _currentDpiScale = dpiX > 0 ? dpiX / 96.0 : GetCurrentDpiScaleFromVisual();
             InvalidateRenderCache();
-            RerenderCurrentPage();
+
+            // #189 (upstream KillerPDF commit "Re-render on DPI change"): every raster budget is
+            // measured in DEVICE pixels, so moving the window to a monitor at a different scale
+            // factor changes how many pixels a page needs WITHOUT changing its size in DIPs. In a
+            // fit mode the move also changes the window's DIP size, so the resize path re-fits and
+            // re-renders; at a manual zoom nothing else fires and the page would sit upscaled from
+            // the old monitor's render. That was survivable while the re-sharpen budget carried a 2×
+            // supersample, which happened to cover a 100% → 200% jump; at the device-native budget
+            // this cluster introduces there is no headroom left.
+            //
+            // Upstream overrides OnDpiChanged for this; here that would be dead code, because the
+            // WndProc above claims WM_DPICHANGED (handled = true) and so WPF's DpiChanged never
+            // fires (see CurrentRenderDpiScale). This IS our DPI-change entry point, so it owns the
+            // re-render. RerenderCurrentPage repaints the primary tile at the new GetCurrentDpiX and
+            // refills _renderDims (which the crop / annotation / form paths key off, and which
+            // InvalidateRenderCache just dropped); it then ends in ApplyZoom, the single fan-out to
+            // the per-mode render paths — StartContinuousResharpen for Continuous, and the deferred
+            // RefreshPageView → RenderAdditionalPages that re-rasterizes the Grid / Two-Page tiles.
+            //
+            // Deferred to DispatcherPriority.Loaded so the SetWindowPos above has been laid out
+            // first: the tile pass measures PagePreviewPanel.ActualWidth and _annotationCanvas.Width,
+            // which are still the pre-move values while we are on the WndProc stack.
+            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                (Action)(() => { if (_doc is not null) RerenderCurrentPage(); }));
         }
 
         private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam)
@@ -1855,6 +1884,20 @@ namespace TDPdf
             return Math.Max(1, (int)Math.Round(_currentDpiScale * LayoutZoomScale * 96.0));
         }
 
+        // #189 (upstream KillerPDF PR #194): the one device scale every RASTER budget is measured
+        // against. It has to be _currentDpiScale and not VisualTreeHelper.GetDpi(this): both
+        // GetDpi and CompositionTarget.TransformToDevice read WPF's HwndTarget.CurrentDpiScale,
+        // which is only refreshed when WPF's own internal hook processes WM_DPICHANGED — and our
+        // WndProc claims that message (handled = true) so it can apply Windows' suggested rect
+        // against the custom chrome. Public HwndSource hooks run BEFORE the internal HwndTarget
+        // hook, so handling it there ends the chain and WPF's DPI state never moves. _currentDpiScale
+        // is seeded from the visual at SourceInitialized and then taken straight from the message's
+        // own wParam in WmDpiChanged, so it is the one value that is right after a monitor move.
+        // GetCurrentDpiX (the primary tile) already reads it; the continuous re-sharpen budget and
+        // the Grid / Two-Page tile budget go through here so all three rasterize at one density.
+        // Windows per-monitor DPI is isotropic, so collapsing X/Y to a single scalar loses nothing.
+        private double CurrentRenderDpiScale() => _currentDpiScale > 0 ? _currentDpiScale : 1.0;
+
         private void InvalidateRenderCache()
         {
             _renderCache.Clear();
@@ -1870,15 +1913,54 @@ namespace TDPdf
         // bitmap per page. Cap it and, when over, drop the entries whose page is FARTHEST from the one
         // just rendered: renders cluster around the viewport, so the farthest are least likely next.
         private const int RenderCachePageCap = 48;
+
+        // #189 (upstream KillerPDF v1.7.2): the count cap alone was not enough. An entry's size
+        // scales with the page and the render budget, so 48 cached Letter pages can hold ~630 MB in
+        // ONE tab — and every open tab keeps its own cache. Budget the cache in BYTES as well, with
+        // a floor of nearby pages so the moving window around the viewport still serves instantly.
+        private const long RenderCacheByteBudget = 160L << 20;   // ~160 MB per tab
+        private const int RenderCacheMinPages = 6;
+
+        // Bytes held by this tab's cached page bitmaps.
+        //
+        // Upstream needs a parallel size dictionary written on the producing thread, because ITS
+        // cache is a ConcurrentDictionary filled from background render threads and reading
+        // bmp.PixelWidth during eviction was a cross-thread touch on the BitmapSource. We do NOT
+        // have that problem: _renderCache is a plain Dictionary written only from RenderPage, whose
+        // awaits resume on the UI thread, and our RenderedPage record already carries PixelWidth /
+        // PixelHeight as plain ints captured at render time. So measure straight off the record and
+        // never touch the BitmapSource — do not "restore" upstream's parallel dictionary here.
+        private long RenderCacheBytes()
+        {
+            long total = 0;
+            foreach (var entry in _renderCache.Values)
+                total += 4L * entry.PixelWidth * entry.PixelHeight;   // Bgra32
+            return total;
+        }
+
+        private bool OverRenderCacheBudget()
+        {
+            int count = _renderCache.Count;
+            if (count > RenderCachePageCap) return true;
+            return count > RenderCacheMinPages && RenderCacheBytes() > RenderCacheByteBudget;
+        }
+
         private void CapRenderCache(int aroundPage)
         {
-            if (_renderCache.Count <= RenderCachePageCap) return;
+            if (!OverRenderCacheBudget()) return;
             var keys = _renderCache.Keys.ToList();
             // Farthest page first.
             keys.Sort((a, b) => Math.Abs(b.pageIndex - aroundPage).CompareTo(Math.Abs(a.pageIndex - aroundPage)));
             foreach (var k in keys)
             {
-                if (_renderCache.Count <= RenderCachePageCap) break;
+                if (!OverRenderCacheBudget()) break;
+                // Distance 0: this is the page we just rendered (the cache is keyed by DPI bucket
+                // too, so it can hold more than one entry for it) and, because the sort put the
+                // farthest first, so is every key after it. Nothing sane left to evict. Upstream
+                // guards its rescanning eviction loop the same way with `if (bestDist <= 0) break`;
+                // ours walks a fixed sorted list, so it terminates whatever the budgets say — this
+                // only stops it throwing away the page on screen to chase a budget it cannot meet.
+                if (k.pageIndex == aroundPage) break;
                 _renderCache.Remove(k);
             }
         }
@@ -2082,9 +2164,15 @@ namespace TDPdf
             double panelW = pagesPerRow * pageSlotW;
             if (panelW > 0) _pageContentPanel.Width = panelW;
 
-            var dpiInfo = VisualTreeHelper.GetDpi(this);
-            double dpiScaleX = dpiInfo.DpiScaleX;
-            double dpiScaleY = dpiInfo.DpiScaleY;
+            // #189: one authoritative device scale (see CurrentRenderDpiScale) rather than
+            // VisualTreeHelper.GetDpi, which does not survive a monitor move here. Both the box
+            // below and the bitmap DPI further down have to use the SAME number — scaledMax scales
+            // the pixel width up by it and the bitmap DPI divides it back out, so a mismatch would
+            // resize the tiles rather than just re-sharpen them. This is density-only: the tile's
+            // DIP width works out to RenderBoxDip either way, matching the primary tile, which
+            // already sizes its raster off _currentDpiScale via GetCurrentDpiX.
+            double dpiScaleX = CurrentRenderDpiScale();
+            double dpiScaleY = dpiScaleX;
             // Same square box as the primary tile (PdfDocumentService.RenderBoxDip), in device
             // pixels, so grid tiles land on the same DIP size as the primary and the display
             // factor is one number for the whole wrap panel.
@@ -2109,6 +2197,10 @@ namespace TDPdf
                         int w = pageReader.GetPageWidth();
                         int h = pageReader.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var rawBytes = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
                                        ?? pageReader.GetImage();
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
@@ -2537,6 +2629,10 @@ namespace TDPdf
                         int w = pr.GetPageWidth();
                         int h = pr.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
                                   ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
@@ -2643,9 +2739,16 @@ namespace TDPdf
             double zoom = Zoom.ZoomLevel;
             double targetW = _continuousPageW;
             int baseW = Math.Max(800, Math.Min(2048, (int)(targetW * 2)));   // same budget as RenderContinuousPages
-            var dpiInfo = VisualTreeHelper.GetDpi(this);
-            double dpiScale = Math.Max(dpiInfo.DpiScaleX, dpiInfo.DpiScaleY);
-            int hiW = (int)Math.Min(4096, targetW * 2 * dpiScale * Math.Max(1.0, zoom));
+            // #189 (upstream KillerPDF PR #194): targetW * zoom * dpiScale already IS the page's
+            // on-screen size in device pixels, so the extra * 2 this used to carry was a 2× linear
+            // supersample on top of an already-correct budget — 4× the pixels and 4× the bytes for
+            // detail the display cannot resolve. Because fit-width zoom is viewportW / targetW,
+            // targetW cancels and the old hiW reduced to twice the viewport width, which is why the
+            // cost tracked window size and display resolution rather than anything about the file.
+            // Render at the size we actually draw at. (baseW above is the BASE render budget and is
+            // deliberately left alone — upstream did not change it either.)
+            double dpiScale = CurrentRenderDpiScale();
+            int hiW = (int)Math.Min(4096, targetW * dpiScale * Math.Max(1.0, zoom));
 
             // Visible slot range. Slot space is zoom-independent (the shared ScaleTransform supplies
             // the zoom), so divide the scroll offsets back down — the same mapping ScrollChanged uses.
@@ -2666,8 +2769,12 @@ namespace TDPdf
                 if (visible[^1] < _continuousTops.Count - 1) visible.Add(visible[^1] + 1);
             }
 
-            // Below ~1.25× the base budget the re-raster isn't visibly sharper: restore-only pass.
-            bool wantHi = hiW >= (int)(baseW * 1.25);
+            // #189: hiW is now a true device-pixel width, so the trigger is simply "has the base
+            // render run out of pixels for the size we are drawing it at". The old 1.25× margin was
+            // calibrated against a hiW that was inflated 2×; leaving it here would stop the pass
+            // firing where it is still needed and pages would be upscaled from the base render.
+            // 1.05 is hysteresis only, so a page sitting on the boundary doesn't re-raster on a nudge.
+            bool wantHi = hiW >= (int)(baseW * 1.05);
 
             _continuousSharpenCts?.Cancel();
             _continuousSharpenCts = new CancellationTokenSource();
@@ -2704,6 +2811,10 @@ namespace TDPdf
                         using var pr = docReader.GetPageReader(p);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, p, w, h)
                                   ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
@@ -2840,6 +2951,10 @@ namespace TDPdf
                         using var pr = docReader.GetPageReader(i);
                         int w = pr.GetPageWidth(), h = pr.GetPageHeight();
                         // #141: with the annotations the file carries (see PdfiumInterop).
+                        // Form fields stay BAKED here, unlike the primary tile: TDPdf's live
+                        // form overlays (RenderFormFields) exist only on _annotationCanvas, so
+                        // this surface has nothing to draw the values with. Hiding the widgets
+                        // would blank every filled field instead of un-ghosting it.
                         var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
                                   ?? pr.GetImage();
                         if (w <= 0 || h <= 0 || raw is null) continue;
@@ -3507,7 +3622,14 @@ namespace TDPdf
             string OnValue,       // radio/checkbox on-state value (e.g. "/Yes")
             bool   IsReadOnly,
             double Cx, double Cy, double Cw, double Ch,
-            List<string> Options);
+            List<string> Options,
+            // Upstream KillerPDF #158: a comb field is /Tx with the Comb flag (/Ff bit 25) AND a
+            // /MaxLen — the printed row of equal-width boxes forms are so fond of. GetPageFormFields
+            // only ever sets IsComb together with MaxLen > 0 (and never with IsMultiLine, which the
+            // spec makes mutually exclusive), so anything downstream may divide by MaxLen whenever
+            // IsComb is true. MaxLen is also the typing cap.
+            bool   IsComb,
+            int    MaxLen);
 
         /// <summary>
         /// Scans the current page's /Annots for Widget subtypes and overlays interactive
@@ -3556,12 +3678,23 @@ namespace TDPdf
                     double fieldShort = Math.Min(f.Cw, f.Ch);
                     double fontSize = f.IsMultiLine ? fieldShort * 0.18 : fieldShort * 0.65;
                     fontSize = Math.Max(10, fontSize);
+                    // #158: a comb field types one character per printed cell. WPF has no comb
+                    // TextBox, so the overlay approximates the cell walk: a monospace face (Consolas'
+                    // advance is ~0.55em) sized so one advance is at most one cell wide, capped at
+                    // MaxLen characters, and left-padded by half a cell minus half a glyph so the
+                    // first character lands in the middle of cell 0 rather than against its left
+                    // wall. It is an approximation on screen only — the SAVED appearance stream
+                    // below places each glyph exactly at its cell centre. IsComb guarantees
+                    // MaxLen > 0 (see FormFieldInfo), so the division is safe.
+                    double combCellW = f.IsComb ? f.Cw / f.MaxLen : 0;
+                    if (f.IsComb) fontSize = Math.Max(9, Math.Min(fontSize, combCellW / 0.55));
                     var tb = new TextBox
                     {
                         Tag             = FormOverlayTag,
                         Width           = f.Cw,
                         Height          = f.Ch,
                         Text            = cur,
+                        MaxLength       = f.IsComb ? f.MaxLen : 0,   // 0 = unlimited (WPF default)
                         IsReadOnly      = f.IsReadOnly,
                         AcceptsReturn   = f.IsMultiLine,
                         TextWrapping    = f.IsMultiLine ? TextWrapping.Wrap : TextWrapping.NoWrap,
@@ -3572,10 +3705,13 @@ namespace TDPdf
                         BorderBrush     = greenBrush,
                         BorderThickness = new Thickness(1),
                         FontSize        = fontSize,
-                        Padding         = new Thickness(3, 0, 3, 0),
+                        Padding         = f.IsComb
+                            ? new Thickness(Math.Max(0, combCellW / 2 - fontSize * 0.275), 0, 0, 0)
+                            : new Thickness(3, 0, 3, 0),
                         VerticalContentAlignment = f.IsMultiLine ? VerticalAlignment.Top : VerticalAlignment.Center,
                         ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
                     };
+                    if (f.IsComb) tb.FontFamily = new FontFamily("Consolas");
                     tb.GotFocus  += (_, _) => tb.BorderBrush = focusBrush;
                     tb.LostFocus += (_, _) => tb.BorderBrush = greenBrush;
                     int capturedKey = f.ObjNum;
@@ -3802,6 +3938,7 @@ namespace TDPdf
                     // Walk the parent chain to resolve inherited attributes.
                     string ft = "", name = "", curVal = "";
                     int flags = 0;
+                    int maxLen = 0;   // #158: /MaxLen, the comb cell count
                     var options = new List<string>();
 
                     PdfDictionary? node = ann;
@@ -3818,6 +3955,11 @@ namespace TDPdf
                         }
                         if (flags == 0 && node.Elements["/Ff"] is PdfInteger fi)
                             flags = fi.Value;
+                        // #158: /MaxLen is inheritable exactly like /Ff, so it gets the same
+                        // parent-chain walk — a comb field very often carries its /Ff and /MaxLen on
+                        // the parent field node and only the /Rect on the widget.
+                        if (maxLen == 0 && node.Elements["/MaxLen"] is PdfInteger ml)
+                            maxLen = ml.Value;
                         if (options.Count == 0 && node.Elements.GetArray("/Opt") is PdfArray optArr)
                         {
                             for (int j = 0; j < optArr.Elements.Count; j++)
@@ -3838,6 +3980,12 @@ namespace TDPdf
 
                     bool isReadOnly  = (flags & 1) != 0;
                     bool isMultiLine = ft.Contains("Tx") && (flags & 4096) != 0;
+                    // #158: Comb is /Ff bit 25 (1 << 24) and only means anything on a /Tx field that
+                    // also declares how many cells it has. The spec makes comb and multiline mutually
+                    // exclusive, so a field that (wrongly) sets both stays on the ordinary multiline
+                    // path. Requiring maxLen > 0 here is what lets every consumer divide by MaxLen.
+                    bool isComb      = ft.Contains("Tx") && (flags & (1 << 24)) != 0
+                                       && maxLen > 0 && !isMultiLine;
                     bool isPushBtn   = ft.Contains("Btn") && (flags & (1 << 16)) != 0;
                     bool isRadio     = ft.Contains("Btn") && !isPushBtn && (flags & (1 << 15)) != 0;
                     bool isCheckBox  = ft.Contains("Btn") && !isPushBtn && !isRadio;
@@ -3860,7 +4008,8 @@ namespace TDPdf
                         objNum = -(pageIndex * 10000 + i); // synthetic key for inline dicts
 
                     result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
-                        name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options));
+                        name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options,
+                        isComb, maxLen));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
@@ -3937,11 +4086,19 @@ namespace TDPdf
                         // but the appearance writer never saw it: a multiline field has to lay its
                         // value out in lines from the top of the box, a single-line one draws one
                         // vertically centred line.
+                        //
+                        // #158: /MaxLen rides along on the same walk — it is inheritable in exactly
+                        // the same way, and a comb field's appearance needs both it and bit 25.
+                        // The loop now stops only once BOTH have been found (or the chain runs out);
+                        // the per-value `== 0` guards mean the extra iterations can never change
+                        // which /Ff wins, so non-comb fields resolve identically to before.
                         int fieldFlags = 0;
+                        int combLen = 0;
                         node = ann;
-                        while (node is not null && fieldFlags == 0)
+                        while (node is not null && (fieldFlags == 0 || combLen == 0))
                         {
-                            if (node.Elements["/Ff"] is PdfInteger fi) fieldFlags = fi.Value;
+                            if (fieldFlags == 0 && node.Elements["/Ff"] is PdfInteger fi) fieldFlags = fi.Value;
+                            if (combLen == 0 && node.Elements["/MaxLen"] is PdfInteger ml) combLen = ml.Value;
                             var pi = node.Elements["/Parent"];
                             if (pi is null) break;
                             node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
@@ -3952,11 +4109,16 @@ namespace TDPdf
                         string ffType = fieldDict?.Elements["/FT"]?.ToString() ?? "";
                         if (string.IsNullOrEmpty(ffType)) ffType = "/Tx";
                         bool isMultiLine = ffType.Contains("Tx") && (fieldFlags & 4096) != 0;
+                        // #158: same gating as GetPageFormFields — /Tx only, needs a positive
+                        // /MaxLen, and never together with multiline.
+                        bool isComb = ffType.Contains("Tx") && (fieldFlags & (1 << 24)) != 0
+                                      && combLen > 0 && !isMultiLine;
 
                         if (_formTextValues.TryGetValue(objNum, out var textVal) && fieldDict is not null)
                         {
                             fieldDict.Elements["/V"] = new PdfString(textVal);
-                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine);
+                            GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine,
+                                isComb ? combLen : 0);
                         }
                         else if (_formCheckValues.TryGetValue(objNum, out var checkVal) && fieldDict is not null)
                         {
@@ -4023,7 +4185,14 @@ namespace TDPdf
         /// Generates a /AP /N form XObject appearance stream for a text field and sets it
         /// on the widget annotation, so the typed value shows in other viewers.
         /// </summary>
-        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH, bool isMultiLine)
+        /// <param name="combLen">
+        /// Upstream KillerPDF #158. Cell count of a comb field (/Ff bit 25 with a /MaxLen), which
+        /// draws one character per evenly-spaced cell instead of one continuous run. 0 — the default
+        /// every existing caller keeps — means "not a comb field" and leaves the ordinary
+        /// single-line / multiline path below completely untouched.
+        /// </param>
+        private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH, bool isMultiLine,
+            int combLen = 0)
         {
             try
             {
@@ -4036,6 +4205,44 @@ namespace TDPdf
                 // blows the text up to the height of the whole box.
                 fontSize = isMultiLine ? Math.Max(6, fontSize)
                                        : Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
+
+                // #158: comb — one character per evenly-spaced cell, the way Acrobat fills the
+                // printed boxes. Each glyph gets its OWN text matrix placing it at its cell's
+                // centre: Tm sets the absolute position, so no leading/advance accumulates between
+                // them and the run cannot drift out of the cells. The horizontal offset backs off
+                // half a glyph from the cell centre (Helvetica-class average advance is ~0.55em, so
+                // half is ~0.275em), and the width cap keeps a wide glyph from spilling into its
+                // neighbour. Spaces are skipped: they paint nothing and would only cost operators.
+                // The shared single-run path below cannot express this — it would bunch the whole
+                // value into the left of cell 0. Note this returns before that path, and every
+                // non-comb caller passes combLen == 0, so nothing here can affect them.
+                if (combLen > 0)
+                {
+                    double cellW = fieldW / combLen;
+                    fontSize = Math.Max(6, Math.Min(fontSize, Math.Min(fieldH * 0.85, cellW * 1.4)));
+                    string oneLine = text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
+                    if (oneLine.Length > combLen) oneLine = oneLine[..combLen];
+                    double combY = (fieldH - fontSize) / 2 + fontSize * 0.2;
+                    if (combY < 1) combY = 1;
+
+                    var csb = new System.Text.StringBuilder();
+                    csb.Append($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n");
+                    csb.Append($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n");
+                    for (int i = 0; i < oneLine.Length; i++)
+                    {
+                        if (oneLine[i] == ' ') continue;
+                        double gx = i * cellW + cellW / 2 - fontSize * 0.275;
+                        // Same EscapePdfString the run path uses, so WinAnsi folding and (, ), \
+                        // escaping are identical for a comb cell and an ordinary field.
+                        csb.Append($"1 0 0 1 {gx:F2} {combY:F2} Tm\n({EscapePdfString(oneLine[i].ToString())}) Tj\n");
+                    }
+                    csb.Append("ET\nQ\nEMC");
+
+                    var combXobj = BuildFormXObject(fontName, fieldW, fieldH, csb.ToString());
+                    if (combXobj is null) return;
+                    AttachAppearance(widgetAnn, combXobj);
+                    return;
+                }
 
                 // Tj shows a string; it has no concept of a line break, so a value with newlines
                 // in it drew as one run with the breaks swallowed (they survived into the literal
@@ -13850,19 +14057,52 @@ namespace TDPdf
                         {
                             var mkc = mk.GetColor();
                             var mkBrush = new XSolidBrush(XColor.FromArgb(mkc.A, mkc.R, mkc.G, mkc.B));
-                            foreach (var pr in mk.PaintRects())
-                                gfx.DrawRectangle(mkBrush,
-                                    pr.X * sx, pr.Y * sy, pr.Width * sx, pr.Height * sy);
+                            // TDPdf patch (#200, from upstream KillerPDF): a highlight burns with the
+                            // Multiply blend mode so the colour darkens the paper and the text under
+                            // it stays crisp instead of being washed out by an opaque overlay.
+                            // Strikethrough and underline stay normal draws — a thin dark band
+                            // multiplied over text would disappear.
+                            XGraphicsState? mkState = null;
+                            if (mk.Style == MarkupStyle.Highlight)
+                            {
+                                mkState = gfx.Save();
+                                gfx.SetPdfBlendMode("Multiply");
+                            }
+                            try
+                            {
+                                foreach (var pr in mk.PaintRects())
+                                    gfx.DrawRectangle(mkBrush,
+                                        pr.X * sx, pr.Y * sy, pr.Width * sx, pr.Height * sy);
+                            }
+                            finally
+                            {
+                                // The grestore returns the blend mode to Normal.
+                                if (mkState is not null) gfx.Restore(mkState);
+                            }
                             break;
                         }
 
                         case HighlightAnnotation ha:
+                        {
                             var hc = ha.GetColor();
                             var hBrush = new XSolidBrush(XColor.FromArgb(hc.A, hc.R, hc.G, hc.B));
-                            gfx.DrawRectangle(hBrush,
-                                ha.Bounds.X * sx, ha.Bounds.Y * sy,
-                                ha.Bounds.Width * sx, ha.Bounds.Height * sy);
+                            // TDPdf patch (#200, from upstream KillerPDF): burn with Multiply so the
+                            // highlight darkens the paper rather than covering the text.
+                            var hState = gfx.Save();
+                            gfx.SetPdfBlendMode("Multiply");
+                            try
+                            {
+                                gfx.DrawRectangle(hBrush,
+                                    ha.Bounds.X * sx, ha.Bounds.Y * sy,
+                                    ha.Bounds.Width * sx, ha.Bounds.Height * sy);
+                            }
+                            finally
+                            {
+                                // The grestore returns the blend mode to Normal.
+                                gfx.Restore(hState);
+                            }
                             break;
+                        }
 
                         case ShapeAnnotation shp:
                         {

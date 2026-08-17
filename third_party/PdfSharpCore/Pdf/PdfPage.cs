@@ -157,9 +157,17 @@ namespace PdfSharpCore.Pdf
         public PageOrientation Orientation
         {
             get { return _orientation; }
-            set { _orientation = value; }
+            set { _orientation = value; _orientationSetExplicitly = true; }
         }
         PageOrientation _orientation;
+
+        // TDPdf patch (#184, from upstream KillerPDF): distinguishes an orientation set by CODE
+        // (a page the caller creates in landscape, where WriteObject's media-box flip is the
+        // intended behavior) from one derived from a loaded file's /Rotate in the dict
+        // constructor. Flipping the media box of a READ page is what swapped MediaBox on save
+        // when a page opened at /Rotate 90 was rotated to an even multiple, permanently
+        // clipping the content.
+        bool _orientationSetExplicitly;
 
         /// <summary>
         /// Gets or sets one of the predefined standard sizes like.
@@ -589,9 +597,15 @@ namespace PdfSharpCore.Pdf
 
         internal override void WriteObject(PdfWriter writer)
         {
-            // HACK: temporarily flip media box if Landscape
+            // HACK: temporarily flip media box if Landscape.
+            // TDPdf patch (#184, from upstream KillerPDF): only for pages whose orientation was
+            // set by code. A page READ from a file got its orientation from /Rotate; flipping its
+            // media box on save rewrote the box to the visual dimensions while /Rotate stayed,
+            // clipping the content.
             PdfRectangle mediaBox = MediaBox;
-            if (_orientation == PageOrientation.Landscape && Math.Abs(Rotate / 90) % 2 == 0)
+            bool flipMediaBox = _orientationSetExplicitly
+                && _orientation == PageOrientation.Landscape && Math.Abs(Rotate / 90) % 2 == 0;
+            if (flipMediaBox)
                 MediaBox = new PdfRectangle(mediaBox.X1, mediaBox.Y1, mediaBox.Y2, mediaBox.X2);
 
 #if false
@@ -628,7 +642,7 @@ namespace PdfSharpCore.Pdf
 #endif
             base.WriteObject(writer);
 
-            if (_orientation == PageOrientation.Landscape)
+            if (flipMediaBox)
                 MediaBox = mediaBox;
         }
 

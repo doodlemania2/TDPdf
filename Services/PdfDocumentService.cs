@@ -170,7 +170,16 @@ namespace TDPdf.Services
                     int height = pageReader.GetPageHeight();
                     // #141: with annotations, so the viewer shows the markup the file carries the way
                     // Firefox and SumatraPDF do. White background matches the page's white Border.
-                    var rawBytes = PdfiumInterop.RenderPageWithAnnotations(path, pageIndex, width, height)
+                    //
+                    // Form fields excluded (upstream KillerPDF 1.7.2): this is the PRIMARY tile, the
+                    // one surface MainWindow.RenderFormFields covers with live WPF TextBox/ComboBox/
+                    // check/radio overlays. Those overlays sit on a partly transparent field fill, so
+                    // a baked field appearance underneath showed through as a second, slightly offset
+                    // copy of the same text. The secondary tiles and the Continuous strip get NO
+                    // overlays in TDPdf, so they deliberately keep their fields baked — see the
+                    // includeFormFields docs on RenderPageWithAnnotations.
+                    var rawBytes = PdfiumInterop.RenderPageWithAnnotations(path, pageIndex, width, height,
+                                       includeFormFields: false)
                                    ?? pageReader.GetImage();
                     cancellationToken.ThrowIfCancellationRequested();
 

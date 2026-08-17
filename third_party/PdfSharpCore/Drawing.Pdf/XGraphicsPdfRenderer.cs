@@ -1218,6 +1218,17 @@ namespace PdfSharpCore.Drawing.Pdf
             _content.Append(value);
         }
 
+        // TDPdf patch (#200, from upstream KillerPDF): emits an ExtGState carrying only /BM so a
+        // caller can draw with a PDF blend mode (highlights use Multiply, so text stays dark under
+        // the color). The alpha ExtGStates the color realizer emits set only CA/ca, so the blend
+        // mode persists until the enclosing XGraphics.Restore's grestore.
+        internal void SetBlendMode(string blendMode)
+        {
+            PdfExtGState extGState = Owner.ExtGStateTable.GetExtGStateBlend(blendMode);
+            string gs = Resources.AddExtGState(extGState);
+            AppendFormatString("{0} gs\n", gs);
+        }
+
         internal void AppendFormatArgs(string format, params object[] args)
         {
             _content.AppendFormat(CultureInfo.InvariantCulture, format, args);
