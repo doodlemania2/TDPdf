@@ -1,0 +1,36 @@
+name: probe-runner
+
+# Temporary: reports what tooling the self-hosted `tdpdf` runner has, so the
+# Intune auto-deploy workflow can be written against reality rather than guesses.
+# Delete once that workflow is in place.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: tdpdf
+    steps:
+      - name: Environment
+        run: |
+          echo "=== identity ==="
+          id; whoami; echo "HOME=$HOME"
+          echo "=== os ==="
+          uname -a; cat /etc/os-release 2>/dev/null | head -3
+          echo "=== privilege ==="
+          if command -v sudo >/dev/null 2>&1; then echo "sudo: present"; sudo -n true 2>/dev/null && echo "sudo: PASSWORDLESS" || echo "sudo: needs password"; else echo "sudo: absent"; fi
+          [ "$(id -u)" = "0" ] && echo "running as ROOT" || echo "running as non-root"
+          echo "=== package manager ==="
+          command -v apt-get >/dev/null && echo "apt-get: yes" || echo "apt-get: no"
+          echo "=== tools ==="
+          for t in python3 pip3 pwsh openssl osslsigncode zip unzip curl jq dotnet git; do
+            if command -v $t >/dev/null 2>&1; then printf "%-14s YES  %s\n" "$t" "$($t --version 2>&1 | head -1)"; else printf "%-14s no\n" "$t"; fi
+          done
+          echo "=== python modules ==="
+          python3 -c "import cryptography, requests; print('cryptography+requests: yes')" 2>/dev/null || echo "cryptography/requests: missing"
+          python3 -c "import hashlib,hmac,base64,secrets; print('stdlib crypto: yes')" 2>/dev/null || true
+          echo "=== dotnet ==="
+          dotnet --list-sdks 2>/dev/null | head -3
+          echo "=== network egress ==="
+          curl -s -o /dev/null -w "graph.microsoft.com: %{http_code}\n" --max-time 15 https://graph.microsoft.com/v1.0/ || echo "graph: unreachable"
+          curl -s -o /dev/null -w "login.microsoftonline.com: %{http_code}\n" --max-time 15 https://login.microsoftonline.com/ || echo "login: unreachable"
