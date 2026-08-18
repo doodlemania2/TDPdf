@@ -14,6 +14,24 @@ TDPdf is a Windows-only WPF PDF editor shipped as a single self-contained `TDPdf
 - Full signed release: `./release.ps1` (Windows; needs Certum cert + signtool), or `./release.ps1 -SkipSign` for a dry run.
 - **There is no test suite or linter.** `dotnet build` warnings are the only lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
 - Single-file publish uses SDK properties in `TDPdf.csproj` (`IncludeNativeLibrariesForSelfExtract`, compression); do not reintroduce Costura/Fody bundling. `PublishTrimmed` and Native AOT are intentionally off — WPF and the PDF libraries are not trim-safe.
+- **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and reports only the 2 `MSB3243` warnings — a false clean that hides every `CS*` warning you just introduced. The real baseline is **6 warnings, 0 errors**.
+
+### Release checklist
+
+Bumping the version touches **four** files. They must all land in the **same PR**, because `main` is push-protected and a follow-up fix needs a whole second PR:
+
+1. `TDPdf.csproj` — `<Version>`, `<AssemblyVersion>`, `<FileVersion>`, all three together.
+2. `CHANGELOG.md` — a `## [x.y.z.w] - YYYY-MM-DD` section (Keep a Changelog / SemVer) **and** the compare links at the bottom.
+3. `build/intune/Detect-TDPdf.ps1` — `$MinVersion`. **Easy to forget, and nothing fails loudly when you do:** the build is green, the release publishes, and the miss only shows up later as Intune reporting every machine already compliant so the new version never installs.
+4. `.github/release-notes/v<x.y.z.w>.md` — the human-facing notes. **Required before the tag exists.** `release.yml` passes `--notes-file .github/release-notes/$TAG.md`, so a missing file fails the tagged build outright; historically that single omission is the only reason release runs have failed.
+
+Then, to actually cut a release:
+
+- Merging to `main` builds **nothing**. The only CI on push is `codeql.yml` (required check `Analyze (csharp)`, ~6 min).
+- A binary is produced only by `.github/workflows/release.yml`, which is **tag-triggered** (`push: tags: [v*]`) and runs on the self-hosted **`tdpdf`** runner. Tag style is annotated: `git tag -a v1.21.0.0 -m "TDPdf 1.21.0.0"`.
+- **A GitHub Release is not a deployment.** `release.yml` runs a plain `dotnet publish` — it does **not** sign and does **not** build a `.intunewin`. The published exe is unsigned (SmartScreen warns) and nothing reaches Intune-managed machines.
+- Getting the fleet onto a version is a separate manual Windows step: `./release.ps1` (Certum cert via SimplySign Desktop; `-SkipSign` for a dry run) → upload **both** the `.intunewin` **and** `build/intune/Detect-TDPdf.ps1` to the Intune portal. Intune runs its own *uploaded* copy of the detection script, so step 3 above is inert until re-uploaded — and uploading a new detection script against an old package makes every machine report non-compliant and reinstall the **old** version indefinitely. Ship the package and the script together or not at all.
+- `pdf-landing/` is not part of this ritual — it has been stale for many versions and no workflow deploys it. Leave it alone unless asked.
 
 ## Architecture
 
@@ -44,7 +62,7 @@ Single-window WPF app with MVVM foundations but no DI. Almost all UI behavior li
 - XAML-named controls the codegen can't resolve are re-fetched in the constructor via `FindName(...)!` into `_camelCase` fields (see the `// Manual element refs` block). Follow that pattern for new named XAML elements.
 - UI palette is centralized in `MainWindow.xaml` resources (`BgDark`, `BgPanel`, `AccentGreen`, `DangerRed`, …) and theme dictionaries under `Themes/` (Dark, Light, HighContrast). Use those brushes; don't hardcode hex colors. Toolbar glyphs are `Segoe MDL2 Assets`.
 - Set `_isDirty = true` on any change that mutates the document, and route open/close paths through the existing dirty-check prompts.
-- Versioning: bump `<Version>`, `<AssemblyVersion>`, and `<FileVersion>` together in `TDPdf.csproj`, add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md` (Keep a Changelog / SemVer), and update the compare links at the bottom.
+- Versioning: see the **Release checklist** under Build / publish / release. Four files move together, and `main` is push-protected, so they must all be in the same PR — there is no fixing one up afterwards without a second PR.
 - GPLv3 compliance: keep `LICENSE` and `NOTICE` intact, preserve upstream copyright headers, never reintroduce upstream personal branding. New dialog titles / product strings must say "TDPdf".
 
 <!-- BEGIN derek-task-inbox — shared block, identical in every CLAUDE.md under /Volumes/Data/repos. Edit all copies together. Canonical source: the Outline "Protocol" page linked below. -->
