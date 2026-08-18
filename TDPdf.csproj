@@ -107,9 +107,17 @@
     </None>
   </ItemGroup>
 
-  <!-- GPL3 source bundle: produces <AppName>-<Version>-src.zip in the publish folder every time you Publish. -->
+  <!-- GPL3 source bundle: produces <AppName>-<Version>-src.zip in the publish folder every time you Publish.
+       Shells out to Windows PowerShell on Windows and to pwsh elsewhere: the CI release runs on a LINUX
+       runner, where `powershell` does not exist, so this Exec failed every time and — because it is
+       IgnoreExitCode — did so silently, which is why tagged releases carried no source zip.
+       ProjectDir/PublishDir are trimmed of BOTH separators since MSBuild uses '/' off Windows. -->
+  <PropertyGroup>
+    <_BundleShell Condition="'$(OS)' == 'Windows_NT'">powershell</_BundleShell>
+    <_BundleShell Condition="'$(OS)' != 'Windows_NT'">pwsh</_BundleShell>
+  </PropertyGroup>
   <Target Name="BundleSource" AfterTargets="Publish">
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)build\bundle-source.ps1&quot; -ProjectDir &quot;$(ProjectDir.TrimEnd('\'))&quot; -Version &quot;$(Version)&quot; -AppName &quot;$(AssemblyName)&quot; -PublishDir &quot;$(PublishDir.TrimEnd('\'))&quot;" IgnoreExitCode="true" />
+    <Exec Command="$(_BundleShell) -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)build/bundle-source.ps1&quot; -ProjectDir &quot;$(ProjectDir.TrimEnd('\').TrimEnd('/'))&quot; -Version &quot;$(Version)&quot; -AppName &quot;$(AssemblyName)&quot; -PublishDir &quot;$(PublishDir.TrimEnd('\').TrimEnd('/'))&quot;" IgnoreExitCode="true" />
   </Target>
 
 </Project>

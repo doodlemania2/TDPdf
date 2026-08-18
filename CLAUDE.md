@@ -29,8 +29,26 @@ Then, to actually cut a release:
 
 - Merging to `main` builds **nothing**. The only CI on push is `codeql.yml` (required check `Analyze (csharp)`, ~6 min).
 - A binary is produced only by `.github/workflows/release.yml`, which is **tag-triggered** (`push: tags: [v*]`) and runs on the self-hosted **`tdpdf`** runner. Tag style is annotated: `git tag -a v1.21.0.0 -m "TDPdf 1.21.0.0"`.
-- **A GitHub Release is not a deployment.** `release.yml` runs a plain `dotnet publish` — it does **not** sign and does **not** build a `.intunewin`. The published exe is unsigned (SmartScreen warns) and nothing reaches Intune-managed machines.
-- Getting the fleet onto a version is a separate manual Windows step: `./release.ps1` (Certum cert via SimplySign Desktop; `-SkipSign` for a dry run) → upload **both** the `.intunewin` **and** `build/intune/Detect-TDPdf.ps1` to the Intune portal. Intune runs its own *uploaded* copy of the detection script, so step 3 above is inert until re-uploaded — and uploading a new detection script against an old package makes every machine report non-compliant and reinstall the **old** version indefinitely. Ship the package and the script together or not at all.
+- **Pushing the tag now does the whole thing.** `release.yml` embeds the telemetry key, signs the EXE, publishes the GitHub Release (exe + GPLv3 source zip + `SHA256SUMS.txt`), and updates the existing Intune app — see *Automated release pipeline* below. `./release.ps1` remains the manual Windows path (Certum via SimplySign, `-SkipSign` for a dry run) and is still the way to produce a real `.intunewin` for portal work.
+
+#### Automated release pipeline
+
+The `tdpdf` runner is **Linux** (self-hosted ARC on the K3s cluster). That single fact explains the design: `signtool.exe` and `IntuneWinAppUtil.exe` are Windows-only, so the workflow signs with **`osslsigncode`** and talks to **Microsoft Graph directly**. A `.intunewin` is only a transport container for the portal UI — Graph accepts the encrypted payload plus a `fileEncryptionInfo` block, which `build/intune/Deploy-IntuneUpdate.ps1` produces itself.
+
+Each stage is gated on its secret being present, so a missing or rotated secret degrades the run to build-and-release rather than failing it:
+
+| Secret | Enables | If absent |
+|---|---|---|
+| `TDPDF_APPINSIGHTS_CONN` | telemetry key embedded into the EXE | ships the no-op placeholder |
+| `CODESIGN_PFX_BASE64`, `CODESIGN_PFX_PASSWORD` | Authenticode signing | **unsigned exe**, with a warning |
+| `INTUNE_APP_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Intune app updated | Intune step skipped |
+
+- **The Intune step updates an app that already exists and is already targeted.** It adds a `mobileAppContentVersion` and repoints `committedContentVersion`. Assignments hang off the *app*, not the content version, so **targeting is never touched** — the script also refuses to run against anything that is not a `win32LobApp`.
+- It PATCHes `displayVersion` and the PowerShell detection rule **in the same call** that commits the content, which is what structurally prevents the old failure mode of a package and its detection script disagreeing about the version.
+- `displayVersion` comes from `<AssemblyVersion>` in the csproj, not from the tag, so a mistyped tag cannot mislabel the app.
+- Run `Deploy-IntuneUpdate.ps1 -DryRun` to zip, encrypt and digest locally with no Graph writes. Do that first when changing anything in that script.
+- `workflow_dispatch` accepts `skip_intune: true` to cut a GitHub Release without touching the fleet.
+- The signing and Intune steps only work off Windows — do not "fix" them back to `signtool`/`IntuneWinAppUtil` unless the runner becomes Windows.
 - `pdf-landing/` is not part of this ritual — it has been stale for many versions and no workflow deploys it. Leave it alone unless asked.
 
 ## Architecture

@@ -24,7 +24,10 @@ if (-not (Test-Path $publishDirFull)) {
 $zip = Join-Path $publishDirFull "$AppName-$Version-src.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 
-$staging = Join-Path $env:TEMP "$AppName-src-$([guid]::NewGuid())"
+# GetTempPath(), not $env:TEMP: TEMP is only set on Windows, so off Windows this
+# bound $null and the whole bundle died with "Cannot bind argument to parameter
+# 'Path'" — invisible in CI, because the MSBuild target ignores the exit code.
+$staging = Join-Path ([System.IO.Path]::GetTempPath()) "$AppName-src-$([guid]::NewGuid())"
 try {
     New-Item -ItemType Directory -Force -Path $staging | Out-Null
     Push-Location $projectDirFull
