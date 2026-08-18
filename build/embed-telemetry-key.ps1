@@ -35,7 +35,12 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$generated = Join-Path $ProjectDir 'Diagnostics\EmbeddedTelemetry.Generated.cs'
+# Multi-segment Join-Path, not a literal 'Diagnostics\...' string: on Linux a
+# backslash is an ordinary filename character, so the old form created a file
+# actually called "Diagnostics\EmbeddedTelemetry.Generated.cs" in the project
+# root. The csproj never saw it, so the key silently failed to embed and the
+# build shipped the placeholder — no error, just no telemetry.
+$generated = Join-Path $ProjectDir 'Diagnostics' 'EmbeddedTelemetry.Generated.cs'
 
 if ($Remove) {
     if (Test-Path $generated) {

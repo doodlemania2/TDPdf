@@ -1,8 +1,18 @@
 name: release
 
-# Publishes a self-contained single-file Windows x64 build of TDPdf
-# whenever a tag matching v* is pushed, and attaches the .exe to a
-# GitHub Release with the supplied release notes.
+# Publishes a self-contained single-file Windows x64 build of TDPdf whenever a
+# tag matching v* is pushed: embeds the telemetry key, signs the EXE, attaches
+# it to a GitHub Release, and updates the existing Intune Win32 app.
+#
+# The runner is LINUX (self-hosted ARC, label `tdpdf`), which is why signing
+# uses osslsigncode rather than signtool.exe, and why the Intune step talks to
+# Microsoft Graph directly instead of building a .intunewin with the
+# Windows-only IntuneWinAppUtil.exe. A .intunewin is only a transport container
+# for the portal UI; Graph takes the encrypted payload plus fileEncryptionInfo.
+#
+# Every optional stage is gated on its secrets being present, so the workflow
+# degrades to exactly its previous behaviour (build + release, unsigned) rather
+# than failing, if a secret is missing or rotated out.
 
 on:
   push:
@@ -12,6 +22,10 @@ on:
       tag:
         description: "Tag to release (e.g. v1.0.0)"
         required: true
+      skip_intune:
+        description: "Build and release, but do not touch Intune"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -19,6 +33,13 @@ permissions:
 jobs:
   release:
     runs-on: tdpdf
+    # The `secrets` context is NOT available in step-level `if:`, so presence is
+    # resolved once here into plain env flags (job-level `env` may read secrets)
+    # and the steps gate on those.
+    env:
+      HAS_TELEMETRY: ${{ secrets.TDPDF_APPINSIGHTS_CONN != '' }}
+      HAS_PFX:       ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
+      HAS_INTUNE:    ${{ secrets.INTUNE_APP_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +51,35 @@ jobs:
           else
             echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
+
+      # The version Intune displays comes from the csproj, not the tag, so a
+      # mistyped tag can never silently ship a mislabelled app version.
+      - name: Read project version
+        id: ver
+        run: |
+          V=$(grep -oPm1 '(?<=<AssemblyVersion>)[^<]+' TDPdf.csproj)
+          [ -n "$V" ] || { echo "::error::Could not read <AssemblyVersion> from TDPdf.csproj"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Project version: $V"
+
+      # Guards the release-notes omission that has historically been the only
+      # reason tagged builds fail — caught here with a clear message rather
+      # than 10 minutes later inside `gh release create`.
+      - name: Check release notes exist
+        run: |
+          NOTES=".github/release-notes/${{ steps.tag.outputs.name }}.md"
+          [ -f "$NOTES" ] || { echo "::error::Missing $NOTES — release.yml passes it to --notes-file. Commit it and re-tag."; exit 1; }
+          echo "Found $NOTES"
+
+      - name: Embed telemetry key
+        if: env.HAS_TELEMETRY == 'true'
+        env:
+          TDPDF_APPINSIGHTS_CONN: ${{ secrets.TDPDF_APPINSIGHTS_CONN }}
+        run: |
+          pwsh -NoProfile -File build/embed-telemetry-key.ps1 -ProjectDir "$PWD"
+          test -f Diagnostics/EmbeddedTelemetry.Generated.cs \
+            && echo "Telemetry key embedded." \
+            || { echo "::error::embed-telemetry-key.ps1 produced no file."; exit 1; }
 
       - name: Publish (Release, win-x64, single-file, self-contained)
         run: |
@@ -43,17 +93,66 @@ jobs:
             -p:EnableCompressionInSingleFile=true \
             -o publish
 
-      - name: Stage release asset
+      # Always strip the generated key from the tree, mirroring release.ps1, so
+      # it can never leak into the source bundle or a later step.
+      - name: Remove embedded telemetry key from working tree
+        if: always()
+        run: pwsh -NoProfile -File build/embed-telemetry-key.ps1 -ProjectDir "$PWD" -Remove || true
+
+      - name: Sign
+        id: sign
+        if: env.HAS_PFX == 'true'
+        env:
+          PFX_B64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          PFX_PASS: ${{ secrets.CODESIGN_PFX_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osslsigncode
+          umask 077
+          PFX="$(mktemp)"
+          printf '%s' "$PFX_B64" | base64 -d > "$PFX"
+          # Timestamping matters: without it the signature dies with the cert.
+          # Try several authorities, as release.ps1 does.
+          SIGNED=0
+          for TS in http://timestamp.digicert.com http://timestamp.sectigo.com http://ts.ssl.com; do
+            echo "Timestamp authority: $TS"
+            if osslsigncode sign \
+                 -pkcs12 "$PFX" -pass "$PFX_PASS" \
+                 -h sha256 -ts "$TS" \
+                 -n "TDPdf" -i "https://thedoodleproject.com/tdpdf" \
+                 -in publish/TDPdf.exe -out publish/TDPdf.signed.exe; then
+              SIGNED=1; break
+            fi
+            echo "Failed with $TS, trying next."
+          done
+          shred -u "$PFX" 2>/dev/null || rm -f "$PFX"
+          [ "$SIGNED" = "1" ] || { echo "::error::Signing failed with every timestamp authority."; exit 1; }
+          mv publish/TDPdf.signed.exe publish/TDPdf.exe
+          osslsigncode verify -in publish/TDPdf.exe || \
+            echo "::warning::Signature present but not chain-verifiable on this runner — expected for a self-signed cert whose root is trusted only on managed devices."
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Warn if unsigned
+        if: env.HAS_PFX != 'true'
+        run: echo "::warning::CODESIGN_PFX_BASE64 not set — shipping an UNSIGNED exe."
+
+      - name: Stage release assets
         id: asset
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp publish/TDPdf.exe "dist/TDPdf-${{ steps.tag.outputs.name }}-win-x64.exe"
+          # GPLv3 corresponding-source zip, produced by the BundleSource target.
+          cp publish/*-src.zip dist/ 2>/dev/null || echo "::warning::No source zip found — check the BundleSource target."
+          ( cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
           ls -la dist
 
       - name: Create / update GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           TAG="${{ steps.tag.outputs.name }}"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
@@ -61,4 +160,33 @@ jobs:
               --notes-file .github/release-notes/$TAG.md \
               --target "${GITHUB_SHA}"
           fi
-          gh release upload "$TAG" dist/TDPdf-${TAG}-win-x64.exe --clobber
+          gh release upload "$TAG" dist/* --clobber
+
+      # Updates the EXISTING app: adds a content version and repoints
+      # committedContentVersion. Assignments live on the app, not on the content
+      # version, so the current targeting is untouched.
+      - name: Update Intune app
+        if: env.HAS_INTUNE == 'true' && github.event.inputs.skip_intune != 'true'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          pwsh -NoProfile -File build/intune/Deploy-IntuneUpdate.ps1 \
+            -AppId "${{ secrets.INTUNE_APP_ID }}" \
+            -ExePath publish/TDPdf.exe \
+            -DetectionScriptPath build/intune/Detect-TDPdf.ps1 \
+            -DisplayVersion "${{ steps.ver.outputs.version }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### TDPdf ${{ steps.tag.outputs.name }}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            echo "| Version (from csproj) | ${{ steps.ver.outputs.version }} |"
+            echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes' || 'NO — unsigned' }} |"
+            echo "| Intune | ${{ (env.HAS_INTUNE == 'true' && github.event.inputs.skip_intune != 'true') && 'updated' || 'skipped' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
