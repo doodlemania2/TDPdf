@@ -111,7 +111,19 @@ jobs:
           sudo apt-get install -y -qq osslsigncode
           umask 077
           PFX="$(mktemp)"
-          printf '%s' "$PFX_B64" | base64 -d > "$PFX"
+          # tr -d strips any newlines/spaces the secret picked up on the way in:
+          # PowerShell's pipeline appends a newline, and a pasted value can carry
+          # wrapping. Base64 itself contains no whitespace, so this is lossless.
+          printf '%s' "$PFX_B64" | tr -d '[:space:]' | base64 -d > "$PFX"
+          [ -s "$PFX" ] || { echo "::error::CODESIGN_PFX_BASE64 did not decode to anything. Re-run the base64 step and set the secret again."; exit 1; }
+          # Verify the password up front: osslsigncode's failure for a bad password
+          # is cryptic, and this says plainly which of the two secrets is wrong.
+          if ! openssl pkcs12 -in "$PFX" -passin pass:"$PFX_PASS" -nokeys -clcerts -noout 2>/tmp/pfxerr; then
+            echo "::error::Could not open the PFX with CODESIGN_PFX_PASSWORD. Either the password is wrong or the file is not a valid PKCS#12."
+            sed -e 's/^/  /' /tmp/pfxerr | head -5
+            exit 1
+          fi
+          echo "PFX opened OK; subject: $(openssl pkcs12 -in "$PFX" -passin pass:"$PFX_PASS" -nokeys -clcerts 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null | tr '\n' ' ')"
           # Timestamping matters: without it the signature dies with the cert.
           # Try several authorities, as release.ps1 does.
           SIGNED=0
