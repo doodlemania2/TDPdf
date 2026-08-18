@@ -6,6 +6,9 @@ name: probe-runner
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/intune-auto-deploy]
+    paths: ['.github/workflows/probe-runner.yml']
 
 jobs:
   probe:
