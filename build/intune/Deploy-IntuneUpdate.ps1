@@ -226,6 +226,8 @@ function Send-BlocksToAzure {
 
     $stream  = [System.IO.File]::OpenRead($FilePath)
     $blockIds = [System.Collections.Generic.List[string]]::new()
+    $expected = (Get-Item $FilePath).Length
+    $sent     = 0L
     try {
         $buffer = [byte[]]::new($BlockSize)
         $index  = 0
@@ -233,8 +235,17 @@ function Send-BlocksToAzure {
             $blockId = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($index.ToString('D6')))
             $blockIds.Add($blockId)
 
-            $chunk = if ($read -eq $buffer.Length) { $buffer } else { $buffer[0..($read - 1)] }
-            $uri   = "$SasUri&comp=block&blockid=$([uri]::EscapeDataString($blockId))"
+            # Exact-size byte[] every time. Do NOT use `$buffer[0..(`$read-1)]` for the
+            # trailing partial block: range-slicing a byte[] in PowerShell yields an
+            # Object[] of boxed bytes, which Invoke-RestMethod serialises as TEXT rather
+            # than sending raw. The blob then uploads and commits happily at the Azure
+            # layer, and only Intune notices - the HMAC over the payload no longer
+            # matches, surfacing much later as a bare 'commitFileFailed'.
+            $chunk = [byte[]]::new($read)
+            [Array]::Copy($buffer, 0, $chunk, 0, $read)
+            $sent += $read
+
+            $uri = "$SasUri&comp=block&blockid=$([uri]::EscapeDataString($blockId))"
             Invoke-RestMethod -Method Put -Uri $uri -Body $chunk `
                 -Headers @{ 'x-ms-blob-type' = 'BlockBlob' } -ContentType 'application/octet-stream' -ErrorAction Stop | Out-Null
 
@@ -242,6 +253,10 @@ function Send-BlocksToAzure {
             Write-Note "block $index uploaded ($([math]::Round($read/1MB,1)) MB)"
         }
     } finally { $stream.Dispose() }
+
+    # Cheap guard against a silently short or long upload; Azure would accept it and
+    # only Intune's decrypt would complain, with no useful message.
+    if ($sent -ne $expected) { throw "Uploaded $sent bytes but the encrypted payload is $expected bytes." }
 
     # Commit the block list, in order.
     $xml = "<?xml version=`"1.0`" encoding=`"utf-8`"?><BlockList>" +
