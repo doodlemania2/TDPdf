@@ -316,9 +316,16 @@ try {
         -Uri "deviceAppManagement/mobileApps/$AppId/microsoft.graph.win32LobApp/contentVersions" -Body @{}
     Write-Ok "content version $($cv.id)"
 
+    # The content file MUST be called IntunePackage.intunewin. This is not
+    # cosmetic, and it is NOT the setup file's name: the service validates it,
+    # and anything else - including the real EXE name - is rejected with a
+    # generic "An error has occurred" BadRequest that names no field. It is the
+    # internal name IntuneWinAppUtil gives the encrypted payload inside a
+    # .intunewin, and the upload API kept the convention. $setupFile stays
+    # TDPdf.exe INSIDE the zip, which is what the app's setupFilePath points at.
     $fileBody = @{
         '@odata.type'  = '#microsoft.graph.mobileAppContentFile'
-        name           = $setupFile
+        name           = 'IntunePackage.intunewin'
         size           = $plainSize
         sizeEncrypted  = $encSize
         isDependency   = $false
