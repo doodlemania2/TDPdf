@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.22.0.0] - 2026-08-18
+
+A release-infrastructure release. **There are no functional changes to the application** — no fix, no feature, no behaviour difference from 1.21.0.0. Everything here is in how TDPdf is built, signed and delivered. It is versioned rather than folded into the next feature release so that the first build produced end-to-end by the automated pipeline is identifiable, and so the Intune detection script and the shipped binary move together the way the new checklist requires.
+
+If you are reading this to decide whether to upgrade: you do not need to. 1.21.0.0 and 1.22.0.0 are the same editor.
+
+### Changed
+
+- **Releases are now built, signed and published automatically from a pushed tag**, rather than by hand. The CI runner is Linux, so signing uses `osslsigncode` rather than Windows-only `signtool.exe`, and the Intune app is updated through Microsoft Graph rather than by uploading a `.intunewin` produced by the Windows-only `IntuneWinAppUtil.exe` — that file is only a transport container for the portal, and Graph accepts the encrypted payload directly. Each stage is gated on its credentials being present, so a missing or rotated secret degrades the run to an unsigned build-and-publish instead of failing it.
+- **The published binary is signed**, and the release now carries the GPLv3 corresponding-source zip and a `SHA256SUMS.txt` alongside the executable.
+- **The Intune deployment updates the existing app in place** — a new content version, the displayed version, and the detection script are all set in one operation, so the payload and the script that detects it can no longer disagree. Existing assignments are untouched, because assignments belong to the app rather than to a content version.
+
+### Fixed
+
+- **The telemetry key was never actually embedded by CI.** The generator built its output path as a literal `Diagnostics\...` string, so on the Linux build machine it wrote a file with a backslash in its *name*. The project never saw that file, so every CI build silently shipped the no-op placeholder instead of failing.
+- **Tagged releases shipped no GPLv3 corresponding-source zip.** The bundling step invoked `powershell`, which does not exist on Linux, and the script itself relied on `%TEMP%`, which is unset there. The build step ignores its own exit code, so this failed silently on every release. The public repository satisfied the licence throughout; the intended artifact simply was not being produced.
+- Two faults in the new Intune upload path, both of which failed in ways that pointed nowhere near their cause: the content file must be named `IntunePackage.intunewin` or the service rejects it with a `BadRequest` that names no field, and the trailing partial upload block was being sent as text rather than bytes — accepted by storage, and surfacing only much later as a bare `commitFileFailed` when Intune could not validate the payload.
+
+### Notes
+
+- **Detection now requires 1.22.0.0**, so managed machines will reinstall even though the application is unchanged. That is the cost of versioning this release and is understood.
+- Upstream KillerPDF is unchanged since the v1.7.3 sync in 1.21.0.0; there is no fork-sync content here.
+
 ## [1.21.0.0] - 2026-08-17
 
 Fork-sync release porting the features and bug fixes from upstream [KillerPDF](https://github.com/SteveTheKiller/KillerPDF) **v1.7.2** and **v1.7.3**, adapted to TDPdf's diverged multi-tab architecture. The headline items — a print dialog that can finally choose its paper, column-aware text selection, book layout, Transform LEVELS — sit alongside a group of memory and save-path fixes that matter more here than they read upstream. Porting surfaced three bugs in upstream's own versions of these changes, all fixed here rather than inherited.
@@ -662,7 +685,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.21.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.22.0.0...HEAD
+[1.22.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.21.0.0...v1.22.0.0
 [1.21.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.20.0.0...v1.21.0.0
 [1.20.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.19.0.0...v1.20.0.0
 [1.19.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.18.0.0...v1.19.0.0
