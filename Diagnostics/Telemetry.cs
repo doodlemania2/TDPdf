@@ -35,6 +35,28 @@ namespace TDPdf.Diagnostics
         private static TelemetryConfiguration? s_config;
         private static string s_appVersion = string.Empty;
         private static readonly object s_lock = new();
+        private static System.Threading.Timer? s_heartbeatTimer;
+        private static DateTimeOffset s_sessionStart;
+
+        /// <summary>
+        /// Identifies this run. Random per launch and never written to disk, so it is NOT a device
+        /// fingerprint — the deliberate absence of Context.User.Id / Device.Id below still holds.
+        /// </summary>
+        /// <remarks>
+        /// Without it, crash counts cannot be normalised: there is no way to tell one user having a
+        /// terrible afternoon from a regression hitting the whole fleet, which is exactly the
+        /// question that mattered on 2026-08-20. With it, crash-free session rate is
+        /// countIf(Crash) / countIf(App.Startup) grouped by session.
+        /// </remarks>
+        public static string SessionId { get; private set; } = string.Empty;
+
+        /// <summary>
+        /// How often a running instance says it is still alive. A "fleet went quiet" alert needs a
+        /// positive signal — App.Startup alone cannot distinguish "nobody launched it today" from
+        /// "telemetry broke", and the second is the one worth waking up for. Fifteen minutes is
+        /// cheap at this fleet size: the busiest hour in 90 days carried 131 events in total.
+        /// </summary>
+        private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(15);
 
         public static bool IsEnabled { get; private set; }
 
@@ -55,6 +77,12 @@ namespace TDPdf.Diagnostics
                 {
                     if (IsEnabled) return;
 
+                    // Before any gate: a session identity even when nothing is exported, so the
+                    // value is stable for the whole run rather than appearing only once telemetry
+                    // happens to be configured.
+                    if (SessionId.Length == 0) SessionId = Guid.NewGuid().ToString("N");
+                    s_sessionStart = DateTimeOffset.UtcNow;
+
                     // Two independent gates, both required.
                     //
                     // Consent: a per-user opt-out from the Settings dialog. Read defensively —
@@ -70,7 +98,7 @@ namespace TDPdf.Diagnostics
                     // separately, so a device configured for only one still reports to it. During
                     // the migration both are live; afterwards, retiring either is a config change.
                     s_appVersion = appVersion ?? string.Empty;
-                    OtlpTelemetry.Initialize(s_appVersion, ResolveEnvironment());
+                    OtlpTelemetry.Initialize(s_appVersion, ResolveEnvironment(), SessionId);
 
                     // Destination: absent in every build that has not been explicitly pointed
                     // somewhere, which is what lets this source ship publicly without phoning
@@ -117,6 +145,7 @@ namespace TDPdf.Diagnostics
 
                 // Outside the lock: replay is I/O and emits through the very methods that take it.
                 ReplaySpooledCrashes();
+                StartHeartbeat();
             }
             catch
             {
@@ -146,47 +175,7 @@ namespace TDPdf.Diagnostics
             catch { /* swallow — telemetry must never throw */ }
         }
 
-        /// <summary>
-        /// Emit a single numeric measurement (e.g. page count, file
-        /// size in KB, render milliseconds). No-op when disabled.
-        /// </summary>
-        public static void TrackMetric(string name, double value, IDictionary<string, string>? properties = null)
-        {
-            if (!IsEnabled) return;
-            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
-            try
-            {
-                var mt = new MetricTelemetry(name, value);
-                IDictionary<string, string>? scrubbed = ScrubProperties(properties);
-                if (scrubbed is not null)
-                    foreach (var kv in scrubbed)
-                        mt.Properties[kv.Key] = kv.Value;
-                s_client?.TrackMetric(mt);
-            }
-            catch { /* swallow */ }
-        }
 
-        /// <summary>
-        /// Lightweight structured log line. The message is scrubbed via
-        /// <see cref="Sanitizer"/> before it leaves the process, but
-        /// callers should still avoid embedding file paths or document
-        /// content. No-op when disabled.
-        /// </summary>
-        public static void TrackTrace(string message, SeverityLevel severity = SeverityLevel.Information, IDictionary<string, string>? properties = null)
-        {
-            if (!IsEnabled) return;
-            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
-            try
-            {
-                var tt = new TraceTelemetry(Sanitizer.Scrub(message), severity);
-                IDictionary<string, string>? scrubbed = ScrubProperties(properties);
-                if (scrubbed is not null)
-                    foreach (var kv in scrubbed)
-                        tt.Properties[kv.Key] = kv.Value;
-                s_client?.TrackTrace(tt);
-            }
-            catch { /* swallow */ }
-        }
 
         /// <summary>
         /// Emit a completed-operation event carrying a duration metric
@@ -353,6 +342,8 @@ namespace TDPdf.Diagnostics
         public static void Shutdown()
         {
             OtlpTelemetry.Shutdown();
+            try { s_heartbeatTimer?.Dispose(); } catch { /* swallow */ }
+            s_heartbeatTimer = null;
             lock (s_lock)
             {
                 IsEnabled = false;
@@ -364,6 +355,47 @@ namespace TDPdf.Diagnostics
                     s_config = null;
                 }
             }
+        }
+
+        /// <summary>Begins the periodic liveness signal. Idempotent.</summary>
+        private static void StartHeartbeat()
+        {
+            if (!IsEnabled || s_heartbeatTimer is not null) return;
+            try
+            {
+                s_heartbeatTimer = new System.Threading.Timer(
+                    _ => TrackEvent("App.Heartbeat", new Dictionary<string, string>
+                    {
+                        ["UptimeMinutes"] =
+                            ((int)(DateTimeOffset.UtcNow - s_sessionStart).TotalMinutes)
+                                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    }),
+                    null, HeartbeatInterval, HeartbeatInterval);
+            }
+            catch { /* a machine that cannot spare a timer still reports everything else */ }
+        }
+
+        /// <summary>
+        /// Records that this session ended under its own power. The presence or absence of this
+        /// event is what separates a clean exit from a crash or a kill — a session with an
+        /// App.Startup and no App.SessionEnd did not finish, whether or not a Crash arrived.
+        /// Call from Application.OnExit, before <see cref="Flush"/>.
+        /// </summary>
+        public static void TrackSessionEnd()
+        {
+            if (!IsEnabled) return;
+            try
+            {
+                s_heartbeatTimer?.Dispose();
+                s_heartbeatTimer = null;
+                TrackEvent("App.SessionEnd", new Dictionary<string, string>
+                {
+                    ["DurationMinutes"] =
+                        ((int)(DateTimeOffset.UtcNow - s_sessionStart).TotalMinutes)
+                            .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                });
+            }
+            catch { /* swallow */ }
         }
 
         /// <summary>
@@ -427,9 +459,12 @@ namespace TDPdf.Diagnostics
             if (properties is null || properties.Count == 0)
                 return properties;
 
-            var copy = new Dictionary<string, string>(properties.Count);
+            var copy = new Dictionary<string, string>(properties.Count + 1);
             foreach (var kv in properties)
                 copy[kv.Key] = Sanitizer.Scrub(kv.Value);
+            // Stamped centrally rather than at each of the 24 call sites — a signal that has to be
+            // remembered is a signal that will be missing from whichever event you need it on.
+            if (SessionId.Length > 0) copy["SessionId"] = SessionId;
             return copy;
         }
     }

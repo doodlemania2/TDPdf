@@ -51,7 +51,7 @@ namespace TDPdf.Diagnostics
         /// Best-effort start. A missing or malformed destination leaves this disabled and every
         /// method a no-op — the same contract <see cref="Telemetry"/> offers.
         /// </summary>
-        public static void Initialize(string appVersion, string environment)
+        public static void Initialize(string appVersion, string environment, string sessionId)
         {
             try
             {
@@ -77,6 +77,9 @@ namespace TDPdf.Diagnostics
                             // is always the one a given tool wants.
                             ["deployment.environment"] = environment,
                             ["deployment.environment.name"] = environment,
+                            // Resource rather than per-record: it is constant for the process, and
+                            // as a resource attribute SigNoz can group and count sessions directly.
+                            ["session.id"] = sessionId,
                         });
 
                     void Configure(OtlpExporterOptions o, string signalPath)

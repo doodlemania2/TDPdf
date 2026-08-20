@@ -45,7 +45,12 @@ in rather than leaving you to guess.
 `Tool.Selected`, `File.New`, `File.Open`, `File.Merge`, `File.Split`, `File.Print`,
 `File.ExportImages`, `File.OpenFailed`, `File.OpenRecovered`, `File.OpenUnlockedByPdfium`,
 `File.SaveFailed`, `File.SaveRecoveryAttempt`, `File.PrintFailed`, `File.ExportFailed`,
-`Settings.Recovered`, and operation timings named `Op.*`.
+`Settings.Recovered`, `App.Heartbeat`, `App.SessionEnd`, and operation timings named `Op.*`.
+
+`App.Heartbeat` is sent every 15 minutes while TDPdf is running and says only that it is still
+running and for how long. `App.SessionEnd` records that it closed normally — its *absence* is what
+tells us a run ended in a crash, which is how crash rate is measured without tracking anything
+about you.
 
 `Tool.Selected` records *which tool* you chose (Text, Signature, Highlight …), never what you did
 with it. `File.Open` records that an open happened, its duration and whether it succeeded — not
@@ -58,6 +63,11 @@ processor count, and whether the install is per-user or machine-wide.
 stack traces are passed through `Diagnostics/Sanitizer.cs`, which scrubs file-system paths before
 transmission, because exception text routinely contains the path of the document being worked on.
 TDPdf deliberately exposes no way to report a raw, unscrubbed exception.
+
+**A session identifier.** Every report carries a random identifier generated fresh each time
+TDPdf starts. It is never written to disk and never reused, so it cannot link one run of the
+application to another, or to you. It exists so that a hundred crashes from one unlucky machine can
+be told apart from a hundred crashes across the whole fleet — those need very different responses.
 
 **Device name.** Reports carry the machine's name — for example `L-JSMITH` — because it is what
 makes a report actionable: it separates one machine with a fault from a fleet-wide regression.
@@ -73,7 +83,8 @@ is the one to weigh if you are deciding whether to enable reporting.
 - Text you type into a PDF, form field values, or search terms.
 - Your username, email address, or any account identifier.
 - A persistent user or device identifier. TDPdf explicitly does not set the reporting SDK's user
-  or device ID fields, so there is no cross-session fingerprint beyond the machine name above.
+  or device ID fields. The session identifier above is regenerated on every launch and never
+  stored, so there is no cross-session fingerprint beyond the machine name.
 
 ## What is stored on your machine
 
