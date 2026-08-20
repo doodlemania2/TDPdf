@@ -341,15 +341,58 @@ opt a device into anonymous Application Insights telemetry. With neither
 in play, TDPdf is a no-op: the SDK is initialized with an empty
 configuration and no network calls are made.
 
-| Method | Who provisions | When the key lives in the package |
+| Method | Who provisions | Rotatable without a release? |
 |---|---|---|
-| **Build-time-embedded key** (recommended for managed fleets) | The release engineer, once, when running `release.ps1` | Compiled into `TDPdf.exe` itself; never in a separate file on the device |
-| **Per-device file-based provisioning** | An admin on the device via `TDPdf.exe /set-telemetry` | Only on devices where someone explicitly ran the command |
+| **Managed policy key** (recommended for managed fleets) | An Intune Remediation — see [Telemetry policy profile](#telemetry-policy-profile) | **Yes** |
+| **Build-time-embedded key** (**deprecated**) | The release engineer, at release time | No — rotation requires building, signing and shipping a new EXE to every device |
+| **Per-device file-based provisioning** | An admin on the device via `TDPdf.exe /set-telemetry` | Per device, by hand |
+
+> The embedded key is deprecated precisely because of that middle column. It is the reason the
+> Application Insights key was never rotated in practice: rotation cost a full release. It stays
+> only as a fallback for devices the policy profile has not reached, and should be removed once
+> the profile has rolled out.
+
+Since **v1.22.2.0** a **user consent setting** also applies (Settings → Privacy, on by default).
+Reporting requires *both* consent and a configured destination, so a build with no destination
+sends nothing whatever the setting says. See [`PRIVACY.md`](../PRIVACY.md).
 
 Either method ends up at the same on-device state: a hardened
 `%ProgramData%\TDPdf\telemetry.dat` containing a DPAPI-LocalMachine-
 encrypted copy of the connection string. The only difference is **how
 that file gets there**.
+
+### Telemetry policy profile
+
+The destination lives in `HKLM\SOFTWARE\Policies\TDPdf\Telemetry`:
+
+| Value | Contents |
+|---|---|
+| `OtlpEndpoint` | Base URL of the OTLP collector, e.g. `https://otlp-tdpdf.thedoodleproject.net` |
+| `OtlpToken` | Bearer token for that collector. **TDPdf-scoped** — not the shared cluster token |
+| `ConnectionString` | Application Insights connection string, while dual-export is running |
+
+Deploy it as an **Intune Remediation** (Devices → Remediations), pairing:
+
+- **Detection**: `build/intune/Detect-TDPdfTelemetryPolicy.ps1`
+- **Remediation**: `build/intune/Set-TDPdfTelemetryPolicy.ps1`
+
+Run as **SYSTEM**, 64-bit PowerShell, on the same group the TDPdf app targets.
+
+Both scripts ship with `__PLACEHOLDER__` values. **Replace them at upload time — never commit
+real values.** Detection compares against the *expected* token rather than merely checking the key
+exists, so rotating is: edit both scripts, re-upload, and every device picks the new value up on
+its next remediation cycle. A presence-only check would strand the fleet on the old token forever,
+which is the failure this design exists to prevent.
+
+`SOFTWARE\Policies\` is deliberate. Besides being the Windows convention for administrator-pushed
+settings, `App.Uninstall` runs `DeleteSubKeyTree("Software\TDPdf")` against both hives — so the
+obvious location would have an uninstall silently destroy your configuration.
+
+**On the ACL.** The remediation script restricts writes to SYSTEM and Administrators, leaving
+authenticated users read-only. TDPdf runs in the user's context and must read the token, so any
+signed-in user can read it; that is inherent, and the ACL buys integrity rather than secrecy — a
+standard user cannot redirect the fleet's telemetry elsewhere. The token is scoped to TDPdf alone,
+so a leak is rotated here without touching any other application on the collector.
 
 ### What gets sent (when enabled)
 

@@ -61,11 +61,23 @@ namespace TDPdf.Diagnostics
         /// </remarks>
         internal const string RegistryPath = @"SOFTWARE\Policies\TDPdf\Telemetry";
 
-        /// <summary>Value name under <see cref="RegistryPath"/>.</summary>
+        /// <summary>Value name under <see cref="RegistryPath"/> for the Application Insights destination.</summary>
         internal const string RegistryValueName = "ConnectionString";
+
+        /// <summary>Value name under <see cref="RegistryPath"/> for the OTLP collector base URL.</summary>
+        internal const string RegistryOtlpEndpointValueName = "OtlpEndpoint";
+
+        /// <summary>Value name under <see cref="RegistryPath"/> for the OTLP bearer token.</summary>
+        internal const string RegistryOtlpTokenValueName = "OtlpToken";
 
         /// <summary>Environment-variable override, for developers and self-hosters.</summary>
         internal const string EnvironmentVariableName = "TDPDF_TELEMETRY_CONNECTION";
+
+        /// <summary>Environment-variable override for the OTLP collector base URL.</summary>
+        internal const string OtlpEndpointEnvironmentVariableName = "TDPDF_OTLP_ENDPOINT";
+
+        /// <summary>Environment-variable override for the OTLP bearer token.</summary>
+        internal const string OtlpTokenEnvironmentVariableName = "TDPDF_OTLP_TOKEN";
 
         /// <summary>Where the live destination came from. For the Settings dialog and support.</summary>
         internal enum Source
@@ -106,7 +118,7 @@ namespace TDPdf.Diagnostics
             }
             catch { /* environment access can throw under restricted hosts */ }
 
-            string? fromRegistry = TryReadRegistry();
+            string? fromRegistry = TryReadRegistryValue(RegistryValueName);
             if (!string.IsNullOrWhiteSpace(fromRegistry))
             {
                 source = Source.Registry;
@@ -137,14 +149,56 @@ namespace TDPdf.Diagnostics
             return null;
         }
 
+        /// <summary>
+        /// The OTLP collector for this device, or <c>null</c> when none is configured.
+        /// </summary>
+        /// <remarks>
+        /// Resolved independently of the Application Insights destination, and deliberately so:
+        /// this is a dual-export migration, and either destination may be present without the
+        /// other. During the migration both are configured; afterwards, retiring Application
+        /// Insights is a matter of clearing one registry value rather than shipping a build.
+        /// <para>
+        /// The endpoint and the token are returned together or not at all — an endpoint with no
+        /// token would produce a stream of 401s from every laptop in the fleet, which is worse
+        /// than staying quiet.
+        /// </para>
+        /// </remarks>
+        public static (string Endpoint, string Token)? TryResolveOtlp()
+        {
+            // Same device-level opt-out that outranks the Application Insights destination.
+            if (TelemetryStore.IsDisabled()) return null;
+
+            string? endpoint = null;
+            string? token = null;
+
+            try
+            {
+                endpoint = Environment.GetEnvironmentVariable(OtlpEndpointEnvironmentVariableName);
+                token = Environment.GetEnvironmentVariable(OtlpTokenEnvironmentVariableName);
+            }
+            catch { /* environment access can throw under restricted hosts */ }
+
+            if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(token))
+            {
+                endpoint = TryReadRegistryValue(RegistryOtlpEndpointValueName);
+                token = TryReadRegistryValue(RegistryOtlpTokenValueName);
+            }
+
+            if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(token))
+                return null;
+
+            return (endpoint.Trim().TrimEnd('/'), token.Trim());
+        }
+
         /// <summary>True when this build has somewhere to send telemetry at all.</summary>
-        public static bool HasDestination() => TryResolveConnectionString() is not null;
+        public static bool HasDestination() =>
+            TryResolveConnectionString() is not null || TryResolveOtlp() is not null;
 
         /// <summary>
         /// Reads the managed destination. Returns <c>null</c> when the key is absent, which is the
         /// normal case for a public build and for a machine whose profile has not arrived yet.
         /// </summary>
-        private static string? TryReadRegistry()
+        private static string? TryReadRegistryValue(string valueName)
         {
             try
             {
@@ -155,7 +209,7 @@ namespace TDPdf.Diagnostics
                 using var key = hklm.OpenSubKey(RegistryPath, writable: false);
                 if (key is null) return null;
 
-                return key.GetValue(RegistryValueName) as string is { } value && !string.IsNullOrWhiteSpace(value)
+                return key.GetValue(valueName) as string is { } value && !string.IsNullOrWhiteSpace(value)
                     ? value.Trim()
                     : null;
             }
