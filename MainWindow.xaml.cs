@@ -2107,9 +2107,14 @@ namespace TDPdf
                 // Defer additional pages until layout has settled so ActualWidth is valid.
                 // RenderPageLinks runs AFTER RenderAdditionalPages so ClearSecondaryPages
                 // inside RenderAdditionalPages doesn't wipe the overlays we just added.
+                // #115: Background, NOT Loaded. All three of these mutate AnnotationCanvas.Children,
+                // and Loaded outranks Render, so the continuation can be dispatched while the layout
+                // pass it is meant to follow is still in flight — which is what was tearing the
+                // canvas out from under Canvas.MeasureOverride. Background runs strictly after
+                // layout completes, which is all "settled" ever meant here.
                 int linkBitmapW = renderedPage.PixelWidth;
                 int linkBitmapH = renderedPage.PixelHeight;
-                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
                 {
                     RenderAdditionalPages(pageIndex);
                     RenderPageLinks(pageIndex, linkBitmapW, linkBitmapH);
@@ -3325,6 +3330,16 @@ namespace TDPdf
         /// </summary>
         private void PagePreviewPanel_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
+            // #115: ScrollChanged BUBBLES. Every nested ScrollViewer under the preview panel raises
+            // it here — multi-line form-field TextBoxes (VerticalScrollBarVisibility=Auto) and
+            // ComboBoxes that RenderFormFields parents into AnnotationCanvas, the signature popup's
+            // own scroller, the sidebar. Those fire during their layout, and the Continuous branch
+            // below assigns PageList.SelectedIndex, whose handler removes selection chrome from
+            // AnnotationCanvas — a synchronous child mutation inside a measure pass. It also meant
+            // scrolling a form field could move the current page. Only the panel's own scrolling
+            // counts.
+            if (!ReferenceEquals(e.OriginalSource, PagePreviewPanel)) return;
+
             // Grid view (upstream v1.6.4): follow the tile nearest the viewport center so the
             // statusbar page counter tracks scrolling instead of pointing at the last-clicked page.
             // We update only the counter, NOT PageList.SelectedIndex — in Grid a selection change
