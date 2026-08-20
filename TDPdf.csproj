@@ -53,6 +53,13 @@
          GeneratePathProperty path used by the EmbeddedResource entries below. -->
     <PackageReference Include="Tesseract" Version="5.2.0" GeneratePathProperty="true" ExcludeAssets="build;buildTransitive;native;contentFiles" />
     <PackageReference Include="Microsoft.ApplicationInsights" Version="2.22.0" />
+    <!-- OTLP export alongside Application Insights (dual-export migration to the self-hosted
+         SigNoz collector). Deliberately the plain OpenTelemetry SDK rather than the Azure Monitor
+         distro: the classic ApplicationInsights SDK above stays as-is, and these two pipelines
+         are kept independent so retiring either one is a config change, not a rewrite. -->
+    <PackageReference Include="OpenTelemetry" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="9.0.0" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
     <PackageReference Include="System.Text.Json" Version="8.0.5" />

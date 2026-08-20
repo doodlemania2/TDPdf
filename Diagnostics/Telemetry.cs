@@ -66,12 +66,24 @@ namespace TDPdf.Diagnostics
                     catch { /* unreadable user.config — fall back to the default */ }
                     if (!consented) return;
 
+                    // OTLP first, and independently: the two destinations are resolved
+                    // separately, so a device configured for only one still reports to it. During
+                    // the migration both are live; afterwards, retiring either is a config change.
+                    s_appVersion = appVersion ?? string.Empty;
+                    OtlpTelemetry.Initialize(s_appVersion, ResolveEnvironment());
+
                     // Destination: absent in every build that has not been explicitly pointed
                     // somewhere, which is what lets this source ship publicly without phoning
                     // home. Also honours the /clear-telemetry device opt-out internally.
                     string? connectionString = TelemetryConfig.TryResolveConnectionString();
                     if (string.IsNullOrWhiteSpace(connectionString))
+                    {
+                        // No Application Insights destination, but OTLP may still be live — in
+                        // which case this is enabled, not disabled. Getting this wrong would make
+                        // every Track* call below a no-op on an OTLP-only device.
+                        IsEnabled = OtlpTelemetry.IsEnabled;
                         return;
+                    }
 
                     var config = TelemetryConfiguration.CreateDefault();
                     config.ConnectionString = connectionString;
@@ -120,11 +132,13 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static void TrackEvent(string name, IDictionary<string, string>? properties = null)
         {
-            if (!IsEnabled || s_client is null) return;
+            if (!IsEnabled) return;
+            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
                 IDictionary<string, string>? scrubbed = ScrubProperties(properties);
-                s_client.TrackEvent(name, scrubbed);
+                s_client?.TrackEvent(name, scrubbed);
+                OtlpTelemetry.TrackEvent(name, scrubbed);
             }
             catch { /* swallow — telemetry must never throw */ }
         }
@@ -135,7 +149,8 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static void TrackMetric(string name, double value, IDictionary<string, string>? properties = null)
         {
-            if (!IsEnabled || s_client is null) return;
+            if (!IsEnabled) return;
+            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
                 var mt = new MetricTelemetry(name, value);
@@ -143,7 +158,7 @@ namespace TDPdf.Diagnostics
                 if (scrubbed is not null)
                     foreach (var kv in scrubbed)
                         mt.Properties[kv.Key] = kv.Value;
-                s_client.TrackMetric(mt);
+                s_client?.TrackMetric(mt);
             }
             catch { /* swallow */ }
         }
@@ -156,7 +171,8 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static void TrackTrace(string message, SeverityLevel severity = SeverityLevel.Information, IDictionary<string, string>? properties = null)
         {
-            if (!IsEnabled || s_client is null) return;
+            if (!IsEnabled) return;
+            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
                 var tt = new TraceTelemetry(Sanitizer.Scrub(message), severity);
@@ -164,7 +180,7 @@ namespace TDPdf.Diagnostics
                 if (scrubbed is not null)
                     foreach (var kv in scrubbed)
                         tt.Properties[kv.Key] = kv.Value;
-                s_client.TrackTrace(tt);
+                s_client?.TrackTrace(tt);
             }
             catch { /* swallow */ }
         }
@@ -176,7 +192,8 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static void TrackOperation(string name, double durationMs, bool success, IDictionary<string, string>? properties = null)
         {
-            if (!IsEnabled || s_client is null) return;
+            if (!IsEnabled) return;
+            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
                 var props = new Dictionary<string, string>
@@ -190,7 +207,10 @@ namespace TDPdf.Diagnostics
                         props[kv.Key] = kv.Value;
 
                 var metrics = new Dictionary<string, double> { ["DurationMs"] = durationMs };
-                s_client.TrackEvent("Op." + name, props, metrics);
+                s_client?.TrackEvent("Op." + name, props, metrics);
+                // As a span, not an event: SigNoz computes latency percentiles from spans, so the
+                // p95-duration alert needs this shape rather than a pre-aggregated number.
+                OtlpTelemetry.TrackOperation("Op." + name, durationMs, success, props);
             }
             catch { /* swallow */ }
         }
@@ -252,7 +272,8 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static void TrackCrash(Exception exception, string source, bool recoverable)
         {
-            if (!IsEnabled || s_client is null) return;
+            if (!IsEnabled) return;
+            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
                 var props = new Dictionary<string, string>
@@ -265,7 +286,13 @@ namespace TDPdf.Diagnostics
                     ["GroupingKey"]   = Sanitizer.GroupingKey(exception),
                     ["AppVersion"]    = s_appVersion,
                 };
-                s_client.TrackEvent("Crash", props);
+                s_client?.TrackEvent("Crash", props);
+                // Pass the ALREADY-SCRUBBED strings, never the exception. OpenTelemetry's exception
+                // helpers serialise Message and StackTrace verbatim, and TDPdf's exception text
+                // routinely carries the path of the document being worked on.
+                OtlpTelemetry.TrackCrash(
+                    props["ExceptionType"], props["Message"], props["StackTrace"],
+                    source, recoverable, props["GroupingKey"]);
             }
             catch { /* swallow */ }
         }
@@ -277,7 +304,11 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static void Flush()
         {
-            if (!IsEnabled || s_client is null) return;
+            if (!IsEnabled) return;
+            // Spans force-flush here; buffered LOG records are drained by OtlpTelemetry.Shutdown's
+            // dispose, so the exit path must be Flush() then Shutdown() or crash records are lost.
+            OtlpTelemetry.Flush();
+            if (s_client is null) return;
             try
             {
                 s_client.Flush();
@@ -303,6 +334,7 @@ namespace TDPdf.Diagnostics
         /// </remarks>
         public static void Shutdown()
         {
+            OtlpTelemetry.Shutdown();
             lock (s_lock)
             {
                 IsEnabled = false;
@@ -314,6 +346,28 @@ namespace TDPdf.Diagnostics
                     s_config = null;
                 }
             }
+        }
+
+        /// <summary>
+        /// The deployment.environment resource attribute. A desktop application has no staging
+        /// tier, so this distinguishes a real install from a developer's machine rather than a
+        /// deployment ring: an unconfigured build reports "development", which also keeps a
+        /// contributor's local runs out of the production stream if they point one at a collector.
+        /// </summary>
+        private static string ResolveEnvironment()
+        {
+            try
+            {
+                string? explicitEnv = Environment.GetEnvironmentVariable("TDPDF_DEPLOYMENT_ENVIRONMENT");
+                if (!string.IsNullOrWhiteSpace(explicitEnv)) return explicitEnv.Trim();
+            }
+            catch { /* restricted host */ }
+
+#if DEBUG
+            return "development";
+#else
+            return "production";
+#endif
         }
 
         private static IDictionary<string, string>? ScrubProperties(IDictionary<string, string>? properties)
