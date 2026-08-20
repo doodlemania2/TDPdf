@@ -5,16 +5,18 @@ using System.Windows.Controls;
 namespace TDPdf.Controls
 {
     /// <summary>
-    /// A <see cref="WrapPanel"/> resilient to the layout race described on
-    /// <see cref="LayoutRace"/>. On a <see cref="WrapPanel"/> the race surfaces as
-    /// <see cref="ArgumentOutOfRangeException"/> out of <c>VisualCollection.get_Item</c>
-    /// (observed signature: <c>index ('2') must be less than '1'</c>), because the panel
-    /// indexes its children rather than enumerating them.
+    /// A <see cref="Canvas"/> resilient to the layout race described on
+    /// <see cref="LayoutRace"/>. On a <see cref="Canvas"/> the race surfaces as
+    /// <see cref="InvalidOperationException"/> out of
+    /// <c>VisualCollection.Enumerator.MoveNext</c>, because <c>Canvas.MeasureOverride</c>
+    /// enumerates its children rather than indexing them.
     ///
-    /// This is the page-grid panel (<c>PageContentPanel</c>) whose secondary pages are
-    /// added and removed from async Dispatcher continuations.
+    /// This is the annotation overlay (<c>AnnotationCanvas</c>), whose children are churned
+    /// by annotation re-renders, selection chrome, link and form-field overlays, and inline
+    /// text edit boxes — several of those from Dispatcher continuations. Placing a signature
+    /// or a text box was killing the process outright (#115).
     /// </summary>
-    public sealed class SafeWrapPanel : WrapPanel
+    public sealed class SafeCanvas : Canvas
     {
         private Size _lastMeasure;
 
