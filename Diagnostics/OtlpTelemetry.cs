@@ -64,6 +64,8 @@ namespace TDPdf.Diagnostics
 
                     var (endpoint, token) = otlp.Value;
 
+                    EnableDiskRetry();
+
                     var resource = ResourceBuilder.CreateDefault()
                         .AddService(serviceName: ServiceName, serviceVersion: appVersion)
                         .AddAttributes(new Dictionary<string, object>
@@ -118,6 +120,55 @@ namespace TDPdf.Diagnostics
                 // Never let telemetry setup break startup.
                 IsEnabled = false;
                 Shutdown();
+            }
+        }
+
+        /// <summary>
+        /// Turns on the exporter's on-disk retry queue, so telemetry raised while the collector is
+        /// unreachable is persisted and sent when connectivity returns instead of being dropped.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This matters far more here than it would for a server. TDPdf runs on laptops: offline,
+        /// captive-portal wifi and VPN-off are the normal state, not an incident. Without this,
+        /// every event raised away from the network is lost silently, and the fleet's telemetry
+        /// quietly under-reports exactly the users who are travelling.
+        /// </para>
+        /// <para>
+        /// The queue is a directory of serialised OTLP batches. Setting the path is what enables
+        /// the feature — the exporter derives EnableDiskRetry from its presence — and the storage
+        /// engine ships inside the exporter package, so no extra dependency is involved. The
+        /// variable is read when the providers are built, which is why this runs first.
+        /// </para>
+        /// <para>
+        /// <b>This reverses the "no on-disk buffering" choice</b> that <see cref="TelemetryStore"/>
+        /// records for the Application Insights channel, and the reversal is deliberate: everything
+        /// written here has already been through <see cref="Sanitizer"/>, so the queue holds event
+        /// names and scrubbed text rather than document paths. It lives under the user's own
+        /// LocalApplicationData, is disclosed in PRIVACY.md, and is deleted along with the rest of
+        /// that folder. What it buys is that a crash report raised on a plane still arrives.
+        /// </para>
+        /// <para>
+        /// Note the limit: this retries batches whose <em>send</em> failed. A batch still sitting in
+        /// the in-memory processor when the process is killed is not covered — closing that gap for
+        /// crash records specifically is what the on-disk crash log replay is for.
+        /// </para>
+        /// </remarks>
+        private static void EnableDiskRetry()
+        {
+            try
+            {
+                string dir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "TDPdf", "telemetry-spool");
+                System.IO.Directory.CreateDirectory(dir);
+                Environment.SetEnvironmentVariable(
+                    "OTEL_DOTNET_EXPERIMENTAL_OTLP_DISK_RETRY_DIRECTORY_PATH", dir);
+            }
+            catch
+            {
+                // A read-only or redirected profile just means no queue — export still works while
+                // the collector is reachable, which is strictly better than failing to start.
             }
         }
 

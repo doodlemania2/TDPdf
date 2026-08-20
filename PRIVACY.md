@@ -75,6 +75,21 @@ is the one to weigh if you are deciding whether to enable reporting.
 - A persistent user or device identifier. TDPdf explicitly does not set the reporting SDK's user
   or device ID fields, so there is no cross-session fingerprint beyond the machine name above.
 
+## What is stored on your machine
+
+TDPdf keeps two small local queues so a report raised without a network connection is not simply
+lost. Both hold **only** the sanitised data described above — never document contents, names or
+paths — and both live under your own user profile:
+
+| Location | Contents | Lifetime |
+|---|---|---|
+| `%LOCALAPPDATA%\TDPdf\telemetry-spool` | Batches whose upload failed | Deleted once sent |
+| `%LOCALAPPDATA%\TDPdf\pending-crashes` | Crash records the app died before it could send | Deleted on replay; dropped unsent after 14 days, capped at 50 |
+
+The second exists because a crash that kills the process takes its in-memory report with it. Both
+are safe to delete by hand at any time; deleting them loses unsent reports and nothing else. With
+reporting turned off, nothing new is written to either.
+
 ## Where it goes
 
 To whichever collector the destination points at. In the deployment this repository is maintained

@@ -114,6 +114,9 @@ namespace TDPdf.Diagnostics
 
                     IsEnabled = true;
                 }
+
+                // Outside the lock: replay is I/O and emits through the very methods that take it.
+                ReplaySpooledCrashes();
             }
             catch
             {
@@ -287,6 +290,21 @@ namespace TDPdf.Diagnostics
                     ["AppVersion"]    = s_appVersion,
                 };
                 s_client?.TrackEvent("Crash", props);
+
+                // Queue the same already-scrubbed record on disk. Both pipelines above buffer in
+                // memory, so a crash that kills the process takes its own report with it — which is
+                // exactly what happened on 2026-08-20. Replay at the next launch closes that.
+                CrashSpool.Write(new CrashSpool.Record
+                {
+                    ExceptionType = props["ExceptionType"],
+                    Message = props["Message"],
+                    StackTrace = props["StackTrace"],
+                    Source = source,
+                    Recoverable = recoverable,
+                    GroupingKey = props["GroupingKey"],
+                    AppVersion = s_appVersion,
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                });
                 // Pass the ALREADY-SCRUBBED strings, never the exception. OpenTelemetry's exception
                 // helpers serialise Message and StackTrace verbatim, and TDPdf's exception text
                 // routinely carries the path of the document being worked on.
@@ -346,6 +364,40 @@ namespace TDPdf.Diagnostics
                     s_config = null;
                 }
             }
+        }
+
+        /// <summary>
+        /// Sends crash records that were queued by a previous run that died before it could report
+        /// them. Marked <c>Replayed</c> so they are distinguishable from live crashes — their
+        /// arrival time is this launch, not the crash, and an alert counting crashes per session
+        /// would otherwise attribute an old crash to a healthy session.
+        /// </summary>
+        private static void ReplaySpooledCrashes()
+        {
+            CrashSpool.Replay(record =>
+            {
+                try
+                {
+                    var props = new Dictionary<string, string>
+                    {
+                        ["Source"]        = record.Source,
+                        ["Recoverable"]   = record.Recoverable ? "true" : "false",
+                        ["ExceptionType"] = record.ExceptionType,
+                        ["Message"]       = record.Message,
+                        ["StackTrace"]    = record.StackTrace,
+                        ["GroupingKey"]   = record.GroupingKey,
+                        ["AppVersion"]    = record.AppVersion,
+                        ["Replayed"]      = "true",
+                        ["CrashTimeUtc"]  = record.TimestampUtc.ToString("o"),
+                    };
+                    // Straight to the sinks, never back through TrackCrash — that would re-spool a
+                    // record we are in the middle of draining and replay it forever.
+                    s_client?.TrackEvent("Crash", props);
+                    OtlpTelemetry.TrackCrash(record.ExceptionType, record.Message,
+                        record.StackTrace, record.Source, record.Recoverable, record.GroupingKey);
+                }
+                catch { /* swallow */ }
+            });
         }
 
         /// <summary>
