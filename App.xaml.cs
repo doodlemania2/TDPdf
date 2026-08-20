@@ -540,9 +540,14 @@ namespace TDPdf
 
         protected override void OnExit(ExitEventArgs e)
         {
-            // Bounded best-effort telemetry flush. Capped at ~2s inside
-            // Telemetry.Flush so shutdown can never hang on the network.
+            // Order matters. TrackSessionEnd marks this run as having finished under its own
+            // power — a session with an App.Startup and no App.SessionEnd did not, which is what
+            // makes crash-free session rate measurable. Then Flush, then Shutdown: buffered OTLP
+            // LOG records are drained by Shutdown's dispose, not by Flush, so exiting after Flush
+            // alone would discard the very event just recorded.
+            Telemetry.TrackSessionEnd();
             Telemetry.Flush();
+            Telemetry.Shutdown();
             ThemeManager.Cleanup();
             try { _singleInstanceMutex?.Dispose(); } catch { }
             base.OnExit(e);
