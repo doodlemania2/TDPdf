@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.0.0] - 2026-08-20
+
+Telemetry becomes something you can see, control and switch off — and starts reporting to the parish's own self-hosted collector alongside Application Insights. Groundwork for open-sourcing this repository.
+
+### Added
+
+- **A telemetry setting, on by default, in Settings → Privacy.** Reporting now needs *two* things: your consent, and a configured destination. Either alone sends nothing. That split is what makes the default honest rather than sneaky — a build compiled from a public checkout has no destination configured anywhere, so it reports to nobody whichever way the setting is set. The dialog says which of the two states your machine is actually in, rather than letting you believe you have switched off something that was never on. Turning it off takes effect immediately, flushing first so reports already recorded in good faith are not dropped by the act of opting out.
+- **[`PRIVACY.md`](PRIVACY.md)** — what is collected, what never is, where it is stored on your machine, and how to turn it off. Enumerated from the code rather than written as boilerplate, including the two fields a careful reader would ask about: reports carry the **machine name**, and a **session identifier** that is regenerated every launch and never written to disk.
+- **Export to the self-hosted OTLP collector**, running alongside Application Insights. Neither destination knows about the other and each is resolved independently, so retiring either one later is a configuration change rather than a rewrite. Completed operations are exported as spans, so latency percentiles are computed from real data instead of pre-aggregated numbers.
+- **Telemetry survives being offline.** Two mechanisms, because "telemetry is down" hides two different failures. Reports whose upload fails are queued on disk and sent when connectivity returns — this matters far more on laptops, where offline and captive-portal wifi are the normal state rather than an incident. And crash reports are written to disk *as they are raised*, then replayed at the next launch: a crash that kills the process takes its own in-memory report with it, which is exactly why some of the crashes fixed in 1.22.1.0 left no trace at all.
+- **New signals** — a per-launch session identifier, a 15-minute heartbeat, and a clean-shutdown marker. These exist so crash counts can be *normalised*: the events TDPdf already sent could say a crash happened, but not how often out of how many attempts, so there was no way to tell one user having a terrible afternoon from a regression hitting everyone.
+
+### Changed
+
+- **The telemetry destination is now delivered as managed policy** rather than compiled into the executable. Rotating the key becomes a policy push instead of building, signing and shipping a new binary to every device — which is the reason the previous key was never rotated in practice. The embedded key remains as a deprecated fallback so machines that have not received the policy keep reporting, and will be removed once it has rolled out.
+- **The README's privacy section, which had become false.** It said released binaries ship with no telemetry endpoint embedded; that stopped being true when the key was embedded for 1.22.1.0. It now states plainly that a build you compile yourself reports to nobody, while a maintainer-released managed binary does report unless you turn it off.
+
+### Removed
+
+- `Telemetry.TrackMetric` and `Telemetry.TrackTrace`, which had no callers. Nothing was being lost — unlike the superficially similar defect found in a sibling project, where values *were* being recorded and silently discarded — but they advertised a capability the application does not have.
+
+### Notes
+
+- **Nothing is removed from the Azure side.** Application Insights keeps every alert rule and query it has; this adds a second destination rather than replacing the first.
+- **The OTLP path is inert until an administrator configures it.** With no policy key present the exporter never starts, and behaviour is identical to 1.22.1.0.
+
 ## [1.22.1.0] - 2026-08-20
 
 A fixes-only release. The headline is a crash that made **Insert Signature and Insert Text Box look broken**: placing either one could take the whole application down, so the annotation never appeared and the user was left thinking the tool did nothing. Alongside it, the applicable fixes from upstream KillerPDF's in-progress **v1.7.4**. (v1.7.2 and v1.7.3 landed in 1.21.0.0.)
@@ -705,7 +731,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.22.1.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...HEAD
+[1.23.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.1.0...v1.23.0.0
 [1.22.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.0.0...v1.22.1.0
 [1.22.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.21.0.0...v1.22.0.0
 [1.21.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.20.0.0...v1.21.0.0
