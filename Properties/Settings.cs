@@ -120,6 +120,21 @@ namespace TDPdf.Properties
             set => this[nameof(DontRememberRecentFiles)] = value;
         }
 
+        // Consent for usage and crash reporting (default ON). This is the CONSENT half only —
+        // TelemetryConfig supplies the destination, and both are required before anything is sent.
+        // Default True is honest rather than aggressive precisely because of that split: a build
+        // with no destination configured (which is every build outside the managed deployment,
+        // including anything compiled from a public checkout) sends nothing no matter what this
+        // says. Turning it off is a per-user opt-out; `TDPdf.exe /clear-telemetry` remains the
+        // device-wide one and outranks this.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool TelemetryEnabled
+        {
+            get => (bool)this[nameof(TelemetryEnabled)];
+            set => this[nameof(TelemetryEnabled)] = value;
+        }
+
         // --- Print dialog: remember the last device-level choices across sessions. ---
 
         // Full name of the last-used print queue; empty falls back to the OS default printer.

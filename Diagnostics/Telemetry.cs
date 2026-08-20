@@ -16,9 +16,11 @@ namespace TDPdf.Diagnostics
     /// administrator has provisioned <see cref="TelemetryStore"/>.
     ///
     /// Guarantees:
-    ///   * Absence of the provisioning file ⇒ <see cref="IsEnabled"/>
-    ///     stays <c>false</c> and every method returns immediately
-    ///     without touching the network.
+    ///   * No configured destination (see <see cref="TelemetryConfig"/>)
+    ///     OR consent withdrawn ⇒ <see cref="IsEnabled"/> stays
+    ///     <c>false</c> and every method returns immediately without
+    ///     touching the network. A build that has never been pointed at
+    ///     a collector cannot report anywhere, whatever the setting says.
     ///   * Every public method swallows its own exceptions. Telemetry
     ///     can never crash, block, or slow the app.
     ///   * No <c>TrackException(Exception)</c> overload is exposed,
@@ -53,7 +55,21 @@ namespace TDPdf.Diagnostics
                 {
                     if (IsEnabled) return;
 
-                    string? connectionString = TelemetryStore.TryLoad();
+                    // Two independent gates, both required.
+                    //
+                    // Consent: a per-user opt-out from the Settings dialog. Read defensively —
+                    // a corrupt user.config must not be the reason crash reporting silently
+                    // stops, so a throw here is treated as "consented" (the default) rather
+                    // than swallowing the whole Initialize.
+                    bool consented = true;
+                    try { consented = TDPdf.Properties.Settings.Default.TelemetryEnabled; }
+                    catch { /* unreadable user.config — fall back to the default */ }
+                    if (!consented) return;
+
+                    // Destination: absent in every build that has not been explicitly pointed
+                    // somewhere, which is what lets this source ship publicly without phoning
+                    // home. Also honours the /clear-telemetry device opt-out internally.
+                    string? connectionString = TelemetryConfig.TryResolveConnectionString();
                     if (string.IsNullOrWhiteSpace(connectionString))
                         return;
 
@@ -272,6 +288,32 @@ namespace TDPdf.Diagnostics
                 Task.Delay(2000).Wait();
             }
             catch { /* swallow */ }
+        }
+
+        /// <summary>
+        /// Stops this session reporting and releases the client. Used when a user withdraws
+        /// consent mid-session — the alternative, waiting for the next launch, would keep sending
+        /// after they had asked us to stop.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately does NOT flush: <see cref="Flush"/> is the caller's decision, because the
+        /// right behaviour differs. Withdrawing consent flushes first (events already recorded in
+        /// good faith are not silently dropped); a hard stop would not. Idempotent, and never
+        /// throws — the same contract as every other method here.
+        /// </remarks>
+        public static void Shutdown()
+        {
+            lock (s_lock)
+            {
+                IsEnabled = false;
+                try { s_config?.Dispose(); }
+                catch { /* swallow */ }
+                finally
+                {
+                    s_client = null;
+                    s_config = null;
+                }
+            }
         }
 
         private static IDictionary<string, string>? ScrubProperties(IDictionary<string, string>? properties)

@@ -1411,6 +1411,35 @@ namespace TDPdf
             confirmLinks.Unchecked += ConfirmOpenLinksSettingChanged;
             panel.Children.Add(confirmLinks);
 
+            // Consent for usage and crash reporting. Sits with the other privacy switches rather
+            // than in About, matching where every user preference already lives.
+            var telemetry = new CheckBox
+            {
+                Content = "Send anonymous usage and crash reports",
+                IsChecked = TDPdf.Properties.Settings.Default.TelemetryEnabled,
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Event names, tool names, app and Windows version, and sanitised crash reports. "
+                        + "Never document contents, file names or file paths. See PRIVACY.md.",
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            telemetry.Checked += TelemetrySettingChanged;
+            telemetry.Unchecked += TelemetrySettingChanged;
+            panel.Children.Add(telemetry);
+
+            // Tell the truth about what the checkbox is actually doing. With no destination
+            // configured the setting is inert whichever way it is set, and saying so is better
+            // than letting someone believe they have turned something off that was never on.
+            panel.Children.Add(new TextBlock
+            {
+                Text = TelemetryConfig.HasDestination()
+                    ? "Reporting to your organisation's collector."
+                    : "No reporting destination is configured on this device, so nothing is sent.",
+                Foreground = BrushResource("TextSecondary"),
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 11,
+                Margin = new Thickness(22, 0, 0, 12)
+            });
+
             var note = new TextBlock
             {
                 Text = "Tab changes take effect after restarting TDPdf. Native frame changes are applied after restarting TDPdf. Themes update immediately.",
@@ -1448,6 +1477,39 @@ namespace TDPdf
             TdpDialog.Show(this,
                 "Restart required for the single-window tabs setting to take effect.",
                 "TDPdf", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        /// <summary>
+        /// Per-user consent for usage and crash reporting. Takes effect on the next launch:
+        /// Telemetry.Initialize runs once at startup and builds the client there, so flipping this
+        /// mid-session cannot retroactively un-send what has already gone. Turning it OFF stops the
+        /// live client immediately as well, so the rest of this session is silent either way.
+        /// Preference only — never touches _isDirty.
+        /// </summary>
+        private void TelemetrySettingChanged(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox cb) return;
+
+            bool requested = cb.IsChecked == true;
+            if (TDPdf.Properties.Settings.Default.TelemetryEnabled == requested) return;
+
+            TDPdf.Properties.Settings.Default.TelemetryEnabled = requested;
+            TDPdf.Properties.Settings.Default.Save();
+
+            if (!requested)
+            {
+                // Honour the withdrawal now rather than at next launch. Flush first so events
+                // already queued from this session are not silently discarded mid-flight.
+                Telemetry.Flush();
+                Telemetry.Shutdown();
+                SetStatus("Usage and crash reporting turned off.");
+            }
+            else
+            {
+                SetStatus(TelemetryConfig.HasDestination()
+                    ? "Usage and crash reporting will resume when TDPdf restarts."
+                    : "Usage reporting is on, but no destination is configured on this device.");
+            }
         }
 
         // #146 (upstream KillerPDF v1.6.5): "Don't remember recently opened files". Upstream parks
