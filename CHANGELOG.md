@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.24.0.0] - 2026-08-20
+
+Completes the telemetry migration begun in 1.23.0.0: reporting to Azure Application Insights stops, and the self-hosted OpenTelemetry collector becomes the only destination.
+
+### Changed
+
+- **Reporting to Application Insights is retired.** 1.23.0.0 sent to both destinations so the new path could be proven against real devices without a gap in coverage. With that done, the two sources that kept every machine reporting to Azure — the DPAPI provisioning file and the key compiled into the executable — are no longer consulted. No script has to visit each machine to remove anything; a device stops reporting to Azure the moment this build lands.
+
+### Notes
+
+- **The Azure resource, its data and its retention are untouched.** This changes what TDPdf sends, not what Azure holds. Historical telemetry remains queryable for as long as its retention allows.
+- **Reversible without a release.** The Application Insights code path is deliberately left in place rather than deleted, reachable by setting `ConnectionString` under `HKLM\SOFTWARE\Policies\TDPdf\Telemetry`. If the OpenTelemetry path turns out to have a problem on real hardware, restoring Azure reporting is a policy push. The remaining machinery — the embedded key, `/set-telemetry`, the embed step in the release pipeline — is left for a later cleanup once the new path has proven itself over weeks rather than hours. An unused code path is cheap; being blind is not.
+
 ## [1.23.0.0] - 2026-08-20
 
 Telemetry becomes something you can see, control and switch off — and starts reporting to the parish's own self-hosted collector alongside Application Insights. Groundwork for open-sourcing this repository.
@@ -731,7 +744,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.24.0.0...HEAD
+[1.24.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...v1.24.0.0
 [1.23.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.1.0...v1.23.0.0
 [1.22.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.0.0...v1.22.1.0
 [1.22.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.21.0.0...v1.22.0.0

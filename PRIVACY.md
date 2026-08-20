@@ -27,11 +27,10 @@ The default-on consent setting is not a way of enabling reporting by stealth. It
 because consent alone has nowhere to send anything. A destination is configured in exactly one of
 these ways, and none of them happens by accident:
 
-1. The `TDPDF_TELEMETRY_CONNECTION` environment variable — for developers, or for anyone
-   self-hosting who wants to point their own build at their own collector.
-2. A registry value at `HKLM\SOFTWARE\Policies\TDPdf\Telemetry\ConnectionString`, which an
-   organisation pushes to machines it manages.
-3. A provisioning file written by an administrator running `TDPdf.exe /set-telemetry`.
+1. Registry values at `HKLM\SOFTWARE\Policies\TDPdf\Telemetry` — `OtlpEndpoint` and
+   `OtlpToken` — which an organisation pushes to machines it manages.
+2. The `TDPDF_OTLP_ENDPOINT` and `TDPDF_OTLP_TOKEN` environment variables, for developers or for
+   anyone self-hosting who wants to point their own build at their own collector.
 
 If you are running a build you compiled yourself and have done none of the above, TDPdf has no
 destination and reports nothing. The Settings dialog tells you which of these two states you are

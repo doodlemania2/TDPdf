@@ -26,14 +26,11 @@ namespace TDPdf.Diagnostics
     ///   delivered by an Intune configuration profile. <b>This is the one that matters:</b> it
     ///   makes rotation a policy push instead of a signed release of the whole application, which
     ///   is the defect in the build-time-embedded key it replaces.</item>
-    ///   <item>The DPAPI provisioning file (<see cref="TelemetryStore"/>) — every machine already
-    ///   in the fleet is provisioned this way, so it stays until the Intune profile has rolled
-    ///   out everywhere.</item>
-    ///   <item>The build-time-embedded constant (<see cref="EmbeddedTelemetry"/>) — <b>deprecated.</b>
-    ///   Kept only so a machine that has neither of the above keeps reporting. Remove it once the
-    ///   registry profile is live on the fleet; it obfuscates a secret inside a binary that ships
-    ///   to end-user laptops, which is a speed bump rather than a control, and it cannot be
-    ///   rotated without a release.</item>
+    ///   <item><b>Retired 2026-08-20:</b> the DPAPI provisioning file and the build-time-embedded
+    ///   constant are no longer consulted for the Application Insights destination. Those were the
+    ///   two sources keeping the fleet reporting to Azure, so no longer reading them IS the
+    ///   cutover. Application Insights is now reachable only by explicitly setting one of the two
+    ///   sources above, which is also the rollback path.</item>
     /// </list>
     /// A device-level opt-out (<c>TDPdf.exe /clear-telemetry</c>, which writes
     /// <see cref="TelemetryStore.DisabledMarkerPath"/>) outranks every source above.
@@ -125,27 +122,22 @@ namespace TDPdf.Diagnostics
                 return fromRegistry;
             }
 
-            string? fromFile = TelemetryStore.TryLoad();
-            if (!string.IsNullOrWhiteSpace(fromFile))
-            {
-                source = Source.ProvisioningFile;
-                return fromFile;
-            }
-
-            try
-            {
-                if (EmbeddedTelemetry.HasKey)
-                {
-                    string? embedded = EmbeddedTelemetry.TryDecrypt();
-                    if (!string.IsNullOrWhiteSpace(embedded))
-                    {
-                        source = Source.EmbeddedKey;
-                        return embedded;
-                    }
-                }
-            }
-            catch { /* deprecated path — never let it break startup */ }
-
+            // RETIRED 2026-08-20: the DPAPI provisioning file and the build-time-embedded key are
+            // no longer consulted. Those two are what kept every machine in the fleet reporting to
+            // Application Insights, so ignoring them is what actually performs the cutover — the
+            // fleet goes quiet on Azure at the moment this build lands, without needing a script
+            // to visit 30 machines and delete a file.
+            //
+            // The code path above is deliberately LEFT INTACT rather than deleted. Application
+            // Insights is now opt-in through the two explicit sources only, so restoring it is
+            // setting one policy value:
+            //
+            //   HKLM\SOFTWARE\Policies\TDPdf\Telemetry\ConnectionString
+            //
+            // That is the rollback if the OTLP path turns out to have a problem on real devices —
+            // a policy push, not a release. Delete the rest of this machinery (EmbeddedTelemetry,
+            // /set-telemetry, the embed step in release.yml) once OTLP has proven itself over a
+            // few weeks, not before: an unused code path is cheap, and being blind is not.
             return null;
         }
 
