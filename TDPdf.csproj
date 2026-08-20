@@ -12,9 +12,9 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\tdpdf-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.22.0.0</Version>
-    <AssemblyVersion>1.22.0.0</AssemblyVersion>
-    <FileVersion>1.22.0.0</FileVersion>
+    <Version>1.22.1.0</Version>
+    <AssemblyVersion>1.22.1.0</AssemblyVersion>
+    <FileVersion>1.22.1.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- The vendored PdfSharpCore (netstandard2.0, AnyCPU) is referenced by this x64 app. By default
          the SDK unsets the parent's Configuration/Platform when building the ProjectReference, so the

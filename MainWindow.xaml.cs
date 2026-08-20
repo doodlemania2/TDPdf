@@ -271,6 +271,8 @@ namespace TDPdf
 
         // Manual element refs (XAML codegen doesn't resolve these)
         private Canvas _annotationCanvas = null!;
+        /// <summary>False until Loaded has run; guards paths reachable from the single-instance pipe thread.</summary>
+        private bool _uiReady;
         private Grid _pageContentGrid = null!;
         private Button _toolSelectBtn = null!;
         private Button _toolTextBtn = null!;
@@ -517,6 +519,7 @@ namespace TDPdf
             // Also show the portable badge when running outside the install location.
             Loaded += async (_, _) =>
             {
+                _uiReady = true;
                 RefreshRecentFilesUi();
 
                 // Nothing is open yet, so start on the collapsed rail (instant — no glide before the
@@ -532,6 +535,8 @@ namespace TDPdf
 
                 if (App.IsPortable())
                     _portableBadge.Visibility = Visibility.Visible;
+
+                FlushPendingExternalOpen();   // #202: a forward that landed before we were wired up
             };
         }
 
@@ -2107,9 +2112,14 @@ namespace TDPdf
                 // Defer additional pages until layout has settled so ActualWidth is valid.
                 // RenderPageLinks runs AFTER RenderAdditionalPages so ClearSecondaryPages
                 // inside RenderAdditionalPages doesn't wipe the overlays we just added.
+                // #115: Background, NOT Loaded. All three of these mutate AnnotationCanvas.Children,
+                // and Loaded outranks Render, so the continuation can be dispatched while the layout
+                // pass it is meant to follow is still in flight — which is what was tearing the
+                // canvas out from under Canvas.MeasureOverride. Background runs strictly after
+                // layout completes, which is all "settled" ever meant here.
                 int linkBitmapW = renderedPage.PixelWidth;
                 int linkBitmapH = renderedPage.PixelHeight;
-                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
                 {
                     RenderAdditionalPages(pageIndex);
                     RenderPageLinks(pageIndex, linkBitmapW, linkBitmapH);
@@ -3325,6 +3335,16 @@ namespace TDPdf
         /// </summary>
         private void PagePreviewPanel_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
+            // #115: ScrollChanged BUBBLES. Every nested ScrollViewer under the preview panel raises
+            // it here — multi-line form-field TextBoxes (VerticalScrollBarVisibility=Auto) and
+            // ComboBoxes that RenderFormFields parents into AnnotationCanvas, the signature popup's
+            // own scroller, the sidebar. Those fire during their layout, and the Continuous branch
+            // below assigns PageList.SelectedIndex, whose handler removes selection chrome from
+            // AnnotationCanvas — a synchronous child mutation inside a measure pass. It also meant
+            // scrolling a form field could move the current page. Only the panel's own scrolling
+            // counts.
+            if (!ReferenceEquals(e.OriginalSource, PagePreviewPanel)) return;
+
             // Grid view (upstream v1.6.4): follow the tile nearest the viewport center so the
             // statusbar page counter tracks scrolling instead of pointing at the last-clicked page.
             // We update only the counter, NOT PageList.SelectedIndex — in Grid a selection change
@@ -4535,16 +4555,21 @@ namespace TDPdf
                     double combY = (fieldH - fontSize) / 2 + fontSize * 0.2;
                     if (combY < 1) combY = 1;
 
+                    // Invariant, like every number written into a content stream below: string
+                    // interpolation formats with the OS culture, and the comma decimal separator of
+                    // de-DE and most European locales is not a valid PDF number token — the whole
+                    // appearance stream then fails to execute in a strict viewer (upstream v1.7.4).
                     var csb = new System.Text.StringBuilder();
-                    csb.Append($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n");
-                    csb.Append($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n");
+                    csb.Append(FormattableString.Invariant($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n"));
+                    csb.Append(FormattableString.Invariant($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n"));
                     for (int i = 0; i < oneLine.Length; i++)
                     {
                         if (oneLine[i] == ' ') continue;
                         double gx = i * cellW + cellW / 2 - fontSize * 0.275;
                         // Same EscapePdfString the run path uses, so WinAnsi folding and (, ), \
                         // escaping are identical for a comb cell and an ordinary field.
-                        csb.Append($"1 0 0 1 {gx:F2} {combY:F2} Tm\n({EscapePdfString(oneLine[i].ToString())}) Tj\n");
+                        csb.Append(FormattableString.Invariant(
+                            $"1 0 0 1 {gx:F2} {combY:F2} Tm\n({EscapePdfString(oneLine[i].ToString())}) Tj\n"));
                     }
                     csb.Append("ET\nQ\nEMC");
 
@@ -4569,9 +4594,11 @@ namespace TDPdf
                                            : (fieldH - fontSize) / 2 + fontSize * 0.2;
                 if (textY < 1) textY = 1;
 
+                // Invariant: a comma decimal from the OS culture is not a valid PDF number token.
                 var sb = new System.Text.StringBuilder();
-                sb.Append($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n");
-                sb.Append($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n{leading:F2} TL\n{pad:F2} {textY:F2} Td\n");
+                sb.Append(FormattableString.Invariant($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n"));
+                sb.Append(FormattableString.Invariant(
+                    $"BT\n{fontName} {fontSize:F2} Tf\n0 g\n{leading:F2} TL\n{pad:F2} {textY:F2} Td\n"));
                 for (int i = 0; i < lines.Count; i++)
                 {
                     if (i > 0) sb.Append("T*\n");   // down one leading, back to the left inset
@@ -4643,7 +4670,9 @@ namespace TDPdf
                 double tx = (fieldW - fs * 0.6) / 2;
                 double ty = (fieldH - fs) / 2 + fs * 0.15;
 
-                string checkedContent = $"q\nBT\n/ZaDb {fs:F2} Tf\n0 g\n{tx:F2} {ty:F2} Td\n(4) Tj\nET\nQ";
+                // Invariant: a comma decimal from the OS culture is not a valid PDF number token.
+                string checkedContent = FormattableString.Invariant(
+                    $"q\nBT\n/ZaDb {fs:F2} Tf\n0 g\n{tx:F2} {ty:F2} Td\n(4) Tj\nET\nQ");
                 string offContent     = "q\nQ"; // empty — just clears
 
                 var checkedXobj = BuildFormXObject("/ZaDb", fieldW, fieldH, checkedContent, isZaDb: true);
@@ -12964,8 +12993,22 @@ namespace TDPdf
         /// via the single-instance pipe. Brings the window forward and opens the
         /// file in a new tab.
         /// </summary>
+        /// <summary>A forwarded path that arrived before the window was wired up, replayed from Loaded.</summary>
+        private string? _pendingExternalPath;
+
         public void OpenPathFromAnotherInstance(string? path)
         {
+            // Upstream v1.7.4 (#202): the second launch forwards off the named-pipe thread and
+            // marshals here, but WPF sets Application.Current.MainWindow from the Window
+            // constructor — so this can run while ours is still executing, against fields the
+            // manual-element-refs block has not assigned yet. Hold the path and let Loaded replay
+            // it rather than dereferencing null and losing the file the user double-clicked.
+            if (!_uiReady)
+            {
+                _pendingExternalPath = path;
+                return;
+            }
+
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Activate();
             Topmost = true;
@@ -12973,6 +13016,15 @@ namespace TDPdf
             Focus();
             if (!string.IsNullOrWhiteSpace(path) && System.IO.File.Exists(path))
                 _ = OpenInTabAsync(path);
+        }
+
+        /// <summary>Replays whatever arrived during startup. A no-op in the normal case.</summary>
+        private void FlushPendingExternalOpen()
+        {
+            if (_pendingExternalPath is null) return;
+            var path = _pendingExternalPath;
+            _pendingExternalPath = null;
+            OpenPathFromAnotherInstance(path);
         }
 
         // ============================================================
@@ -15841,7 +15893,7 @@ namespace TDPdf
         /// already have: <see cref="AppendPdfFileToDoc"/> (File ▸ Merge, including named-destination link
         /// rewriting) and <see cref="AddImagePagesFromFile"/> (one page per image frame).
         /// </summary>
-        private void AppendFilesToCurrentDoc(string[] files)
+        private async void AppendFilesToCurrentDoc(string[] files)
         {
             if (_doc is null) return;
             CommitActiveTextBox();
@@ -15856,7 +15908,15 @@ namespace TDPdf
                     if (IsPdfPath(f)) AppendPdfFileToDoc(doc, f);
                     else              AddImagePagesFromFile(doc, f);
                 }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Sidebar drop skipped {f}: {ex}"); }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Sidebar drop skipped {f}: {ex}");
+                    // #203 (upstream v1.7.4): a damaged PDF used to be swallowed here — nothing was
+                    // appended and nothing was said, so the file simply vanished from the drop.
+                    // Offer the same repair the open path offers.
+                    if (IsPdfPath(f)) await TryAppendRepairedPdfAsync(doc, f);
+                }
+                if (_doc is null || !ReferenceEquals(_doc, doc)) return;   // document swapped mid-await
             }
             if (doc.PageCount == before)
             {
@@ -15867,6 +15927,58 @@ namespace TDPdf
             // Same persist-and-repaint path as the page reorder below; it marks the document dirty.
             SaveTempAndReload();
             SetStatus($"Appended {added} page{(added == 1 ? "" : "s")} from {files.Length} file{(files.Length == 1 ? "" : "s")}");
+        }
+
+        /// <summary>
+        /// #203: offers to repair a dropped PDF that PdfSharpCore could not read, and appends the
+        /// repaired copy on success. The original file is never written to.
+        /// </summary>
+        /// <remarks>
+        /// Only the lossless strategy is offered here, deliberately narrower than upstream's three.
+        /// <see cref="TDPdf.Services.PdfiumInterop.TryPdfiumRepair"/> re-saves through PDFium and
+        /// keeps text, forms and bookmarks. The open path's raster recovery is NOT chained on:
+        /// opening a rasterized document tells the user the whole file was recovered from pixels,
+        /// whereas appending one would bury a run of flattened, unsearchable pages in the middle of
+        /// a live document with nothing to distinguish them. If PDFium cannot read it either, say so
+        /// and leave the document alone.
+        /// </remarks>
+        private async Task TryAppendRepairedPdfAsync(PdfDocument doc, string path)
+        {
+            string name = System.IO.Path.GetFileName(path);
+            var ask = TdpDialog.Show(this,
+                $"\"{name}\" has a damaged structure and could not be appended.\n\n" +
+                "Attempt a repair? A repaired copy is used — the original file is not changed.\n\n" +
+                "A repaired file may be missing bookmarks, forms and other interactive features.",
+                "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (ask != MessageBoxResult.Yes) return;
+
+            string fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+            SetBusy(true, $"Repairing {name}...");
+            try
+            {
+                bool repaired = await Task.Run(
+                    () => TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath));
+                if (repaired)
+                {
+                    try
+                    {
+                        AppendPdfFileToDoc(doc, fixedPath);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Repaired append failed {path}: {ex}");
+                    }
+                }
+                TdpDialog.Show(this, $"\"{name}\" could not be repaired.", "TDPdf",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+                try { if (File.Exists(fixedPath)) File.Delete(fixedPath); } catch { /* temp file */ }
+            }
         }
 
         private void PageList_Drop(object sender, DragEventArgs e)

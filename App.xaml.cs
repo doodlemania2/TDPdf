@@ -615,16 +615,28 @@ namespace TDPdf
             try
             {
                 var report = CrashReporter.Report(e.Exception, "UI thread");
-                bool shouldContinue = CrashDialog.ShowCrash(report);
-                e.Handled = report.Recoverable && shouldContinue;
 
-                if (!e.Handled)
+                if (report.Recoverable)
                 {
-                    // App is going down — give the in-memory telemetry
-                    // channel a bounded window to ship the crash event.
-                    Telemetry.Flush();
-                    Shutdown(1);
+                    // #115: mark it handled and unwind FIRST, then ask. CrashDialog is modal, and a
+                    // modal window opened from the throwing stack pushes a dispatcher frame that
+                    // re-enters whatever was in flight — for a throw inside ContextLayoutManager
+                    // that means re-entering layout, which threw again, tripped ShowCrash's
+                    // reentrancy guard into returning "don't continue", and turned a recoverable
+                    // exception into process death. Background priority runs after the current
+                    // operation has fully unwound.
+                    e.Handled = true;
+                    _ = Dispatcher.BeginInvoke(DispatcherPriority.Background,
+                        new Action(() => PromptAfterRecoveredCrash(report)));
+                    return;
                 }
+
+                CrashDialog.ShowCrash(report);
+                e.Handled = false;
+                // App is going down — give the in-memory telemetry
+                // channel a bounded window to ship the crash event.
+                Telemetry.Flush();
+                Shutdown(1);
             }
             catch
             {
@@ -632,6 +644,22 @@ namespace TDPdf
                 // thread rather than entering an exception loop.
                 e.Handled = true;
             }
+        }
+
+        /// <summary>
+        /// Shows the crash dialog for an already-recovered exception, off the stack that threw it.
+        /// The app is alive and usable at this point; the dialog only offers the user the chance to
+        /// close it down anyway.
+        /// </summary>
+        private void PromptAfterRecoveredCrash(CrashReport report)
+        {
+            try
+            {
+                if (CrashDialog.ShowCrash(report)) return;
+                Telemetry.Flush();
+                Shutdown(1);
+            }
+            catch { /* never throw from the crash path */ }
         }
 
         private void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)

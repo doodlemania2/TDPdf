@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using Docnet.Core;
@@ -118,8 +119,11 @@ namespace TDPdf.Services
         private const uint FullyTransparent = 0x00000000u;
 
         /// <summary>
-        /// Marks every WIDGET (form-field) annotation on the loaded page hidden, so that neither the
-        /// FPDF_ANNOT render pass nor FFLDraw paints a field appearance into the bitmap.
+        /// Marks every WIDGET (form-field) annotation on the loaded page hidden, so that the
+        /// FPDF_ANNOT render pass does not paint a field appearance into the bitmap, and returns
+        /// each widget's original flags keyed by annotation index so
+        /// <see cref="RestoreWidgetAnnotationFlags"/> can put them back before FFLDraw runs.
+        /// Returns <c>null</c> when the flags could not be read at all.
         /// </summary>
         /// <remarks>
         /// In-memory only, and safe because of it: this renderer's document is a one-shot load that
@@ -132,10 +136,11 @@ namespace TDPdf.Services
         /// An <c>EntryPointNotFoundException</c> (an older bundled PDFium with no annot API) is
         /// swallowed so the render degrades to leaving the fields baked in rather than crashing.
         /// </remarks>
-        private static void HideWidgetAnnotations(IntPtr page)
+        private static Dictionary<int, int>? HideWidgetAnnotations(IntPtr page)
         {
             try
             {
+                var saved = new Dictionary<int, int>();
                 int count = FPDFPage_GetAnnotCountRaw(page);
                 for (int i = 0; i < count; i++)
                 {
@@ -144,12 +149,42 @@ namespace TDPdf.Services
                     try
                     {
                         if (FPDFAnnot_GetSubtypeRaw(annot) == FpdfAnnotSubtypeWidget)
-                            FPDFAnnot_SetFlagsRaw(annot, FPDFAnnot_GetFlagsRaw(annot) | FpdfAnnotFlagHidden);
+                        {
+                            int flags = FPDFAnnot_GetFlagsRaw(annot);
+                            saved[i] = flags;
+                            FPDFAnnot_SetFlagsRaw(annot, flags | FpdfAnnotFlagHidden);
+                        }
                     }
                     finally { FPDFPage_CloseAnnotRaw(annot); }
                 }
+                return saved;
             }
-            catch { /* annot API unavailable: fields stay baked, no crash */ }
+            catch { return null; /* annot API unavailable: fields stay baked, no crash */ }
+        }
+
+        /// <summary>
+        /// Puts back the widget flags <see cref="HideWidgetAnnotations"/> saved, so FFLDraw sees the
+        /// file's own visibility: a field the document genuinely marks hidden stays hidden, and
+        /// everything else is painted exactly once, by FFLDraw.
+        /// </summary>
+        /// <remarks>
+        /// Same locking and handle discipline as <see cref="HideWidgetAnnotations"/> — call only
+        /// from inside the <c>PdfiumLock</c> section, and close every annot handle that is opened.
+        /// </remarks>
+        private static void RestoreWidgetAnnotationFlags(IntPtr page, Dictionary<int, int>? saved)
+        {
+            if (saved is null) return;
+            try
+            {
+                foreach (var kv in saved)
+                {
+                    IntPtr annot = FPDFPage_GetAnnotRaw(page, kv.Key);
+                    if (annot == IntPtr.Zero) continue;
+                    try { FPDFAnnot_SetFlagsRaw(annot, kv.Value); }
+                    finally { FPDFPage_CloseAnnotRaw(annot); }
+                }
+            }
+            catch { /* best-effort: the document is a one-shot load that is never saved */ }
         }
 
         /// <summary>
@@ -231,7 +266,19 @@ namespace TDPdf.Services
                             {
                                 // Must happen after the page loads and before either draw call: both
                                 // the FPDF_ANNOT pass and FFLDraw honour the hidden flag.
-                                if (!includeFormFields) HideWidgetAnnotations(page);
+                                //
+                                // Upstream v1.7.4: widgets are hidden for the static FPDF_ANNOT pass
+                                // in BOTH modes. The on-screen viewer replaces them with live
+                                // overlays; the output path paints them once via FFLDraw below, and
+                                // letting the static pass draw the /AP as well painted every field
+                                // twice wherever the stored /AP layout and FFLDraw's (NeedAppearances)
+                                // layout disagreed — the slightly-offset ghost on filled forms, this
+                                // time in print / flatten / export rather than on screen. When the
+                                // output path has no form environment to draw with, the widgets stay
+                                // visible so the static pass is still the one thing showing them.
+                                var savedWidgetFlags = includeFormFields && form == IntPtr.Zero
+                                    ? null
+                                    : HideWidgetAnnotations(page);
                                 IntPtr bitmap = FPDFBitmap_CreateExRaw(
                                     width, height, FPDFBitmapBgra, pinned.AddrOfPinnedObject(), stride);
                                 if (bitmap == IntPtr.Zero) return null;
@@ -255,8 +302,14 @@ namespace TDPdf.Services
                                     // hidden flag set above already suppresses them, but FFLDraw is
                                     // then pure cost with nothing left to paint.
                                     if (includeFormFields && form != IntPtr.Zero)
+                                    {
+                                        // Restore first: FFLDraw honours the hidden flag too, so
+                                        // leaving it set would suppress the very pass that is meant
+                                        // to be the single painter of these fields.
+                                        RestoreWidgetAnnotationFlags(page, savedWidgetFlags);
                                         FPDF_FFLDrawRaw(form, bitmap, page, 0, 0, width, height, 0,
                                             FpdfAnnot | FpdfLcdText);
+                                    }
                                 }
                                 finally { FPDFBitmap_DestroyRaw(bitmap); }
                             }
