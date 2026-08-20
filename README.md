@@ -54,11 +54,30 @@ Requires Windows and the .NET 9 SDK to build.
 
 ## Privacy
 
-TDPdf does **not** phone home by default. Released binaries ship with no telemetry endpoint embedded.
+**Building this repository produces a binary that reports to nobody.** No telemetry endpoint is
+committed here — the source ships an empty placeholder, and the real value is generated at release
+time and gitignored. Reporting needs both a user consent setting (Settings → Privacy, on by
+default) *and* a configured destination; a build with no destination is inert whichever way the
+setting is set, so the default costs a self-builder nothing.
 
-Telemetry support exists in the codebase but is gated on a per-machine provisioning file at `%ProgramData%\TDPdf\telemetry.dat`. If that file is missing (the default), no events are emitted and no outbound network calls are made.
+A destination is configured deliberately, in one of three ways: the `TDPDF_TELEMETRY_CONNECTION`
+environment variable, an administrator-pushed policy value at
+`HKLM\SOFTWARE\Policies\TDPdf\Telemetry\ConnectionString`, or a provisioning file written by
+`TDPdf.exe /set-telemetry`. **Binaries released by this project's maintainers for managed
+deployment do carry an embedded destination** and report to a collector operated by the deploying
+organisation — if you are running one of those rather than your own build, reporting is on unless
+you turn it off.
 
-When an administrator explicitly provisions a connection string (intended for managed/Intune deployments), TDPdf may send anonymous usage and crash events to Azure Application Insights. Only event names plus coarse properties (app version, install scope, OS version) are sent. File paths, file names, document content, user names, and persistent device identifiers are never sent; stack traces are scrubbed of paths before transmission. Provisioning details and the rotation/clear procedure are documented in [`docs/intune-distribution.md`](docs/intune-distribution.md).
+When reporting is on, TDPdf sends event names, coarse technical context (app version, install
+scope, Windows version) and sanitised crash reports. Document contents, file names, file paths,
+user names and persistent device identifiers are never sent, and stack traces are scrubbed of
+paths before transmission. Reports do carry the machine name.
+
+Turn it off per user in Settings → Privacy, or device-wide with `TDPdf.exe /clear-telemetry`,
+which outranks any administrator-pushed destination.
+
+**Full detail, enumerated from the source: [PRIVACY.md](PRIVACY.md).** Provisioning and rotation
+for managed deployments: [`docs/intune-distribution.md`](docs/intune-distribution.md).
 
 ## Changelog
 
