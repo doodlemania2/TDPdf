@@ -60,13 +60,13 @@ time and gitignored. Reporting needs both a user consent setting (Settings → P
 default) *and* a configured destination; a build with no destination is inert whichever way the
 setting is set, so the default costs a self-builder nothing.
 
-A destination is configured deliberately, in one of three ways: the `TDPDF_TELEMETRY_CONNECTION`
-environment variable, an administrator-pushed policy value at
-`HKLM\SOFTWARE\Policies\TDPdf\Telemetry\ConnectionString`, or a provisioning file written by
-`TDPdf.exe /set-telemetry`. **Binaries released by this project's maintainers for managed
-deployment do carry an embedded destination** and report to a collector operated by the deploying
-organisation — if you are running one of those rather than your own build, reporting is on unless
-you turn it off.
+A destination is configured deliberately, either by administrator-pushed policy values at
+`HKLM\SOFTWARE\Policies\TDPdf\Telemetry` (`OtlpEndpoint` and `OtlpToken`), or by the
+`TDPDF_OTLP_ENDPOINT` / `TDPDF_OTLP_TOKEN` environment variables. **Binaries released by this
+project's maintainers for managed deployment report to a collector operated by the deploying
+organisation** — if you are running one of those rather than your own build, reporting is on
+unless you turn it off. Telemetry goes to that OpenTelemetry collector only; reporting to Azure
+Application Insights was retired in 1.24.0.0.
 
 When reporting is on, TDPdf sends event names, coarse technical context (app version, install
 scope, Windows version) and sanitised crash reports. Document contents, file names, file paths,
