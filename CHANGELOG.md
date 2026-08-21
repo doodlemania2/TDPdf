@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.1.0] - 2026-08-21
+
+**A regression introduced in 1.23.0.0.** Upgrade from 1.23.0.0 as soon as it reaches you.
+
+### Fixed
+
+- **The page-grid crash guard stopped guarding, and the crash it was written for came back.** `SafeWrapPanel` has protected the page grid since 1.8.1.0 against a WPF race where the panel's child collection is indexed while it is being changed. 1.23.0.0 rewrote the shared predicate that decides whether a given exception is that race, and narrowed it in a way that no longer recognises it — so the guard passed the crash straight through and the application closed. One user hit it fourteen times before it was caught.
+
+  The cause is worth recording. The predicate asked the exception where it was thrown, via `TargetSite`, and only consulted the stack trace when that was unavailable. On .NET 8 and later the runtime raises this particular error through a *throw helper*, so `TargetSite` reports `System.ArgumentOutOfRangeException` — technically non-null, and nothing to do with the collection — which made the check answer "not that race" and skip the stack-trace test that matches it exactly. The two signals are now independent: either can confirm the race, and neither can veto the other.
+
+  Nothing else about 1.23.0.0 is affected, and no telemetry, consent or privacy behaviour changed.
+
 ## [1.23.0.0] - 2026-08-20
 
 Telemetry becomes something you can see, control and switch off — and starts reporting to the parish's own self-hosted collector alongside Application Insights. Groundwork for open-sourcing this repository.
@@ -731,7 +743,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.1.0...HEAD
+[1.23.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...v1.23.1.0
 [1.23.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.1.0...v1.23.0.0
 [1.22.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.0.0...v1.22.1.0
 [1.22.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.21.0.0...v1.22.0.0

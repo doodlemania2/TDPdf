@@ -37,17 +37,36 @@ namespace TDPdf.Controls
             if (ex is not (InvalidOperationException or ArgumentOutOfRangeException or IndexOutOfRangeException))
                 return false;
 
-            // TargetSite is null for exceptions that have been rethrown across a boundary
-            // that dropped it; fall back to the declaring type recorded on the stack trace.
+            // Two independent signals, and NEITHER may veto the other.
+            //
+            // The obvious implementation — check TargetSite, and only consult the stack trace when
+            // TargetSite is null — is wrong, and was shipped in 1.23.0.0. On .NET 8+,
+            // VisualCollection.get_Item raises this through the runtime's throw helper:
+            //
+            //     at System.ArgumentOutOfRangeException.ThrowGreaterEqual[T](...)
+            //     at System.ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual[T](...)
+            //     at System.Windows.Media.VisualCollection.get_Item(Int32 index)
+            //     at System.Windows.Controls.WrapPanel.MeasureOverride(Size constraint)
+            //
+            // so TargetSite.DeclaringType is System.ArgumentOutOfRangeException — non-null, and
+            // nothing to do with the collection. The early return then answered "not a layout
+            // race" and the stack-trace check below, which matches perfectly, never ran. The guard
+            // silently stopped guarding the exact crash it was written for, and a user hit it
+            // fourteen times before this was found (grouping key B982F438BC51, the same signature
+            // SafeWrapPanel was created for in 1.8.1.0).
+            //
+            // The stack trace is the reliable signal precisely because it survives throw helpers.
+            // TargetSite is kept as a cheap first check, never as a veto.
             string? declaringType = ex.TargetSite?.DeclaringType?.FullName;
-            if (declaringType is not null)
-                return declaringType.Contains("VisualCollection", StringComparison.Ordinal)
-                    || declaringType.Contains("UIElementCollection", StringComparison.Ordinal);
+            if (declaringType is not null && MentionsVisualCollection(declaringType))
+                return true;
 
-            return ex.StackTrace is { } st
-                && (st.Contains("VisualCollection", StringComparison.Ordinal)
-                    || st.Contains("UIElementCollection", StringComparison.Ordinal));
+            return ex.StackTrace is { } st && MentionsVisualCollection(st);
         }
+
+        private static bool MentionsVisualCollection(string text) =>
+            text.Contains("VisualCollection", StringComparison.Ordinal)
+            || text.Contains("UIElementCollection", StringComparison.Ordinal);
 
         /// <summary>
         /// Re-runs layout once the children collection has settled. Background priority
