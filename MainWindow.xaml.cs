@@ -8319,6 +8319,8 @@ namespace TDPdf
         {
             if (_pendingSignature is null) return;
 
+            Telemetry.TrackEvent("Annotation.PlaceStarted",
+                new Dictionary<string, string> { ["Type"] = "Signature" });
             var sig = _pendingSignature;
             double scale = 0.5;
 
@@ -8351,6 +8353,8 @@ namespace TDPdf
             SetTool(EditTool.Select);
             SelectAnnotation(annot, new Rect(annot.Position.X, annot.Position.Y, sigW, sigH));
             SetStatus("Signature placed — drag the corner handle to resize, or Delete to remove");
+            Telemetry.TrackEvent("Annotation.PlaceCompleted",
+                new Dictionary<string, string> { ["Type"] = "Signature" });
         }
 
         private void PlaceImageFromDialog(Point pos, int pageIdx)
@@ -11420,6 +11424,8 @@ namespace TDPdf
             AutomationProperties.SetHelpText(tb, "Type annotation text. Press Enter to save or Escape to cancel.");
             Canvas.SetLeft(tb, pos.X);
             Canvas.SetTop(tb, pos.Y);
+            Telemetry.TrackEvent("Annotation.PlaceStarted",
+                new Dictionary<string, string> { ["Type"] = "Text" });
             _annotationCanvas.Children.Add(tb);
             _activeTextBox = tb;
             tb.KeyDown += TextBox_KeyDown;
@@ -11430,6 +11436,8 @@ namespace TDPdf
                 Keyboard.Focus(tb);
                 if (existing is not null) tb.SelectAll();
                 tb.LostFocus += TextBox_LostFocus;
+                Telemetry.TrackEvent("Annotation.PlaceCompleted",
+                    new Dictionary<string, string> { ["Type"] = "Text" });
             };
         }
 

@@ -25,7 +25,7 @@ namespace TDPdf.Controls
                 _lastMeasure = base.MeasureOverride(constraint);
                 return _lastMeasure;
             }
-            catch (Exception ex) when (LayoutRace.IsCollectionChangedDuringLayout(ex))
+            catch (Exception ex) when (LayoutRace.IsWrapPanelCollectionChangedDuringLayout(ex))
             {
                 LayoutRace.QueueRelayout(this);
                 return _lastMeasure;
@@ -38,7 +38,7 @@ namespace TDPdf.Controls
             {
                 return base.ArrangeOverride(finalSize);
             }
-            catch (Exception ex) when (LayoutRace.IsCollectionChangedDuringLayout(ex))
+            catch (Exception ex) when (LayoutRace.IsWrapPanelCollectionChangedDuringLayout(ex))
             {
                 LayoutRace.QueueRelayout(this);
                 return finalSize;

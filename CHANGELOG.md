@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.2.0] - 2026-08-24
+
+**A second layout-race hotfix for 1.23.x.** Upgrade from 1.23.0.0 or 1.23.1.0 as soon as it reaches you.
+
+### Fixed
+
+- **Insert Signature no longer closes the application, and Insert Text Box no longer appears to do nothing.** Production telemetry showed both failures recurring on 1.23.1.0. The WPF runtime can omit its internal `VisualCollection` frame from an optimized stack trace; the safety check added in 1.22.1.0 and repaired in 1.23.1.0 still required that frame, so it could reject the exact `Canvas.MeasureOverride` / `WrapPanel.MeasureOverride` race it exists to recover from. The guards now inspect real stack frames and accept the panel's own layout method with or without the omitted collection frame. They remain deliberately narrow: an exception raised by a child control is not swallowed.
+
+### Changed
+
+- Text-box and signature placement now emit start/completion telemetry breadcrumbs containing only the annotation type. They contain no text, signature data, page number, filename, or document details, and make a future interrupted placement distinguishable from a user merely selecting a tool.
+
 ## [1.23.1.0] - 2026-08-21
 
 **A regression introduced in 1.23.0.0.** Upgrade from 1.23.0.0 as soon as it reaches you.
@@ -743,7 +755,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.1.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.2.0...HEAD
+[1.23.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.1.0...v1.23.2.0
 [1.23.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...v1.23.1.0
 [1.23.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.1.0...v1.23.0.0
 [1.22.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.0.0...v1.22.1.0

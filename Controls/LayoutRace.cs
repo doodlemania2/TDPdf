@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -18,11 +19,11 @@ namespace TDPdf.Controls
     internal static class LayoutRace
     {
         /// <summary>
-        /// True only when the throw came out of the visual/UI element collection itself.
+        /// True only when the throw originated in the guarded panel's own layout method.
         /// The exception type alone is far too broad — an
         /// <see cref="InvalidOperationException"/> raised by a child's own measure is a real
-        /// bug and must keep crashing — so the throw site is the discriminator. It is also
-        /// culture-independent, unlike matching on the message.
+        /// bug and must keep crashing — so the first non-helper stack frame is the
+        /// discriminator. It is also culture-independent, unlike matching on the message.
         ///
         /// Two shapes are known:
         ///   * <c>VisualCollection.Enumerator.MoveNext</c> throwing
@@ -32,37 +33,65 @@ namespace TDPdf.Controls
         ///     <see cref="ArgumentOutOfRangeException"/> ("index ('2') must be less than
         ///     '1'") — panels that index, e.g. <c>WrapPanel</c>.
         /// </summary>
-        public static bool IsCollectionChangedDuringLayout(Exception ex)
+        public static bool IsCanvasCollectionChangedDuringLayout(Exception ex)
         {
-            if (ex is not (InvalidOperationException or ArgumentOutOfRangeException or IndexOutOfRangeException))
+            return ex is InvalidOperationException
+                && OriginatesInPanelLayout(ex, "System.Windows.Controls.Canvas");
+        }
+
+        public static bool IsWrapPanelCollectionChangedDuringLayout(Exception ex)
+        {
+            return ex is (ArgumentOutOfRangeException or IndexOutOfRangeException)
+                && OriginatesInPanelLayout(ex, "System.Windows.Controls.WrapPanel");
+        }
+
+        private static bool OriginatesInPanelLayout(Exception ex, string panelType)
+        {
+            if (IsPanelLayoutMethod(
+                    ex.TargetSite?.DeclaringType?.FullName,
+                    ex.TargetSite?.Name,
+                    panelType))
+            {
+                return true;
+            }
+
+            StackFrame[]? frames = new StackTrace(ex, false).GetFrames();
+            if (frames is null)
                 return false;
 
-            // Two independent signals, and NEITHER may veto the other.
-            //
-            // The obvious implementation — check TargetSite, and only consult the stack trace when
-            // TargetSite is null — is wrong, and was shipped in 1.23.0.0. On .NET 8+,
-            // VisualCollection.get_Item raises this through the runtime's throw helper:
-            //
-            //     at System.ArgumentOutOfRangeException.ThrowGreaterEqual[T](...)
-            //     at System.ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual[T](...)
-            //     at System.Windows.Media.VisualCollection.get_Item(Int32 index)
-            //     at System.Windows.Controls.WrapPanel.MeasureOverride(Size constraint)
-            //
-            // so TargetSite.DeclaringType is System.ArgumentOutOfRangeException — non-null, and
-            // nothing to do with the collection. The early return then answered "not a layout
-            // race" and the stack-trace check below, which matches perfectly, never ran. The guard
-            // silently stopped guarding the exact crash it was written for, and a user hit it
-            // fourteen times before this was found (grouping key B982F438BC51, the same signature
-            // SafeWrapPanel was created for in 1.8.1.0).
-            //
-            // The stack trace is the reliable signal precisely because it survives throw helpers.
-            // TargetSite is kept as a cheap first check, never as a veto.
-            string? declaringType = ex.TargetSite?.DeclaringType?.FullName;
-            if (declaringType is not null && MentionsVisualCollection(declaringType))
-                return true;
+            // Optimized WPF builds may omit VisualCollection.get_Item /
+            // VisualCollection.Enumerator.MoveNext entirely. Walk past runtime throw helpers and
+            // any collection frames that remain; the guarded panel's MeasureOverride or
+            // ArrangeOverride must be the first real caller. A child-control exception therefore
+            // stays visible instead of being swallowed merely because its later stack contains
+            // Canvas or WrapPanel.
+            foreach (StackFrame frame in frames)
+            {
+                var method = frame.GetMethod();
+                if (method is null)
+                    continue;
 
-            return ex.StackTrace is { } st && MentionsVisualCollection(st);
+                string? declaringType = method.DeclaringType?.FullName;
+                if (IsThrowHelperMethod(declaringType, method.Name)
+                    || (declaringType is not null && MentionsVisualCollection(declaringType)))
+                {
+                    continue;
+                }
+
+                return IsPanelLayoutMethod(declaringType, method.Name, panelType);
+            }
+
+            return false;
         }
+
+        private static bool IsPanelLayoutMethod(string? declaringType, string? methodName, string panelType) =>
+            string.Equals(declaringType, panelType, StringComparison.Ordinal)
+            && methodName is "MeasureOverride" or "ArrangeOverride";
+
+        private static bool IsThrowHelperMethod(string? declaringType, string methodName) =>
+            string.Equals(declaringType, "System.ThrowHelper", StringComparison.Ordinal)
+            || (declaringType is "System.ArgumentOutOfRangeException" or "System.InvalidOperationException"
+                && methodName.StartsWith("Throw", StringComparison.Ordinal));
 
         private static bool MentionsVisualCollection(string text) =>
             text.Contains("VisualCollection", StringComparison.Ordinal)
