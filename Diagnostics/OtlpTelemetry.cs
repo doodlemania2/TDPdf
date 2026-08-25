@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
@@ -274,20 +275,34 @@ namespace TDPdf.Diagnostics
             try { s_tracerProvider?.ForceFlush(timeoutMs); } catch { /* swallow */ }
         }
 
-        /// <summary>Stops export and releases both pipelines. Idempotent; never throws.</summary>
-        public static void Shutdown()
+        /// <summary>Stops export and releases both pipelines. Idempotent, bounded, and never throws.</summary>
+        public static void Shutdown(int timeoutMs = 2000)
         {
+            ILoggerFactory? loggerFactory;
+            TracerProvider? tracerProvider;
+            ActivitySource? activitySource;
             lock (s_lock)
             {
                 IsEnabled = false;
-                try { s_loggerFactory?.Dispose(); } catch { /* swallow */ }
-                try { s_tracerProvider?.Dispose(); } catch { /* swallow */ }
-                try { s_activitySource?.Dispose(); } catch { /* swallow */ }
+                loggerFactory = s_loggerFactory;
+                tracerProvider = s_tracerProvider;
+                activitySource = s_activitySource;
                 s_loggerFactory = null;
                 s_logger = null;
                 s_tracerProvider = null;
                 s_activitySource = null;
             }
+
+            try
+            {
+                _ = Task.Run(() =>
+                {
+                    try { loggerFactory?.Dispose(); } catch { /* swallow */ }
+                    try { tracerProvider?.Dispose(); } catch { /* swallow */ }
+                    try { activitySource?.Dispose(); } catch { /* swallow */ }
+                }).Wait(Math.Max(0, timeoutMs));
+            }
+            catch { /* swallow */ }
         }
     }
 }

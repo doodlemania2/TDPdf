@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.5.0] - 2026-08-25
+
+**Fixes closing a changed document appearing to hang while background page rendering continued.**
+
+### Fixed
+
+- **Close Without Saving now stops every render pipeline before releasing the document.** Closing previously canceled only the primary-page render while grid, continuous-view, re-sharpen, and window-maintenance PDFium workers could continue rasterizing 17–25 pages. The close path then forced a synchronous full garbage collection while those workers were still allocating bitmaps, making the accepted close appear frozen and sustaining substantial CPU use.
+- **Released bitmap memory is collected without blocking the UI.** The synchronous `GC.Collect()` on every tab close is replaced by one coalesced, optimized, non-blocking collection at application-idle priority.
+- **Application exit no longer waits indefinitely for OpenTelemetry exporters to dispose.** Exporter shutdown now has a two-second bound after the existing bounded flush.
+- **Switching tabs cancels every render pipeline tied to the previous document.** Stale PDFium work can no longer keep using CPU or marshal old page bitmaps back to the shared UI after a tab switch.
+- **The unsaved-changes choice is explicit.** Dirty file and application prompts now say **Close Without Saving** and **Cancel** instead of the ambiguous **Yes** and **No**, where choosing No intentionally left the file open and looked like the close command had failed.
+
 ## [1.23.4.0] - 2026-08-25
 
 **A second focused follow-up for Insert Text Box.** A Windows smoke test confirmed that Signature and Draw worked in 1.23.3.0 while the text editor still did not accept input.
@@ -781,7 +793,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.4.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.5.0...HEAD
+[1.23.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.4.0...v1.23.5.0
 [1.23.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.3.0...v1.23.4.0
 [1.23.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.2.0...v1.23.3.0
 [1.23.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.1.0...v1.23.2.0
