@@ -8691,7 +8691,7 @@ namespace TDPdf
                     break;
 
                 case EditTool.Text:
-                   if (ClickInsideActiveTextBox(pos))
+                   if (TryRestoreActiveTextBoxFocus(pos))
                    {
                        e.Handled = true;
                        break;
@@ -11390,23 +11390,36 @@ namespace TDPdf
             public TextAnnotation? Existing { get; init; }
         }
 
-        private bool ClickInsideActiveTextBox(Point pos)
+        private bool TryRestoreActiveTextBoxFocus(Point pos)
         {
             if (_activeTextBox is null || !ReferenceEquals(_activeTextBox.Parent, _textEditorCanvas))
                 return false;
 
-            double x = Canvas.GetLeft(_activeTextBox);
-            double y = Canvas.GetTop(_activeTextBox);
+            TextBox textBox = _activeTextBox;
+            double x = Canvas.GetLeft(textBox);
+            double y = Canvas.GetTop(textBox);
             if (!IsFinite(x) || !IsFinite(y)) return false;
 
-            double width = _activeTextBox.ActualWidth > 0
-                ? _activeTextBox.ActualWidth
-                : _activeTextBox.Width;
-            double height = _activeTextBox.ActualHeight > 0
-                ? _activeTextBox.ActualHeight
-                : Math.Max(_activeTextBox.MinHeight, 24);
-            return pos.X >= x && pos.X <= x + width
-                && pos.Y >= y && pos.Y <= y + height;
+            double width = textBox.ActualWidth > 0 ? textBox.ActualWidth : textBox.Width;
+            double height = textBox.ActualHeight > 0 ? textBox.ActualHeight : Math.Max(textBox.MinHeight, 24);
+            if (pos.X < x || pos.X > x + width || pos.Y < y || pos.Y > y + height)
+                return false;
+
+            textBox.Focus();
+            Keyboard.Focus(textBox);
+            int characterIndex = textBox.GetCharacterIndexFromPoint(
+                new Point(pos.X - x, pos.Y - y),
+                snapToText: true);
+            if (characterIndex >= 0)
+                textBox.CaretIndex = characterIndex;
+
+            Telemetry.TrackEvent("Annotation.TextEditorFocusRestored",
+                new Dictionary<string, string>
+                {
+                    ["Type"] = "Text",
+                    ["Focused"] = textBox.IsKeyboardFocusWithin ? "true" : "false"
+                });
+            return true;
         }
 
         private static void RemoveTextEditorElement(UIElement element)
@@ -11434,7 +11447,7 @@ namespace TDPdf
                 textBox.Loaded -= loadedHandler;
                 textBox.LostFocus += lostFocusHandler;
                 _ = textBox.Dispatcher.BeginInvoke(
-                    System.Windows.Threading.DispatcherPriority.Input,
+                    System.Windows.Threading.DispatcherPriority.ContextIdle,
                     () =>
                     {
                         bool attached = ReferenceEquals(_activeTextBox, textBox)
@@ -11508,6 +11521,19 @@ namespace TDPdf
             _textEditorCanvas.Children.Add(tb);
             _activeTextBox = tb;
             tb.KeyDown += TextBox_KeyDown;
+            tb.PreviewMouseLeftButtonDown += (_, _) =>
+            {
+                tb.Focus();
+                Keyboard.Focus(tb);
+            };
+            bool inputStarted = false;
+            tb.TextChanged += (_, _) =>
+            {
+                if (inputStarted) return;
+                inputStarted = true;
+                Telemetry.TrackEvent("Annotation.TextEditorInputStarted",
+                    new Dictionary<string, string> { ["Type"] = "Text" });
+            };
             SetStatus("Type your text, then press Enter to place it (Shift+Enter for a new line)");
             FocusTextEditorWhenLoaded(
                 tb,

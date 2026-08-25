@@ -43,7 +43,8 @@ in rather than leaving you to guess.
 
 `App.Startup`, `Install.Start`, `Install.Success`, `Uninstall.Start`, `Uninstall.Success`,
 `Tool.Selected`, `Annotation.PlaceStarted`, `Annotation.PlaceCompleted`,
-`Annotation.TextEditorFocusLost`, `Annotation.TextEditorClosed`, `File.New`, `File.Open`,
+`Annotation.TextEditorFocusLost`, `Annotation.TextEditorFocusRestored`,
+`Annotation.TextEditorInputStarted`, `Annotation.TextEditorClosed`, `File.New`, `File.Open`,
 `File.Merge`, `File.Split`, `File.Print`,
 `File.ExportImages`, `File.OpenFailed`, `File.OpenRecovered`, `File.OpenUnlockedByPdfium`,
 `File.SaveFailed`, `File.SaveRecoveryAttempt`, `File.PrintFailed`, `File.ExportFailed`,
@@ -57,7 +58,8 @@ about you.
 `Tool.Selected` records *which tool* you chose (Text, Signature, Highlight …), never what you did
 with it. The annotation placement events record only whether Text or Signature placement started,
 whether the text editor remained attached and received keyboard focus, and whether it was committed,
-canceled, deleted, or left empty. They never record text, signature data, a page number, or document
+canceled, deleted, or left empty. A separate breadcrumb records only that editing began; it never
+records the typed text. These events never record text, signature data, a page number, or document
 details. `File.Open` records that an open happened, its duration and whether it succeeded — not
 which file.
 
