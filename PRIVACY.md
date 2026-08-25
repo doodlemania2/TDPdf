@@ -42,7 +42,8 @@ in rather than leaving you to guess.
 **Events.** A name, and nothing about the document involved:
 
 `App.Startup`, `Install.Start`, `Install.Success`, `Uninstall.Start`, `Uninstall.Success`,
-`Tool.Selected`, `Annotation.PlaceStarted`, `Annotation.PlaceCompleted`, `File.New`, `File.Open`,
+`Tool.Selected`, `Annotation.PlaceStarted`, `Annotation.PlaceCompleted`,
+`Annotation.TextEditorFocusLost`, `Annotation.TextEditorClosed`, `File.New`, `File.Open`,
 `File.Merge`, `File.Split`, `File.Print`,
 `File.ExportImages`, `File.OpenFailed`, `File.OpenRecovered`, `File.OpenUnlockedByPdfium`,
 `File.SaveFailed`, `File.SaveRecoveryAttempt`, `File.PrintFailed`, `File.ExportFailed`,
@@ -54,10 +55,11 @@ tells us a run ended in a crash, which is how crash rate is measured without tra
 about you.
 
 `Tool.Selected` records *which tool* you chose (Text, Signature, Highlight …), never what you did
-with it. The annotation placement events record only whether Text or Signature placement started
-and reached the end of its UI setup; they never record text, signature data, a page number, or
-document details. `File.Open` records that an open happened, its duration and whether it succeeded
-— not which file.
+with it. The annotation placement events record only whether Text or Signature placement started,
+whether the text editor remained attached and received keyboard focus, and whether it was committed,
+canceled, deleted, or left empty. They never record text, signature data, a page number, or document
+details. `File.Open` records that an open happened, its duration and whether it succeeded — not
+which file.
 
 **Technical context.** Application version, Windows version, 64-bit or not, .NET runtime version,
 processor count, and whether the install is per-user or machine-wide.

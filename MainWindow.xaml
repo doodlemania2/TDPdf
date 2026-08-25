@@ -1503,6 +1503,12 @@
                                         <Grid>
                                             <Image x:Name="PageImage" RenderOptions.BitmapScalingMode="HighQuality" Stretch="None" AutomationProperties.Name="Rendered PDF page"/>
                                             <controls:SafeCanvas x:Name="AnnotationCanvas" Background="Transparent" ClipToBounds="True" Focusable="True" KeyboardNavigation.TabIndex="41" AutomationProperties.Name="PDF annotation canvas" AutomationProperties.HelpText="Use the selected tool to add, select, edit, or delete annotations on the current page." AutomationProperties.LabeledBy="{Binding ElementName=AnnotationCanvasLabel}" PreviewMouseDown="Canvas_PreviewMouseDown" PreviewMouseLeftButtonDown="Canvas_MouseLeftButtonDown" MouseMove="Canvas_MouseMove" PreviewMouseLeftButtonUp="Canvas_MouseLeftButtonUp" PreviewMouseUp="Canvas_PreviewMouseUp" LostMouseCapture="Canvas_LostMouseCapture"/>
+                                           <!-- Live text editors must not share AnnotationCanvas: normal async
+                                                annotation refreshes clear that canvas and used to detach a newly
+                                                loaded editor before the user could see or type into it. A null
+                                                background lets empty areas click through to AnnotationCanvas. -->
+                                           <controls:SafeCanvas x:Name="TextEditorCanvas" Background="{x:Null}" ClipToBounds="True"
+                                                                Focusable="False" Panel.ZIndex="10"/>
                                         </Grid>
                                     </Border>
                                     <!-- Additional pages rendered dynamically in code-behind -->

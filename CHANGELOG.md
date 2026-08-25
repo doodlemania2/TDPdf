@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.3.0] - 2026-08-25
+
+**A focused follow-up for Insert Text Box.** Version 1.23.2.0 stopped the layout-race crash, but production telemetry proved that one user still could not get a usable text editor.
+
+### Fixed
+
+- **The live text editor can no longer disappear during a normal page refresh.** It previously lived inside `AnnotationCanvas`, whose persistent annotations and PDF overlays are routinely rebuilt with `Children.Clear()`. The TextBox could reach WPF's `Loaded` event and then be detached by a render refresh before the user saw it—the exact pattern recorded in production, where one machine created thirteen loaded editors in seconds but could not type into any of them. Live placed-text and existing-PDF-text editors now use a dedicated topmost `SafeCanvas` that annotation rendering never clears.
+- **Text editing takes keyboard focus after the creating mouse event has finished.** All text-editor paths now share one deferred focus routine, rather than requesting focus synchronously from `Loaded` while WPF is still completing input and layout. Clicking inside the active editor is also protected by its actual bounds, placement near a page edge stays visible, and stale lost-focus events cannot commit a newer editor.
+
+### Changed
+
+- Privacy-safe text-editor telemetry now records whether the editor remained attached, received focus, and ended committed, canceled, deleted, or empty. It still records no typed text, page number, filename, signature data, or document details.
+
 ## [1.23.2.0] - 2026-08-24
 
 **A second layout-race hotfix for 1.23.x.** Upgrade from 1.23.0.0 or 1.23.1.0 as soon as it reaches you.
@@ -755,7 +768,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.2.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.3.0...HEAD
+[1.23.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.2.0...v1.23.3.0
 [1.23.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.1.0...v1.23.2.0
 [1.23.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...v1.23.1.0
 [1.23.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.22.1.0...v1.23.0.0

@@ -271,6 +271,7 @@ namespace TDPdf
 
         // Manual element refs (XAML codegen doesn't resolve these)
         private Canvas _annotationCanvas = null!;
+        private Canvas _textEditorCanvas = null!;
         /// <summary>False until Loaded has run; guards paths reachable from the single-instance pipe thread.</summary>
         private bool _uiReady;
         private Grid _pageContentGrid = null!;
@@ -418,6 +419,7 @@ namespace TDPdf
             var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             if (v != null) VersionLabel.Text = $"v{v.Major}.{v.Minor}.{v.Build}";
             _annotationCanvas = (Canvas)FindName("AnnotationCanvas")!;
+            _textEditorCanvas = (Canvas)FindName("TextEditorCanvas")!;
             _pageContentGrid = (Grid)FindName("PageContentGrid")!;
             _toolSelectBtn = (Button)FindName("ToolSelectBtn")!;
             _toolTextBtn = (Button)FindName("ToolTextBtn")!;
@@ -1143,6 +1145,7 @@ namespace TDPdf
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
+            CommitActiveTextBox();
             CaptureViewState();
             int dirtyCount = _tabs.Count(t => t.Doc is not null && t.IsDirty);
             if (dirtyCount > 0)
@@ -2161,6 +2164,8 @@ namespace TDPdf
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
                 _annotationCanvas.Height = renderedPage.DisplayHeight;
+                _textEditorCanvas.Width = renderedPage.DisplayWidth;
+                _textEditorCanvas.Height = renderedPage.DisplayHeight;
                 // #197: the cursor-trailing page tooltip added by #151 is gone — the viewport-corner
                 // badge announces the page instead, in one fixed place, for every view mode.
                 ShowPageBadge(pageIndex);
@@ -8686,6 +8691,11 @@ namespace TDPdf
                     break;
 
                 case EditTool.Text:
+                   if (ClickInsideActiveTextBox(pos))
+                   {
+                       e.Handled = true;
+                       break;
+                   }
                     CommitActiveTextBox();
                     PlaceTextBox(pos, pageIdx);
                     e.Handled = true;
@@ -10973,7 +10983,7 @@ namespace TDPdf
                     };
                     Canvas.SetLeft(retb, reb.X);
                     Canvas.SetTop(retb, reb.Y);
-                    _annotationCanvas.Children.Add(retb);
+                    _textEditorCanvas.Children.Add(retb);
                     _activeTextBox = retb;
                     var rewo = new Rectangle
                     {
@@ -10985,9 +10995,9 @@ namespace TDPdf
                     };
                     Canvas.SetLeft(rewo, reb.X - 2);
                     Canvas.SetTop(rewo, reb.Y - 2);
-                    _annotationCanvas.Children.Insert(_annotationCanvas.Children.IndexOf(retb), rewo);
+                    _textEditorCanvas.Children.Insert(_textEditorCanvas.Children.IndexOf(retb), rewo);
                     retb.KeyDown += EditTextBox_KeyDown;
-                    retb.Loaded += (s, ev) => { retb.Focus(); Keyboard.Focus(retb); retb.SelectAll(); retb.LostFocus += EditTextBox_LostFocus; };
+                    FocusTextEditorWhenLoaded(retb, selectAll: true, EditTextBox_LostFocus);
                     SetStatus("Re-editing text — Enter to save, Escape to cancel");
                     return;
                 }
@@ -11032,7 +11042,7 @@ namespace TDPdf
                 };
                 Canvas.SetLeft(tb, hit.CanvasBounds.X);
                 Canvas.SetTop(tb, hit.CanvasBounds.Y);
-                _annotationCanvas.Children.Add(tb);
+                _textEditorCanvas.Children.Add(tb);
                 _activeTextBox = tb;
 
                 // Show white-out behind the edit box so original text is hidden
@@ -11046,17 +11056,11 @@ namespace TDPdf
                 };
                 Canvas.SetLeft(whiteout, hit.CanvasBounds.X - 2);
                 Canvas.SetTop(whiteout, hit.CanvasBounds.Y - 2);
-                int tbIdx = _annotationCanvas.Children.IndexOf(tb);
-                _annotationCanvas.Children.Insert(tbIdx, whiteout);
+                int tbIdx = _textEditorCanvas.Children.IndexOf(tb);
+                _textEditorCanvas.Children.Insert(tbIdx, whiteout);
 
                 tb.KeyDown += EditTextBox_KeyDown;
-                tb.Loaded += (s, ev) =>
-                {
-                    tb.Focus();
-                    Keyboard.Focus(tb);
-                    tb.SelectAll();
-                    tb.LostFocus += EditTextBox_LostFocus;
-                };
+                FocusTextEditorWhenLoaded(tb, selectAll: true, EditTextBox_LostFocus);
 
                 SetStatus("Editing text - Enter to save, Escape to cancel");
             }
@@ -11098,10 +11102,17 @@ namespace TDPdf
 
         private void EditTextBox_LostFocus(object sender, RoutedEventArgs e)
         {
-            if (_activeTextBox is not null && _activeTextBox.Tag is TextEditContext)
+            if (sender is TextBox tb
+                && ReferenceEquals(_activeTextBox, tb)
+                && tb.Tag is TextEditContext)
             {
-                Dispatcher.BeginInvoke(new Action(CommitTextEdit),
-                    System.Windows.Threading.DispatcherPriority.Background);
+                _ = Dispatcher.BeginInvoke(
+                    System.Windows.Threading.DispatcherPriority.Background,
+                    () =>
+                    {
+                        if (ReferenceEquals(_activeTextBox, tb))
+                            CommitTextEdit();
+                    });
             }
         }
 
@@ -11110,12 +11121,12 @@ namespace TDPdf
             if (_activeTextBox is null) return;
             var tb = _activeTextBox;
             _activeTextBox = null;
-            _annotationCanvas.Children.Remove(tb);
+            RemoveTextEditorElement(tb);
             // Remove the whiteout rectangle
-            var whiteout = _annotationCanvas.Children.OfType<Rectangle>()
+            var whiteout = _textEditorCanvas.Children.OfType<Rectangle>()
                 .FirstOrDefault(r => r.Tag is string s && s == "EditWhiteout");
             if (whiteout is not null)
-                _annotationCanvas.Children.Remove(whiteout);
+               _textEditorCanvas.Children.Remove(whiteout);
             SetStatus("Text edit cancelled");
         }
 
@@ -11125,13 +11136,13 @@ namespace TDPdf
             var tb = _activeTextBox;
             _activeTextBox = null;
             string newText = tb.Text.Trim();
-            _annotationCanvas.Children.Remove(tb);
+            RemoveTextEditorElement(tb);
 
             // Remove the whiteout rectangle
-            var whiteout = _annotationCanvas.Children.OfType<Rectangle>()
+            var whiteout = _textEditorCanvas.Children.OfType<Rectangle>()
                 .FirstOrDefault(r => r.Tag is string s && s == "EditWhiteout");
             if (whiteout is not null)
-                _annotationCanvas.Children.Remove(whiteout);
+               _textEditorCanvas.Children.Remove(whiteout);
 
             if (string.IsNullOrEmpty(newText) || newText == ctx.OriginalText)
             {
@@ -11355,6 +11366,7 @@ namespace TDPdf
         /// </summary>
         private bool TryReeditPlacedText(Point pos, int pageIdx)
         {
+            CommitActiveTextBox();
             if (pageIdx < 0 || !_annotations.TryGetValue(pageIdx, out var list)) return false;
             for (int i = list.Count - 1; i >= 0; i--)
             {
@@ -11376,6 +11388,69 @@ namespace TDPdf
             public int PageIndex { get; init; }
             /// <summary>Non-null when re-editing an existing box: it was pulled from the list at edit-start and is restored on cancel.</summary>
             public TextAnnotation? Existing { get; init; }
+        }
+
+        private bool ClickInsideActiveTextBox(Point pos)
+        {
+            if (_activeTextBox is null || !ReferenceEquals(_activeTextBox.Parent, _textEditorCanvas))
+                return false;
+
+            double x = Canvas.GetLeft(_activeTextBox);
+            double y = Canvas.GetTop(_activeTextBox);
+            if (!IsFinite(x) || !IsFinite(y)) return false;
+
+            double width = _activeTextBox.ActualWidth > 0
+                ? _activeTextBox.ActualWidth
+                : _activeTextBox.Width;
+            double height = _activeTextBox.ActualHeight > 0
+                ? _activeTextBox.ActualHeight
+                : Math.Max(_activeTextBox.MinHeight, 24);
+            return pos.X >= x && pos.X <= x + width
+                && pos.Y >= y && pos.Y <= y + height;
+        }
+
+        private static void RemoveTextEditorElement(UIElement element)
+        {
+            if (element is FrameworkElement { Parent: Panel parent })
+                parent.Children.Remove(element);
+        }
+
+        private static Dictionary<string, string> TextEditorTelemetry(string outcome) =>
+            new()
+            {
+                ["Type"] = "Text",
+                ["Outcome"] = outcome
+            };
+
+        private void FocusTextEditorWhenLoaded(
+            TextBox textBox,
+            bool selectAll,
+            RoutedEventHandler lostFocusHandler,
+            Action<bool, bool>? completed = null)
+        {
+            RoutedEventHandler? loadedHandler = null;
+            loadedHandler = (_, _) =>
+            {
+                textBox.Loaded -= loadedHandler;
+                textBox.LostFocus += lostFocusHandler;
+                _ = textBox.Dispatcher.BeginInvoke(
+                    System.Windows.Threading.DispatcherPriority.Input,
+                    () =>
+                    {
+                        bool attached = ReferenceEquals(_activeTextBox, textBox)
+                            && ReferenceEquals(textBox.Parent, _textEditorCanvas);
+                        if (attached)
+                        {
+                            textBox.Focus();
+                            Keyboard.Focus(textBox);
+                            if (selectAll) textBox.SelectAll();
+                            else textBox.CaretIndex = textBox.Text.Length;
+                        }
+
+                        completed?.Invoke(attached, textBox.IsKeyboardFocusWithin);
+                    });
+            };
+            textBox.Loaded += loadedHandler;
         }
 
         /// <summary>
@@ -11409,6 +11484,8 @@ namespace TDPdf
                 BorderThickness = new Thickness(1),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = _textFontSize,
+                CaretBrush = new SolidColorBrush(_textColor),
+                SelectionBrush = (SolidColorBrush)FindResource("AccentGreen"),
                 Width = width,
                 MinHeight = existing is not null && existing.Height > 24 ? existing.Height : 24,
                 Padding = new Thickness(2),
@@ -11422,23 +11499,30 @@ namespace TDPdf
                 : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
             AutomationProperties.SetName(tb, "Annotation text");
             AutomationProperties.SetHelpText(tb, "Type annotation text. Press Enter to save or Escape to cancel.");
-            Canvas.SetLeft(tb, pos.X);
-            Canvas.SetTop(tb, pos.Y);
+            double maxX = Math.Max(0, _textEditorCanvas.Width - width);
+            double maxY = Math.Max(0, _textEditorCanvas.Height - Math.Max(tb.MinHeight, 24));
+            Canvas.SetLeft(tb, Math.Clamp(pos.X, 0, maxX));
+            Canvas.SetTop(tb, Math.Clamp(pos.Y, 0, maxY));
             Telemetry.TrackEvent("Annotation.PlaceStarted",
                 new Dictionary<string, string> { ["Type"] = "Text" });
-            _annotationCanvas.Children.Add(tb);
+            _textEditorCanvas.Children.Add(tb);
             _activeTextBox = tb;
             tb.KeyDown += TextBox_KeyDown;
-            // Defer focus until the TextBox is actually rendered
-            tb.Loaded += (s, e) =>
-            {
-                tb.Focus();
-                Keyboard.Focus(tb);
-                if (existing is not null) tb.SelectAll();
-                tb.LostFocus += TextBox_LostFocus;
-                Telemetry.TrackEvent("Annotation.PlaceCompleted",
-                    new Dictionary<string, string> { ["Type"] = "Text" });
-            };
+            SetStatus("Type your text, then press Enter to place it (Shift+Enter for a new line)");
+            FocusTextEditorWhenLoaded(
+                tb,
+                selectAll: existing is not null,
+                TextBox_LostFocus,
+                (attached, focused) =>
+                {
+                    Telemetry.TrackEvent("Annotation.PlaceCompleted",
+                        new Dictionary<string, string>
+                        {
+                            ["Type"] = "Text",
+                            ["Attached"] = attached ? "true" : "false",
+                            ["Focused"] = focused ? "true" : "false"
+                        });
+                });
         }
 
         /// <summary>Reflects the current whiteout setting onto the live placed-text editing box, if any.</summary>
@@ -11466,13 +11550,20 @@ namespace TDPdf
 
         private void TextBox_LostFocus(object sender, RoutedEventArgs e)
         {
-            if (_activeTextBox is null) return;
+            if (sender is not TextBox tb || !ReferenceEquals(_activeTextBox, tb)) return;
+            Telemetry.TrackEvent("Annotation.TextEditorFocusLost",
+                new Dictionary<string, string> { ["Type"] = "Text" });
             // Commit on blur when there's content, or always when re-editing (so clearing the box deletes it).
-            bool reediting = _activeTextBox.Tag is PlacedTextContext { Existing: not null };
-            if (reediting || !string.IsNullOrWhiteSpace(_activeTextBox.Text))
+            bool reediting = tb.Tag is PlacedTextContext { Existing: not null };
+            if (reediting || !string.IsNullOrWhiteSpace(tb.Text))
             {
-                Dispatcher.BeginInvoke(new Action(CommitActiveTextBox),
-                    System.Windows.Threading.DispatcherPriority.Background);
+                _ = Dispatcher.BeginInvoke(
+                    System.Windows.Threading.DispatcherPriority.Background,
+                    () =>
+                    {
+                        if (ReferenceEquals(_activeTextBox, tb))
+                            CommitActiveTextBox();
+                    });
             }
         }
 
@@ -11482,7 +11573,7 @@ namespace TDPdf
             if (_activeTextBox is null) return;
             var tb = _activeTextBox;
             _activeTextBox = null;
-            _annotationCanvas.Children.Remove(tb);
+            RemoveTextEditorElement(tb);
             if (tb.Tag is PlacedTextContext { Existing: { } original } ctx)
             {
                 if (!_annotations.TryGetValue(ctx.PageIndex, out var list))
@@ -11491,6 +11582,7 @@ namespace TDPdf
                 DropTopSnapshotIfFor(ctx.PageIndex);   // no net change — discard the edit-start snapshot
                 RenderAllAnnotations(ctx.PageIndex);
             }
+            Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Canceled"));
         }
 
         private void CommitActiveTextBox()
@@ -11520,7 +11612,7 @@ namespace TDPdf
             double width = tb.Width;
             double height = tb.ActualHeight;
 
-            _annotationCanvas.Children.Remove(tb);
+            RemoveTextEditorElement(tb);
 
             if (!string.IsNullOrEmpty(content))
             {
@@ -11554,12 +11646,18 @@ namespace TDPdf
                 // #168: say it NOW, not after saving and reopening. The burn resolves the same
                 // family this checks (DrawAnnotationsOnDocument), so the two never disagree.
                 WarnIfGlyphsWillBeLost(PdfFontStyle.DefaultFamily, ta.Content);
+                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Committed"));
             }
             else if (reediting)
             {
                 // Box emptied while re-editing: original was already removed at edit-start → commit as a delete.
                 MarkDirty();
                 RenderAllAnnotations(pageIdx);
+                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Deleted"));
+            }
+            else
+            {
+                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Empty"));
             }
         }
 
@@ -12556,7 +12654,13 @@ namespace TDPdf
             }
 
             // Cancel any active transient gesture/edit before mutating state.
+            bool canceledTextEditor = _activeTextBox is not null;
             CancelActiveGesture();
+            if (canceledTextEditor)
+            {
+                SetStatus("Text edit canceled");
+                return;
+            }
 
             var entry = source.Last!.Value;
             source.RemoveLast();
@@ -12652,7 +12756,10 @@ namespace TDPdf
         /// </summary>
         private void CancelActiveGesture()
         {
-            if (_activeTextBox is not null) CancelTextEdit();
+            if (_activeTextBox?.Tag is TextEditContext)
+                CancelTextEdit();
+            else if (_activeTextBox is not null)
+                CancelActiveTextBox();
             if (_isPanning) EndPan();
             _isDrawing = false;
             _isSelecting = false;
@@ -12679,6 +12786,7 @@ namespace TDPdf
             if (pageIdx < 0) return;
             // Wiping the page is the opposite of keeping an unfinished shape: drop it (and its
             // preview visuals, which the canvas clear below would otherwise strand).
+            CancelActiveGesture();
             ResolveShapePolygon(commit: false);
             if (_annotations.ContainsKey(pageIdx) && _annotations[pageIdx].Count > 0)
             {
@@ -12780,6 +12888,8 @@ namespace TDPdf
             ClearCropSelection();
             SetTool(EditTool.Select);
             _annotationCanvas.Children.Clear();
+            _textEditorCanvas.Children.Clear();
+            _activeTextBox = null;
             ClearSecondaryPages();
 
             if (_ctx.Doc is null)
@@ -12961,7 +13071,11 @@ namespace TDPdf
             // A freeform polygon still being placed on the tab we are about to throw away has
             // nowhere to land, so it is discarded rather than committed — and discarding it here,
             // before the dirty prompt, keeps an abandoned gesture from asking about unsaved work.
-            if (ReferenceEquals(_ctx, ctx)) ResolveShapePolygon(commit: false);
+            if (ReferenceEquals(_ctx, ctx))
+            {
+                ResolveShapePolygon(commit: false);
+                CommitActiveTextBox();
+            }
 
             if (ctx.Doc is not null && ctx.IsDirty)
             {
