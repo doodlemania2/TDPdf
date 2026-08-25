@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.4.0] - 2026-08-25
+
+**A second focused follow-up for Insert Text Box.** A Windows smoke test confirmed that Signature and Draw worked in 1.23.3.0 while the text editor still did not accept input.
+
+### Fixed
+
+- **Clicking the active text box now explicitly restores keyboard focus.** The 1.23.3.0 fallback correctly recognized clicks within the editor's bounds but only swallowed the underlying annotation-canvas event, leaving an unfocused editor unusable. The fallback now focuses the editor and places the caret at the clicked character.
+- **Initial text-editor focus waits until queued mouse input has completed.** The deferred focus callback now runs at dispatcher context-idle priority instead of competing with the mouse event that created the editor. Direct clicks on the editor also explicitly reaffirm focus.
+
+### Changed
+
+- Privacy-safe telemetry now distinguishes an editor that merely loaded from one that actually received its first text change, and records whether an in-bounds focus recovery succeeded. It still records no typed text, page number, filename, or document content.
+
 ## [1.23.3.0] - 2026-08-25
 
 **A focused follow-up for Insert Text Box.** Version 1.23.2.0 stopped the layout-race crash, but production telemetry proved that one user still could not get a usable text editor.
@@ -768,7 +781,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.3.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.4.0...HEAD
+[1.23.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.3.0...v1.23.4.0
 [1.23.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.2.0...v1.23.3.0
 [1.23.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.1.0...v1.23.2.0
 [1.23.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.0.0...v1.23.1.0
