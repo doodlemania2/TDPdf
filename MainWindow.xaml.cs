@@ -1153,14 +1153,16 @@ namespace TDPdf
                 var msg = dirtyCount == 1
                     ? "You have unsaved changes. Close TDPdf without saving?"
                     : $"You have unsaved changes in {dirtyCount} open files. Close TDPdf without saving?";
-                var res = TdpDialog.Show(this, msg,
-                    "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                var res = TdpDialog.ShowYesNo(this, msg,
+                    "Close Without Saving", "Cancel",
+                    "TDPdf", MessageBoxImage.Warning);
                 if (res != MessageBoxResult.Yes)
                 {
                     e.Cancel = true;
                     return;
                 }
             }
+            CancelDocumentWork(cancelWindowOperation: true);
             // Closing is now committed (any dirty prompt was accepted). Decide whether to remember the
             // open documents for next launch, then persist or clear the saved session accordingly.
             HandleSessionOnClose();
@@ -2115,6 +2117,7 @@ namespace TDPdf
         private async void RenderPage(int pageIndex)
         {
             if (_currentFile is null || _doc is null) return;
+            DocumentContext renderContext = _ctx;
             var currentFile = _currentFile;
             _renderCancellationTokenSource?.Cancel();
             _renderCancellationTokenSource?.Dispose();
@@ -2188,6 +2191,12 @@ namespace TDPdf
                 int linkBitmapH = renderedPage.PixelHeight;
                 _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
                 {
+                    if (cancellationToken.IsCancellationRequested
+                        || !ReferenceEquals(_ctx, renderContext)
+                        || !string.Equals(_currentFile, currentFile, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
                     RenderAdditionalPages(pageIndex);
                     RenderPageLinks(pageIndex, linkBitmapW, linkBitmapH);
                     RenderFormFields(pageIndex, linkBitmapW, linkBitmapH);
@@ -12900,7 +12909,8 @@ namespace TDPdf
 
             CommitActiveTextBox();
             CaptureViewState();
-            _renderCancellationTokenSource?.Cancel();
+            CancelDocumentWork(cancelWindowOperation: false);
+            ClearContinuousRenderState();
 
             _ctx = ctx;
 
@@ -13106,9 +13116,10 @@ namespace TDPdf
             if (ctx.Doc is not null && ctx.IsDirty)
             {
                 if (!ReferenceEquals(_ctx, ctx)) ActivateContext(ctx);
-                var res = TdpDialog.Show(this,
-                    "You have unsaved changes. Close this file without saving?",
-                    "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                var res = TdpDialog.ShowYesNo(this,
+                    "This file has unsaved changes.",
+                    "Close Without Saving", "Cancel",
+                    "TDPdf", MessageBoxImage.Warning);
                 if (res != MessageBoxResult.Yes) return;
             }
 
@@ -13117,8 +13128,10 @@ namespace TDPdf
 
             if (closingActive)
             {
-                _openCancellationTokenSource?.Cancel();
-                _renderCancellationTokenSource?.Cancel();
+                CancelDocumentWork(cancelWindowOperation: false);
+                PageImage.Source = null;
+                PageImage.Tag = null;
+                _primaryPageBitmap = null;
             }
 
             try { ctx.Doc?.Close(); } catch { }
@@ -13134,11 +13147,7 @@ namespace TDPdf
             ctx.Thumbnails = null;
             _tabs.Remove(ctx);
 
-            // #122 (upstream v1.6.3): the page-bitmap caches just dropped are the bulk of a large
-            // document's RAM. Without a compaction the process holds its peak working set (the classic
-            // "closed the big file but memory stayed high"). Force a collection so the freed bitmaps
-            // are actually returned after closing a heavy document.
-            GC.Collect();
+            QueueReleasedDocumentCollection();
 
             if (_tabs.Count == 0)
             {
@@ -13158,6 +13167,54 @@ namespace TDPdf
             }
             RebuildTabStrip();
             SetStatus("Ready");
+        }
+
+        private void CancelDocumentWork(bool cancelWindowOperation)
+        {
+            _openCancellationTokenSource?.Cancel();
+            _renderCancellationTokenSource?.Cancel();
+            _secondaryRenderCts?.Cancel();
+            _continuousRenderCts?.Cancel();
+            _continuousSharpenCts?.Cancel();
+            _continuousWindowCts?.Cancel();
+            _continuousSharpenTimer?.Stop();
+            if (cancelWindowOperation)
+                _cancellableOpCts?.Cancel();
+        }
+
+        private void ClearContinuousRenderState()
+        {
+            _continuousSharpenTimer?.Stop();
+            _continuousSharpPages.Clear();
+            _continuousBaseBitmaps.Clear();
+            _continuousSharpW = 0;
+            _continuousTops.Clear();
+
+            foreach (UIElement child in _continuousPanel.Children)
+            {
+                if (child is Border { Child: Image image })
+                    image.Source = null;
+            }
+            _continuousPanel.Children.Clear();
+        }
+
+        private bool _releasedDocumentCollectionPending;
+
+        private void QueueReleasedDocumentCollection()
+        {
+            if (_releasedDocumentCollectionPending) return;
+            _releasedDocumentCollectionPending = true;
+            _ = Dispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+                () =>
+                {
+                    _releasedDocumentCollectionPending = false;
+                    GC.Collect(
+                        GC.MaxGeneration,
+                        GCCollectionMode.Optimized,
+                        blocking: false,
+                        compacting: false);
+                });
         }
 
         /// <summary>
@@ -16545,7 +16602,24 @@ namespace TDPdf
             string title = "TDPdf",
             MessageBoxButton buttons = MessageBoxButton.OK,
             MessageBoxImage image = MessageBoxImage.None)
-            => ShowCore(owner, message, title, buttons, image, null).result;
+            => ShowCore(owner, message, title, buttons, image, null, null, null).result;
+
+        public static MessageBoxResult ShowYesNo(
+            Window? owner,
+            string message,
+            string yesLabel,
+            string noLabel,
+            string title = "TDPdf",
+            MessageBoxImage image = MessageBoxImage.None)
+            => ShowCore(
+                owner,
+                message,
+                title,
+                MessageBoxButton.YesNo,
+                image,
+                null,
+                yesLabel,
+                noLabel).result;
 
         // Same themed dialog as Show, plus a single opt-out checkbox below the message (e.g. "Don't ask
         // again"). Returns the button result together with whether the checkbox was ticked.
@@ -16556,7 +16630,7 @@ namespace TDPdf
             string title = "TDPdf",
             MessageBoxButton buttons = MessageBoxButton.OKCancel,
             MessageBoxImage image = MessageBoxImage.None)
-            => ShowCore(owner, message, title, buttons, image, checkboxLabel);
+            => ShowCore(owner, message, title, buttons, image, checkboxLabel, null, null);
 
         private static (MessageBoxResult result, bool ticked) ShowCore(
             Window? owner,
@@ -16564,7 +16638,9 @@ namespace TDPdf
             string title,
             MessageBoxButton buttons,
             MessageBoxImage image,
-            string? checkboxLabel)
+            string? checkboxLabel,
+            string? yesLabel,
+            string? noLabel)
         {
             var result = MessageBoxResult.OK;
             bool ticked = false;
@@ -16672,9 +16748,9 @@ namespace TDPdf
                     btnPanel.Children.Add(MakeBtn("Cancel", MessageBoxResult.Cancel, isCancel: true));
                     break;
                 case MessageBoxButton.YesNo:
-                    defaultBtn = MakeBtn("Yes", MessageBoxResult.Yes, accent: true, isDefault: true);
+                    defaultBtn = MakeBtn(yesLabel ?? "Yes", MessageBoxResult.Yes, accent: true, isDefault: true);
                     btnPanel.Children.Add(defaultBtn);
-                    btnPanel.Children.Add(MakeBtn("No", MessageBoxResult.No, isCancel: true));
+                    btnPanel.Children.Add(MakeBtn(noLabel ?? "No", MessageBoxResult.No, isCancel: true));
                     break;
                 case MessageBoxButton.YesNoCancel:
                     defaultBtn = MakeBtn("Yes", MessageBoxResult.Yes, accent: true, isDefault: true);
