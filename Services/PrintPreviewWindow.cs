@@ -94,6 +94,11 @@ namespace TDPdf.Services
         private Func<int> _copiesGet = () => 1;   // reads the copies stepper (clamped, min 1)
         private Grid _rootGrid = null!;           // wraps the card content so the print scrim can overlay it
         private Button _printBtn = null!;         // disabled while a print job rasterizes + spools
+        // Set while a job is rasterizing and spooling. The print scrim blocks the mouse but takes no
+        // keyboard focus, so a keystroke in the Pages box (or an arrow key in a combo) still re-runs
+        // UpdatePreview mid-job; without this it would re-enable Print and Enter (IsDefault) would
+        // spool a second copy behind the scrim. Only the failure path clears it — success closes.
+        private bool _printing;
 
         // Segoe MDL2 Assets close glyph, matching the main window chrome close button.
         private const string CloseGlyph = "";
@@ -619,7 +624,12 @@ namespace TDPdf.Services
             // Buttons pinned below the scroller so they stay visible on a short window.
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
             var cancel = MakeButton("Cancel", false);
-            cancel.Click += (_, _) => { DialogResult = false; Close(); };
+            cancel.Click += (_, _) =>
+            {
+                if (_printing) return;
+                DialogResult = false;
+                Close();
+            };
             cancel.IsCancel = true;
             _printBtn = MakeButton("Print", true);
             _printBtn.Margin = new Thickness(8, 0, 0, 0);
@@ -962,39 +972,23 @@ namespace TDPdf.Services
 
         // ---- Sheet composition (shared by the preview and the print path) ----
 
-        // Raster-pixels -> DIP scale factor for a page under the current scale mode.
-        // Fit shrinks the page into the available area; Custom uses the true physical size * percent.
-        private double ScaleFor(BitmapSource bmp, int idx, double availW, double availH)
-        {
-            if (_scaleMode == 1)
-            {
-                double physDipW = _pageSizes[idx].Width / PointPerInch * DipPerInch;
-                double actual   = physDipW / Math.Max(1, bmp.PixelWidth);
-                return actual * (Math.Clamp(_customPct, 25, 400) / 100.0);
-            }
-            return Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
-        }
+        private readonly record struct PrintLayout(
+            int NUp,
+            bool Landscape,
+            double MarginPx,
+            int ScaleMode,
+            double CustomPercent,
+            int AlignH,
+            int AlignV);
 
-        // Page offset within the available area for the current position selection.
-        private double OffsetH(double availW, double imgW)
-            => _alignH == 0 ? 0 : _alignH == 2 ? availW - imgW : (availW - imgW) / 2;
-        private double OffsetV(double availH, double imgH)
-            => _alignV == 0 ? 0 : _alignV == 2 ? availH - imgH : (availH - imgH) / 2;
-
-        // Column/row grid for the current pages-per-sheet count, oriented to the sheet.
-        private (int cols, int rows) NupGrid() => _nUp switch
-        {
-            2 => _landscape ? (2, 1) : (1, 2),
-            4 => (2, 2),
-            6 => _landscape ? (3, 2) : (2, 3),
-            9 => (3, 3),
-            _ => (1, 1)
-        };
+        private PrintLayout CapturePrintLayout() =>
+            new(_nUp, _landscape, _marginPx, _scaleMode, _customPct, _alignH, _alignV);
 
         // The page indices the preview walks AND the Print button sends — whatever range is typed in the
-        // Pages box (blank or unparseable falls back to every page, matching ParseRange), narrowed by the
-        // odd/even selector. Driving the preview, the sheet count and the spool path off this one list is
-        // what keeps the printed output from ever drifting from what the preview showed.
+        // Pages box (blank = every page; a range that matches no page = empty, which the preview and the
+        // print guard both surface), narrowed by the odd/even selector. Driving the preview, the sheet
+        // count and the spool path off this one list is what keeps the printed output from ever drifting
+        // from what the preview showed.
         //
         // The subset filters on the 1-based page NUMBER the user sees, so 0-based index 0 is page 1 = odd.
         // Unlike ParseRange, an empty result here is meaningful (e.g. a 1-page document with "Even pages
@@ -1022,43 +1016,61 @@ namespace TDPdf.Services
         // none of the requested pages could be fetched. Shared by the preview and the print path so
         // what you see is what prints. The `fetch` delegate supplies the page bitmap (preview cache
         // for the preview; a fresh 300 DPI render for print).
-        private Grid? ComposeSheet(List<int> idxs, double aw, double ah, Func<int, BitmapSource?> fetch)
+        private Grid? ComposeSheet(
+            List<int> idxs,
+            double aw,
+            double ah,
+            Func<int, BitmapSource?> fetch,
+            PrintLayout? frozenLayout = null)
         {
+            PrintLayout layout = frozenLayout ?? CapturePrintLayout();
             var sheet = new Grid
             {
                 Width = aw, Height = ah, Background = Brushes.White, ClipToBounds = true,
                 UseLayoutRounding = true, SnapsToDevicePixels = true
             };
             var canvas = new Canvas();
-            double m = _marginPx;
+            double m = layout.MarginPx;
             bool any = false;
 
-            if (_nUp <= 1)
+            if (layout.NUp <= 1)
             {
                 if (idxs.Count > 0 && fetch(idxs[0]) is BitmapSource bmp)
                 {
                     int idx = idxs[0];
                     double availW = aw - 2 * m, availH = ah - 2 * m;
-                    double s  = ScaleFor(bmp, idx, availW, availH);
+                    double s = layout.ScaleMode == 1
+                        ? (_pageSizes[idx].Width / PointPerInch * DipPerInch / Math.Max(1, bmp.PixelWidth))
+                            * (Math.Clamp(layout.CustomPercent, 25, 400) / 100.0)
+                        : Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
                     double iw = bmp.PixelWidth * s, ih = bmp.PixelHeight * s;
                     // In fit mode, snap to the printable area when within a pixel of filling it so the
                     // white sheet doesn't peek through as a 1px hairline at the page edge.
-                    if (_scaleMode == 0)
+                    if (layout.ScaleMode == 0)
                     {
                         if (iw >= availW - 1.5) iw = availW + 1;
                         if (ih >= availH - 1.5) ih = availH + 1;
                     }
                     var img = new Image { Source = bmp, Width = iw, Height = ih };
                     RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-                    Canvas.SetLeft(img, m + OffsetH(availW, iw));
-                    Canvas.SetTop(img, m + OffsetV(availH, ih));
+                    double offsetH = layout.AlignH == 0 ? 0 : layout.AlignH == 2 ? availW - iw : (availW - iw) / 2;
+                    double offsetV = layout.AlignV == 0 ? 0 : layout.AlignV == 2 ? availH - ih : (availH - ih) / 2;
+                    Canvas.SetLeft(img, m + offsetH);
+                    Canvas.SetTop(img, m + offsetV);
                     canvas.Children.Add(img);
                     any = true;
                 }
             }
             else
             {
-                var (cols, rows) = NupGrid();
+                var (cols, rows) = layout.NUp switch
+                {
+                    2 => layout.Landscape ? (2, 1) : (1, 2),
+                    4 => (2, 2),
+                    6 => layout.Landscape ? (3, 2) : (2, 3),
+                    9 => (3, 3),
+                    _ => (1, 1)
+                };
                 const double gap = 6;
                 double cellW = (aw - 2 * m) / cols, cellH = (ah - 2 * m) / rows;
                 for (int i = 0; i < idxs.Count && i < cols * rows; i++)
@@ -1124,12 +1136,14 @@ namespace TDPdf.Services
                 : $"Page {(idxs.Count > 0 ? idxs[0] + 1 : 1)} of {_pageCount}";
         }
 
-        // Greys out Print when the page range + odd/even selector leave nothing to send. The flat button
+        // Greys out Print when the page range + odd/even selector leave nothing to send, and holds it
+        // down while a job is in flight so a keystroke behind the scrim can't revive it. The flat button
         // template has no disabled visual of its own, so opacity carries the state.
         private void UpdatePrintEnabled(bool anySelected)
         {
-            _printBtn.IsEnabled = anySelected;
-            _printBtn.Opacity   = anySelected ? 1.0 : 0.5;
+            bool enable = anySelected && !_printing;
+            _printBtn.IsEnabled = enable;
+            _printBtn.Opacity   = enable ? 1.0 : 0.5;
             _printBtn.ToolTip   = anySelected
                 ? null
                 : "No pages match the current page range and odd/even selection.";
@@ -1171,6 +1185,10 @@ namespace TDPdf.Services
 
             int copies = _copiesGet();
             if (copies < 1) copies = 1;
+            PrintLayout printLayout = CapturePrintLayout();
+            PrintQueue selectedQueue = _queue;
+            string queueName = selectedQueue.FullName;
+            SavePrintPrefs();
 
             // The 300 DPI re-rasterize below runs long enough on real documents that the window used to
             // freeze with no feedback - it read as a crash ("click Print and nothing happens"). Cover the
@@ -1178,6 +1196,7 @@ namespace TDPdf.Services
             // return to the PDF once the job is handed to the spooler. The Print button is disabled and the
             // scrim swallows clicks so the job can't be double-triggered mid-print.
             var overlay = ShowPrintOverlay(out TextBlock statusText);
+            _printing = true;
             _printBtn.IsEnabled = false;
 
             try
@@ -1187,9 +1206,7 @@ namespace TDPdf.Services
                 // for a beat; resuming at Background priority guarantees the scrim's render pass ran first.
                 await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
 
-                SavePrintPrefs();   // remember printer / orientation / color / two-sided for next time
-
-                var pd = new PrintDialog { PrintQueue = _queue };
+                var pd = new PrintDialog { PrintQueue = selectedQueue };
                 var ticket = pd.PrintTicket;
                 // Copies are handled at the driver level via the single ticket count (no manual copy
                 // loop, which double-printed on some drivers); color and duplex ride the ticket too.
@@ -1246,55 +1263,163 @@ namespace TDPdf.Services
                 });
 
                 statusText.Text = "Sending to printer…";
-                // Let the scrim repaint the new message before the UI-thread compose + spool below runs.
-                await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
 
-                var fixedDoc = new FixedDocument();
-                // Group the selected pages into sheets of _nUp and compose each sheet from the pre-rendered
-                // bitmaps (margins + position + scale + tiling all handled inside ComposeSheet, shared with
-                // the preview). Yield every dozen sheets so the scrim's spinner keeps turning on big jobs.
-                int composed = 0;
-                for (int start = 0; start < indices.Count; start += _nUp)
+                // Compose the sheets and spool them from a dedicated STA print thread — see
+                // SpoolOnPrintThreadAsync for why this cannot stay on the UI thread. The single ticket
+                // still carries copies/color/duplex and orientation, so the output is identical to the
+                // old UI-thread path (copies stay driver-level via ticket.CopyCount).
+                bool? ok = await SpoolOnPrintThreadAsync(
+                   indices, aw, ah, hi, ticket, queueName, printLayout);
+
+                if (ok == null)
                 {
-                    var chunk = indices.Skip(start).Take(_nUp).ToList();
-                    var sheet = ComposeSheet(chunk, aw, ah, i => i >= 0 && i < _pageCount ? hi[i] : null);
-                    if (sheet == null) continue;
-
-                    var fp = new FixedPage { Width = aw, Height = ah };
-                    FixedPage.SetLeft(sheet, 0);
-                    FixedPage.SetTop(sheet, 0);
-                    fp.Children.Add(sheet);
-                    fp.Measure(new Size(aw, ah));
-                    fp.Arrange(new Rect(new Point(), new Size(aw, ah)));
-
-                    var pc = new PageContent();
-                    ((IAddChild)pc).AddChild(fp);
-                    fixedDoc.Pages.Add(pc);
-
-                    if (++composed % 12 == 0)
-                        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
-                }
-
-                if (fixedDoc.Pages.Count == 0)
-                {
+                    // No sheet composed — every selected page failed to render.
                     RemoveOverlay(overlay);
-                    _printBtn.IsEnabled = true;
+                    _printing = false;
+                    UpdatePreview();
                     TdpDialog.Show(this, "No pages could be rendered for printing.", "TDPdf",
                         MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
 
-                pd.PrintDocument(fixedDoc.DocumentPaginator, "TDPdf");
-                PrintedPageCount = indices.Count;
-                DialogResult = true;
+                PrintedPageCount = ok.Value ? indices.Count : 0;
+                _printing = false;
+                DialogResult = ok.Value;
                 Close();
             }
             catch (Exception ex)
             {
                 RemoveOverlay(overlay);   // drop the scrim so the error dialog isn't stuck behind it
-                _printBtn.IsEnabled = true;
+                _printing = false;
+                // Re-derive Print rather than switching it straight back on: the Pages box could have
+                // been retyped behind the scrim, and a range that now matches nothing must stay disabled.
+                UpdatePreview();
                 TdpDialog.Show(this, $"Print failed:\n{ex.GetType().Name}: {ex.Message}",
                     "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// Composes the sheet sequence and spools it from a dedicated STA thread that owns its own
+        /// Dispatcher. Returns true once the job reaches the spooler, false if it was cancelled, and
+        /// null when no sheet could be composed (every selected page failed to render).
+        /// </summary>
+        /// <remarks>
+        /// XpsDocumentWriter.WriteAsync is asynchronous only in that it returns straight away: the
+        /// serialization itself runs as dispatcher work items on the CALLING thread, and every selected
+        /// page has to be encoded into the XPS package there. Driven from the UI thread that starved
+        /// input — the scrim included, since the scrim needs that same thread to paint — for the whole
+        /// spool, long enough for Windows to mark the window Not Responding on a big job.
+        ///
+        /// Frozen BitmapSources cross threads freely and ComposeSheet only reads plain layout fields, so
+        /// the FixedPages are built on, and stay on, this thread. Output is unaffected: same sheets, same
+        /// ticket, same spooler.
+        /// </remarks>
+        private Task<bool?> SpoolOnPrintThreadAsync(
+            List<int> indices, double aw, double ah,
+            BitmapSource?[] hi, PrintTicket ticket, string queueName, PrintLayout layout)
+        {
+            var done = new TaskCompletionSource<bool?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var thread = new System.Threading.Thread(() =>
+            {
+                var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                // WriteAsync completes back on this dispatcher, so it has to be pumping before the work
+                // starts — queue the job, then run the loop.
+                dispatcher.BeginInvoke(new Action(async () =>
+                {
+                    try
+                    {
+                        done.TrySetResult(await ComposeAndSpool(
+                            indices, aw, ah, hi, ticket, queueName, layout));
+                    }
+                    catch (Exception ex) { done.TrySetException(ex); }
+                    finally { dispatcher.InvokeShutdown(); }
+                }));
+                System.Windows.Threading.Dispatcher.Run();
+            });
+            // STA: both the XPS serializer and the spooler reach apartment-bound COM underneath.
+            thread.SetApartmentState(System.Threading.ApartmentState.STA);
+            thread.IsBackground = true;
+            thread.Name = "TDPdf print spool";
+            thread.Start();
+            return done.Task;
+        }
+
+        /// <summary>
+        /// Builds the sheet sequence and hands it to the spooler. Runs entirely on the print thread.
+        /// Returns null when no sheet could be composed.
+        /// </summary>
+        private async Task<bool?> ComposeAndSpool(
+            List<int> indices, double aw, double ah,
+            BitmapSource?[] hi, PrintTicket ticket, string queueName, PrintLayout layout)
+        {
+            var fixedDoc = new FixedDocument();
+            // Group the selected pages into sheets of the frozen N-up setting and compose each from
+            // the pre-rendered bitmaps
+            // (margins + position + scale + tiling all handled inside ComposeSheet, shared with the
+            // preview). Copies/color/duplex ride the single ticket, so there is no manual copy loop here —
+            // the driver applies ticket.CopyCount, matching the previous UI-thread path.
+            for (int start = 0; start < indices.Count; start += layout.NUp)
+            {
+                var chunk = indices.Skip(start).Take(layout.NUp).ToList();
+                var sheet = ComposeSheet(
+                    chunk,
+                    aw,
+                    ah,
+                    i => i >= 0 && i < _pageCount ? hi[i] : null,
+                    layout);
+                if (sheet == null) continue;
+
+                var fp = new FixedPage { Width = aw, Height = ah };
+                FixedPage.SetLeft(sheet, 0);
+                FixedPage.SetTop(sheet, 0);
+                fp.Children.Add(sheet);
+                fp.Measure(new Size(aw, ah));
+                fp.Arrange(new Rect(new Point(), new Size(aw, ah)));
+
+                var pc = new PageContent();
+                ((IAddChild)pc).AddChild(fp);
+                fixedDoc.Pages.Add(pc);
+            }
+
+            if (fixedDoc.Pages.Count == 0) return null;
+
+            // A PrintQueue holds a spooler handle opened by whichever thread created it, so this thread
+            // opens its own by name rather than borrowing the one the dialog is holding.
+            using var server = new LocalPrintServer();
+            using var queue  = ResolveQueue(server, queueName);
+
+            var writer  = PrintQueue.CreateXpsDocumentWriter(queue);
+            var spooled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            writer.WritingCompleted += (_, ev) =>
+            {
+                if (ev.Error is not null)  spooled.TrySetException(ev.Error);
+                else if (ev.Cancelled)     spooled.TrySetResult(false);
+                else                       spooled.TrySetResult(true);
+            };
+            // Write the FixedDocument itself, NOT its DocumentPaginator: the paginator path makes the XPS
+            // serializer wrap each page's Visual in a fresh FixedPage, but the Visual already IS a
+            // FixedPage — "FixedPage cannot contain another FixedPage". The FixedDocument overload
+            // serializes the existing FixedPages directly.
+            writer.WriteAsync(fixedDoc, ticket);
+            return await spooled.Task;
+        }
+
+        /// <summary>
+        /// Reopens a print queue by name on the calling thread. LoadPrinters enumerates local queues and
+        /// connections off the local server, so its FullName resolves here too; fall back to matching
+        /// that same enumeration for the names the spooler will not take directly.
+        /// </summary>
+        private static PrintQueue ResolveQueue(LocalPrintServer server, string fullName)
+        {
+            try { return server.GetPrintQueue(fullName); }
+            catch
+            {
+                var match = server
+                    .GetPrintQueues([EnumeratedPrintQueueTypes.Local, EnumeratedPrintQueueTypes.Connections])
+                    .FirstOrDefault(q => q.FullName == fullName);
+                if (match != null) return match;
+                throw;
             }
         }
 
@@ -1346,7 +1471,18 @@ namespace TDPdf.Services
 
         private void RemoveOverlay(Border overlay) => _rootGrid.Children.Remove(overlay);
 
-        // Parses "1-3,5" style ranges into sorted 0-based indices. Blank/invalid = all pages.
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            if (_printing)
+            {
+                e.Cancel = true;
+                return;
+            }
+            base.OnClosing(e);
+        }
+
+        // Parses "1-3,5" style ranges into sorted 0-based indices. Blank = all pages; a range that
+        // matches no page returns empty and the callers surface it (never widened back to every page).
         // Internal because it is the app's one page-range syntax: the print dialog and the
         // image export (File ▸ Export Pages as Images…) share it, hint text included.
         internal static List<int> ParseRange(string? text, int count)
@@ -1367,8 +1503,13 @@ namespace TDPdf.Services
                         int.TryParse(seg[1].Trim(), out int b))
                     {
                         if (a > b) (a, b) = (b, a);
-                        for (int i = a; i <= b; i++)
-                            if (i >= 1 && i <= count) set.Add(i - 1);
+                        // Clamp the ends rather than testing each i inside the loop. With the test
+                        // inside, "1-2147483647" ran i++ past int.MaxValue, wrapped to int.MinValue,
+                        // and i <= b was true again — the loop never ended. The Pages box drives the
+                        // preview live, so that froze the app on a keystroke. Same output either way.
+                        if (a < 1) a = 1;
+                        if (b > count) b = count;
+                        for (int i = a; i <= b; i++) set.Add(i - 1);
                     }
                 }
                 else if (int.TryParse(part, out int v))
@@ -1376,7 +1517,12 @@ namespace TDPdf.Services
                     if (v >= 1 && v <= count) set.Add(v - 1);
                 }
             }
-            return set.Count == 0 ? [.. Enumerable.Range(0, count)] : [.. set];
+            // A blank box already returned every page above, so reaching here with nothing resolved
+            // means the text matched no page — a number past the end, or a typo. Return the empty set
+            // and let the callers surface it (the preview says "No pages selected", the print guard
+            // blocks). Falling back to every page here meant a slipped keystroke in the Pages box
+            // silently spooled the whole document.
+            return [.. set];
         }
 
         // ---- Button / control factory (matches our themed dialog buttons, no blue hover chrome) ----

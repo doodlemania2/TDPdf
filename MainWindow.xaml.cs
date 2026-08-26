@@ -1665,16 +1665,33 @@ namespace TDPdf
         private void RotatePages_Click(int delta)
         {
             if (_doc is null) return;
+            CommitActiveTextBox();
             var selected = PageList.SelectedItems;
             if (selected.Count == 0) return;
             try
             {
                 var indices = new List<int>();
                 foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+                // #169: a rotation must not destroy the overlay annotations. SaveTempAndReload's
+                // default clears them all, so a second rotation after placing an annotation would
+                // lose committed, unsaved work. Remap each rotated page's annotations through the
+                // turn first — the render dims here are still the pre-turn frame the user drew on;
+                // the reload will re-render at the swapped frame — then keep them across the reload.
+                foreach (var idx in indices)
+                {
+                    // Always derive the canonical DIP canvas frame from page geometry. _renderDims can
+                    // also be filled by secondary grid rendering, whose w/h are device pixels on a
+                    // HiDPI monitor rather than the primary annotation canvas's DPI-normalized DIPs.
+                    var dims = AnnotationCanvasSize(_doc.Pages[idx]);
+                    if (_annotations.TryGetValue(idx, out var anns))
+                        TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h);
+                    RemapAnnotationSnapshots(_undoStack, idx, delta, dims.w, dims.h);
+                    RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
+                }
                 foreach (var idx in indices)
                     _doc.Pages[idx].Rotate = ((_doc.Pages[idx].Rotate + delta) % 360 + 360) % 360;
                 int restoreIdx = PageList.SelectedIndex;
-                SaveTempAndReload();
+                SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = Math.Min(restoreIdx, PageList.Items.Count - 1);
                 // After a rotation the page aspect ratio changes; always fit-to-page so the
                 // full rotated page is visible regardless of the previous zoom level. Re-fit
@@ -1686,6 +1703,35 @@ namespace TDPdf
             catch (Exception ex)
             {
                 TdpDialog.Show(this, $"Rotate failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private static (int w, int h) AnnotationCanvasSize(PdfPage page)
+        {
+            var (wpt, hpt) = VisiblePageSize(page);
+            double longest = Math.Max(wpt, hpt);
+            if (longest <= 0) return (1, 1);
+            double scale = TDPdf.Services.PdfDocumentService.RenderBoxDip / longest;
+            return (
+                Math.Max(1, (int)Math.Round(wpt * scale)),
+                Math.Max(1, (int)Math.Round(hpt * scale)));
+        }
+
+        private static void RemapAnnotationSnapshots(
+            LinkedList<UndoEntry> history,
+            int pageIndex,
+            int delta,
+            double oldW,
+            double oldH)
+        {
+            for (var node = history.First; node is not null; node = node.Next)
+            {
+                if (node.Value.Kind == UndoKind.PageSnapshot
+                    && node.Value.PageIdx == pageIndex
+                    && node.Value.PageAnnotations is { } annotations)
+                {
+                    TDPdf.Services.AnnotationRotate.Remap(annotations, delta, oldW, oldH);
+                }
             }
         }
 
@@ -11450,29 +11496,40 @@ namespace TDPdf
             RoutedEventHandler lostFocusHandler,
             Action<bool, bool>? completed = null)
         {
+            bool completionReported = false;
+            void Activate()
+            {
+                bool attached = ReferenceEquals(_activeTextBox, textBox)
+                    && ReferenceEquals(textBox.Parent, _textEditorCanvas);
+                if (attached)
+                {
+                    textBox.Focus();
+                    Keyboard.Focus(textBox);
+                    if (selectAll) textBox.SelectAll();
+                    else textBox.CaretIndex = textBox.Text.Length;
+                }
+
+                if (!completionReported)
+                {
+                    completionReported = true;
+                    completed?.Invoke(attached, textBox.IsKeyboardFocusWithin);
+                }
+            }
+
+            textBox.LostFocus += lostFocusHandler;
             RoutedEventHandler? loadedHandler = null;
             loadedHandler = (_, _) =>
             {
                 textBox.Loaded -= loadedHandler;
-                textBox.LostFocus += lostFocusHandler;
-                _ = textBox.Dispatcher.BeginInvoke(
-                    System.Windows.Threading.DispatcherPriority.ContextIdle,
-                    () =>
-                    {
-                        bool attached = ReferenceEquals(_activeTextBox, textBox)
-                            && ReferenceEquals(textBox.Parent, _textEditorCanvas);
-                        if (attached)
-                        {
-                            textBox.Focus();
-                            Keyboard.Focus(textBox);
-                            if (selectAll) textBox.SelectAll();
-                            else textBox.CaretIndex = textBox.Text.Length;
-                        }
-
-                        completed?.Invoke(attached, textBox.IsKeyboardFocusWithin);
-                    });
+                Activate();
             };
             textBox.Loaded += loadedHandler;
+            // Loaded may already have fired by the time a dynamically-added editor is wired up.
+            // The unconditional fallback is idempotent and guarantees every editor gets an
+            // activation attempt after the current mouse/layout pass either way.
+            _ = textBox.Dispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.Loaded,
+                (Action)Activate);
         }
 
         /// <summary>
@@ -11527,7 +11584,6 @@ namespace TDPdf
             Canvas.SetTop(tb, Math.Clamp(pos.Y, 0, maxY));
             Telemetry.TrackEvent("Annotation.PlaceStarted",
                 new Dictionary<string, string> { ["Type"] = "Text" });
-            _textEditorCanvas.Children.Add(tb);
             _activeTextBox = tb;
             tb.KeyDown += TextBox_KeyDown;
             tb.PreviewMouseLeftButtonDown += (_, _) =>
@@ -11558,6 +11614,7 @@ namespace TDPdf
                             ["Focused"] = focused ? "true" : "false"
                         });
                 });
+            _textEditorCanvas.Children.Add(tb);
         }
 
         /// <summary>Reflects the current whiteout setting onto the live placed-text editing box, if any.</summary>
@@ -15043,10 +15100,15 @@ namespace TDPdf
         // Temp save/reload
         // ============================================================
 
-        private void SaveTempAndReload()
+        private void SaveTempAndReload(bool keepAnnotations = false)
         {
             if (_doc is null || _currentFile is null) return;
-            _annotations.Clear();
+            // Structural edits (delete / reorder / crop / transform) invalidate the overlay
+            // annotations, whose canvas coordinates are tied to the pre-edit page geometry, so they
+            // are cleared by default. Rotation is the one exception: it remaps its pages'
+            // annotations through the turn beforehand (see RotatePages_Click) and passes
+            // keepAnnotations: true so that unsaved work survives the reload.
+            if (!keepAnnotations) _annotations.Clear();
             ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();

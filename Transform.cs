@@ -40,6 +40,11 @@ namespace TDPdf
         private void OpenTransformWindow()
         {
             if (_doc is null || _currentFile is null) return;
+            // Transform bakes the live annotation layer into both its preview and the applied page
+            // image. A text box that still has keyboard focus has not entered that layer yet, so
+            // opening Transform straight after typing would preview (and apply) the page without the
+            // freshly typed text. Commit it first so BurnAllAnnotationsToTemp below sees it.
+            CommitActiveTextBox();
             int pageIdx = PageList.SelectedIndex;
             if (pageIdx < 0) pageIdx = 0;
             if (pageIdx >= _doc.PageCount) return;
