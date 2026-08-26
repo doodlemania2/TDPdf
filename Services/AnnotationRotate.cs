@@ -119,18 +119,12 @@ namespace TDPdf.Services
                         te.OriginalBounds = MapRect(te.OriginalBounds);
                         break;
 
-                    // Existing-image edit: the original white-out turns with the page content. The
-                    // replacement is a live upright WPF overlay, like ImageAnnotation, so its centre
-                    // follows the sheet while its dimensions stay intact rather than stretching.
+                    // Existing-image edit is a replacement for page content, so both its region and
+                    // pixels turn with the sheet. RenderAllAnnotations and the PDF burn honor Rotation.
                     case ImageEditAnnotation ie:
                         ie.OriginalBounds = MapRect(ie.OriginalBounds);
-                        Size targetSize = ie.TargetBounds.Size;
-                        Point target = MapAnchor(
-                            ie.TargetBounds.X,
-                            ie.TargetBounds.Y,
-                            targetSize.Width,
-                            targetSize.Height);
-                        ie.TargetBounds = new Rect(target, targetSize);
+                        ie.TargetBounds = MapRect(ie.TargetBounds);
+                        ie.Rotation = ((ie.Rotation + d) % 360 + 360) % 360;
                         break;
 
                     // Transient crop overlay — normally consumed by the apply-crop reload rather than

@@ -262,6 +262,7 @@ namespace TDPdf
     {
         public Rect OriginalBounds { get; set; }
         public Rect TargetBounds { get; set; }
+        public int Rotation { get; set; }
         public string? OriginalImageData { get; set; }
         public string? ReplacementImagePath { get; set; }
         public bool IsDeleted { get; set; }
@@ -269,6 +270,7 @@ namespace TDPdf
         public override PageAnnotation Clone() => new ImageEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, TargetBounds = TargetBounds,
+            Rotation = Rotation,
             OriginalImageData = OriginalImageData, ReplacementImagePath = ReplacementImagePath,
             IsDeleted = IsDeleted
         };

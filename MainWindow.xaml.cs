@@ -12708,7 +12708,11 @@ namespace TDPdf
                 bmp.CacheOption = BitmapCacheOption.OnLoad;
                 bmp.EndInit();
                 bmp.Freeze();
-                return bmp;
+                int rotation = ((edit.Rotation % 360) + 360) % 360;
+                if (rotation == 0) return bmp;
+                var rotated = new TransformedBitmap(bmp, new RotateTransform(rotation));
+                rotated.Freeze();
+                return rotated;
             }
             catch
             {
@@ -15033,9 +15037,31 @@ namespace TDPdf
 
                                     if (xImg is not null)
                                     {
-                                        gfx.DrawImage(xImg,
-                                            iea.TargetBounds.X * sx, iea.TargetBounds.Y * sy,
-                                            iea.TargetBounds.Width * sx, iea.TargetBounds.Height * sy);
+                                        int rotation = ((iea.Rotation % 360) + 360) % 360;
+                                        if (rotation == 0)
+                                        {
+                                            gfx.DrawImage(xImg,
+                                                iea.TargetBounds.X * sx, iea.TargetBounds.Y * sy,
+                                                iea.TargetBounds.Width * sx, iea.TargetBounds.Height * sy);
+                                        }
+                                        else
+                                        {
+                                            double cx = (iea.TargetBounds.X + iea.TargetBounds.Width / 2) * sx;
+                                            double cy = (iea.TargetBounds.Y + iea.TargetBounds.Height / 2) * sy;
+                                            bool imageQuarterTurn = rotation is 90 or 270;
+                                            double drawW = (imageQuarterTurn ? iea.TargetBounds.Height : iea.TargetBounds.Width) * sx;
+                                            double drawH = (imageQuarterTurn ? iea.TargetBounds.Width : iea.TargetBounds.Height) * sy;
+                                            var state = gfx.Save();
+                                            try
+                                            {
+                                                gfx.RotateAtTransform(rotation, new XPoint(cx, cy));
+                                                gfx.DrawImage(xImg, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+                                            }
+                                            finally
+                                            {
+                                                gfx.Restore(state);
+                                            }
+                                        }
                                     }
                                 }
                                 catch { /* skip broken image edit */ }
