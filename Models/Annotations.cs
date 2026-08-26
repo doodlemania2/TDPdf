@@ -144,6 +144,13 @@ namespace TDPdf
         public MarkupStyle Style { get; set; } = MarkupStyle.Highlight;
 
         /// <summary>
+        /// Clockwise page rotation applied since this markup was created. Highlights use full rects
+        /// and ignore it; underline and strikethrough use it to keep their painted band aligned with
+        /// text that became vertical after a page rotation.
+        /// </summary>
+        public int Rotation { get; set; }
+
+        /// <summary>
         /// One rect per covered text line, in canvas pixels, in reading order. Each rect is the
         /// FULL line box; <see cref="PaintRects"/> narrows it to a band for strikethrough/underline.
         /// </summary>
@@ -172,14 +179,24 @@ namespace TDPdf
             var source = LineRects.Count > 0 ? LineRects : new List<Rect> { Bounds };
             foreach (var line in source)
             {
-                double t = Math.Max(1.5, line.Height * 0.09);
+                int rotation = ((Rotation % 360) + 360) % 360;
+                bool vertical = rotation is 90 or 270;
+                double t = Math.Max(1.5, (vertical ? line.Width : line.Height) * 0.09);
                 switch (Style)
                 {
                     case MarkupStyle.Strikethrough:
-                        yield return new Rect(line.X, line.Y + line.Height / 2 - t / 2, line.Width, t);
+                        yield return vertical
+                            ? new Rect(line.X + line.Width / 2 - t / 2, line.Y, t, line.Height)
+                            : new Rect(line.X, line.Y + line.Height / 2 - t / 2, line.Width, t);
                         break;
                     case MarkupStyle.Underline:
-                        yield return new Rect(line.X, line.Y + Math.Max(0, line.Height - t), line.Width, t);
+                        yield return rotation switch
+                        {
+                            90 => new Rect(line.X, line.Y, t, line.Height),
+                            180 => new Rect(line.X, line.Y, line.Width, t),
+                            270 => new Rect(line.X + Math.Max(0, line.Width - t), line.Y, t, line.Height),
+                            _ => new Rect(line.X, line.Y + Math.Max(0, line.Height - t), line.Width, t),
+                        };
                         break;
                     default:
                         yield return line;
@@ -192,7 +209,7 @@ namespace TDPdf
         {
             var copy = new MarkupAnnotation
             {
-                PageIndex = PageIndex, Bounds = Bounds, Style = Style,
+                PageIndex = PageIndex, Bounds = Bounds, Style = Style, Rotation = Rotation,
                 ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
             };
             copy.LineRects.AddRange(LineRects);
@@ -245,6 +262,7 @@ namespace TDPdf
     {
         public Rect OriginalBounds { get; set; }
         public Rect TargetBounds { get; set; }
+        public int Rotation { get; set; }
         public string? OriginalImageData { get; set; }
         public string? ReplacementImagePath { get; set; }
         public bool IsDeleted { get; set; }
@@ -252,6 +270,7 @@ namespace TDPdf
         public override PageAnnotation Clone() => new ImageEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, TargetBounds = TargetBounds,
+            Rotation = Rotation,
             OriginalImageData = OriginalImageData, ReplacementImagePath = ReplacementImagePath,
             IsDeleted = IsDeleted
         };

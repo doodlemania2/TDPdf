@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.6.0] - 2026-08-26
+
+**A curated fixes-only sync with upstream KillerPDF v1.7.4/v1.7.5, plus the remaining Insert Text Box activation repair.**
+
+### Fixed
+
+- **Every dynamic text editor now gets an unconditional activation attempt.** TDPdf attached its focus callback only to WPF's `Loaded` event. A dynamically-added TextBox can already be loaded before that handler is attached, so the callback never ran and the editor silently received no keyboard input. The editor lifecycle is now wired before the TextBox enters the visual tree, and an idempotent dispatcher fallback runs whether `Loaded` fires before or after registration. This follows the upstream KillerPDF fix for the same “silently took no typing” failure.
+- **Lost-focus handling is attached independently of `Loaded`.** Even if WPF's loaded event has already passed, the editor now has complete commit/cancel lifecycle handling.
+- **Large or invalid print ranges cannot freeze TDPdf or silently widen to the whole document** (upstream KillerPDF v1.7.4, PRs #220/#222). Range endpoints are clamped before iteration, so `1-2147483647` cannot overflow into an endless loop; a range matching no pages now produces an empty preview with Print disabled instead of printing every page.
+- **Printing stays responsive through composition and spooling** (upstream KillerPDF v1.7.4, PR #228). The existing 300-DPI raster pass already ran in the background; sheet composition and the XPS spool operation now run on a dedicated STA print thread as well, while the progress overlay remains responsive.
+- **An in-flight print job cannot be triggered twice.** Print stays disabled while rasterization and spooling are active even if keyboard input behind the overlay refreshes the preview (upstream KillerPDF v1.7.4).
+- **Rotating pages preserves unsaved annotations and keeps them reachable** (upstream KillerPDF v1.7.4/v1.7.5, #169). Highlights, line markup, ink, shapes, placed text, signatures, images, existing-content edits, and crop geometry are remapped through the turn. Upright text and placed items follow the sheet by their center and are clamped within the rotated page bounds.
+- **Transform includes a text box that is still being edited** (upstream KillerPDF v1.7.5). The live editor is committed before the preview and full-resolution transformed page are built.
+
+### Notes
+
+- Already present and therefore not re-ported: page-image export, Shift+mouse-wheel horizontal scrolling, toolbar hiding, the grid page badge, comma-decimal form appearances, duplicate form-field output repair, damaged-drop repair, and startup file-forwarding safety.
+- Intentionally skipped: localization, themes, split-pane behavior, upstream packaging/install changes, branding/landing assets, and cosmetic-only toolbar/badge changes.
+
 ## [1.23.5.0] - 2026-08-25
 
 **Fixes closing a changed document appearing to hang while background page rendering continued.**
@@ -793,7 +812,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.5.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...HEAD
+[1.23.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.5.0...v1.23.6.0
 [1.23.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.4.0...v1.23.5.0
 [1.23.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.3.0...v1.23.4.0
 [1.23.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.2.0...v1.23.3.0
