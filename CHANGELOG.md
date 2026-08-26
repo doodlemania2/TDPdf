@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.23.7.0] - 2026-08-26
+
+**Fixes Insert Text Box discarding the editor a frame after it appears — the actual cause, after four releases of treating it as a focus bug.**
+
+### Fixed
+
+- **An automatic re-fit no longer discards the text box you just placed.** Production traces show the editor being created, attached and focused correctly, then committed as empty 15–140 ms later without a keystroke and without losing focus. Focus was never broken; a layout-driven caller was reaching the shared "settle any in-progress edit" chokepoint one frame after placement. `FitToWidth` / `FitToPage` run from a `SizeChanged` continuation whenever anything perturbs the viewport — including adding the text box itself — and every re-fit committed the live editor. Automatic re-fits now leave it alone, using the `_applyingFitZoom` marker that already existed for exactly this distinction but which nothing read.
+- **A brand-new, untouched text box can no longer be torn down before you can type in it.** An editor that is empty, has never received input and is not a re-edit is now protected from an incidental commit for a short grace period, whatever the caller. A re-edit still commits immediately, because emptying that box means "delete this annotation".
+
+### Changed
+
+- **`Annotation.TextEditorClosed` now records `Via`, the method that requested the commit**, alongside the existing outcome. A new `Annotation.TextEditorCommitDeferred` event records commits refused by the grace window. Both carry a compile-time method name only. Diagnosing this failure previously required guessing which of twenty-one callers ran; it is now a single field in telemetry.
+
+### Notes
+
+- The build warning baseline drops from 6 to 4: wiring `_applyingFitZoom` to its intended purpose retires the `CS0414` "assigned but never used" warning it had been raising in both project passes.
+
 ## [1.23.6.0] - 2026-08-26
 
 **A curated fixes-only sync with upstream KillerPDF v1.7.4/v1.7.5, plus the remaining Insert Text Box activation repair.**
@@ -813,6 +830,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...HEAD
+[1.23.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...v1.23.7.0
 [1.23.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.5.0...v1.23.6.0
 [1.23.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.4.0...v1.23.5.0
 [1.23.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.3.0...v1.23.4.0

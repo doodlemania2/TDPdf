@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.ExceptionServices;
 using System.Threading;
@@ -11483,12 +11484,33 @@ namespace TDPdf
                 parent.Children.Remove(element);
         }
 
-        private static Dictionary<string, string> TextEditorTelemetry(string outcome) =>
-            new()
+        private static Dictionary<string, string> TextEditorTelemetry(string outcome, string? via = null)
+        {
+            var props = new Dictionary<string, string>
             {
                 ["Type"] = "Text",
                 ["Outcome"] = outcome
             };
+            // #129: which method asked for the commit. Four releases (1.23.3 – 1.23.6) chased this
+            // as a focus bug on the strength of PlaceCompleted{Focused=true} followed ~30ms later by
+            // TextEditorClosed{Outcome=Empty}; focus was never the problem, an unidentified caller of
+            // the commit chokepoint was. A C# method name is a compile-time constant, so this cannot
+            // leak document or user content and needs no scrubbing.
+            if (!string.IsNullOrEmpty(via)) props["Via"] = via;
+            return props;
+        }
+
+        /// <summary>
+        /// How long a freshly placed, still-untouched text editor is protected from an
+        /// <em>incidental</em> commit. See <see cref="CommitActiveTextBox"/>.
+        /// </summary>
+        private const double UntouchedEditorGraceMs = 400;
+
+        /// <summary>When the live placed-text editor was created, for the grace window above.</summary>
+        private DateTime _activeTextBoxPlacedUtc = DateTime.MinValue;
+
+        /// <summary>Set on the first <c>TextChanged</c>, i.e. once the user has actually typed.</summary>
+        private bool _activeTextBoxTouched;
 
         private void FocusTextEditorWhenLoaded(
             TextBox textBox,
@@ -11585,6 +11607,8 @@ namespace TDPdf
             Telemetry.TrackEvent("Annotation.PlaceStarted",
                 new Dictionary<string, string> { ["Type"] = "Text" });
             _activeTextBox = tb;
+            _activeTextBoxPlacedUtc = DateTime.UtcNow;
+            _activeTextBoxTouched = false;
             tb.KeyDown += TextBox_KeyDown;
             tb.PreviewMouseLeftButtonDown += (_, _) =>
             {
@@ -11594,6 +11618,7 @@ namespace TDPdf
             bool inputStarted = false;
             tb.TextChanged += (_, _) =>
             {
+                if (ReferenceEquals(_activeTextBox, tb)) _activeTextBoxTouched = true;
                 if (inputStarted) return;
                 inputStarted = true;
                 Telemetry.TrackEvent("Annotation.TextEditorInputStarted",
@@ -11677,7 +11702,11 @@ namespace TDPdf
             Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Canceled"));
         }
 
-        private void CommitActiveTextBox()
+        /// <param name="via">
+        /// Compile-time name of the calling method, supplied by the compiler. Recorded on the
+        /// resulting <c>Annotation.TextEditorClosed</c> event — see <see cref="TextEditorTelemetry"/>.
+        /// </param>
+        private void CommitActiveTextBox([CallerMemberName] string? via = null)
         {
             // This is the app's single "settle any in-progress canvas edit" chokepoint — every
             // save / flatten / print / close / tool switch / tab switch / page change routes
@@ -11685,6 +11714,29 @@ namespace TDPdf
             // left dangling on a canvas that is about to be rebuilt. See ShapePolyClick.
             ResolveShapePolygon(commit: true);
             if (_activeTextBox is null) return;
+
+            // #129: a text box the user has not typed into yet is not a finished edit, and tearing
+            // it down is only ever right as a response to user intent. Production traces show the
+            // opposite happening: PlaceStarted → PlaceCompleted{Attached=true,Focused=true} →
+            // TextEditorClosed{Outcome=Empty} inside 15–140ms, repeatedly, with no keystroke and no
+            // TextEditorFocusLost in between. Something on a layout / render continuation reaches
+            // this chokepoint one frame after placement and discards the editor before the user can
+            // possibly have typed, which is exactly what "Insert Text Box does nothing" looks like.
+            //
+            // Refuse that specific case: brand new, never typed into, still empty, and not a re-edit
+            // (a re-edit MUST commit — an emptied box there means "delete this annotation"). The
+            // caller is recorded so the next report names it instead of costing another release.
+            // Worst case if a genuine commit lands inside the window, an empty editor outlives it by
+            // a few hundred milliseconds and produces no annotation either way.
+            if (!_activeTextBoxTouched
+                && _activeTextBox.Tag is PlacedTextContext { Existing: null }
+                && string.IsNullOrWhiteSpace(_activeTextBox.Text)
+                && (DateTime.UtcNow - _activeTextBoxPlacedUtc).TotalMilliseconds < UntouchedEditorGraceMs)
+            {
+                Telemetry.TrackEvent("Annotation.TextEditorCommitDeferred",
+                    TextEditorTelemetry("UntouchedGrace", via));
+                return;
+            }
             // If it's an inline (existing-PDF-text) edit, use the dedicated commit path
             if (_activeTextBox.Tag is TextEditContext)
             {
@@ -11738,18 +11790,18 @@ namespace TDPdf
                 // #168: say it NOW, not after saving and reopening. The burn resolves the same
                 // family this checks (DrawAnnotationsOnDocument), so the two never disagree.
                 WarnIfGlyphsWillBeLost(PdfFontStyle.DefaultFamily, ta.Content);
-                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Committed"));
+                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Committed", via));
             }
             else if (reediting)
             {
                 // Box emptied while re-editing: original was already removed at edit-start → commit as a delete.
                 MarkDirty();
                 RenderAllAnnotations(pageIdx);
-                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Deleted"));
+                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Deleted", via));
             }
             else
             {
-                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Empty"));
+                Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Empty", via));
             }
         }
 
@@ -15462,7 +15514,15 @@ namespace TDPdf
         private void ApplyZoom()
         {
             SyncLayoutZoom();
-            CommitActiveTextBox();
+            // #129: settling the live editor is right for a zoom the USER asked for — the box is
+            // positioned in page coordinates and a manual zoom is a deliberate change of view. An
+            // automatic re-fit is not user intent: FitToWidth / FitToPage run from
+            // PagePreviewPanel_SizeChanged on a Loaded-priority continuation, i.e. one layout frame
+            // after anything that perturbs the viewport — including placing a text box — so
+            // committing here discarded the editor the user was about to type into.
+            // _applyingFitZoom already marks exactly this distinction; until now nothing read it
+            // (it was the CS0414 "assigned but never used" warning in the build baseline).
+            if (!_applyingFitZoom) CommitActiveTextBox();
             SaveZoomSetting();
 
             // Continuous view is scaled entirely by the shared ScaleTransform above; it must not
