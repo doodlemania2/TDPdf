@@ -40,6 +40,20 @@ namespace TDPdf
         public const double MinZoomLevel = 0.05;
         public const double MaxZoomLevel = 4.0;
 
+        /// <summary>
+        /// How close a zoom has to be to a dropdown preset for the dropdown to show that preset.
+        /// </summary>
+        /// <remarks>
+        /// #131: ONE tolerance, used by every comparison in this pair. It was two — <c>FindPreset</c>
+        /// matched at 0.005 while <c>OnSelectedLevelChanged</c> wrote back at 0.0001 — and the gap
+        /// between them was a self-driving loop: a computed fit of, say, 0.998 selected the 100%
+        /// preset for display, and the write-back then forced the zoom itself to 1.00, changing the
+        /// view the user had asked to fit and re-entering the whole zoom pipeline to do it.
+        /// Displaying a preset must never move the zoom to it. <c>MainWindow.ZoomBox_SelectionChanged</c>
+        /// reads this too, so the combo cannot read its own mirror back as a user pick.
+        /// </remarks>
+        public const double PresetMatchTolerance = 0.005;
+
         public ZoomViewModel()
         {
             AvailableLevels = new ObservableCollection<ZoomLevelOption>
@@ -109,7 +123,11 @@ namespace TDPdf
 
         partial void OnSelectedLevelChanged(ZoomLevelOption? value)
         {
-            if (value?.ZoomLevel is double preset && System.Math.Abs(preset - ZoomLevel) > 0.0001)
+            // #131: only a selection that asks for a DIFFERENT zoom moves the zoom. Anything inside
+            // PresetMatchTolerance is the selection this view model just made to mirror the zoom
+            // that is already in force — see the remarks on that constant.
+            if (value?.ZoomLevel is double preset
+                && System.Math.Abs(preset - ZoomLevel) >= PresetMatchTolerance)
             {
                 SetZoomLevel(preset);
             }
@@ -123,7 +141,8 @@ namespace TDPdf
         {
             foreach (var option in AvailableLevels)
             {
-                if (option.ZoomLevel is double preset && System.Math.Abs(preset - value) < 0.005)
+                if (option.ZoomLevel is double preset
+                    && System.Math.Abs(preset - value) < PresetMatchTolerance)
                     return option;
             }
 
