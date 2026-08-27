@@ -493,7 +493,10 @@ namespace TDPdf
             RebuildTabStrip();
             ApplyCustomChromeVisibility();
             ThemeManager.ThemeChanged += ThemeManager_ThemeChanged;
-            Zoom.SetZoomLevel(TDPdf.Properties.Settings.Default.LastZoomLevel);
+            // #132: named, for the same reason as the DpiChanged handler below — the compiler would
+            // otherwise stamp LastZoomOrigin with ".ctor" and leave it there until something else
+            // sets a zoom, making every Zoom.Churn until then indistinguishable from that handler.
+            Zoom.SetZoomLevel(TDPdf.Properties.Settings.Default.LastZoomLevel, origin: "StartupZoomRestore");
             Zoom.PropertyChanged += Zoom_PropertyChanged;
             CommandBindings.Add(new CommandBinding(ZoomInRoutedCommand, (_, _) => ChangeZoomByCommand(ZoomChange.In)));
             CommandBindings.Add(new CommandBinding(ZoomOutRoutedCommand, (_, _) => ChangeZoomByCommand(ZoomChange.Out)));
@@ -517,7 +520,14 @@ namespace TDPdf
             // the message and never raises DpiChanged. WmDpiChanged is the live DPI-change path and
             // does the re-render itself. Left in place rather than deleted because it is harmless
             // and idempotent, and it is the correct response if WPF ever does raise the event.
-            DpiChanged += (_, _) => ApplyZoom();
+            //
+            // #132: name it explicitly rather than letting [CallerMemberName] fill it in. A lambda
+            // in a constructor body reports ".ctor", which is ALSO what a stale
+            // ZoomViewModel.LastZoomOrigin reads after the startup zoom restore — so the first
+            // production Zoom.Churn came back Via=".ctor" and could not distinguish "the handler
+            // this comment calls dead is alive on that machine" from "nothing has set a zoom origin
+            // since launch". Those are very different findings; one word separates them for good.
+            DpiChanged += (_, _) => ApplyZoom(via: nameof(DpiChanged));
 
             // Open a file passed via command-line / file association (e.g. double-clicking a .pdf)
             // Also show the portable badge when running outside the install location.

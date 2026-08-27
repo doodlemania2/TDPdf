@@ -912,6 +912,72 @@ namespace TDPdf
         // Installation
         // ============================================================
 
+        /// <summary>
+        /// Copies the running EXE onto <paramref name="dest"/>, surviving a destination that is
+        /// momentarily locked.
+        /// </summary>
+        /// <remarks>
+        /// #134: a plain <c>File.Copy(overwrite: true)</c> here crashed the installer on five
+        /// occasions across four consecutive releases, always the same
+        /// <see cref="IOException"/> — "the process cannot access the file" — out of
+        /// <c>DoInstall</c> on a first-run path, where the user sees the app die on launch rather
+        /// than install. The lock is transient every time (a previous TDPdf finishing its exit, a
+        /// shell preview handler, an AV scan), so two cheap things clear it:
+        /// <list type="number">
+        /// <item>a short backoff and retry, which covers a process on its way out; and</item>
+        /// <item>renaming the destination aside first — Windows permits renaming a file that is
+        /// open and even one that is executing, where it refuses to overwrite it.</item>
+        /// </list>
+        /// The displaced file is deleted on the next install if it is no longer held, so a machine
+        /// cannot accumulate them. If every attempt fails the original exception is rethrown
+        /// untouched, preserving the "exit non-zero and let Intune retry" contract that the caller
+        /// depends on.
+        /// </remarks>
+        private static void CopyExeOverLock(string src, string dest)
+        {
+            const int attempts = 4;
+            string displaced = dest + ".old";
+
+            // Clear anything a previous install displaced, now that nothing should hold it.
+            try { if (File.Exists(displaced)) File.Delete(displaced); }
+            catch (Exception ex) { InstallLog.Write($"Could not remove {displaced} (harmless): {ex.Message}"); }
+
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Copy(src, dest, overwrite: true);
+                    if (attempt > 1) InstallLog.Write($"Copy succeeded on attempt {attempt}.");
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    if (attempt >= attempts)
+                    {
+                        InstallLog.WriteError($"Copy failed after {attempts} attempts", ex);
+                        throw;
+                    }
+                    InstallLog.Write($"Copy attempt {attempt} failed ({ex.GetType().Name}: {ex.Message}); retrying.");
+
+                    // Second attempt onward: move the lock out of the way rather than fight it.
+                    if (attempt >= 2)
+                    {
+                        try
+                        {
+                            if (File.Exists(dest)) File.Move(dest, displaced, overwrite: true);
+                            InstallLog.Write($"Displaced locked destination to {displaced}.");
+                        }
+                        catch (Exception moveEx)
+                        {
+                            InstallLog.Write($"Could not displace destination: {moveEx.Message}");
+                        }
+                    }
+
+                    Thread.Sleep(250 * attempt);
+                }
+            }
+        }
+
         private static void DoInstall(bool wantDesktop, bool silent = false)
         {
             var scope = NewInstallScope;
@@ -924,12 +990,13 @@ namespace TDPdf
 
             InstallLog.Write($"DoInstall scope={scope} src={src} dest={installExe} hive={hive.Name}");
 
-            // Copy EXE to install location. If the destination file is locked
-            // (TDPdf is running from the install location), File.Copy throws
-            // IOException; the caller maps any exception to a non-zero exit
-            // code so Intune retries on the next sync.
+            // Copy EXE to install location. If the destination is locked — a previous TDPdf still
+            // exiting, an Explorer preview handler, an AV scanner mid-scan — File.Copy throws
+            // IOException and the caller maps it to a non-zero exit code so Intune retries on the
+            // next sync. That contract is preserved; CopyExeOverLock just stops the common,
+            // transient case from getting that far. See #134.
             Directory.CreateDirectory(installDir);
-            File.Copy(src, installExe, overwrite: true);
+            CopyExeOverLock(src, installExe);
 
             // Post-copy verification. Without this, a partial / silently-failed
             // copy could leave us with no file on disk and the caller would
