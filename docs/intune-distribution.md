@@ -175,7 +175,7 @@ registered. Any of the three options below check that marker; pick one.
 
 The script reads the registry marker, parses `Version` with
 `[Version]::TryParse`, and emits stdout only when the installed version
-is greater than or equal to `$MinVersion` (defaulted to `1.8.0.0`). Bump
+is greater than or equal to `$MinVersion` (currently `1.24.1.0`). Bump
 `$MinVersion` in the script for each release.
 
 **Fallback A — Registry value comparison (manual rule):**
@@ -401,8 +401,17 @@ so a leak is rotated here without touching any other application on the collecto
   they could be sent are spooled to disk and replayed at the next launch, marked
   `crash.replayed`.
 - `Tool.Selected` — tool palette interactions. Property: `Tool` name.
-- `File.Open` / `File.New` / `File.Save` / `File.SaveFlattened` / `File.Merge` / `File.Split` /
+- `Zoom.Churn` — 1.24.1.0. A self-diagnostic for [#132](https://github.com/doodlemania2/TDPdf/issues/132).
+  Emitted when the viewport re-applies its zoom 8 or more times per second and **keeps doing so for
+  at least 2 seconds**. The sustain requirement is what makes it a defect signature rather than a
+  rate: a sidebar animation, a window-edge drag and one flick of Ctrl+wheel all clear 8/s by design
+  and none of them holds it. Properties: `Count`, `Via` (the TDPdf method that originated most of
+  those zooms — the originator, not the handler they all funnel through), `ViaCount`, `SustainedMs`,
+  `FitMode`, `ViewMode` — all compile-time constants, integers, or enum names. Rate-limited to one
+  report per 15 minutes.
+- `File.Open` / `File.New` / `File.Merge` / `File.Split` /
   `File.Print` — coarse-grained usage. **No file names, paths, sizes, or document content.**
+  (Saving is not among these: it is timed instead, and appears as the `Op.*` spans below.)
 - `Op.*` spans — durations for timed operations, so latency percentiles are computed by the
   backend rather than pre-aggregated here.
 

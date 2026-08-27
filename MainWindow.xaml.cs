@@ -194,11 +194,12 @@ namespace TDPdf
         // the next open — and what stops a remembered Fit Width being quietly overwritten when a
         // fit early-returns and leaves _zoomFitMode reading None.
         private bool _manualZoomIntent;
-        // Vestigial re-entrancy guard around the FitToWidth / FitToPage zoom writes: set and
-        // cleared, never read (hence the CS0414 the build carries). Deliberately left alone —
-        // it is NOT the remembered-fit flag, which is the persisted Settings.DefaultFitMode, and
-        // the resize re-fit it would have guarded is already debounced by _fitResizePending.
-        private bool _applyingFitZoom;
+        // #131: _applyingFitZoom is gone. It was vestigial until 1.23.7.0 read it to keep automatic
+        // re-fits out of the text-editor commit chokepoint; the fleet then proved that guard both
+        // unnecessary (a zoom never needed to settle the editor — see ApplyZoom) and ineffective
+        // (a plain bool cannot survive the re-entrancy the zoom writes actually produce). Removing
+        // the ONE read makes it an unread field again, so the field and its four writes go too
+        // rather than coming back as a CS0414.
         private bool _fitResizePending;
 
         // Selection move/resize for non-placed annotations
@@ -2683,6 +2684,13 @@ namespace TDPdf
                 _gridViewToggle.IsChecked = mode == ViewMode.Grid;
                 return;
             }
+            // #131: a view-mode switch is an explicit gesture and belongs on the commit
+            // chokepoint alongside tool / tab / page switches. It only ever reached it
+            // incidentally, through ApplyZoom, and then only when the switch's fit happened to
+            // change the zoom VALUE — an equal SetZoomLevel raises no PropertyChanged. Entering
+            // Continuous collapses the page panel, so without this the live editor simply went
+            // invisible while still being the active one.
+            CommitActiveTextBox();
             _viewMode = mode;
             _gridViewToggle.IsChecked = mode == ViewMode.Grid;
             try
@@ -11560,6 +11568,35 @@ namespace TDPdf
         /// </summary>
         private void PlaceTextBox(Point pos, int pageIdx, TextAnnotation? existing = null)
         {
+            // #131: every caller offers the live editor to the commit chokepoint before getting
+            // here. If one is STILL live, the untouched-editor grace refused that commit — and the
+            // assignment below is about to overwrite _activeTextBox, stranding the refused box on
+            // TextEditorCanvas with nothing referencing it. Nothing reaps that canvas except a tab
+            // switch, so it would sit on the page, visible and unusable, for the rest of the
+            // session. A brand-new editor nobody typed into has nothing worth preserving; discard
+            // it. (Only a placed-text box can be in that state — the grace never defers an inline
+            // PDF-text edit, and the inline path returns rather than replacing the editor.)
+            //
+            // Discard EXACTLY what the grace refused, and settle anything else properly. The
+            // second branch is unreachable today for the reason above, but "we are about to
+            // overwrite the field" must never become a licence to throw away text somebody typed.
+            if (_activeTextBox is { } stale)
+            {
+                if (!_activeTextBoxTouched
+                    && stale.Tag is PlacedTextContext { Existing: null }
+                    && string.IsNullOrWhiteSpace(stale.Text))
+                {
+                    _activeTextBox = null;
+                    RemoveTextEditorElement(stale);
+                    Telemetry.TrackEvent("Annotation.TextEditorClosed",
+                        TextEditorTelemetry("Empty", nameof(PlaceTextBox)));
+                }
+                else
+                {
+                    CommitActiveTextBox();
+                }
+            }
+
             double width = DefaultTextBoxWidth;
             if (existing is not null)
             {
@@ -11716,20 +11753,29 @@ namespace TDPdf
             if (_activeTextBox is null) return;
 
             // #129: a text box the user has not typed into yet is not a finished edit, and tearing
-            // it down is only ever right as a response to user intent. Production traces show the
-            // opposite happening: PlaceStarted → PlaceCompleted{Attached=true,Focused=true} →
-            // TextEditorClosed{Outcome=Empty} inside 15–140ms, repeatedly, with no keystroke and no
-            // TextEditorFocusLost in between. Something on a layout / render continuation reaches
-            // this chokepoint one frame after placement and discards the editor before the user can
-            // possibly have typed, which is exactly what "Insert Text Box does nothing" looks like.
+            // it down is only ever right as a response to user intent. Refuse that specific case:
+            // brand new, never typed into, still empty, and not a re-edit (a re-edit MUST commit —
+            // an emptied box there means "delete this annotation"). Worst case if a genuine commit
+            // lands inside the window, an empty editor outlives it by a few hundred milliseconds
+            // and produces no annotation either way.
             //
-            // Refuse that specific case: brand new, never typed into, still empty, and not a re-edit
-            // (a re-edit MUST commit — an emptied box there means "delete this annotation"). The
-            // caller is recorded so the next report names it instead of costing another release.
-            // Worst case if a genuine commit lands inside the window, an empty editor outlives it by
-            // a few hundred milliseconds and produces no annotation either way.
+            // #131: this is now a BACKSTOP, not the fix. The caller that was destroying every
+            // editor in production was ApplyZoom (54/54 destructions, `Via=ApplyZoom`), and it has
+            // been removed from that path entirely — a zoom never needed to settle the editor. What
+            // this block is still worth is the same thing it was worth then: an unforeseen
+            // incidental caller shows up as a NAMED deferral in telemetry instead of as another
+            // silent "Insert Text Box does nothing" report. It buys 400 ms and a name; it is not
+            // load-bearing, and no future fix should lean on it as though it were.
+            //
+            // The page check is load-bearing and was missing. PageList_SelectionChanged routes
+            // through here, and deferring it left the empty editor parented to TextEditorCanvas —
+            // which no re-render clears — so it floated over the page the user had just navigated
+            // TO while still carrying the PageIndex of the page it was placed ON. Typing into it
+            // then put the text on a page nobody was looking at. Before this release the ~23 Hz
+            // ApplyZoom commit destroyed the box milliseconds later and hid that; it does not now.
             if (!_activeTextBoxTouched
-                && _activeTextBox.Tag is PlacedTextContext { Existing: null }
+                && _activeTextBox.Tag is PlacedTextContext { Existing: null } graceCtx
+                && graceCtx.PageIndex == PageList.SelectedIndex
                 && string.IsNullOrWhiteSpace(_activeTextBox.Text)
                 && (DateTime.UtcNow - _activeTextBoxPlacedUtc).TotalMilliseconds < UntouchedEditorGraceMs)
             {
@@ -15511,18 +15557,106 @@ namespace TDPdf
             }
         }
 
-        private void ApplyZoom()
+        // ---- Zoom churn detector (#131) ------------------------------------------------------
+        //
+        // The text-editor bug above was only ever VISIBLE because an editor happened to be alive
+        // while ApplyZoom repeated; TextEditorCommitDeferred fires nowhere else, so the fleet data
+        // could not say whether placing a box STARTED the repetition or merely exposed a loop that
+        // was always running. With the commit gone, that signal disappears entirely — and a UI
+        // re-rendering the page ~23 times a second (each pass cancelling a render, re-fitting, and
+        // writing user.config) is a defect whether or not anything is being destroyed by it.
+        //
+        // So report the loop directly instead: count ApplyZoom calls in a rolling window and emit
+        // ONE event per burst naming the caller that dominated it. A C# method name is a
+        // compile-time constant, so this cannot carry document or user content.
+        //
+        // TWO details this gets wrong if written naively, both of which make the event worthless:
+        //
+        // 1. The name must be the ORIGINATOR, not ApplyZoom's caller. ApplyZoom has three call
+        //    sites and every zoom write in the app arrives through one of them —
+        //    Zoom_PropertyChanged — so [CallerMemberName] here reports the fan-in point on
+        //    essentially every event. A re-fit loop, a pinch and Ctrl+wheel would be
+        //    indistinguishable. ZoomViewModel.LastZoomOrigin is the frame above, and is what
+        //    separates FitToWidth from a person turning a wheel.
+        // 2. It must fire on SUSTAINED churn only. A rate alone is not a defect signature: the
+        //    sidebar's 250 ms width animation re-fits on every frame by design (see the comment on
+        //    AnimateSidebarWidth), dragging a window edge does the same, and one flick of
+        //    Ctrl+wheel walks nine presets. All three clear any threshold worth setting. What was
+        //    pathological in production was that the rate held with no one touching anything, so
+        //    require the window to STAY above threshold for ZoomChurnSustainMs before reporting.
+        private const int ZoomChurnThreshold = 8;
+        private static readonly TimeSpan ZoomChurnWindow = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan ZoomChurnSustain = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan ZoomChurnReportInterval = TimeSpan.FromMinutes(15);
+        private readonly Queue<(DateTime At, string Via)> _zoomApplyLog = new();
+        private DateTime _churnAboveThresholdSinceUtc = DateTime.MinValue;
+        private DateTime _lastZoomChurnReportUtc = DateTime.MinValue;
+
+        private void NoteZoomApplied(string? via)
+        {
+            var now = DateTime.UtcNow;
+            // The originator, when there is one to have. RerenderCurrentPage and the (dead) DpiChanged
+            // handler reach ApplyZoom without going through the view model at all, and for those the
+            // compiler-supplied name IS the answer.
+            string origin = (via == nameof(Zoom_PropertyChanged) ? Zoom.LastZoomOrigin : via) ?? via ?? "unknown";
+            _zoomApplyLog.Enqueue((now, origin));
+            while (_zoomApplyLog.Count > 0 && now - _zoomApplyLog.Peek().At > ZoomChurnWindow)
+                _zoomApplyLog.Dequeue();
+
+            if (_zoomApplyLog.Count < ZoomChurnThreshold)
+            {
+                _churnAboveThresholdSinceUtc = DateTime.MinValue;   // the burst broke; start over
+                return;
+            }
+            if (_churnAboveThresholdSinceUtc == DateTime.MinValue) _churnAboveThresholdSinceUtc = now;
+            if (now - _churnAboveThresholdSinceUtc < ZoomChurnSustain) return;
+            if (now - _lastZoomChurnReportUtc < ZoomChurnReportInterval) return;
+            _lastZoomChurnReportUtc = now;
+
+            // The caller that contributed most of the burst — that is the one worth naming.
+            var tally = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var (_, caller) in _zoomApplyLog)
+                tally[caller] = tally.TryGetValue(caller, out int c) ? c + 1 : 1;
+            string dominant = "unknown";
+            int best = 0;
+            foreach (var pair in tally)
+                if (pair.Value > best) { best = pair.Value; dominant = pair.Key; }
+
+            Telemetry.TrackEvent("Zoom.Churn", new Dictionary<string, string>
+            {
+                ["Count"] = _zoomApplyLog.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["Via"] = dominant,
+                ["ViaCount"] = best.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["SustainedMs"] = ((int)(now - _churnAboveThresholdSinceUtc).TotalMilliseconds)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["FitMode"] = _zoomFitMode.ToString(),
+                ["ViewMode"] = _viewMode.ToString()
+            });
+        }
+
+        /// <param name="via">
+        /// Compile-time name of the calling method, supplied by the compiler, for the churn
+        /// detector below. See <see cref="NoteZoomApplied"/>.
+        /// </param>
+        private void ApplyZoom([CallerMemberName] string? via = null)
         {
             SyncLayoutZoom();
-            // #129: settling the live editor is right for a zoom the USER asked for — the box is
-            // positioned in page coordinates and a manual zoom is a deliberate change of view. An
-            // automatic re-fit is not user intent: FitToWidth / FitToPage run from
-            // PagePreviewPanel_SizeChanged on a Loaded-priority continuation, i.e. one layout frame
-            // after anything that perturbs the viewport — including placing a text box — so
-            // committing here discarded the editor the user was about to type into.
-            // _applyingFitZoom already marks exactly this distinction; until now nothing read it
-            // (it was the CS0414 "assigned but never used" warning in the build baseline).
-            if (!_applyingFitZoom) CommitActiveTextBox();
+            NoteZoomApplied(via);
+            // #131: a zoom change must NOT settle the live text editor, and never needed to.
+            //
+            // 1.23.7.0 tried to keep only the AUTOMATIC re-fits out of the commit chokepoint
+            // (`if (!_applyingFitZoom) CommitActiveTextBox();`). Production said no: 54 of 54
+            // editor destructions across the fleet arrived here, `Via=ApplyZoom`, with the flag
+            // false — and at ~23 Hz, sustained, so the 400 ms grace added alongside it merely
+            // moved every death to 409-456 ms. Upstream KillerPDF has never had this call on any
+            // automatic path; its chokepoint is reached only from tool/tab/page switches, save,
+            // print, close, Enter and blur.
+            //
+            // The premise was wrong, not the guard. The page tile, AnnotationCanvas and
+            // TextEditorCanvas are all sized from PdfDocumentService's fixed RenderBoxDip, and the
+            // zoom is an ancestor LayoutTransform on PageContentGrid — so the editor's
+            // Canvas.Left/Top and the TextAnnotation.Position they become are the same numbers at
+            // every zoom. Nothing about a zoom needs the box settled; the box scales with the page.
             SaveZoomSetting();
 
             // Continuous view is scaled entirely by the shared ScaleTransform above; it must not
@@ -15585,13 +15719,30 @@ namespace TDPdf
         private void ZoomBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_zoomBox?.SelectedItem is not ZoomLevelOption option) return;
-            // Picking a fit from the dropdown is an explicit preference, so it is remembered and
-            // applied to the next document opened (upstream v1.7.1).
+            // #131: this handler cannot assume it was called by a person. ZoomBox.SelectedItem is
+            // TwoWay-bound to Zoom.SelectedLevel, and ZoomViewModel.OnZoomLevelChanged rewrites that
+            // property on EVERY zoom change from every source, so the binding echoes each
+            // programmatic zoom straight back here as a SelectionChanged. Acting on the echo made
+            // the app zoom itself: it called BeginManualZoom — silently cancelling the fit the user
+            // had chosen — and wrote a zoom nobody asked for, re-entering ApplyZoom with no user
+            // behind it.
+            //
+            // The view model marks the selection it pushes, so the echo is identified by IDENTITY.
+            // Do NOT try to identify it arithmetically by comparing the picked preset against the
+            // current zoom: whatever the ordering, the two agree by the time this runs, so such a
+            // test cannot separate an echo from a real pick and swallows both.
+            if (Zoom.ConsumeMirrorEcho(option)) return;
+            //
+            // The two fit entries can never be echoes anyway — FindPreset only ever returns an
+            // option with a numeric ZoomLevel, so a fit reaches this handler only because a person
+            // picked it. Picking a fit from the dropdown is an explicit preference, so it is
+            // remembered and applied to the next document opened (upstream v1.7.1).
             if (option.IsFitWidth) { SaveDefaultFitMode(ZoomFitMode.Width); FitToWidth(); return; }
             if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
+            if (option.ZoomLevel is not double zoom) return;
             // User picked an explicit zoom level — stop tracking the window size.
             BeginManualZoom();
-            if (option.ZoomLevel is double zoom) Zoom.SetZoomLevel(zoom);
+            Zoom.SetZoomLevel(zoom);
         }
 
         // ============================================================
@@ -15658,17 +15809,13 @@ namespace TDPdf
                 if (_continuousPageW <= 0) return;
                 _zoomFitMode = ZoomFitMode.Width;
                 _manualZoomIntent = false;   // #201: a fit retires the remembered manual zoom
-                _applyingFitZoom = true;
-                try { Zoom.SetZoomLevel(viewW / _continuousPageW); }
-                finally { _applyingFitZoom = false; }
+                Zoom.SetZoomLevel(viewW / _continuousPageW);
                 return;
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
             _zoomFitMode = ZoomFitMode.Width;
             _manualZoomIntent = false;   // #201
-            _applyingFitZoom = true;
-            try { Zoom.SetZoomLevel(viewW / PageImage.ActualWidth * DisplayZoomFactor()); }
-            finally { _applyingFitZoom = false; }
+            Zoom.SetZoomLevel(viewW / PageImage.ActualWidth * DisplayZoomFactor());
         }
 
         private void FitToPage()
@@ -15691,21 +15838,14 @@ namespace TDPdf
                 double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
                 _zoomFitMode = ZoomFitMode.Page;
                 _manualZoomIntent = false;   // #201
-                _applyingFitZoom = true;
-                try { Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH)); }
-                finally { _applyingFitZoom = false; }
+                Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH));
                 return;
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
             _zoomFitMode = ZoomFitMode.Page;
             _manualZoomIntent = false;   // #201
-            _applyingFitZoom = true;
-            try
-            {
-                Zoom.SetZoomLevel(Math.Min(viewW / PageImage.ActualWidth, viewH / PageImage.ActualHeight)
-                                  * DisplayZoomFactor());
-            }
-            finally { _applyingFitZoom = false; }
+            Zoom.SetZoomLevel(Math.Min(viewW / PageImage.ActualWidth, viewH / PageImage.ActualHeight)
+                              * DisplayZoomFactor());
         }
 
         private void PagePreviewPanel_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -15727,6 +15867,11 @@ namespace TDPdf
         {
             double scale = (e.DeltaManipulation.Scale.X + e.DeltaManipulation.Scale.Y) / 2.0;
             if (Math.Abs(scale - 1.0) < 0.01) return;
+            // #131: a pinch is as explicit as Ctrl+wheel and stops the view tracking the window,
+            // the same as every other manual path. It never did so on its own — it only ever
+            // reached BeginManualZoom by accident, through the zoom combo reading its own update
+            // back as a user pick, and then only when the pinch happened to land on a preset.
+            BeginManualZoom();
             Zoom.SetZoomLevel(Zoom.ZoomLevel * scale);
             e.Handled = true;
         }

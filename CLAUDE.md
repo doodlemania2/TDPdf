@@ -14,7 +14,7 @@ TDPdf is a Windows-only WPF PDF editor shipped as a single self-contained `TDPdf
 - Full signed release: `./release.ps1` (Windows; needs Certum cert + signtool), or `./release.ps1 -SkipSign` for a dry run.
 - **There is no test suite or linter.** `dotnet build` warnings are the only lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
 - Single-file publish uses SDK properties in `TDPdf.csproj` (`IncludeNativeLibrariesForSelfExtract`, compression); do not reintroduce Costura/Fody bundling. `PublishTrimmed` and Native AOT are intentionally off — WPF and the PDF libraries are not trim-safe.
-- **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and reports only the 2 `MSB3243` warnings — a false clean that hides every `CS*` warning you just introduced. The real baseline is **6 warnings, 0 errors**.
+- **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and reports only the 2 `MSB3243` warnings — a false clean that hides every `CS*` warning you just introduced. The real baseline is **4 warnings, 0 errors** (2x `MSB3243`, 2x `CS8602` at `Services/PdfDocumentService.cs:517`, each doubled by the `wpftmp` project). It was 6 until 1.24.1.0 removed the `_applyingFitZoom` field and its `CS0414`.
 
 ### Release checklist
 
