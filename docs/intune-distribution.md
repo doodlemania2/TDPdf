@@ -175,7 +175,7 @@ registered. Any of the three options below check that marker; pick one.
 
 The script reads the registry marker, parses `Version` with
 `[Version]::TryParse`, and emits stdout only when the installed version
-is greater than or equal to `$MinVersion` (defaulted to `1.8.0.0`). Bump
+is greater than or equal to `$MinVersion` (currently `1.24.1.0`). Bump
 `$MinVersion` in the script for each release.
 
 **Fallback A — Registry value comparison (manual rule):**
@@ -401,7 +401,7 @@ so a leak is rotated here without touching any other application on the collecto
   they could be sent are spooled to disk and replayed at the next launch, marked
   `crash.replayed`.
 - `Tool.Selected` — tool palette interactions. Property: `Tool` name.
-- `Zoom.Churn` — 1.24.1.0. Emitted only when the viewport re-applies its zoom more than 8
+- `Zoom.Churn` — 1.24.1.0. Emitted only when the viewport re-applies its zoom 8 or more
   times in one second, which is a defect signature, not normal use. Properties: `Count`,
   `Via` (the TDPdf method that made most of those calls), `ViaCount`, `FitMode`, `ViewMode` —
   all compile-time constants or enum names. Rate-limited to one report per 5 minutes.

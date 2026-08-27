@@ -22,7 +22,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ### Added
 
-- **`Zoom.Churn` telemetry.** The repeated zoom passes were only ever visible because a text editor happened to be alive while they ran, and that signal disappears with the fix above. The viewport now reports directly when it re-applies its zoom more than 8 times in a second, naming the method responsible. Rate-limited to one report every five minutes; carries method and enum names only, and cannot reference a document. Disclosed in `PRIVACY.md`. The repetition itself is a separate defect and is tracked in [#132](https://github.com/doodlemania2/TDPdf/issues/132).
+- **`Zoom.Churn` telemetry.** The repeated zoom passes were only ever visible because a text editor happened to be alive while they ran, and that signal disappears with the fix above. The viewport now reports directly when it re-applies its zoom 8 or more times in a second, naming the method responsible. Rate-limited to one report every five minutes; carries method and enum names only, and cannot reference a document. Disclosed in `PRIVACY.md`, along with `Annotation.TextEditorCommitDeferred` — that one shipped in 1.23.7.0 and was left out of the privacy policy at the time. The repetition itself is a separate defect and is tracked in [#132](https://github.com/doodlemania2/TDPdf/issues/132).
 
 ## [1.24.0.0] - 2026-08-26
 
