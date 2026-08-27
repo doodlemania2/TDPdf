@@ -11730,8 +11730,16 @@ namespace TDPdf
             // incidental caller shows up as a NAMED deferral in telemetry instead of as another
             // silent "Insert Text Box does nothing" report. It buys 400 ms and a name; it is not
             // load-bearing, and no future fix should lean on it as though it were.
+            //
+            // The page check is load-bearing and was missing. PageList_SelectionChanged routes
+            // through here, and deferring it left the empty editor parented to TextEditorCanvas —
+            // which no re-render clears — so it floated over the page the user had just navigated
+            // TO while still carrying the PageIndex of the page it was placed ON. Typing into it
+            // then put the text on a page nobody was looking at. Before this release the ~23 Hz
+            // ApplyZoom commit destroyed the box milliseconds later and hid that; it does not now.
             if (!_activeTextBoxTouched
-                && _activeTextBox.Tag is PlacedTextContext { Existing: null }
+                && _activeTextBox.Tag is PlacedTextContext { Existing: null } graceCtx
+                && graceCtx.PageIndex == PageList.SelectedIndex
                 && string.IsNullOrWhiteSpace(_activeTextBox.Text)
                 && (DateTime.UtcNow - _activeTextBoxPlacedUtc).TotalMilliseconds < UntouchedEditorGraceMs)
             {
@@ -15524,22 +15532,48 @@ namespace TDPdf
         //
         // So report the loop directly instead: count ApplyZoom calls in a rolling window and emit
         // ONE event per burst naming the caller that dominated it. A C# method name is a
-        // compile-time constant, so this cannot carry document or user content. One event per
-        // burst, rate-limited, keeps a pathological loop from becoming a pathological event stream.
+        // compile-time constant, so this cannot carry document or user content.
+        //
+        // TWO details this gets wrong if written naively, both of which make the event worthless:
+        //
+        // 1. The name must be the ORIGINATOR, not ApplyZoom's caller. ApplyZoom has three call
+        //    sites and every zoom write in the app arrives through one of them —
+        //    Zoom_PropertyChanged — so [CallerMemberName] here reports the fan-in point on
+        //    essentially every event. A re-fit loop, a pinch and Ctrl+wheel would be
+        //    indistinguishable. ZoomViewModel.LastZoomOrigin is the frame above, and is what
+        //    separates FitToWidth from a person turning a wheel.
+        // 2. It must fire on SUSTAINED churn only. A rate alone is not a defect signature: the
+        //    sidebar's 250 ms width animation re-fits on every frame by design (see the comment on
+        //    AnimateSidebarWidth), dragging a window edge does the same, and one flick of
+        //    Ctrl+wheel walks nine presets. All three clear any threshold worth setting. What was
+        //    pathological in production was that the rate held with no one touching anything, so
+        //    require the window to STAY above threshold for ZoomChurnSustainMs before reporting.
         private const int ZoomChurnThreshold = 8;
         private static readonly TimeSpan ZoomChurnWindow = TimeSpan.FromSeconds(1);
-        private static readonly TimeSpan ZoomChurnReportInterval = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan ZoomChurnSustain = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan ZoomChurnReportInterval = TimeSpan.FromMinutes(15);
         private readonly Queue<(DateTime At, string Via)> _zoomApplyLog = new();
+        private DateTime _churnAboveThresholdSinceUtc = DateTime.MinValue;
         private DateTime _lastZoomChurnReportUtc = DateTime.MinValue;
 
         private void NoteZoomApplied(string? via)
         {
             var now = DateTime.UtcNow;
-            _zoomApplyLog.Enqueue((now, via ?? "unknown"));
+            // The originator, when there is one to have. RerenderCurrentPage and the (dead) DpiChanged
+            // handler reach ApplyZoom without going through the view model at all, and for those the
+            // compiler-supplied name IS the answer.
+            string origin = (via == nameof(Zoom_PropertyChanged) ? Zoom.LastZoomOrigin : via) ?? via ?? "unknown";
+            _zoomApplyLog.Enqueue((now, origin));
             while (_zoomApplyLog.Count > 0 && now - _zoomApplyLog.Peek().At > ZoomChurnWindow)
                 _zoomApplyLog.Dequeue();
 
-            if (_zoomApplyLog.Count < ZoomChurnThreshold) return;
+            if (_zoomApplyLog.Count < ZoomChurnThreshold)
+            {
+                _churnAboveThresholdSinceUtc = DateTime.MinValue;   // the burst broke; start over
+                return;
+            }
+            if (_churnAboveThresholdSinceUtc == DateTime.MinValue) _churnAboveThresholdSinceUtc = now;
+            if (now - _churnAboveThresholdSinceUtc < ZoomChurnSustain) return;
             if (now - _lastZoomChurnReportUtc < ZoomChurnReportInterval) return;
             _lastZoomChurnReportUtc = now;
 
@@ -15557,6 +15591,8 @@ namespace TDPdf
                 ["Count"] = _zoomApplyLog.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["Via"] = dominant,
                 ["ViaCount"] = best.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["SustainedMs"] = ((int)(now - _churnAboveThresholdSinceUtc).TotalMilliseconds)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["FitMode"] = _zoomFitMode.ToString(),
                 ["ViewMode"] = _viewMode.ToString()
             });
@@ -15648,33 +15684,26 @@ namespace TDPdf
         {
             if (_zoomBox?.SelectedItem is not ZoomLevelOption option) return;
             // #131: this handler cannot assume it was called by a person. ZoomBox.SelectedItem is
-            // TwoWay-bound to Zoom.SelectedLevel, and ZoomViewModel.OnZoomLevelChanged writes that
+            // TwoWay-bound to Zoom.SelectedLevel, and ZoomViewModel.OnZoomLevelChanged rewrites that
             // property on EVERY zoom change from every source, so the binding echoes each
             // programmatic zoom straight back here as a SelectionChanged. Acting on the echo made
-            // the app zoom itself: it called BeginManualZoom (silently cancelling the fit the user
-            // had chosen) and wrote a zoom nobody asked for, which is one of the ways ApplyZoom was
-            // reached in a loop. Upstream KillerPDF drives its combo imperatively behind a
-            // _syncingZoomBox flag for exactly this reason; a flag cannot work here because the
-            // binding's target update is not guaranteed to run inside the write that caused it, so
-            // compare against the model instead — a selection that asks for what is already in
-            // force is an echo, whenever it arrives.
+            // the app zoom itself: it called BeginManualZoom — silently cancelling the fit the user
+            // had chosen — and wrote a zoom nobody asked for, re-entering ApplyZoom with no user
+            // behind it.
             //
-            // The two fit entries need no such check and must not get one: FindPreset only ever
-            // returns an option with a numeric ZoomLevel, so a fit can reach this handler only
-            // because a person picked it — and skipping it would silently drop the
-            // SaveDefaultFitMode that makes the choice stick for the next document.
+            // The view model marks the selection it pushes, so the echo is identified by IDENTITY.
+            // Do NOT try to identify it arithmetically by comparing the picked preset against the
+            // current zoom: whatever the ordering, the two agree by the time this runs, so such a
+            // test cannot separate an echo from a real pick and swallows both.
+            if (Zoom.ConsumeMirrorEcho(option)) return;
             //
-            // Picking a fit from the dropdown is an explicit preference, so it is remembered and
-            // applied to the next document opened (upstream v1.7.1).
+            // The two fit entries can never be echoes anyway — FindPreset only ever returns an
+            // option with a numeric ZoomLevel, so a fit reaches this handler only because a person
+            // picked it. Picking a fit from the dropdown is an explicit preference, so it is
+            // remembered and applied to the next document opened (upstream v1.7.1).
             if (option.IsFitWidth) { SaveDefaultFitMode(ZoomFitMode.Width); FitToWidth(); return; }
             if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             if (option.ZoomLevel is not double zoom) return;
-            // Same tolerance the view model matches presets with, so the preset it just selected to
-            // MIRROR the current zoom can never be read back as a request to change it. Nothing is
-            // lost: when the zoom is already within that tolerance the combo is ALREADY showing
-            // that preset as its selected item, so a person re-picking it raises no
-            // SelectionChanged at all — every event this drops is an echo.
-            if (Math.Abs(zoom - Zoom.ZoomLevel) < ZoomViewModel.PresetMatchTolerance) return;
             // User picked an explicit zoom level — stop tracking the window size.
             BeginManualZoom();
             Zoom.SetZoomLevel(zoom);
