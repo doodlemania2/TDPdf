@@ -79,6 +79,15 @@ namespace TDPdf
         // Uninstall and IsInstalled so they don't depend on the current
         // process's user context (PerMachine uninstall fires under UAC as the
         // user, not SYSTEM — `IsSystemContextSafe()` would lie there).
+        /// <summary>
+        /// Full path of the installed EXE for whichever scope this machine actually has, or
+        /// <c>null</c> when TDPdf is not installed (a portable run). #132/#134: the update check
+        /// compares the version of the file sitting there against the process that is running, to
+        /// notice an update that landed underneath a running instance.
+        /// </summary>
+        internal static string? InstalledExePath =>
+            DetectInstalledScope() is { } scope ? InstallExeFor(scope) : null;
+
         private static InstallScope? DetectInstalledScope()
         {
             using (var k = Registry.LocalMachine.OpenSubKey(@"Software\TDPdf"))
@@ -936,11 +945,14 @@ namespace TDPdf
         private static void CopyExeOverLock(string src, string dest)
         {
             const int attempts = 4;
-            string displaced = dest + ".old";
 
-            // Clear anything a previous install displaced, now that nothing should hold it.
-            try { if (File.Exists(displaced)) File.Delete(displaced); }
-            catch (Exception ex) { InstallLog.Write($"Could not remove {displaced} (harmless): {ex.Message}"); }
+            // Clear anything a PREVIOUS install displaced, now that whatever held it has probably
+            // gone. Best-effort by definition: the instance that was running then may still be.
+            foreach (string stale in DisplacedNamesFor(dest))
+            {
+                try { if (File.Exists(stale)) File.Delete(stale); }
+                catch { /* still held; DisplacedNamesFor will simply pick another name below */ }
+            }
 
             for (int attempt = 1; ; attempt++)
             {
@@ -959,23 +971,48 @@ namespace TDPdf
                     }
                     InstallLog.Write($"Copy attempt {attempt} failed ({ex.GetType().Name}: {ex.Message}); retrying.");
 
-                    // Second attempt onward: move the lock out of the way rather than fight it.
-                    if (attempt >= 2)
-                    {
-                        try
-                        {
-                            if (File.Exists(dest)) File.Move(dest, displaced, overwrite: true);
-                            InstallLog.Write($"Displaced locked destination to {displaced}.");
-                        }
-                        catch (Exception moveEx)
-                        {
-                            InstallLog.Write($"Could not displace destination: {moveEx.Message}");
-                        }
-                    }
+                    // From the second attempt, stop fighting the lock and move it out of the way.
+                    // Windows refuses to overwrite a file that is open or executing but is perfectly
+                    // happy to RENAME one, which is what makes updating a running TDPdf possible at
+                    // all: the live process keeps running from the renamed image, the new build goes
+                    // into place, and the next launch is the new build.
+                    if (attempt >= 2) TryDisplace(dest);
 
                     Thread.Sleep(250 * attempt);
                 }
             }
+        }
+
+        /// <summary>Candidate parking names for a destination we cannot overwrite.</summary>
+        /// <remarks>
+        /// More than one, because the obvious single name is not enough: a person who has had two
+        /// updates land without restarting is holding <c>.old</c> already, and reusing it would fail
+        /// exactly when the retry matters most.
+        /// </remarks>
+        private static IEnumerable<string> DisplacedNamesFor(string dest)
+        {
+            yield return dest + ".old";
+            for (int i = 1; i <= 4; i++) yield return $"{dest}.old{i}";
+        }
+
+        private static void TryDisplace(string dest)
+        {
+            if (!File.Exists(dest)) return;
+            foreach (string parked in DisplacedNamesFor(dest))
+            {
+                try
+                {
+                    if (File.Exists(parked)) continue;   // held by an older still-running instance
+                    File.Move(dest, parked);
+                    InstallLog.Write($"Displaced locked destination to {parked}.");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    InstallLog.Write($"Could not displace to {parked}: {ex.Message}");
+                }
+            }
+            InstallLog.Write("Could not displace the locked destination under any name.");
         }
 
         private static void DoInstall(bool wantDesktop, bool silent = false)

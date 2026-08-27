@@ -551,6 +551,25 @@ namespace TDPdf
                     _portableBadge.Visibility = Visibility.Visible;
 
                 FlushPendingExternalOpen();   // #202: a forward that landed before we were wired up
+
+                // #132: last, and off the UI thread. Ask whether a newer TDPdf has been released
+                // and, on a managed device, ask Intune to come and get it rather than waiting up to
+                // eight hours for its own check-in — the gap that left one machine six releases
+                // behind, still hitting a bug every one of those releases had fixed.
+                var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
+                              ?? new Version(0, 0, 0, 0);
+                TDPdf.Services.UpdateCheck.StartBackgroundCheck(running);
+
+                // #134: an update CAN land under a running instance — Windows refuses to overwrite
+                // an executing file but permits renaming it aside, which is exactly what the
+                // installer does. It works, and the person carries on in the old build none the
+                // wiser. Say so.
+                if (App.InstalledExePath is { } installedExe
+                    && TDPdf.Services.UpdateCheck.IsRestartPending(installedExe, running))
+                {
+                    SetStatusHeld("An update has been installed - restart TDPdf to use it.", 10000);
+                    Telemetry.TrackEvent("Update.RestartPending");
+                }
             };
         }
 
