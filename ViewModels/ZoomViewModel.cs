@@ -194,8 +194,8 @@ namespace TDPdf
             foreach (var option in forward ? AvailableLevels : ReverseAvailableLevels())
             {
                 if (option.ZoomLevel is not double preset) continue;
-                if (forward && preset > current + 0.005) return preset;
-                if (!forward && preset < current - 0.005) return preset;
+                if (forward && preset > current + PresetMatchTolerance) return preset;
+                if (!forward && preset < current - PresetMatchTolerance) return preset;
             }
 
             return fallback;

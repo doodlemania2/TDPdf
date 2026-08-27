@@ -73,7 +73,7 @@ times a second and keeps doing so for at least two seconds, it reports how many,
 name of the method in TDPdf's own source that asked for most of them, how many of them that method
 accounted for, and the zoom fit mode and view mode in force. Method names are fixed at compile time and the two modes are names of settings you chose,
 so this can only ever describe a part of the program and how you have the view arranged — never a
-document, a page, or anything you typed. It is rate-limited to one report every five minutes.
+document, a page, or anything you typed. It is rate-limited to one report every 15 minutes.
 
 `Annotation.TextEditorCommitDeferred` records that TDPdf declined to close a text box you had not
 typed into yet, and which part of the program asked it to. `Annotation.TextEditorClosed` carries

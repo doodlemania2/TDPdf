@@ -2684,6 +2684,13 @@ namespace TDPdf
                 _gridViewToggle.IsChecked = mode == ViewMode.Grid;
                 return;
             }
+            // #131: a view-mode switch is an explicit gesture and belongs on the commit
+            // chokepoint alongside tool / tab / page switches. It only ever reached it
+            // incidentally, through ApplyZoom, and then only when the switch's fit happened to
+            // change the zoom VALUE — an equal SetZoomLevel raises no PropertyChanged. Entering
+            // Continuous collapses the page panel, so without this the live editor simply went
+            // invisible while still being the active one.
+            CommitActiveTextBox();
             _viewMode = mode;
             _gridViewToggle.IsChecked = mode == ViewMode.Grid;
             try
@@ -11569,7 +11576,26 @@ namespace TDPdf
             // session. A brand-new editor nobody typed into has nothing worth preserving; discard
             // it. (Only a placed-text box can be in that state — the grace never defers an inline
             // PDF-text edit, and the inline path returns rather than replacing the editor.)
-            if (_activeTextBox is { Tag: PlacedTextContext }) CancelActiveTextBox();
+            //
+            // Discard EXACTLY what the grace refused, and settle anything else properly. The
+            // second branch is unreachable today for the reason above, but "we are about to
+            // overwrite the field" must never become a licence to throw away text somebody typed.
+            if (_activeTextBox is { } stale)
+            {
+                if (!_activeTextBoxTouched
+                    && stale.Tag is PlacedTextContext { Existing: null }
+                    && string.IsNullOrWhiteSpace(stale.Text))
+                {
+                    _activeTextBox = null;
+                    RemoveTextEditorElement(stale);
+                    Telemetry.TrackEvent("Annotation.TextEditorClosed",
+                        TextEditorTelemetry("Empty", nameof(PlaceTextBox)));
+                }
+                else
+                {
+                    CommitActiveTextBox();
+                }
+            }
 
             double width = DefaultTextBoxWidth;
             if (existing is not null)
