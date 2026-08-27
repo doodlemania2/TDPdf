@@ -77,8 +77,8 @@ namespace TDPdf.Diagnostics
                 Interlocked.Exchange(ref _writing, 0);
             }
 
-            // Best-effort sanitized telemetry. No-op unless the admin
-            // has provisioned Application Insights via TelemetryStore.
+            // Best-effort sanitized telemetry. No-op unless an OTLP collector has been
+            // provisioned for this device (see TelemetryConfig).
             Telemetry.TrackCrash(exception, source, recoverable);
 
             return new CrashReport(exception, source, logPath, LogDirectory, recoverable, summary, details);

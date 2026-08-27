@@ -132,10 +132,12 @@ namespace TDPdf
             // the Intune Win32 app install/uninstall commands and by the QuietUninstallString
             // in the Add/Remove Programs entry.
             //
-            // `/set-telemetry` and `/clear-telemetry` are admin/SYSTEM-only provisioning
-            // flags for opt-in Application Insights (see Diagnostics/TelemetryStore.cs).
-            // Connection string is read from STDIN, never the command line, so it can't
-            // leak into shell history, Intune script logs, or process inspection.
+            // `/clear-telemetry` is the admin/SYSTEM-only device opt-out. It outranks every
+            // configuration source, including the managed Intune policy, so a machine can be
+            // taken out of reporting without waiting for a profile change (see
+            // Diagnostics/TelemetryConfig.cs). Its `/set-telemetry` counterpart was removed in
+            // 1.24.0.0 along with Application Insights: the OTLP collector is provisioned by
+            // policy, so there is no longer a secret for an operator to pipe in by hand.
             if (e.Args.Length > 0)
             {
                 bool silent = e.Args.Length > 1 &&
@@ -144,13 +146,9 @@ namespace TDPdf
                 if (string.Equals(e.Args[0], "/install", StringComparison.OrdinalIgnoreCase))
                 {
                     InstallLog.WriteHeader("INSTALL", e.Args);
-                    // SYSTEM-context install is the right moment to drop
-                    // %ProgramData%\TDPdf\telemetry.dat from the embedded
-                    // key (release builds only). No-op for dev / CI / user
-                    // /install if Embedded key isn't present, and a no-op
-                    // if telemetry.dat already exists or the user has
-                    // explicitly disabled telemetry on this device.
-                    TryAutoProvisionEmbeddedTelemetry();
+                    // SYSTEM-context install is the right moment to retire a legacy
+                    // telemetry.dat, since this is the one path that reliably runs elevated.
+                    TelemetryStore.RemoveLegacyStore();
                     Telemetry.Initialize(AppVersionString());
                     Telemetry.TrackEvent("Install.Start", InstallProps(silent));
                     try
@@ -194,36 +192,16 @@ namespace TDPdf
                     return;
                 }
 
-                if (string.Equals(e.Args[0], "/set-telemetry", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Deliberately do NOT log e.Args here — even though we
-                    // require stdin input, an accidental positional arg
-                    // would be the leaked-secret path. WriteHeader logs
-                    // args verbatim, so emit a hand-built header instead.
-                    InstallLog.Write("=== SET-TELEMETRY === (stdin)");
-                    try
-                    {
-                        SetTelemetryFromStdin();
-                        InstallLog.Write("SET-TELEMETRY OK");
-                        Shutdown(0);
-                    }
-                    catch (Exception ex)
-                    {
-                        InstallLog.WriteError("SET-TELEMETRY FAILED", ex);
-                        Shutdown(1);
-                    }
-                    return;
-                }
-
                 if (string.Equals(e.Args[0], "/clear-telemetry", StringComparison.OrdinalIgnoreCase))
                 {
                     InstallLog.WriteHeader("CLEAR-TELEMETRY", e.Args);
                     try
                     {
+                        // Clear() also removes any legacy telemetry.dat left by a pre-1.24.0.0
+                        // install. That file held a DPAPI-encrypted Application Insights
+                        // connection string which nothing reads any more; leaving a dead secret
+                        // on disk across the fleet is not a state worth preserving.
                         TelemetryStore.Clear();
-                        // Write the disabled-sentinel so the next launch
-                        // does not silently re-provision from the
-                        // build-time-embedded key.
                         TelemetryStore.MarkDisabled();
                         InstallLog.Write("CLEAR-TELEMETRY OK");
                         Shutdown(0);
@@ -266,17 +244,15 @@ namespace TDPdf
             AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
             TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
-            // Auto-provision from build-time-embedded key if present.
-            // Release builds (TDPDF_APPINSIGHTS_CONN set at release time)
-            // carry an encrypted connection string; dev / CI / source
-            // builds do not. This is a best-effort no-op when there's no
-            // embedded key, when telemetry.dat already exists, or when
-            // the user has run /clear-telemetry on this device.
-            TryAutoProvisionEmbeddedTelemetry();
+            // Retire any telemetry.dat left behind by a pre-1.24.0.0 install. It holds a
+            // DPAPI-encrypted Application Insights connection string that nothing reads since
+            // that destination was removed, so this deletes a dead secret from every machine
+            // that upgrades rather than leaving it sitting in %ProgramData% indefinitely.
+            TelemetryStore.RemoveLegacyStore();
 
-            // Opt-in telemetry (see Diagnostics/Telemetry.cs). No-op
-            // unless telemetry.dat is present. Initialized up front so a
-            // crash during the rest of startup is captured.
+            // Opt-in telemetry (see Diagnostics/Telemetry.cs). No-op unless an OTLP collector
+            // is provisioned. Initialized up front so a crash during the rest of startup is
+            // captured.
             string appVersion = AppVersionString();
             Telemetry.Initialize(appVersion);
 
@@ -551,64 +527,6 @@ namespace TDPdf
             ThemeManager.Cleanup();
             try { _singleInstanceMutex?.Dispose(); } catch { }
             base.OnExit(e);
-        }
-
-        /// <summary>
-        /// Read the App Insights connection string from STDIN (one line
-        /// followed by EOF), encrypt it with DPAPI LocalMachine via
-        /// <see cref="TelemetryStore"/>, and write the hardened
-        /// ciphertext to <c>%ProgramData%\TDPdf\telemetry.dat</c>.
-        ///
-        /// Requires elevation. Caller (admin or SYSTEM) typically pipes
-        /// the connection string:
-        ///   <c>type secret.txt | TDPdf.exe /set-telemetry</c>
-        /// </summary>
-        private static void SetTelemetryFromStdin()
-        {
-            string? connectionString;
-            using (var reader = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8))
-            {
-                // ReadLine is sufficient — connection strings are a
-                // single line by spec. ReadToEnd would also work but
-                // could pull trailing CR/LF noise we'd have to trim.
-                connectionString = reader.ReadLine();
-            }
-
-            if (string.IsNullOrWhiteSpace(connectionString))
-                throw new InvalidOperationException(
-                    "No connection string received on stdin. " +
-                    "Usage: type secret.txt | TDPdf.exe /set-telemetry");
-
-            TelemetryStore.Save(connectionString);
-            // Clear the disabled-sentinel — if a previous /clear-telemetry
-            // wrote it, an explicit /set-telemetry should re-enable.
-            TelemetryStore.ClearDisabledMarker();
-            InstallLog.Write($"Wrote telemetry.dat at {TelemetryStore.Path}");
-        }
-
-        /// <summary>
-        /// Best-effort attempt to write <c>telemetry.dat</c> from the
-        /// build-time-embedded connection string (release builds with
-        /// <c>$env:TDPDF_APPINSIGHTS_CONN</c> set during
-        /// <c>release.ps1</c>). No-op when the embedded key is empty
-        /// (dev/CI builds), when <c>telemetry.dat</c> already exists,
-        /// or when the user has run <c>/clear-telemetry</c> on this
-        /// device. Never throws.
-        /// </summary>
-        private static void TryAutoProvisionEmbeddedTelemetry()
-        {
-            try
-            {
-                if (!EmbeddedTelemetry.HasKey) return;
-                if (TelemetryStore.Exists()) return;
-                if (TelemetryStore.IsDisabled()) return;
-
-                string? conn = EmbeddedTelemetry.TryDecrypt();
-                if (string.IsNullOrWhiteSpace(conn)) return;
-
-                TelemetryStore.Save(conn);
-            }
-            catch { /* best-effort — never block startup */ }
         }
 
         // ============================================================

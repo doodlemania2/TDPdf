@@ -9,34 +9,33 @@ namespace TDPdf.Diagnostics
     /// <see cref="TDPdf.Properties.Settings.TelemetryEnabled"/>.
     ///
     /// The split is what makes this app safe to open-source. A public build ships with no
-    /// destination configured anywhere, so <see cref="TryResolveConnectionString"/> returns
-    /// <c>null</c> and the app sends nothing to anyone — no separate build, no compile flag, and
-    /// nothing to take on trust. A managed install gets a destination pushed to the registry and
-    /// reports normally.
+    /// destination configured anywhere, so <see cref="TryResolveOtlp"/> returns <c>null</c> and the
+    /// app sends nothing to anyone — no separate build, no compile flag, and nothing to take on
+    /// trust. A managed install gets an OTLP collector pushed to the registry and reports normally.
     /// </summary>
     /// <remarks>
     /// Precedence, first match wins:
     /// <list type="number">
-    ///   <item><c>TDPDF_TELEMETRY_CONNECTION</c> environment variable — for a developer, or for
-    ///   someone self-hosting who wants to point this build at their own collector without
-    ///   administrative rights. Deliberately not a registry value under HKCU: a user-writable
-    ///   production path is a redirection surface, and an environment variable is obviously
-    ///   session-scoped to anyone reading it.</item>
+    ///   <item><c>TDPDF_OTLP_ENDPOINT</c> / <c>TDPDF_OTLP_TOKEN</c> environment variables — for a
+    ///   developer, or for someone self-hosting who wants to point this build at their own
+    ///   collector without administrative rights. Deliberately not registry values under HKCU: a
+    ///   user-writable production path is a redirection surface, and an environment variable is
+    ///   obviously session-scoped to anyone reading it.</item>
     ///   <item><see cref="RegistryPath"/> under <c>HKEY_LOCAL_MACHINE</c> — the managed policy path,
     ///   delivered by an Intune configuration profile. <b>This is the one that matters:</b> it
-    ///   makes rotation a policy push instead of a signed release of the whole application, which
-    ///   is the defect in the build-time-embedded key it replaces.</item>
-    ///   <item>The DPAPI provisioning file (<see cref="TelemetryStore"/>) — every machine already
-    ///   in the fleet is provisioned this way, so it stays until the Intune profile has rolled
-    ///   out everywhere.</item>
-    ///   <item>The build-time-embedded constant (<see cref="EmbeddedTelemetry"/>) — <b>deprecated.</b>
-    ///   Kept only so a machine that has neither of the above keeps reporting. Remove it once the
-    ///   registry profile is live on the fleet; it obfuscates a secret inside a binary that ships
-    ///   to end-user laptops, which is a speed bump rather than a control, and it cannot be
-    ///   rotated without a release.</item>
+    ///   makes rotation a policy push instead of a signed release of the whole application.</item>
     /// </list>
     /// A device-level opt-out (<c>TDPdf.exe /clear-telemetry</c>, which writes
     /// <see cref="TelemetryStore.DisabledMarkerPath"/>) outranks every source above.
+    /// <para>
+    /// <b>Application Insights was retired in 1.24.0.0</b> and OTLP is now the only destination.
+    /// Fourteen days of dual export settled it: Azure received a lossy ~17% subset — installs and
+    /// heartbeats, none of the interaction events — while the collector carried the full stream,
+    /// including the evidence that identified the 1.23.x text-editor defect. With it went the DPAPI
+    /// provisioning file as a source of destinations and the build-time-embedded key, which
+    /// obfuscated a secret inside a binary shipped to end-user laptops and could not be rotated
+    /// without a release.
+    /// </para>
     /// </remarks>
     internal static class TelemetryConfig
     {
@@ -61,17 +60,11 @@ namespace TDPdf.Diagnostics
         /// </remarks>
         internal const string RegistryPath = @"SOFTWARE\Policies\TDPdf\Telemetry";
 
-        /// <summary>Value name under <see cref="RegistryPath"/> for the Application Insights destination.</summary>
-        internal const string RegistryValueName = "ConnectionString";
-
         /// <summary>Value name under <see cref="RegistryPath"/> for the OTLP collector base URL.</summary>
         internal const string RegistryOtlpEndpointValueName = "OtlpEndpoint";
 
         /// <summary>Value name under <see cref="RegistryPath"/> for the OTLP bearer token.</summary>
         internal const string RegistryOtlpTokenValueName = "OtlpToken";
-
-        /// <summary>Environment-variable override, for developers and self-hosters.</summary>
-        internal const string EnvironmentVariableName = "TDPDF_TELEMETRY_CONNECTION";
 
         /// <summary>Environment-variable override for the OTLP collector base URL.</summary>
         internal const string OtlpEndpointEnvironmentVariableName = "TDPDF_OTLP_ENDPOINT";
@@ -85,78 +78,12 @@ namespace TDPdf.Diagnostics
             None,
             Environment,
             Registry,
-            ProvisioningFile,
-            EmbeddedKey,
-        }
-
-        /// <summary>
-        /// The destination for this device, or <c>null</c> when none is configured — in which case
-        /// telemetry is inert no matter what the user setting says. Never throws.
-        /// </summary>
-        public static string? TryResolveConnectionString() => TryResolve(out _);
-
-        /// <summary>
-        /// As <see cref="TryResolveConnectionString"/>, also reporting which source supplied the
-        /// value so the Settings dialog can tell the user whether telemetry is actually wired up.
-        /// </summary>
-        public static string? TryResolve(out Source source)
-        {
-            source = Source.None;
-
-            // An explicit device-level opt-out beats every source below. Checked first so a
-            // machine that has been opted out never even reads a destination.
-            if (TelemetryStore.IsDisabled()) return null;
-
-            try
-            {
-                string? env = Environment.GetEnvironmentVariable(EnvironmentVariableName);
-                if (!string.IsNullOrWhiteSpace(env))
-                {
-                    source = Source.Environment;
-                    return env.Trim();
-                }
-            }
-            catch { /* environment access can throw under restricted hosts */ }
-
-            string? fromRegistry = TryReadRegistryValue(RegistryValueName);
-            if (!string.IsNullOrWhiteSpace(fromRegistry))
-            {
-                source = Source.Registry;
-                return fromRegistry;
-            }
-
-            string? fromFile = TelemetryStore.TryLoad();
-            if (!string.IsNullOrWhiteSpace(fromFile))
-            {
-                source = Source.ProvisioningFile;
-                return fromFile;
-            }
-
-            try
-            {
-                if (EmbeddedTelemetry.HasKey)
-                {
-                    string? embedded = EmbeddedTelemetry.TryDecrypt();
-                    if (!string.IsNullOrWhiteSpace(embedded))
-                    {
-                        source = Source.EmbeddedKey;
-                        return embedded;
-                    }
-                }
-            }
-            catch { /* deprecated path — never let it break startup */ }
-
-            return null;
         }
 
         /// <summary>
         /// The OTLP collector for this device, or <c>null</c> when none is configured.
         /// </summary>
         /// <remarks>
-        /// Resolved independently of the Application Insights destination, and deliberately so:
-        /// this is a dual-export migration, and either destination may be present without the
-        /// other. During the migration both are configured; afterwards, retiring Application
-        /// Insights is a matter of clearing one registry value rather than shipping a build.
         /// <para>
         /// The endpoint and the token are returned together or not at all — an endpoint with no
         /// token would produce a stream of 401s from every laptop in the fleet, which is worse
@@ -165,7 +92,7 @@ namespace TDPdf.Diagnostics
         /// </remarks>
         public static (string Endpoint, string Token)? TryResolveOtlp()
         {
-            // Same device-level opt-out that outranks the Application Insights destination.
+            // The device-level opt-out outranks policy, so it is checked before anything is read.
             if (TelemetryStore.IsDisabled()) return null;
 
             string? endpoint = null;
@@ -191,8 +118,7 @@ namespace TDPdf.Diagnostics
         }
 
         /// <summary>True when this build has somewhere to send telemetry at all.</summary>
-        public static bool HasDestination() =>
-            TryResolveConnectionString() is not null || TryResolveOtlp() is not null;
+        public static bool HasDestination() => TryResolveOtlp() is not null;
 
         /// <summary>
         /// Reads the managed destination. Returns <c>null</c> when the key is absent, which is the

@@ -29,7 +29,7 @@ Then, to actually cut a release:
 
 - Merging to `main` builds **nothing**. The only CI on push is `codeql.yml` (required check `Analyze (csharp)`, ~6 min).
 - A binary is produced only by `.github/workflows/release.yml`, which is **tag-triggered** (`push: tags: [v*]`) and runs on the self-hosted **`tdpdf`** runner. Tag style is annotated: `git tag -a v1.21.0.0 -m "TDPdf 1.21.0.0"`.
-- **Pushing the tag now does the whole thing.** `release.yml` embeds the telemetry key, signs the EXE, publishes the GitHub Release (exe + GPLv3 source zip + `SHA256SUMS.txt`), and updates the existing Intune app — see *Automated release pipeline* below. `./release.ps1` remains the manual Windows path (Certum via SimplySign, `-SkipSign` for a dry run) and is still the way to produce a real `.intunewin` for portal work.
+- **Pushing the tag now does the whole thing.** `release.yml` signs the EXE, publishes the GitHub Release (exe + GPLv3 source zip + `SHA256SUMS.txt`), and updates the existing Intune app — see *Automated release pipeline* below. `./release.ps1` remains the manual Windows path (Certum via SimplySign, `-SkipSign` for a dry run) and is still the way to produce a real `.intunewin` for portal work.
 
 #### Automated release pipeline
 
@@ -39,7 +39,6 @@ Each stage is gated on its secret being present, so a missing or rotated secret 
 
 | Secret | Enables | If absent |
 |---|---|---|
-| `TDPDF_APPINSIGHTS_CONN` | telemetry key embedded into the EXE | ships the no-op placeholder |
 | `CODESIGN_PFX_BASE64`, `CODESIGN_PFX_PASSWORD` | Authenticode signing | **unsigned exe**, with a warning |
 | `INTUNE_APP_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Intune app updated | Intune step skipped |
 
@@ -73,7 +72,7 @@ Single-window WPF app with MVVM foundations but no DI. Almost all UI behavior li
 - Self-installer: first launch from outside the install path offers Install / Run Portable; installs per-user to `%LOCALAPPDATA%\Programs\TDPdf\` (no UAC), registers ProgID `TDPdf.pdf`, uninstalls via deferred batch file. `TDPdf.exe "file.pdf"` opens directly.
 - Password-protected PDFs: prompt for password, write a decrypted copy to a temp file, work against that for the session.
 - Signatures persist to `signatures.json` next to the EXE. Drawn (`Strokes`) and imported-image (`ImageData` base64 PNG) variants share `SavedSignature`; `ImageData != null` is the discriminator.
-- Telemetry (`Diagnostics/`) is opt-in and a no-op by default — gated on a provisioning file at `%ProgramData%\TDPdf\telemetry.dat`. Never expose a raw `TrackException`; crash reporting goes through `Sanitizer` to scrub paths. `Diagnostics/EmbeddedTelemetry.Generated.cs` is produced by `build/embed-telemetry-key.ps1` at release time and is gitignored.
+- Telemetry (`Diagnostics/`) is opt-in and a no-op by default — gated on an OTLP collector provisioned by Intune policy under `HKLM\SOFTWARE\Policies\TDPdf\Telemetry` (`OtlpEndpoint` + `OtlpToken`), which exports to self-hosted SigNoz. Never expose a raw `TrackException`; crash reporting goes through `Sanitizer` to scrub paths. Application Insights, the build-time-embedded key and `%ProgramData%\TDPdf\telemetry.dat` were all removed in 1.24.0.0 — do not reintroduce a compiled-in destination.
 
 ## Conventions
 

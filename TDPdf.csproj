@@ -12,9 +12,9 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\tdpdf-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.23.7.0</Version>
-    <AssemblyVersion>1.23.7.0</AssemblyVersion>
-    <FileVersion>1.23.7.0</FileVersion>
+    <Version>1.24.0.0</Version>
+    <AssemblyVersion>1.24.0.0</AssemblyVersion>
+    <FileVersion>1.24.0.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- The vendored PdfSharpCore (netstandard2.0, AnyCPU) is referenced by this x64 app. By default
          the SDK unsets the parent's Configuration/Platform when building the ProjectReference, so the
@@ -52,11 +52,10 @@
          weight. ExcludeAssets stops that copy while keeping the managed assembly (compile/runtime) and the
          GeneratePathProperty path used by the EmbeddedResource entries below. -->
     <PackageReference Include="Tesseract" Version="5.2.0" GeneratePathProperty="true" ExcludeAssets="build;buildTransitive;native;contentFiles" />
-    <PackageReference Include="Microsoft.ApplicationInsights" Version="2.22.0" />
-    <!-- OTLP export alongside Application Insights (dual-export migration to the self-hosted
-         SigNoz collector). Deliberately the plain OpenTelemetry SDK rather than the Azure Monitor
-         distro: the classic ApplicationInsights SDK above stays as-is, and these two pipelines
-         are kept independent so retiring either one is a config change, not a rewrite. -->
+    <!-- OTLP export to the self-hosted SigNoz collector — the sole telemetry destination since
+         1.24.0.0, when Application Insights was retired. Deliberately the plain OpenTelemetry SDK
+         rather than the Azure Monitor distro: nothing here should depend on a specific vendor's
+         backend, which is what made that retirement a dependency deletion rather than a rewrite. -->
     <PackageReference Include="OpenTelemetry" Version="1.17.0" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
@@ -77,19 +76,6 @@
     <Resource Include="Resources\pdf-file.ico" />
     <!-- Brand crest shown on the startup splash (see StartupSplash.cs). -->
     <Resource Include="Resources\splash-logo.png" />
-  </ItemGroup>
-
-  <!--
-    Build-time-embedded telemetry key. EmbeddedTelemetry.Generated.cs is
-    produced by build\embed-telemetry-key.ps1 just before publish and is
-    gitignored; when it exists, it replaces the placeholder constants in
-    EmbeddedTelemetry.cs so the published EXE auto-provisions on first
-    run. When the generated file is absent (CI builds, dev builds, the
-    GPLv3 source bundle), the placeholder ships and telemetry is a
-    no-op unless an admin opts in via `TDPdf.exe /set-telemetry`.
-  -->
-  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)Diagnostics\EmbeddedTelemetry.Generated.cs')">
-    <Compile Remove="Diagnostics\EmbeddedTelemetry.cs" />
   </ItemGroup>
 
   <!-- OCR: embed only the native Tesseract libs (x64) so the app still ships as a single exe. Language data

@@ -9,8 +9,14 @@
     WHY A POLICY KEY RATHER THAN A VALUE COMPILED INTO THE EXE
     The token this writes is the thing that has to be rotatable. Compiled into the binary, rotating
     it means building, signing and shipping a new EXE to every managed device — which is why the
-    Application Insights key it replaces was never rotated. Delivered here, rotation is a policy
-    edit and a remediation cycle.
+    Application Insights key it replaced was never rotated once. Delivered here, rotation is a
+    policy edit and a remediation cycle.
+
+    REMOVING THE RETIRED APPLICATION INSIGHTS VALUE
+    TDPdf 1.24.0.0 dropped Application Insights, so nothing reads the ConnectionString value any
+    more. This script deletes it rather than leaving it: it is a live Azure ingestion secret, and a
+    dead secret sitting in the registry on every managed device is worth one line to clean up. The
+    delete is idempotent and harmless on a machine that never had it.
 
     WHY *Policies*\ AND NOT SOFTWARE\TDPdf\
     App.Uninstall runs DeleteSubKeyTree("Software\TDPdf") against both hives. Putting the
@@ -34,7 +40,6 @@ $ErrorActionPreference = 'Stop'
 # Replaced at upload time. If these still read __...__ the script was uploaded unrendered.
 $OtlpEndpoint     = '__TDPDF_OTLP_ENDPOINT__'
 $OtlpToken        = '__TDPDF_OTLP_TOKEN__'
-$ConnectionString = '__TDPDF_APPINSIGHTS_CONN__'
 
 $KeyPath = 'HKLM:\SOFTWARE\Policies\TDPdf\Telemetry'
 
@@ -48,18 +53,16 @@ try {
         New-Item -Path $KeyPath -Force | Out-Null
     }
 
-    # Only write values that were actually rendered. A half-configured deployment should leave the
-    # other destination alone rather than blanking it — during the migration both are live, and
-    # clearing one is how Application Insights is eventually retired, deliberately, not by accident.
+    # Only write values that were actually rendered, so a half-configured deployment leaves the
+    # rest of the key alone rather than blanking it.
     if (Test-Rendered $OtlpEndpoint) {
         New-ItemProperty -Path $KeyPath -Name 'OtlpEndpoint' -Value $OtlpEndpoint -PropertyType String -Force | Out-Null
     }
     if (Test-Rendered $OtlpToken) {
         New-ItemProperty -Path $KeyPath -Name 'OtlpToken' -Value $OtlpToken -PropertyType String -Force | Out-Null
     }
-    if (Test-Rendered $ConnectionString) {
-        New-ItemProperty -Path $KeyPath -Name 'ConnectionString' -Value $ConnectionString -PropertyType String -Force | Out-Null
-    }
+    # Retired in 1.24.0.0 — see REMOVING THE RETIRED APPLICATION INSIGHTS VALUE above.
+    Remove-ItemProperty -Path $KeyPath -Name 'ConnectionString' -ErrorAction SilentlyContinue
 
     # Integrity ACL: SYSTEM and Administrators may change these; authenticated users may only read.
     # Inheritance is disabled and not copied, so a permissive ACL on SOFTWARE\Policies cannot widen
