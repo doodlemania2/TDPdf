@@ -6,6 +6,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.24.0.0] - 2026-08-26
+
+**Application Insights is removed. The OTLP collector is now the only telemetry destination, and no destination is compiled into the binary at all.**
+
+Fourteen days of dual export settled the question. Azure received a lossy ~17% subset — every install and heartbeat, none of the interaction events — while the collector carried the full stream, including the evidence that identified the 1.23.x text-editor defect. Keeping a second destination that saw less and cost more had no case left.
+
+### Removed
+
+- **The `Microsoft.ApplicationInsights` dependency**, the `TelemetryClient` fan-out, and every Azure-specific type in `Diagnostics/`.
+- **The build-time-embedded key.** `build/embed-telemetry-key.ps1`, `Diagnostics/EmbeddedTelemetry*.cs`, the conditional `<Compile Remove>` in the project file, the `TDPDF_APPINSIGHTS_CONN` secret, and the embed/cleanup steps in `release.yml` and `release.ps1` are all gone. This obfuscated a secret inside a binary shipped to end-user laptops — a speed bump rather than a control — and could not be rotated without a full release, which is why it never was rotated. **No destination is compiled into the binary now; rotation is always a policy push.**
+- **`TDPdf.exe /set-telemetry` and the DPAPI store** at `%ProgramData%\TDPdf\telemetry.dat`. There is no longer a secret for an operator to pipe in by hand. `/clear-telemetry` stays and is unchanged.
+- **The `ConnectionString` policy value.** The Intune remediation now deletes it rather than writing it — a live Azure ingestion secret sitting unread in the registry on every managed device is worth one line to clean up.
+
+### Added
+
+- **`host.name` on every record.** The classic Azure SDK populated the machine name by default; the OpenTelemetry default resource does not, so it is now set explicitly. Without it this release would have silently lost the ability to say *which* device is failing — the capability that let issue #124 name a specific machine. Disclosed under "Device name" in `PRIVACY.md`.
+- **`crash.replayed` and `crash.time_utc`** on spooled crash records. The `Replayed` marker previously rode only the Application Insights event, so removing that destination would have dropped it. It matters because the resource attributes — `session.id` above all — describe the session doing the *reporting*, not the one that died; without the marker, "crashes per session" blames an old crash on a healthy launch.
+
+### Changed
+
+- **Upgrading deletes any legacy `telemetry.dat`,** on launch and again on the elevated `/install` path. It holds a DPAPI-encrypted connection string that nothing reads any more, and a dead secret should not outlive its purpose on 30 laptops.
+- `PRIVACY.md`, `NOTICE`, `README.md` and `docs/intune-distribution.md` rewritten for a single OTLP destination. The Intune guide loses ~230 lines of Azure setup, embedded-key and file-provisioning procedure that no longer describe anything real.
+
+### Notes
+
+- **Nothing is deleted on the Azure side by this release.** The `ai-tdpdf-prod` resource keeps its data and will simply stop receiving; retiring it is a separate, deliberate action.
+
 ## [1.23.7.0] - 2026-08-26
 
 **Fixes Insert Text Box discarding the editor a frame after it appears — the actual cause, after four releases of treating it as a focus bug.**
@@ -830,6 +857,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...HEAD
+[1.24.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.7.0...v1.24.0.0
 [1.23.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...v1.23.7.0
 [1.23.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.5.0...v1.23.6.0
 [1.23.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.4.0...v1.23.5.0

@@ -2,18 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
-using Microsoft.ApplicationInsights.DataContracts;
-using Microsoft.ApplicationInsights.Extensibility;
-using Microsoft.ApplicationInsights.Extensibility.Implementation;
 
 namespace TDPdf.Diagnostics
 {
     /// <summary>
-    /// Thin opt-in wrapper over <see cref="TelemetryClient"/>. By
+    /// Thin opt-in wrapper over <see cref="OtlpTelemetry"/>. By
     /// default this is a no-op — telemetry only emits when the
-    /// administrator has provisioned <see cref="TelemetryStore"/>.
+    /// administrator has provisioned an OTLP collector via
+    /// <see cref="TelemetryConfig"/>.
     ///
     /// Guarantees:
     ///   * No configured destination (see <see cref="TelemetryConfig"/>)
@@ -31,8 +27,6 @@ namespace TDPdf.Diagnostics
     /// </summary>
     internal static class Telemetry
     {
-        private static TelemetryClient? s_client;
-        private static TelemetryConfiguration? s_config;
         private static string s_appVersion = string.Empty;
         private static readonly object s_lock = new();
         private static System.Threading.Timer? s_heartbeatTimer;
@@ -61,12 +55,9 @@ namespace TDPdf.Diagnostics
         public static bool IsEnabled { get; private set; }
 
         /// <summary>
-        /// Best-effort start. Reads the provisioning file, builds a
-        /// private <see cref="TelemetryConfiguration"/> (never the
-        /// global <c>TelemetryConfiguration.Active</c>) with auto
-        /// collectors disabled, and primes a <see cref="TelemetryClient"/>.
-        /// Does not emit any event; callers should follow with the
-        /// startup event that fits their context (App.Startup,
+        /// Best-effort start. Resolves the OTLP collector and primes the
+        /// exporter pipeline. Does not emit any event; callers should follow
+        /// with the startup event that fits their context (App.Startup,
         /// Install.Start, etc.).
         /// </summary>
         public static void Initialize(string appVersion)
@@ -94,53 +85,14 @@ namespace TDPdf.Diagnostics
                     catch { /* unreadable user.config — fall back to the default */ }
                     if (!consented) return;
 
-                    // OTLP first, and independently: the two destinations are resolved
-                    // separately, so a device configured for only one still reports to it. During
-                    // the migration both are live; afterwards, retiring either is a config change.
+                    // Sole destination since 1.24.0.0. Application Insights was retired after
+                    // 14 days of dual export showed it receiving a lossy ~17% subset — every
+                    // install and heartbeat, none of the interaction events — while OTLP carried
+                    // the full stream. See CHANGELOG 1.24.0.0.
                     s_appVersion = appVersion ?? string.Empty;
                     OtlpTelemetry.Initialize(s_appVersion, ResolveEnvironment(), SessionId);
-
-                    // Destination: absent in every build that has not been explicitly pointed
-                    // somewhere, which is what lets this source ship publicly without phoning
-                    // home. Also honours the /clear-telemetry device opt-out internally.
-                    string? connectionString = TelemetryConfig.TryResolveConnectionString();
-                    if (string.IsNullOrWhiteSpace(connectionString))
-                    {
-                        // No Application Insights destination, but OTLP may still be live — in
-                        // which case this is enabled, not disabled. Getting this wrong would make
-                        // every Track* call below a no-op on an OTLP-only device.
-                        IsEnabled = OtlpTelemetry.IsEnabled;
-                        return;
-                    }
-
-                    var config = TelemetryConfiguration.CreateDefault();
-                    config.ConnectionString = connectionString;
-
-                    // InMemoryChannel: no on-disk buffering => no
-                    // privacy surface and no per-user permission
-                    // problems. Buffer is best-effort; events lost on
-                    // crash/network failure are expected.
-                    config.TelemetryChannel = new InMemoryChannel
-                    {
-                        DeveloperMode = false,
-                    };
-
-                    // Disable automatic collectors that could leak more
-                    // than we want (dependency tracking, perf counters,
-                    // live metrics, heartbeat, etc.). The base SDK has
-                    // none of these wired by default — this guard is
-                    // belt-and-suspenders against future SDK changes.
-                    config.DisableTelemetry = false;
-
-                    s_config = config;
-                    s_client = new TelemetryClient(config);
-                    s_client.Context.Component.Version = appVersion;
-                    s_client.Context.Cloud.RoleName = "TDPdf";
-                    s_appVersion = appVersion ?? string.Empty;
-                    // Deliberately do NOT set Context.User.Id or
-                    // Device.Id — no persistent device fingerprint.
-
-                    IsEnabled = true;
+                    IsEnabled = OtlpTelemetry.IsEnabled;
+                    if (!IsEnabled) return;
                 }
 
                 // Outside the lock: replay is I/O and emits through the very methods that take it.
@@ -152,8 +104,6 @@ namespace TDPdf.Diagnostics
                 // Initialization failure must never propagate. Leave
                 // IsEnabled false; future calls become no-ops.
                 IsEnabled = false;
-                s_client = null;
-                s_config = null;
             }
         }
 
@@ -165,12 +115,9 @@ namespace TDPdf.Diagnostics
         public static void TrackEvent(string name, IDictionary<string, string>? properties = null)
         {
             if (!IsEnabled) return;
-            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
-                IDictionary<string, string>? scrubbed = ScrubProperties(properties);
-                s_client?.TrackEvent(name, scrubbed);
-                OtlpTelemetry.TrackEvent(name, scrubbed);
+                OtlpTelemetry.TrackEvent(name, ScrubProperties(properties));
             }
             catch { /* swallow — telemetry must never throw */ }
         }
@@ -185,7 +132,6 @@ namespace TDPdf.Diagnostics
         public static void TrackOperation(string name, double durationMs, bool success, IDictionary<string, string>? properties = null)
         {
             if (!IsEnabled) return;
-            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
                 var props = new Dictionary<string, string>
@@ -198,8 +144,6 @@ namespace TDPdf.Diagnostics
                     foreach (var kv in scrubbed)
                         props[kv.Key] = kv.Value;
 
-                var metrics = new Dictionary<string, double> { ["DurationMs"] = durationMs };
-                s_client?.TrackEvent("Op." + name, props, metrics);
                 // As a span, not an event: SigNoz computes latency percentiles from spans, so the
                 // p95-duration alert needs this shape rather than a pre-aggregated number.
                 OtlpTelemetry.TrackOperation("Op." + name, durationMs, success, props);
@@ -265,7 +209,6 @@ namespace TDPdf.Diagnostics
         public static void TrackCrash(Exception exception, string source, bool recoverable)
         {
             if (!IsEnabled) return;
-            if (s_client is null && !OtlpTelemetry.IsEnabled) return;
             try
             {
                 var props = new Dictionary<string, string>
@@ -278,9 +221,7 @@ namespace TDPdf.Diagnostics
                     ["GroupingKey"]   = Sanitizer.GroupingKey(exception),
                     ["AppVersion"]    = s_appVersion,
                 };
-                s_client?.TrackEvent("Crash", props);
-
-                // Queue the same already-scrubbed record on disk. Both pipelines above buffer in
+                // Queue the same already-scrubbed record on disk. The exporter buffers in
                 // memory, so a crash that kills the process takes its own report with it — which is
                 // exactly what happened on 2026-08-20. Replay at the next launch closes that.
                 CrashSpool.Write(new CrashSpool.Record
@@ -315,17 +256,6 @@ namespace TDPdf.Diagnostics
             // Spans force-flush here; buffered LOG records are drained by OtlpTelemetry.Shutdown's
             // dispose, so the exit path must be Flush() then Shutdown() or crash records are lost.
             OtlpTelemetry.Flush();
-            if (s_client is null) return;
-            try
-            {
-                s_client.Flush();
-                // Classic SDK Flush is fire-and-forget for the HTTPS
-                // upload; the upload completes asynchronously on a
-                // background thread. The documented pattern is to
-                // sleep briefly afterwards.
-                Task.Delay(2000).Wait();
-            }
-            catch { /* swallow */ }
         }
 
         /// <summary>
@@ -347,13 +277,6 @@ namespace TDPdf.Diagnostics
             lock (s_lock)
             {
                 IsEnabled = false;
-                try { s_config?.Dispose(); }
-                catch { /* swallow */ }
-                finally
-                {
-                    s_client = null;
-                    s_config = null;
-                }
             }
         }
 
@@ -410,23 +333,11 @@ namespace TDPdf.Diagnostics
             {
                 try
                 {
-                    var props = new Dictionary<string, string>
-                    {
-                        ["Source"]        = record.Source,
-                        ["Recoverable"]   = record.Recoverable ? "true" : "false",
-                        ["ExceptionType"] = record.ExceptionType,
-                        ["Message"]       = record.Message,
-                        ["StackTrace"]    = record.StackTrace,
-                        ["GroupingKey"]   = record.GroupingKey,
-                        ["AppVersion"]    = record.AppVersion,
-                        ["Replayed"]      = "true",
-                        ["CrashTimeUtc"]  = record.TimestampUtc.ToString("o"),
-                    };
-                    // Straight to the sinks, never back through TrackCrash — that would re-spool a
+                    // Straight to the sink, never back through TrackCrash — that would re-spool a
                     // record we are in the middle of draining and replay it forever.
-                    s_client?.TrackEvent("Crash", props);
                     OtlpTelemetry.TrackCrash(record.ExceptionType, record.Message,
-                        record.StackTrace, record.Source, record.Recoverable, record.GroupingKey);
+                        record.StackTrace, record.Source, record.Recoverable, record.GroupingKey,
+                        replayed: true, crashTimeUtc: record.TimestampUtc.ToString("o"));
                 }
                 catch { /* swallow */ }
             });

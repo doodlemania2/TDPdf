@@ -1,81 +1,47 @@
 using System;
 using System.IO;
 using System.Security.AccessControl;
-using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 
 namespace TDPdf.Diagnostics
 {
     /// <summary>
-    /// At-rest store for the optional Application Insights connection
-    /// string. By design the file is absent in default installs; the
-    /// app emits zero telemetry in that case. An administrator opts a
-    /// device in by running <c>TDPdf.exe /set-telemetry</c>.
+    /// The device-level telemetry opt-out marker, and retirement of the legacy at-rest store.
     ///
-    /// Security model — a "reasonable speed bump", not crypto:
-    ///   * Ciphertext is produced by Windows DPAPI with
-    ///     <see cref="DataProtectionScope.LocalMachine"/>, so a stolen
-    ///     <c>telemetry.dat</c> is useless on another machine.
-    ///   * A fixed entropy byte array compiled into TDPdf is passed as
-    ///     <c>optionalEntropy</c>, so a non-admin user on the same box
-    ///     cannot recover the connection string with a three-line
-    ///     PowerShell that calls <c>ProtectedData.Unprotect</c>. They
-    ///     would have to extract the entropy from the EXE first.
-    ///   * The containing directory and file are ACL'd to grant
-    ///     SYSTEM / Administrators FullControl and Authenticated Users
-    ///     ReadAndExecute only — non-admins can't pre-create the
-    ///     directory to influence ownership before install, and can't
-    ///     overwrite the file once provisioned.
-    ///
-    /// A determined same-machine attacker who can reverse engineer or
-    /// instrument the running TDPdf process can still recover the
-    /// connection string. Treat the connection string as a low-value
-    /// secret, set a daily ingestion cap on the App Insights resource,
-    /// and rotate it if it leaks.
+    /// Until 1.24.0.0 this type also held a DPAPI-encrypted Application Insights connection string
+    /// in <c>%ProgramData%\TDPdf\telemetry.dat</c>, written by <c>TDPdf.exe /set-telemetry</c>.
+    /// Application Insights was retired in that release and the OTLP collector is provisioned by
+    /// Intune policy instead, so there is no longer a secret to store. What survives is the
+    /// <c>telemetry.disabled</c> sentinel, plus <see cref="RemoveLegacyStore"/> to delete the dead
+    /// ciphertext from machines that upgrade.
     /// </summary>
+    /// <remarks>
+    /// The sentinel is the strongest opt-out in the product: <see cref="TelemetryConfig"/> checks it
+    /// before reading any destination, so it outranks the managed policy rather than racing it. An
+    /// administrator taking one machine out of reporting should not have to wait for a profile
+    /// change, nor be silently overridden by one.
+    /// </remarks>
     internal static class TelemetryStore
     {
-        // Fixed entropy. Not a secret — its only job is to require an
-        // attacker to extract bytes from TDPdf.exe before they can
-        // decrypt telemetry.dat, instead of getting the plaintext from
-        // a stock DPAPI Unprotect call. Treat as an app-compatibility
-        // constant: never change it without also re-running
-        // /set-telemetry on every provisioned device.
-        private static readonly byte[] s_entropy = new byte[]
-        {
-            0x54, 0x44, 0x50, 0x64, 0x66, 0x2D, 0x74, 0x65,
-            0x6C, 0x65, 0x6D, 0x65, 0x74, 0x72, 0x79, 0x2D,
-            0x76, 0x31, 0x2D, 0xA7, 0x3C, 0x91, 0x6E, 0x18,
-            0xD2, 0x4B, 0x05, 0xFE, 0x82, 0x70, 0xCA, 0x39,
-        };
-
         private static readonly string s_dir = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "TDPdf");
 
-        public static string Path => System.IO.Path.Combine(s_dir, "telemetry.dat");
+        /// <summary>Pre-1.24.0.0 store. Retained only so it can be deleted.</summary>
+        private static string LegacyStorePath => System.IO.Path.Combine(s_dir, "telemetry.dat");
 
         /// <summary>
-        /// Sentinel file that, when present, disables auto-provisioning
-        /// from the build-time-embedded connection string on the next
-        /// launch. Written by <see cref="MarkDisabled"/> when a user
-        /// runs <c>TDPdf.exe /clear-telemetry</c>; respected by
-        /// <see cref="IsDisabled"/>.
+        /// Sentinel file that, when present, disables all telemetry on this device regardless of
+        /// what policy configures. Written by <see cref="MarkDisabled"/> when an administrator runs
+        /// <c>TDPdf.exe /clear-telemetry</c>; respected by <see cref="IsDisabled"/>, which
+        /// <see cref="TelemetryConfig.TryResolveOtlp"/> consults before reading any destination.
         /// </summary>
         public static string DisabledMarkerPath => System.IO.Path.Combine(s_dir, "telemetry.disabled");
 
-        /// <summary>True if the provisioning file is present on disk.</summary>
-        public static bool Exists()
-        {
-            try { return File.Exists(Path); }
-            catch { return false; }
-        }
-
         /// <summary>
-        /// True if the user has explicitly disabled telemetry on this
-        /// device via <c>/clear-telemetry</c>. Auto-provisioning skips
-        /// when this returns true.
+        /// True if telemetry has been explicitly disabled on this device via
+        /// <c>/clear-telemetry</c>. Destination resolution stops when this returns true.
         /// </summary>
         public static bool IsDisabled()
         {
@@ -84,74 +50,20 @@ namespace TDPdf.Diagnostics
         }
 
         /// <summary>
-        /// Best-effort decrypt of <see cref="Path"/>. Returns
-        /// <c>null</c> when the file is absent or any step fails — never
-        /// throws.
+        /// Delete a pre-1.24.0.0 <c>telemetry.dat</c> if one is present. Best-effort and never
+        /// throws: it runs on every launch, and a machine where it cannot be removed (locked file,
+        /// non-elevated user) must still start normally. The elevated <c>/install</c> path calls it
+        /// too, which is where it will usually succeed.
         /// </summary>
-        public static string? TryLoad()
-        {
-            try
-            {
-                if (!File.Exists(Path))
-                    return null;
+        public static void RemoveLegacyStore() => Clear();
 
-                byte[] cipher = File.ReadAllBytes(Path);
-                byte[] plain = ProtectedData.Unprotect(cipher, s_entropy, DataProtectionScope.LocalMachine);
-                string value = Encoding.UTF8.GetString(plain).Trim();
-                return string.IsNullOrWhiteSpace(value) ? null : value;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Encrypt <paramref name="connectionString"/> with DPAPI
-        /// LocalMachine + entropy and write it to <see cref="Path"/>
-        /// with hardened ACLs. Caller must be elevated (SYSTEM or
-        /// Administrators).
-        /// </summary>
-        public static void Save(string connectionString)
-        {
-            if (string.IsNullOrWhiteSpace(connectionString))
-                throw new ArgumentException("Connection string cannot be empty.", nameof(connectionString));
-
-            EnsureHardenedDirectory();
-
-            byte[] plain = Encoding.UTF8.GetBytes(connectionString.Trim());
-            byte[] cipher = ProtectedData.Protect(plain, s_entropy, DataProtectionScope.LocalMachine);
-
-            // Atomic write via temp + replace so we never leave a
-            // truncated ciphertext on disk.
-            string tmp = Path + ".tmp";
-            File.WriteAllBytes(tmp, cipher);
-            try
-            {
-                if (File.Exists(Path))
-                    File.Replace(tmp, Path, destinationBackupFileName: null);
-                else
-                    File.Move(tmp, Path);
-            }
-            catch
-            {
-                try { File.Delete(tmp); } catch { /* swallow */ }
-                throw;
-            }
-
-            HardenFileAcl(Path);
-
-            // Clear the in-memory plaintext as soon as possible.
-            Array.Clear(plain);
-        }
-
-        /// <summary>Remove the provisioning file. No-op if absent.</summary>
+        /// <summary>Remove the legacy store file. No-op if absent. Never throws.</summary>
         public static void Clear()
         {
             try
             {
-                if (File.Exists(Path))
-                    File.Delete(Path);
+                if (File.Exists(LegacyStorePath))
+                    File.Delete(LegacyStorePath);
             }
             catch { /* swallow — caller logs */ }
         }
@@ -231,7 +143,7 @@ namespace TDPdf.Diagnostics
             catch
             {
                 // ACL hardening is best-effort. If we lack the right
-                // (e.g. the caller is not elevated), Save() above will
+                // (e.g. the caller is not elevated), the write above will
                 // also fail at file-write time and surface a useful
                 // error. Don't mask that with an ACL exception here.
             }

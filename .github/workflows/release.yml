@@ -37,7 +37,6 @@ jobs:
     # resolved once here into plain env flags (job-level `env` may read secrets)
     # and the steps gate on those.
     env:
-      HAS_TELEMETRY: ${{ secrets.TDPDF_APPINSIGHTS_CONN != '' }}
       HAS_PFX:       ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
       HAS_INTUNE:    ${{ secrets.INTUNE_APP_ID != '' }}
     steps:
@@ -71,16 +70,6 @@ jobs:
           [ -f "$NOTES" ] || { echo "::error::Missing $NOTES — release.yml passes it to --notes-file. Commit it and re-tag."; exit 1; }
           echo "Found $NOTES"
 
-      - name: Embed telemetry key
-        if: env.HAS_TELEMETRY == 'true'
-        env:
-          TDPDF_APPINSIGHTS_CONN: ${{ secrets.TDPDF_APPINSIGHTS_CONN }}
-        run: |
-          pwsh -NoProfile -File build/embed-telemetry-key.ps1 -ProjectDir "$PWD"
-          test -f Diagnostics/EmbeddedTelemetry.Generated.cs \
-            && echo "Telemetry key embedded." \
-            || { echo "::error::embed-telemetry-key.ps1 produced no file."; exit 1; }
-
       - name: Publish (Release, win-x64, single-file, self-contained)
         run: |
           dotnet publish TDPdf.csproj \
@@ -92,12 +81,6 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true \
             -p:EnableCompressionInSingleFile=true \
             -o publish
-
-      # Always strip the generated key from the tree, mirroring release.ps1, so
-      # it can never leak into the source bundle or a later step.
-      - name: Remove embedded telemetry key from working tree
-        if: always()
-        run: pwsh -NoProfile -File build/embed-telemetry-key.ps1 -ProjectDir "$PWD" -Remove || true
 
       - name: Sign
         id: sign

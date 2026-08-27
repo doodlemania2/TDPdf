@@ -55,18 +55,18 @@ Requires Windows and the .NET 9 SDK to build.
 ## Privacy
 
 **Building this repository produces a binary that reports to nobody.** No telemetry endpoint is
-committed here — the source ships an empty placeholder, and the real value is generated at release
-time and gitignored. Reporting needs both a user consent setting (Settings → Privacy, on by
-default) *and* a configured destination; a build with no destination is inert whichever way the
-setting is set, so the default costs a self-builder nothing.
+committed here, and since 1.24.0.0 none is embedded into released binaries either — the
+destination is supplied at runtime by administrator-pushed policy, never compiled in. Reporting
+needs both a user consent setting (Settings → Privacy, on by default) *and* a configured
+destination; a build with no destination is inert whichever way the setting is set, so the default
+costs a self-builder nothing.
 
-A destination is configured deliberately, in one of three ways: the `TDPDF_TELEMETRY_CONNECTION`
-environment variable, an administrator-pushed policy value at
-`HKLM\SOFTWARE\Policies\TDPdf\Telemetry\ConnectionString`, or a provisioning file written by
-`TDPdf.exe /set-telemetry`. **Binaries released by this project's maintainers for managed
-deployment do carry an embedded destination** and report to a collector operated by the deploying
-organisation — if you are running one of those rather than your own build, reporting is on unless
-you turn it off.
+A destination is configured deliberately, in one of two ways: the `TDPDF_OTLP_ENDPOINT` and
+`TDPDF_OTLP_TOKEN` environment variables, or administrator-pushed policy values at
+`HKLM\SOFTWARE\Policies\TDPdf\Telemetry\OtlpEndpoint` and `…\OtlpToken`. **Machines under
+managed deployment receive those values from an Intune configuration profile** and report to an
+OpenTelemetry collector operated by the deploying organisation — if you are running such a machine
+rather than your own build, reporting is on unless you turn it off.
 
 When reporting is on, TDPdf sends event names, coarse technical context (app version, install
 scope, Windows version) and sanitised crash reports. Document contents, file names, file paths,

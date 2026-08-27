@@ -336,30 +336,21 @@ other Windows blocking layers behave independently:
 
 ## Telemetry (optional)
 
-Starting with **v1.0.0.6**, TDPdf supports **two complementary** ways to
-opt a device into anonymous Application Insights telemetry. With neither
-in play, TDPdf is a no-op: the SDK is initialized with an empty
-configuration and no network calls are made.
+TDPdf reports to an **OpenTelemetry (OTLP) collector** — self-hosted SigNoz in this deployment —
+and to nothing else. With no collector configured it is a no-op: the pipeline initializes with an
+empty configuration and makes no network calls.
 
-| Method | Who provisions | Rotatable without a release? |
-|---|---|---|
-| **Managed policy key** (recommended for managed fleets) | An Intune Remediation — see [Telemetry policy profile](#telemetry-policy-profile) | **Yes** |
-| **Build-time-embedded key** (**deprecated**) | The release engineer, at release time | No — rotation requires building, signing and shipping a new EXE to every device |
-| **Per-device file-based provisioning** | An admin on the device via `TDPdf.exe /set-telemetry` | Per device, by hand |
+A **user consent setting** also applies (Settings → Privacy, on by default). Reporting requires
+*both* consent and a configured destination, so a build with no destination sends nothing whatever
+the setting says. See [`PRIVACY.md`](../PRIVACY.md).
 
-> The embedded key is deprecated precisely because of that middle column. It is the reason the
-> Application Insights key was never rotated in practice: rotation cost a full release. It stays
-> only as a fallback for devices the policy profile has not reached, and should be removed once
-> the profile has rolled out.
-
-Since **v1.22.2.0** a **user consent setting** also applies (Settings → Privacy, on by default).
-Reporting requires *both* consent and a configured destination, so a build with no destination
-sends nothing whatever the setting says. See [`PRIVACY.md`](../PRIVACY.md).
-
-Either method ends up at the same on-device state: a hardened
-`%ProgramData%\TDPdf\telemetry.dat` containing a DPAPI-LocalMachine-
-encrypted copy of the connection string. The only difference is **how
-that file gets there**.
+> **Changed in 1.24.0.0.** Azure Application Insights was removed, along with both of its
+> provisioning mechanisms: the build-time-embedded key and the per-device
+> `%ProgramData%\TDPdf\telemetry.dat` file. Fourteen days of dual export settled it — Azure
+> received a lossy ~17% subset (installs and heartbeats, none of the interaction events) while the
+> collector carried the full stream. Upgrading deletes any `telemetry.dat` left behind, and the
+> remediation script below removes the retired `ConnectionString` policy value. There is no longer
+> any destination compiled into the binary, so rotation is always a policy push.
 
 ### Telemetry policy profile
 
@@ -369,7 +360,9 @@ The destination lives in `HKLM\SOFTWARE\Policies\TDPdf\Telemetry`:
 |---|---|
 | `OtlpEndpoint` | Base URL of the OTLP collector, e.g. `https://otlp-tdpdf.thedoodleproject.net` |
 | `OtlpToken` | Bearer token for that collector. **TDPdf-scoped** — not the shared cluster token |
-| `ConnectionString` | Application Insights connection string, while dual-export is running |
+
+Both are required. An endpoint without a token resolves to *no destination* rather than producing
+a stream of 401s from every laptop in the fleet.
 
 Deploy it as an **Intune Remediation** (Devices → Remediations), pairing:
 
@@ -397,114 +390,35 @@ so a leak is rotated here without touching any other application on the collecto
 ### What gets sent (when enabled)
 
 - `App.Startup` — once per interactive launch. Properties: `AppVersion`,
-  `InstallScope` (`Installed` / `Portable`), `OSVersion`,
-  `Is64BitProcess`.
+  `InstallScope` (`Installed` / `Portable`), `OSVersion`, `Is64BitProcess`.
+- `App.Heartbeat` — every 15 minutes while running, so "the fleet went quiet" is
+  distinguishable from "nobody launched it today".
+- `App.SessionEnd` — a clean exit. A startup with no matching session end did not finish.
 - `Install.Start` / `Install.Success` — when `/install` runs.
-- `Install.Crash` / `Crash` — sanitized crash events. Stack traces have
-  Windows/POSIX paths, `password=`, and connection-string fragments
-  redacted. A 12-hex-char `GroupingKey` (SHA-256 of
-  `type|firstScrubbedFrame`) is included for bucketing.
+- `Install.Crash` / `Crash` — sanitized crash events. Stack traces have Windows/POSIX paths,
+  `password=`, and connection-string fragments redacted. A 12-hex-char `GroupingKey` (SHA-256 of
+  `type|firstScrubbedFrame`) is included for bucketing. Crashes that killed the process before
+  they could be sent are spooled to disk and replayed at the next launch, marked
+  `crash.replayed`.
 - `Tool.Selected` — tool palette interactions. Property: `Tool` name.
-- `File.Open` / `File.New` / `File.Save` / `File.SaveFlattened` /
-  `File.Merge` / `File.Split` / `File.Print` — coarse-grained usage.
-  **No file names, paths, sizes, or document content** are ever sent.
+- `File.Open` / `File.New` / `File.Save` / `File.SaveFlattened` / `File.Merge` / `File.Split` /
+  `File.Print` — coarse-grained usage. **No file names, paths, sizes, or document content.**
+- `Op.*` spans — durations for timed operations, so latency percentiles are computed by the
+  backend rather than pre-aggregated here.
 
-What is **never** sent: file paths, file names, document content, user
-names, machine names, persistent device identifiers (no `User.Id`, no
-`Device.Id`). Each session is anonymous.
+Every record carries resource attributes identifying the application and the run: `service.name`
+(`tdpdf`), `service.version`, `deployment.environment`, a per-launch `session.id`, and
+`host.name` — the machine name.
 
-### Recommended Azure setup
+**`host.name` is the one identifying field.** It is sent because it is what makes a report
+actionable: it separates one machine with a fault from a fleet-wide regression. On a corporate
+machine the name is often derived from the user's name, so treat it as identifying that device
+and, indirectly, its user. It is disclosed under "Device name" in [`PRIVACY.md`](../PRIVACY.md) —
+if you change one, change the other.
 
-1. Create a **dedicated** Application Insights resource (workspace-based)
-   in a resource group you control. **Do not reuse** one that already
-   receives traffic from other applications — it makes anomaly
-   investigation harder and complicates a key rotation if you ever need
-   one. The blast radius of a leaked TDPdf key should be bounded to
-   this resource and nothing else.
-2. Set a **daily ingestion cap** (Application Insights → Usage and
-   estimated costs → Daily cap). Even though TDPdf events are small,
-   this protects against runaway costs from a buggy build or an attacker
-   who recovers the embedded key.
-3. Configure an **anomaly alert** so you're notified if event volume
-   spikes (e.g. >10× the rolling 7-day average) — first indicator that
-   a key has leaked.
-4. Copy the **connection string** (not the legacy instrumentation key)
-   from the resource's Overview blade.
-
-### Method 1 — Build-time-embedded key (single Intune deployment)
-
-This is the recommended path when you're shipping TDPdf via Intune to a
-fleet of devices you administer. The connection string is encrypted into
-`TDPdf.exe` at release time; the same single `.intunewin` you already
-deploy carries everything needed for telemetry to light up.
-
-**Release-time (one-off, on your release machine):**
-
-1. Set the connection string in your **environment** for the shell
-   session that will run `release.ps1`. Never as a command-line argument
-   (it would land in process listings and the PowerShell history file):
-   ```powershell
-   $env:TDPDF_APPINSIGHTS_CONN = (Get-Content -Raw .\secret.txt).Trim()
-   .\release.ps1
-   Remove-Item Env:TDPDF_APPINSIGHTS_CONN
-   ```
-2. `release.ps1` will invoke `build\embed-telemetry-key.ps1` which
-   generates a per-release AES-256 key, encrypts the connection string,
-   XOR-splits the key across two compiled-in halves, and writes a
-   gitignored `Diagnostics/EmbeddedTelemetry.Generated.cs` that the
-   build picks up. Immediately after publish (success or failure) the
-   generated file is **deleted** from the working tree.
-3. Verify: `git status` should report a clean tree, and `git ls-files
-   Diagnostics/` should NOT list `EmbeddedTelemetry.Generated.cs`. The
-   source bundle (`TDPdf-<version>-src.zip`) is built from `git
-   ls-files`, so it carries only the placeholder.
-4. Deploy the resulting `.intunewin` as you normally do. **No
-   second Intune app, no per-device PowerShell.**
-
-**On the device (automatic):**
-
-1. Intune installs TDPdf via `TDPdf.exe /install /silent` running as
-   SYSTEM. The install branch attempts auto-provisioning: decrypts the
-   embedded key, writes `%ProgramData%\TDPdf\telemetry.dat`, hardens the
-   ACL.
-2. If the device user later runs TDPdf interactively, startup also
-   tries to auto-provision (covering the user-context-install case).
-3. Auto-provisioning skips if `telemetry.dat` already exists, if a
-   `telemetry.disabled` sentinel is present (see "Clearing", below), or
-   if the embedded constants are empty (dev/CI builds).
-
-**Threat model**: the encrypted blob and both XOR-split key halves live
-in `TDPdf.exe`. A non-admin user on the device can't pull the key out
-with a one-line PowerShell, but anyone who can reverse engineer or
-debug-attach the binary can recover it. This is a **speed bump, not
-strong cryptography**. The mitigations are the Azure-side daily cap,
-dedicated resource, anomaly alert, and key rotation — not the embedded
-encryption itself.
-
-### Method 2 — Per-device file-based provisioning (fallback)
-
-Useful when you don't want to (or can't) embed the key at release time:
-admin-managed dev machines, exploratory testing, customer-specific
-keys, etc. This is the original `1.0.0.5` workflow.
-
-`%ProgramData%\TDPdf\telemetry.dat` is written manually via stdin (never
-argv) to keep the connection string out of process listings and the
-installer log:
-
-```powershell
-# secret.txt contains exactly the connection string on one line:
-# InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://...
-Get-Content -Raw secret.txt | & "$env:LOCALAPPDATA\Programs\TDPdf\TDPdf.exe" /set-telemetry
-```
-
-Or from `cmd`:
-
-```cmd
-type secret.txt | "C:\Path\to\TDPdf.exe" /set-telemetry
-```
-
-Running `/set-telemetry` also clears the `telemetry.disabled` sentinel,
-so it re-enables on a previously-cleared device.
+What is **never** sent: file paths, file names, document content, user names, form field values,
+search terms, signature images, or any persistent *user* identifier. The session identifier is
+regenerated on every launch and never written to disk.
 
 ### Clearing telemetry on a device
 
@@ -512,57 +426,25 @@ so it re-enables on a previously-cleared device.
 "C:\Path\to\TDPdf.exe" /clear-telemetry
 ```
 
-This:
-- deletes `%ProgramData%\TDPdf\telemetry.dat`;
-- writes a `%ProgramData%\TDPdf\telemetry.disabled` sentinel that
-  suppresses auto-provisioning from the embedded key on subsequent
-  launches.
+This writes a `%ProgramData%\TDPdf\telemetry.disabled` sentinel (and deletes any legacy
+`telemetry.dat`). The sentinel is checked **before any destination is read**, so it outranks the
+managed policy rather than racing it.
 
-So `/clear-telemetry` is **sticky**: an Intune re-install of the same
-build will not silently re-enable telemetry on a device the user
-opted out of. To re-enable, an admin must run `/set-telemetry` or
-delete the sentinel file.
+So `/clear-telemetry` is **sticky**: neither an Intune re-install nor a remediation cycle will
+silently re-enable reporting on a device that was opted out. To re-enable, delete the sentinel
+file.
 
-### Rotating the connection string
+### Rotating the token
 
-The embedded key is encrypted with a fresh per-release AES key, so a
-key rotation means cutting a new TDPdf release. There is no on-device
-rotation step.
+Edit `OtlpToken` in both `build/intune/Set-TDPdfTelemetryPolicy.ps1` and
+`build/intune/Detect-TDPdfTelemetryPolicy.ps1`, re-upload the remediation, and every device picks
+the new value up on its next cycle. No build, no signing, no release — which was the entire point
+of moving off the embedded key, a key that was never once rotated because rotating it cost a full
+release.
 
-1. In the Azure portal, **regenerate** the App Insights connection
-   string (or stand up a new App Insights resource entirely if you want
-   a clean break).
-2. Cut a new TDPdf release with the new value in
-   `$env:TDPDF_APPINSIGHTS_CONN`. Bump the patch version.
-3. Deploy via Intune as you normally do — the next install on each
-   device overwrites `telemetry.dat` with the new key (atomic write via
-   `.tmp` + `File.Replace`).
-4. Once you confirm new-resource events are flowing, you can disable
-   the old App Insights resource. The old key is now inert no matter
-   what's still on a device.
-
-The same flow works for the file-based fallback: replace `secret.txt`
-and re-run `/set-telemetry` on the device.
-
-### Why this design, not stronger crypto?
-
-The threat model is: an **administrator** of the device is trusted (they
-deployed the package); a non-admin local user should not be able to
-casually read the connection string. Both the embedded-key path and the
-file-based path rely on:
-
-- DPAPI `LocalMachine` scope on `telemetry.dat` (a stolen file is
-  useless on another machine);
-- Explicit ACLs (no inheritance; SYSTEM + Admins FullControl,
-  AuthenticatedUsers Read only);
-- Compiled-in XOR-split entropy in `TDPdf.exe` for the embedded path
-  (raises the bar above a PowerShell one-liner).
-
-Anyone who can run code as SYSTEM (or attach a debugger to the elevated
-TDPdf process) can recover the key. Use a **dedicated resource +
-daily cap + anomaly alert + rotation discipline** so a recovered key
-has a bounded blast radius. If you need stronger guarantees, don't
-enable telemetry — the default no-op behavior is always safe.
+Because detection compares against the *expected* token rather than checking the value merely
+exists, a rotation actually propagates. A presence-only check would strand the fleet on the old
+token indefinitely.
 
 ## GPLv3 compliance reminder
 

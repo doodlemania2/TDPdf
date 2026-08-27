@@ -27,15 +27,19 @@ The default-on consent setting is not a way of enabling reporting by stealth. It
 because consent alone has nowhere to send anything. A destination is configured in exactly one of
 these ways, and none of them happens by accident:
 
-1. The `TDPDF_TELEMETRY_CONNECTION` environment variable — for developers, or for anyone
-   self-hosting who wants to point their own build at their own collector.
-2. A registry value at `HKLM\SOFTWARE\Policies\TDPdf\Telemetry\ConnectionString`, which an
-   organisation pushes to machines it manages.
-3. A provisioning file written by an administrator running `TDPdf.exe /set-telemetry`.
+1. The `TDPDF_OTLP_ENDPOINT` and `TDPDF_OTLP_TOKEN` environment variables — for developers, or for
+   anyone self-hosting who wants to point their own build at their own collector. Both are
+   required; an endpoint without a token is treated as no destination at all.
+2. Registry values at `HKLM\SOFTWARE\Policies\TDPdf\Telemetry\OtlpEndpoint` and `…\OtlpToken`,
+   which an organisation pushes to machines it manages.
 
 If you are running a build you compiled yourself and have done none of the above, TDPdf has no
 destination and reports nothing. The Settings dialog tells you which of these two states you are
 in rather than leaving you to guess.
+
+Reports go to an OpenTelemetry collector operated by the deploying organisation. As of version
+1.24.0.0 that is the only destination TDPdf can send to; earlier versions could also report to
+Azure Application Insights, and that path has been removed from the application entirely.
 
 ## What is sent, when reporting is on
 
@@ -76,8 +80,9 @@ TDPdf starts. It is never written to disk and never reused, so it cannot link on
 application to another, or to you. It exists so that a hundred crashes from one unlucky machine can
 be told apart from a hundred crashes across the whole fleet — those need very different responses.
 
-**Device name.** Reports carry the machine's name — for example `L-JSMITH` — because it is what
-makes a report actionable: it separates one machine with a fault from a fleet-wide regression.
+**Device name.** Reports carry the machine's name — for example `L-JSMITH` — as the `host.name`
+field, because it is what makes a report actionable: it separates one machine with a fault from a
+fleet-wide regression.
 On a corporate machine the name is often derived from the user's name, so treat it as identifying
 that device and, indirectly, its user. This is the only identifying field in the payload, and it
 is the one to weigh if you are deciding whether to enable reporting.
@@ -89,9 +94,9 @@ is the one to weigh if you are deciding whether to enable reporting.
 - Signature images or drawn signatures.
 - Text you type into a PDF, form field values, or search terms.
 - Your username, email address, or any account identifier.
-- A persistent user or device identifier. TDPdf explicitly does not set the reporting SDK's user
-  or device ID fields. The session identifier above is regenerated on every launch and never
-  stored, so there is no cross-session fingerprint beyond the machine name.
+- A persistent user or device identifier. TDPdf sets no user ID and no device ID beyond the
+  machine name described above. The session identifier is regenerated on every launch and never
+  stored, so there is no cross-session fingerprint beyond that name.
 
 ## What is stored on your machine
 
