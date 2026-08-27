@@ -15802,6 +15802,11 @@ namespace TDPdf
         {
             double scale = (e.DeltaManipulation.Scale.X + e.DeltaManipulation.Scale.Y) / 2.0;
             if (Math.Abs(scale - 1.0) < 0.01) return;
+            // #131: a pinch is as explicit as Ctrl+wheel and stops the view tracking the window,
+            // the same as every other manual path. It never did so on its own — it only ever
+            // reached BeginManualZoom by accident, through the zoom combo reading its own update
+            // back as a user pick, and then only when the pinch happened to land on a preset.
+            BeginManualZoom();
             Zoom.SetZoomLevel(Zoom.ZoomLevel * scale);
             e.Handled = true;
         }
