@@ -11561,6 +11561,16 @@ namespace TDPdf
         /// </summary>
         private void PlaceTextBox(Point pos, int pageIdx, TextAnnotation? existing = null)
         {
+            // #131: every caller offers the live editor to the commit chokepoint before getting
+            // here. If one is STILL live, the untouched-editor grace refused that commit — and the
+            // assignment below is about to overwrite _activeTextBox, stranding the refused box on
+            // TextEditorCanvas with nothing referencing it. Nothing reaps that canvas except a tab
+            // switch, so it would sit on the page, visible and unusable, for the rest of the
+            // session. A brand-new editor nobody typed into has nothing worth preserving; discard
+            // it. (Only a placed-text box can be in that state — the grace never defers an inline
+            // PDF-text edit, and the inline path returns rather than replacing the editor.)
+            if (_activeTextBox is { Tag: PlacedTextContext }) CancelActiveTextBox();
+
             double width = DefaultTextBoxWidth;
             if (existing is not null)
             {

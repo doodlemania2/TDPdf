@@ -150,7 +150,14 @@ namespace TDPdf
         /// picked value against the current zoom cannot work, because by the time
         /// <c>SelectionChanged</c> is raised the two agree either way. Clearing the mark on the
         /// first check means a later, genuine pick of the same entry is never mistaken for an echo.
-        /// Nothing here assumes the binding's push is synchronous with the write that caused it.
+        /// <para>
+        /// The single slot is safe because the push IS synchronous — <c>Selector</c>'s selection
+        /// change sets <c>SelectedItem</c>, the TwoWay binding updates this property, and
+        /// <c>SelectionChanged</c> is raised, all inside the write below, so a mark can never
+        /// outlive the echo it was set for. Do not add a <c>Delay</c> or <c>IsAsync</c> to that
+        /// binding, and do not make the mirror write asynchronous: two marks outstanding at once
+        /// would overwrite each other and the unmatched echo would be taken for a user's pick.
+        /// </para>
         /// </remarks>
         public bool ConsumeMirrorEcho(ZoomLevelOption? option)
         {
