@@ -401,6 +401,10 @@ so a leak is rotated here without touching any other application on the collecto
   they could be sent are spooled to disk and replayed at the next launch, marked
   `crash.replayed`.
 - `Tool.Selected` — tool palette interactions. Property: `Tool` name.
+- `Zoom.Churn` — 1.24.1.0. Emitted only when the viewport re-applies its zoom more than 8
+  times in one second, which is a defect signature, not normal use. Properties: `Count`,
+  `Via` (the TDPdf method that made most of those calls), `ViaCount`, `FitMode`, `ViewMode` —
+  all compile-time constants or enum names. Rate-limited to one report per 5 minutes.
 - `File.Open` / `File.New` / `File.Save` / `File.SaveFlattened` / `File.Merge` / `File.Split` /
   `File.Print` — coarse-grained usage. **No file names, paths, sizes, or document content.**
 - `Op.*` spans — durations for timed operations, so latency percentiles are computed by the

@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.24.1.0] - 2026-08-27
+
+**Text boxes work.** Every live text editor in the fleet was being destroyed before anyone could type into it, and had been for five releases. The cause was never focus.
+
+### Fixed
+
+- **A zoom no longer tears down the text box you just placed.** `ApplyZoom` reached the app's commit chokepoint, and it repeats — roughly 23 times a second, sustained. 54 of 54 editor destructions across the fleet arrived from there, and the 400 ms grace window added in 1.23.7.0 only moved every death to 409-456 ms; the next tick took the editor anyway. **The commit was never needed.** The page tile and both annotation canvases are sized from one fixed render box, and the zoom is an ancestor layout transform, so a live box's coordinates — and the annotation it becomes — are identical at every zoom level. Upstream KillerPDF has never settled the editor on an automatic path either. Removed, along with `_applyingFitZoom`, 1.23.7.0's attempt to exempt only the automatic re-fits (the telemetry shows it reading false on all 54 anyway).
+
+  For the record, since four releases were spent on the wrong theory: `Annotation.TextEditorFocusLost` and `Annotation.TextEditorFocusRestored` have fired **zero** times in fleet history, and `Annotation.PlaceCompleted` reports `Attached=true, Focused=true` every time. The editor was being destroyed *while focused*. The single successful text annotation ever recorded came from a user who got a keystroke in 29 ms and won the race.
+
+- **The zoom dropdown no longer reads its own updates back as your input.** The combo box's selection is two-way bound to the view model, which rewrites it on every zoom change from every source — so each zoom the app computed echoed back into the "user picked a zoom" handler, which cancelled whatever fit mode you had chosen and applied a zoom nobody asked for. A selection that asks for the zoom already in force is now recognised as the echo it is.
+
+- **A computed fit is no longer snapped to the nearest preset.** The view model matched a preset within 0.5% but wrote one back if it differed by more than 0.01%, so any Fit Width or Fit Page landing near 100% was quietly forced to exactly 100% — changing the fit you asked for, and re-entering the zoom pipeline to do it. One tolerance now.
+
+### Added
+
+- **`Zoom.Churn` telemetry.** The repeated zoom passes were only ever visible because a text editor happened to be alive while they ran, and that signal disappears with the fix above. The viewport now reports directly when it re-applies its zoom more than 8 times in a second, naming the method responsible. Rate-limited to one report every five minutes; carries method and enum names only, and cannot reference a document. Disclosed in `PRIVACY.md`. The repetition itself is a separate defect and is tracked in [#131](https://github.com/doodlemania2/TDPdf/issues/131).
+
 ## [1.24.0.0] - 2026-08-26
 
 **Application Insights is removed. The OTLP collector is now the only telemetry destination, and no destination is compiled into the binary at all.**
@@ -856,7 +874,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.24.1.0...HEAD
+[1.24.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.0.0...v1.24.1.0
 [1.24.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.7.0...v1.24.0.0
 [1.23.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...v1.23.7.0
 [1.23.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.5.0...v1.23.6.0

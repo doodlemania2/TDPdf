@@ -48,7 +48,8 @@ Azure Application Insights, and that path has been removed from the application 
 `App.Startup`, `Install.Start`, `Install.Success`, `Uninstall.Start`, `Uninstall.Success`,
 `Tool.Selected`, `Annotation.PlaceStarted`, `Annotation.PlaceCompleted`,
 `Annotation.TextEditorFocusLost`, `Annotation.TextEditorFocusRestored`,
-`Annotation.TextEditorInputStarted`, `Annotation.TextEditorClosed`, `File.New`, `File.Open`,
+`Annotation.TextEditorInputStarted`, `Annotation.TextEditorClosed`,
+`Annotation.TextEditorCommitDeferred`, `Zoom.Churn`, `File.New`, `File.Open`,
 `File.Merge`, `File.Split`, `File.Print`,
 `File.ExportImages`, `File.OpenFailed`, `File.OpenRecovered`, `File.OpenUnlockedByPdfium`,
 `File.SaveFailed`, `File.SaveRecoveryAttempt`, `File.PrintFailed`, `File.ExportFailed`,
@@ -66,6 +67,12 @@ canceled, deleted, or left empty. A separate breadcrumb records only that editin
 records the typed text. These events never record text, signature data, a page number, or document
 details. `File.Open` records that an open happened, its duration and whether it succeeded — not
 which file.
+
+`Zoom.Churn` is a self-diagnostic added in 1.24.1.0: if the view re-applies its zoom an
+implausible number of times in one second, it reports how many, and the name of the method in
+TDPdf's own source that asked for them. Method names are fixed at compile time, so this can
+only ever name a part of the program — never a document, a page, or anything you typed. It is
+rate-limited to one report every five minutes.
 
 **Technical context.** Application version, Windows version, 64-bit or not, .NET runtime version,
 processor count, and whether the install is per-user or machine-wide.
