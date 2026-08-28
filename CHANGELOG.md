@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.26.0.0] - 2026-08-27
+
+**The zoom storm is over, text boxes can be styled, and page reordering works the way the list always implied it did.**
+
+### Fixed
+
+- **The repeated re-rendering behind [#132](https://github.com/doodlemania2/TDPdf/issues/132) is fixed, and the cause was a comment.** A handler sat on WPF's `DpiChanged` event under a note asserting it never fires — that our own `WM_DPICHANGED` hook preempts it, leaving harmless dead code. It fires. The `Zoom.Churn` diagnostic added in 1.25.0.0 named it on the first report back and then again from a second, unrelated machine: **13 full zoom passes a second, held for two seconds**, each one cancelling and restarting a page render, re-fitting the view and writing `user.config` to disk. The handler stays — it demonstrably is a live DPI path on some machines — but now acts only when the DPI has actually changed, which is what makes "idempotent" true rather than hoped for.
+
+### Added
+
+- **Bold, italic and underline in text boxes** — Ctrl+B, Ctrl+I, Ctrl+U while editing. They were listed in the shortcut overlay and did nothing, which is exactly what upstream found in their own build. The whole path is new: text annotations carried a size and a colour and nothing else. Everything that measures text — the on-screen box, the annotation measurement, the wrap calculation and the PDF burn-in — now shares one typeface, because bold and italic change glyph advances and a mismatch means the text moves when you save. Underline is drawn explicitly: `XFontStyle.Underline` exists but PdfSharpCore's `DrawString` ignores it, so an underlined note would have looked right and saved without the line. Existing annotations are untouched — all three default to off. (Ported from upstream KillerPDF v1.7.5.)
+- **Drag a selection of pages as one block.** The Pages sidebar has allowed multi-select all along, and dragging then moved exactly one page. It now moves the whole selection, in order, with each page's rotation, and leaves the block selected where it lands. (Ported from upstream KillerPDF #233.)
+- **An insertion line while dragging pages**, showing precisely which gap the pages will drop into instead of asking you to guess from the cursor. The line and the reorder read the same target calculation, so the indicator cannot point somewhere the pages do not go.
+
+### Changed
+
+- **Dropping a block of pages back where it started is now a no-op.** It used to rewrite and reload the document anyway, which discards unsaved annotations — the documented cost of any structural edit — in exchange for no change at all.
+
+### Fork-sync
+
+The remaining portable items from upstream's `develop/1.8.0` were assessed and two are deliberately still out, with reasons recorded in [#135](https://github.com/doodlemania2/TDPdf/issues/135): **letter spacing** cannot be previewed honestly, because WPF has no letter-spacing primitive and a burn-in-only implementation would move the text at the moment you save it — the exact failure the shared-typeface work above exists to prevent; and the **measurement tool** needs a toolbar glyph that cannot be verified from a non-Windows build machine, and a blank button is worse than a missing feature. Two other upstream items turned out not to apply here at all: TDPdf already switches to a drag cursor while panning, and it has no page-duplication command to fix the selection of.
+
 ## [1.25.0.0] - 2026-08-27
 
 **TDPdf now notices when a new release exists, and on a managed device asks Intune to come and get it.** Yesterday a machine was found still running 1.23.5.0, six releases behind, whose user placed 32 text boxes in 28 minutes and got nothing from any of them — every one of those releases had fixed the defect they were hitting, and none had reached them. Nothing on that machine was broken. It simply had not been told.
@@ -896,7 +918,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.25.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.26.0.0...HEAD
+[1.26.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.25.0.0...v1.26.0.0
 [1.25.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.1.0...v1.25.0.0
 [1.24.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.0.0...v1.24.1.0
 [1.24.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.7.0...v1.24.0.0
