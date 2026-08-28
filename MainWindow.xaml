@@ -1358,7 +1358,7 @@
                                 </TextBox.Style>
                             </TextBox>
                         </DockPanel>
-                        <Grid>
+                        <Grid x:Name="SidebarListHost">
                             <ScrollViewer x:Name="SidebarScrollViewer"
                                           VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Disabled">
@@ -1373,10 +1373,18 @@
                                          PreviewMouseWheel="PageList_PreviewMouseWheel"
                                          SelectionChanged="PageList_SelectionChanged"
                                          AllowDrop="True" Drop="PageList_Drop" DragOver="PageList_DragOver"
+                                         DragLeave="PageList_DragLeave"
                                          PreviewMouseLeftButtonDown="PageList_PreviewMouseLeftButtonDown"
                                          PreviewMouseMove="PageList_PreviewMouseMove"
                                          MouseRightButtonUp="PageList_MouseRightButtonUp"/>
                             </ScrollViewer>
+                            <!-- #135: shows exactly where a dragged page (or block of pages) will
+                                 land. Last child so it paints above the lists; never hit-testable,
+                                 or it would eat the drop it exists to describe. -->
+                            <Border x:Name="PageDropLine" Visibility="Collapsed"
+                                    Height="2" VerticalAlignment="Top" Margin="6,0,6,0"
+                                    IsHitTestVisible="False" CornerRadius="1"
+                                    Background="{DynamicResource AccentGreen}"/>
                             <ScrollViewer x:Name="OutlineScrollViewer" Visibility="Collapsed"
                                           VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Auto"

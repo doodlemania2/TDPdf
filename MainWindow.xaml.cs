@@ -280,6 +280,8 @@ namespace TDPdf
         // Manual element refs (XAML codegen doesn't resolve these)
         private Canvas _annotationCanvas = null!;
         private Canvas _textEditorCanvas = null!;
+        private Grid _sidebarListHost = null!;   // #135: host for the page-drop insertion line
+        private Border _pageDropLine = null!;
         /// <summary>False until Loaded has run; guards paths reachable from the single-instance pipe thread.</summary>
         private bool _uiReady;
         private Grid _pageContentGrid = null!;
@@ -428,6 +430,8 @@ namespace TDPdf
             if (v != null) VersionLabel.Text = $"v{v.Major}.{v.Minor}.{v.Build}";
             _annotationCanvas = (Canvas)FindName("AnnotationCanvas")!;
             _textEditorCanvas = (Canvas)FindName("TextEditorCanvas")!;
+            _sidebarListHost = (Grid)FindName("SidebarListHost")!;
+            _pageDropLine = (Border)FindName("PageDropLine")!;
             _pageContentGrid = (Grid)FindName("PageContentGrid")!;
             _toolSelectBtn = (Button)FindName("ToolSelectBtn")!;
             _toolTextBtn = (Button)FindName("ToolTextBtn")!;
@@ -16564,8 +16568,22 @@ namespace TDPdf
             if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
                 Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
             {
-                if (PageList.SelectedIndex >= 0)
-                    DragDrop.DoDragDrop(PageList, PageList.SelectedIndex, DragDropEffects.Move);
+                // #135 (upstream KillerPDF #233): drag every selected page as one ordered block,
+                // not just the one under the cursor. The list has been SelectionMode="Extended"
+                // all along, so people could already select a run of pages and then discovered
+                // that dragging moved exactly one of them.
+                int[] block = PageList.SelectedItems.Count > 0
+                    ? PageList.SelectedItems.Cast<object>()
+                        .Select(o => PageList.Items.IndexOf(o))
+                        .Where(i => i >= 0)
+                        .OrderBy(i => i)
+                        .ToArray()
+                    : Array.Empty<int>();
+                if (block.Length > 0)
+                {
+                    try { DragDrop.DoDragDrop(PageList, block, DragDropEffects.Move); }
+                    finally { HidePageDropLine(); }   // the drag can end anywhere, including nowhere
+                }
             }
         }
 
@@ -16574,13 +16592,76 @@ namespace TDPdf
             // #172 (upstream KillerPDF): the sidebar takes a FileDrop of PDFs/images as well as its own
             // page-reorder payload. The internal payload keeps first refusal so a page drag is never
             // mistaken for a file drop.
-            if (e.Data.GetDataPresent(typeof(int)))
+            if (e.Data.GetDataPresent(typeof(int[])))
+            {
                 e.Effects = DragDropEffects.Move;
+                ShowPageDropLine(DropTargetIndex(e.GetPosition(PageList)));
+            }
             else if (_doc is not null && DroppedOpenablePaths(e).Length > 0)
+            {
                 e.Effects = DragDropEffects.Copy;
+                HidePageDropLine();   // a file drop appends; there is no insertion point to promise
+            }
             else
+            {
                 e.Effects = DragDropEffects.None;
+                HidePageDropLine();
+            }
             e.Handled = true;
+        }
+
+        private void PageList_DragLeave(object sender, DragEventArgs e) => HidePageDropLine();
+
+        /// <summary>
+        /// The index a drop at <paramref name="pos"/> would insert BEFORE — i.e. the first page
+        /// whose midpoint is below the cursor, or one past the end.
+        /// </summary>
+        /// <remarks>
+        /// #135: one helper so the line drawn during the drag and the reorder performed on the drop
+        /// can never disagree. They were separate arithmetic before, which is the standard way a
+        /// drop indicator ends up pointing somewhere the page does not go.
+        /// </remarks>
+        private int DropTargetIndex(Point pos)
+        {
+            for (int i = 0; i < PageList.Items.Count; i++)
+            {
+                if (PageList.ItemContainerGenerator.ContainerFromIndex(i) is ListBoxItem item)
+                {
+                    var mid = item.TranslatePoint(new Point(0, item.ActualHeight / 2), PageList);
+                    if (pos.Y < mid.Y) return i;
+                }
+            }
+            return PageList.Items.Count;
+        }
+
+        private void ShowPageDropLine(int beforeIndex)
+        {
+            if (PageList.Items.Count == 0) { HidePageDropLine(); return; }
+
+            double y;
+            if (beforeIndex < PageList.Items.Count
+                && PageList.ItemContainerGenerator.ContainerFromIndex(beforeIndex) is ListBoxItem at)
+            {
+                y = at.TranslatePoint(new Point(0, 0), _sidebarListHost).Y;
+            }
+            else if (PageList.ItemContainerGenerator.ContainerFromIndex(PageList.Items.Count - 1)
+                     is ListBoxItem last)
+            {
+                y = last.TranslatePoint(new Point(0, last.ActualHeight), _sidebarListHost).Y;
+            }
+            else { HidePageDropLine(); return; }
+
+            // Virtualisation can put a container off-screen; a line drawn outside the host is
+            // meaningless, so say nothing rather than something wrong.
+            if (!IsFinite(y) || y < 0 || y > _sidebarListHost.ActualHeight) { HidePageDropLine(); return; }
+
+            _pageDropLine.Margin = new Thickness(6, y - 1, 6, 0);
+            _pageDropLine.Visibility = Visibility.Visible;
+        }
+
+        private void HidePageDropLine()
+        {
+            if (_pageDropLine is not null) _pageDropLine.Visibility = Visibility.Collapsed;
         }
 
         /// <summary>The dropped FileDrop paths this sidebar can append, using the same PDF/image
@@ -16690,34 +16771,49 @@ namespace TDPdf
 
         private void PageList_Drop(object sender, DragEventArgs e)
         {
-            // #172: a FileDrop appends; anything carrying the internal page-index payload falls through to
+            HidePageDropLine();
+            // #172: a FileDrop appends; anything carrying the internal page payload falls through to
             // the reorder below, unchanged.
-            if (_doc is not null && !e.Data.GetDataPresent(typeof(int)))
+            if (_doc is not null && !e.Data.GetDataPresent(typeof(int[])))
             {
                 var files = DroppedOpenablePaths(e);
                 if (files.Length > 0) { AppendFilesToCurrentDoc(files); e.Handled = true; }
                 return;
             }
-            if (_doc is null || !e.Data.GetDataPresent(typeof(int))) return;
+            if (_doc is null || e.Data.GetData(typeof(int[])) is not int[] block || block.Length == 0)
+                return;
+
             var doc = _doc;
-            int fromIdx = (int)e.Data.GetData(typeof(int))!;
-            var pos = e.GetPosition(PageList);
-            int toIdx = PageList.Items.Count - 1;
-            for (int i = 0; i < PageList.Items.Count; i++)
-            {
-                if (PageList.ItemContainerGenerator.ContainerFromIndex(i) is ListBoxItem item)
-                {
-                    var itemPos = item.TranslatePoint(new Point(0, item.ActualHeight / 2), PageList);
-                    if (pos.Y < itemPos.Y) { toIdx = i; break; }
-                }
-            }
-            if (fromIdx == toIdx) return;
-            var page = doc.Pages[fromIdx];
-            doc.Pages.RemoveAt(fromIdx);
-            if (toIdx > fromIdx) toIdx--;
-            doc.Pages.Insert(toIdx, page);
+            int[] from = block.Where(i => i >= 0 && i < doc.PageCount).Distinct().OrderBy(i => i).ToArray();
+            if (from.Length == 0) return;
+
+            int target = DropTargetIndex(e.GetPosition(PageList));
+
+            // #135: dropping a block back onto itself is not a move. Without this a drag that ends
+            // where it began still rewrites and reloads the document, which costs the user their
+            // unsaved annotations (SaveTempAndReload clears them for every structural edit) in
+            // exchange for nothing at all.
+            int insertAt = target - from.Count(i => i < target);
+            bool contiguous = from[^1] - from[0] == from.Length - 1;
+            if (contiguous && insertAt == from[0]) return;
+
+            // Lift the pages in document order, then remove from the end so the earlier indices
+            // stay valid while we do it. Each PdfPage carries its own /Rotate, so a page's rotation
+            // travels with it and needs no separate bookkeeping.
+            var moving = from.Select(i => doc.Pages[i]).ToList();
+            foreach (int i in from.OrderByDescending(i => i)) doc.Pages.RemoveAt(i);
+
+            insertAt = Math.Clamp(insertAt, 0, doc.PageCount);
+            for (int k = 0; k < moving.Count; k++) doc.Pages.Insert(insertAt + k, moving[k]);
+
             SaveTempAndReload();
-            PageList.SelectedIndex = toIdx;
+
+            // Leave the block selected where it landed, so a second drag continues from where the
+            // eye already is rather than from wherever the list decided to put the selection.
+            PageList.SelectedItems.Clear();
+            for (int k = 0; k < moving.Count && insertAt + k < PageList.Items.Count; k++)
+                PageList.SelectedItems.Add(PageList.Items[insertAt + k]);
+            if (PageList.SelectedItems.Count > 0) PageList.SelectedIndex = insertAt;
         }
 
         // ============================================================
