@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.25.0.0] - 2026-08-27
+
+**TDPdf now notices when a new release exists, and on a managed device asks Intune to come and get it.** Yesterday a machine was found still running 1.23.5.0, six releases behind, whose user placed 32 text boxes in 28 minutes and got nothing from any of them — every one of those releases had fixed the defect they were hitting, and none had reached them. Nothing on that machine was broken. It simply had not been told.
+
+### Added
+
+- **An update check, twice a day.** TDPdf asks GitHub whether a newer release exists and, on an enrolled device, runs the enrollment client's own sync task — the same thing the Company Portal's **Sync** button does — so Intune fetches the update rather than waiting up to eight hours for its next check-in. **It never downloads and never installs:** on a managed device the update path is Intune's and stays Intune's, so the fleet keeps one delivery mechanism, one audit trail and one set of assignments. The request carries no identifier and not even the installed version — the comparison happens on the device. Disclosed in `PRIVACY.md`, and an administrator can switch it off fleet-wide with `Enabled = 0` under `SOFTWARE\Policies\TDPdf\Update`.
+- **The status line says when an update has landed underneath you.** An update can now install while TDPdf is open, which means someone can be working in a build that has quietly been replaced. That is an update that landed rather than an update that arrived, so TDPdf says so.
+
+### Fixed
+
+- **Ctrl+S — and Open, Save As, New, Close, Print, Find and About — now work while you are typing in a text box.** All nine were suppressed whenever an annotation text box had focus, so typing an annotation and reaching for Ctrl+S did nothing at all, in silence. Nobody could have noticed before now: until 1.24.1.0 the editor was destroyed a few hundred milliseconds after it appeared, and nobody was ever typing in one long enough to reach for a shortcut. Undo keeps its guard, and is the only one that should ever have had it — Ctrl+Z inside a text box means "undo my typing", and letting the document handler win would silently revert an annotation, a crop or a page rotation while you believed you were correcting a word. (Ported from upstream KillerPDF #237.)
+- **Installing no longer fails because TDPdf is running.** Windows refuses to overwrite an executing file but permits renaming one, so the installer now displaces the running image and drops the new build into place. This had crashed the installer five times across four consecutive releases, always the same `IOException`, on a first-run path where the user sees the app die rather than install. It also tolerates several updates landing without a restart in between.
+- **PDFs whose file name or password contains characters outside the system code page now open.** Direct PDFium loading marshalled both through the machine's ANSI code page where PDFium expects UTF-8, so anything the local code page could not represent was corrupted before PDFium saw it and the document silently failed to load. (Ported from upstream KillerPDF.)
+- **`Zoom.Churn` can now name the caller responsible.** The diagnostic added in 1.24.1.0 reported `.ctor` on its first production sighting, which is what both the DPI-change handler and an untouched startup zoom produce — opposite findings that the event could not tell apart. Both are named explicitly now. See [#132](https://github.com/doodlemania2/TDPdf/issues/132).
+
+### Fork-sync
+
+Reviewed against upstream KillerPDF `develop/1.8.0` and **deliberately not adopted**. That branch is unreleased, and its defining change is replacing PdfSharpCore with a bespoke document engine on .NET 10 — nearly every entry in its *Changed* section reads "now goes through The KillerPDF.Engine". That is the library swap this project's architecture notes rule out, and adopting it is a fork-defining decision rather than a sync. The two fixes above are what the review was worth: both are upstream's, both were live bugs here, and neither touches their engine. The features that remain genuinely portable — letter spacing, bold/italic/underline while editing, the measurement tool, multi-select thumbnail drag — are tracked as issues.
+
 ## [1.24.1.0] - 2026-08-27
 
 **Text boxes work.** Every live text editor in the fleet was being destroyed before anyone could type into it, and had been for five releases. The cause was never focus.
@@ -876,7 +896,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.24.1.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.25.0.0...HEAD
+[1.25.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.1.0...v1.25.0.0
 [1.24.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.0.0...v1.24.1.0
 [1.24.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.7.0...v1.24.0.0
 [1.23.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.23.6.0...v1.23.7.0

@@ -387,6 +387,40 @@ signed-in user can read it; that is inherent, and the ACL buys integrity rather 
 standard user cannot redirect the fleet's telemetry elsewhere. The token is scoped to TDPdf alone,
 so a leak is rotated here without touching any other application on the collector.
 
+### Update check and sync
+
+**New in 1.25.0.0.** Intune polls each device on its own cycle — roughly eight hours, and only if
+the device is awake and checking in. On 2026-08-27 that gap left one machine running 1.23.5.0, six
+releases behind, whose user placed 32 text boxes in 28 minutes and got nothing from any of them:
+every one of those releases had fixed the defect they were hitting, and none had reached them.
+
+So TDPdf now asks, twice a day, whether a newer release exists. On an enrolled device it responds by
+running the enrollment client's own sync task — the same thing the Company Portal's **Sync** button
+does — so Intune comes and fetches the update rather than waiting for its next scheduled check-in.
+
+**It never downloads and never installs.** On a managed device the update path is Intune's and stays
+Intune's: one delivery mechanism, one audit trail, one set of assignments. An application that
+self-updated underneath Intune would fight the detection rule on every cycle.
+
+| Value | Contents |
+|---|---|
+| `HKLM\SOFTWARE\Policies\TDPdf\Update` → `Enabled` | `0` disables the check fleet-wide. Absent or any other value means enabled. |
+
+Under `SOFTWARE\Policies\` for the same two reasons as the telemetry key: it is the Windows
+convention for administrator-pushed settings, and `App.Uninstall` deletes `Software\TDPdf` from
+both hives, so anything the organisation pushed must not live there.
+
+The check itself is an unauthenticated HTTPS GET to `api.github.com` for this project's latest
+release tag. It carries no identifier and not even the installed version — the comparison happens on
+the device. If your egress policy blocks `api.github.com`, the check fails quietly and nothing else
+changes. It is disclosed to users in [`PRIVACY.md`](../PRIVACY.md).
+
+**Installing over a running TDPdf.** Windows will not let an executing file be overwritten, but it
+will let one be renamed, so the installer displaces the running image and drops the new build into
+place. The person keeps working in the old build until they next start TDPdf, which the status line
+now tells them. This is what makes an Intune install succeed against a machine where somebody has
+TDPdf open — previously it raised `IOException` and relied on the next sync to try again.
+
 ### What gets sent (when enabled)
 
 - `App.Startup` — once per interactive launch. Properties: `AppVersion`,
@@ -412,6 +446,9 @@ so a leak is rotated here without touching any other application on the collecto
 - `File.Open` / `File.New` / `File.Merge` / `File.Split` /
   `File.Print` — coarse-grained usage. **No file names, paths, sizes, or document content.**
   (Saving is not among these: it is timed instead, and appears as the `Op.*` spans below.)
+- `Update.Available` / `Update.SyncTriggered` / `Update.RestartPending` / `Update.CheckFailed` —
+  1.25.0.0. See *Update check and sync* below. Properties are TDPdf version numbers, an ok/failed
+  result, and an exception type name; nothing device- or user-specific.
 - `Op.*` spans — durations for timed operations, so latency percentiles are computed by the
   backend rather than pre-aggregated here.
 
