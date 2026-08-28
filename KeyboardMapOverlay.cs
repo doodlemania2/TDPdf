@@ -97,7 +97,13 @@ namespace TDPdf
                 ["D0"] = ("View", "Reset zoom"),    ["D1"] = ("View", "Actual size"),
                 ["D2"] = ("View", "Fit width"),     ["D3"] = ("View", "Fit page"),
                 ["Equals"] = ("View", "Zoom in"),   ["Minus"] = ("View", "Zoom out"),
+                // #135: B and U are text-box only. I is shown as Invert colors because that is what
+                // it does everywhere except inside a live text box, where TextBox_KeyDown claims it
+                // for Italic before the window's KeyBinding ever sees it — the same deliberate
+                // context split upstream ended up with.
                 ["I"] = ("View", "Invert colors"),
+                ["B"] = ("Text", "Bold (while editing a text box)"),
+                ["U"] = ("Text", "Underline (while editing a text box)"),
             },
             [KbLayer.CtrlShift] = new()
             {
