@@ -514,20 +514,30 @@ namespace TDPdf
             SetTool(EditTool.Select);
             ApplyGrainTexture();
             SourceInitialized += MainWindow_SourceInitialized;
-            // NOTE (#189): this does not currently fire. WndProc claims WM_DPICHANGED with
-            // handled = true so it can apply Windows' suggested rect against the custom chrome, and
-            // public HwndSource hooks run before WPF's internal HwndTarget hook, so WPF never gets
-            // the message and never raises DpiChanged. WmDpiChanged is the live DPI-change path and
-            // does the re-render itself. Left in place rather than deleted because it is harmless
-            // and idempotent, and it is the correct response if WPF ever does raise the event.
+            // #132: THIS FIRES, and the note that used to sit here saying it does not was the
+            // whole bug. It claimed WndProc's WM_DPICHANGED hook (handled = true) preempts WPF's
+            // internal HwndTarget hook, so WPF never raises DpiChanged and this handler was
+            // "harmless and idempotent" dead code. Production disagreed: once 1.25.0.0 named the
+            // caller, Zoom.Churn came back Via=DpiChanged, ViaCount 12 of 13, on two unrelated
+            // machines — a VM and a laptop — each time ~13 ApplyZoom calls a second held for two
+            // seconds. WPF raises this for more than the one message we intercept.
             //
-            // #132: name it explicitly rather than letting [CallerMemberName] fill it in. A lambda
-            // in a constructor body reports ".ctor", which is ALSO what a stale
-            // ZoomViewModel.LastZoomOrigin reads after the startup zoom restore — so the first
-            // production Zoom.Churn came back Via=".ctor" and could not distinguish "the handler
-            // this comment calls dead is alive on that machine" from "nothing has set a zoom origin
-            // since launch". Those are very different findings; one word separates them for good.
-            DpiChanged += (_, _) => ApplyZoom(via: nameof(DpiChanged));
+            // It was never harmless either. Every pass ran a full ApplyZoom: cancel and restart the
+            // page render, re-fit, and write user.config to disk. Twelve times a second.
+            //
+            // So the handler stays — it IS a live DPI path on some machines, and deleting it would
+            // trade a storm for a stale raster — but it now does something only when the DPI has
+            // ACTUALLY changed. A repeat notification carrying the scale we already applied is
+            // exactly the thing to drop, and dropping it is what makes the "idempotent" claim true
+            // rather than merely hoped for. WmDpiChanged remains the authority on the value itself.
+            DpiChanged += (_, e) =>
+            {
+                double scale = e.NewDpi.DpiScaleX;
+                if (scale <= 0 || Math.Abs(scale - _currentDpiScale) < 0.001) return;
+                _currentDpiScale = scale;
+                InvalidateRenderCache();   // every raster budget is measured in device pixels
+                ApplyZoom(via: nameof(DpiChanged));
+            };
 
             // Open a file passed via command-line / file association (e.g. double-clicking a .pdf)
             // Also show the portable badge when running outside the install location.
