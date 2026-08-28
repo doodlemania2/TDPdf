@@ -79,6 +79,15 @@ namespace TDPdf
         // Uninstall and IsInstalled so they don't depend on the current
         // process's user context (PerMachine uninstall fires under UAC as the
         // user, not SYSTEM — `IsSystemContextSafe()` would lie there).
+        /// <summary>
+        /// Full path of the installed EXE for whichever scope this machine actually has, or
+        /// <c>null</c> when TDPdf is not installed (a portable run). #132/#134: the update check
+        /// compares the version of the file sitting there against the process that is running, to
+        /// notice an update that landed underneath a running instance.
+        /// </summary>
+        internal static string? InstalledExePath =>
+            DetectInstalledScope() is { } scope ? InstallExeFor(scope) : null;
+
         private static InstallScope? DetectInstalledScope()
         {
             using (var k = Registry.LocalMachine.OpenSubKey(@"Software\TDPdf"))
@@ -912,6 +921,100 @@ namespace TDPdf
         // Installation
         // ============================================================
 
+        /// <summary>
+        /// Copies the running EXE onto <paramref name="dest"/>, surviving a destination that is
+        /// momentarily locked.
+        /// </summary>
+        /// <remarks>
+        /// #134: a plain <c>File.Copy(overwrite: true)</c> here crashed the installer on five
+        /// occasions across four consecutive releases, always the same
+        /// <see cref="IOException"/> — "the process cannot access the file" — out of
+        /// <c>DoInstall</c> on a first-run path, where the user sees the app die on launch rather
+        /// than install. The lock is transient every time (a previous TDPdf finishing its exit, a
+        /// shell preview handler, an AV scan), so two cheap things clear it:
+        /// <list type="number">
+        /// <item>a short backoff and retry, which covers a process on its way out; and</item>
+        /// <item>renaming the destination aside first — Windows permits renaming a file that is
+        /// open and even one that is executing, where it refuses to overwrite it.</item>
+        /// </list>
+        /// The displaced file is deleted on the next install if it is no longer held, so a machine
+        /// cannot accumulate them. If every attempt fails the original exception is rethrown
+        /// untouched, preserving the "exit non-zero and let Intune retry" contract that the caller
+        /// depends on.
+        /// </remarks>
+        private static void CopyExeOverLock(string src, string dest)
+        {
+            const int attempts = 4;
+
+            // Clear anything a PREVIOUS install displaced, now that whatever held it has probably
+            // gone. Best-effort by definition: the instance that was running then may still be.
+            foreach (string stale in DisplacedNamesFor(dest))
+            {
+                try { if (File.Exists(stale)) File.Delete(stale); }
+                catch { /* still held; DisplacedNamesFor will simply pick another name below */ }
+            }
+
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Copy(src, dest, overwrite: true);
+                    if (attempt > 1) InstallLog.Write($"Copy succeeded on attempt {attempt}.");
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    if (attempt >= attempts)
+                    {
+                        InstallLog.WriteError($"Copy failed after {attempts} attempts", ex);
+                        throw;
+                    }
+                    InstallLog.Write($"Copy attempt {attempt} failed ({ex.GetType().Name}: {ex.Message}); retrying.");
+
+                    // From the second attempt, stop fighting the lock and move it out of the way.
+                    // Windows refuses to overwrite a file that is open or executing but is perfectly
+                    // happy to RENAME one, which is what makes updating a running TDPdf possible at
+                    // all: the live process keeps running from the renamed image, the new build goes
+                    // into place, and the next launch is the new build.
+                    if (attempt >= 2) TryDisplace(dest);
+
+                    Thread.Sleep(250 * attempt);
+                }
+            }
+        }
+
+        /// <summary>Candidate parking names for a destination we cannot overwrite.</summary>
+        /// <remarks>
+        /// More than one, because the obvious single name is not enough: a person who has had two
+        /// updates land without restarting is holding <c>.old</c> already, and reusing it would fail
+        /// exactly when the retry matters most.
+        /// </remarks>
+        private static IEnumerable<string> DisplacedNamesFor(string dest)
+        {
+            yield return dest + ".old";
+            for (int i = 1; i <= 4; i++) yield return $"{dest}.old{i}";
+        }
+
+        private static void TryDisplace(string dest)
+        {
+            if (!File.Exists(dest)) return;
+            foreach (string parked in DisplacedNamesFor(dest))
+            {
+                try
+                {
+                    if (File.Exists(parked)) continue;   // held by an older still-running instance
+                    File.Move(dest, parked);
+                    InstallLog.Write($"Displaced locked destination to {parked}.");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    InstallLog.Write($"Could not displace to {parked}: {ex.Message}");
+                }
+            }
+            InstallLog.Write("Could not displace the locked destination under any name.");
+        }
+
         private static void DoInstall(bool wantDesktop, bool silent = false)
         {
             var scope = NewInstallScope;
@@ -924,12 +1027,13 @@ namespace TDPdf
 
             InstallLog.Write($"DoInstall scope={scope} src={src} dest={installExe} hive={hive.Name}");
 
-            // Copy EXE to install location. If the destination file is locked
-            // (TDPdf is running from the install location), File.Copy throws
-            // IOException; the caller maps any exception to a non-zero exit
-            // code so Intune retries on the next sync.
+            // Copy EXE to install location. If the destination is locked — a previous TDPdf still
+            // exiting, an Explorer preview handler, an AV scanner mid-scan — File.Copy throws
+            // IOException and the caller maps it to a non-zero exit code so Intune retries on the
+            // next sync. That contract is preserved; CopyExeOverLock just stops the common,
+            // transient case from getting that far. See #134.
             Directory.CreateDirectory(installDir);
-            File.Copy(src, installExe, overwrite: true);
+            CopyExeOverLock(src, installExe);
 
             // Post-copy verification. Without this, a partial / silently-failed
             // copy could leave us with no file on disk and the caller would

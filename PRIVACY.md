@@ -13,6 +13,9 @@ bug.
   the state of any build compiled from a public checkout of this repository.
 - **You can turn reporting off** in **Settings → Privacy → "Send anonymous usage and crash
   reports"**, or device-wide with `TDPdf.exe /clear-telemetry`.
+- **One thing happens whether reporting is on or off:** twice a day TDPdf asks GitHub whether a
+  newer version has been released. That request carries nothing about you — see
+  *[Checking for updates](#checking-for-updates)*.
 
 ## Two independent switches
 
@@ -49,7 +52,8 @@ Azure Application Insights, and that path has been removed from the application 
 `Tool.Selected`, `Annotation.PlaceStarted`, `Annotation.PlaceCompleted`,
 `Annotation.TextEditorFocusLost`, `Annotation.TextEditorFocusRestored`,
 `Annotation.TextEditorInputStarted`, `Annotation.TextEditorClosed`,
-`Annotation.TextEditorCommitDeferred`, `Zoom.Churn`, `File.New`, `File.Open`,
+`Annotation.TextEditorCommitDeferred`, `Zoom.Churn`, `Update.Available`,
+`Update.SyncTriggered`, `Update.RestartPending`, `Update.CheckFailed`, `File.New`, `File.Open`,
 `File.Merge`, `File.Split`, `File.Print`,
 `File.ExportImages`, `File.OpenFailed`, `File.OpenRecovered`, `File.OpenUnlockedByPdfium`,
 `File.SaveFailed`, `File.SaveRecoveryAttempt`, `File.PrintFailed`, `File.ExportFailed`,
@@ -100,6 +104,30 @@ fleet-wide regression.
 On a corporate machine the name is often derived from the user's name, so treat it as identifying
 that device and, indirectly, its user. This is the only identifying field in the payload, and it
 is the one to weigh if you are deciding whether to enable reporting.
+
+## Checking for updates
+
+Twice a day, TDPdf asks GitHub whether a newer version of TDPdf has been released. It is a plain
+HTTPS request to the public releases listing for this project, and it is the **only** thing TDPdf
+does that reaches the network regardless of your reporting setting.
+
+**The request says nothing about you.** It carries no identifier, no document state, no machine
+name — and not even which version you are running, because TDPdf downloads the public version
+number and does the comparison on your machine. From the other end it is indistinguishable from
+anyone else visiting the same public page.
+
+**It never downloads or installs anything.** On a device managed by your organisation, finding a
+newer version prompts TDPdf to ask Windows to check in with the management service sooner than it
+otherwise would, so the update you were going to get anyway arrives promptly instead of up to eight
+hours later. The update itself is still delivered by your organisation, through the same mechanism
+as before.
+
+The four `Update.*` events listed above record that this happened. They carry TDPdf version numbers
+and whether the check-in request succeeded — nothing else.
+
+**Turning it off.** An administrator can disable the check for a whole organisation by setting
+`Enabled` to `0` under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Update`. With no network
+access the check simply fails quietly and TDPdf carries on.
 
 ## What is never sent
 

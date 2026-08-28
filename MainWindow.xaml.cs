@@ -493,7 +493,10 @@ namespace TDPdf
             RebuildTabStrip();
             ApplyCustomChromeVisibility();
             ThemeManager.ThemeChanged += ThemeManager_ThemeChanged;
-            Zoom.SetZoomLevel(TDPdf.Properties.Settings.Default.LastZoomLevel);
+            // #132: named, for the same reason as the DpiChanged handler below — the compiler would
+            // otherwise stamp LastZoomOrigin with ".ctor" and leave it there until something else
+            // sets a zoom, making every Zoom.Churn until then indistinguishable from that handler.
+            Zoom.SetZoomLevel(TDPdf.Properties.Settings.Default.LastZoomLevel, origin: "StartupZoomRestore");
             Zoom.PropertyChanged += Zoom_PropertyChanged;
             CommandBindings.Add(new CommandBinding(ZoomInRoutedCommand, (_, _) => ChangeZoomByCommand(ZoomChange.In)));
             CommandBindings.Add(new CommandBinding(ZoomOutRoutedCommand, (_, _) => ChangeZoomByCommand(ZoomChange.Out)));
@@ -517,7 +520,14 @@ namespace TDPdf
             // the message and never raises DpiChanged. WmDpiChanged is the live DPI-change path and
             // does the re-render itself. Left in place rather than deleted because it is harmless
             // and idempotent, and it is the correct response if WPF ever does raise the event.
-            DpiChanged += (_, _) => ApplyZoom();
+            //
+            // #132: name it explicitly rather than letting [CallerMemberName] fill it in. A lambda
+            // in a constructor body reports ".ctor", which is ALSO what a stale
+            // ZoomViewModel.LastZoomOrigin reads after the startup zoom restore — so the first
+            // production Zoom.Churn came back Via=".ctor" and could not distinguish "the handler
+            // this comment calls dead is alive on that machine" from "nothing has set a zoom origin
+            // since launch". Those are very different findings; one word separates them for good.
+            DpiChanged += (_, _) => ApplyZoom(via: nameof(DpiChanged));
 
             // Open a file passed via command-line / file association (e.g. double-clicking a .pdf)
             // Also show the portable badge when running outside the install location.
@@ -541,6 +551,25 @@ namespace TDPdf
                     _portableBadge.Visibility = Visibility.Visible;
 
                 FlushPendingExternalOpen();   // #202: a forward that landed before we were wired up
+
+                // #132: last, and off the UI thread. Ask whether a newer TDPdf has been released
+                // and, on a managed device, ask Intune to come and get it rather than waiting up to
+                // eight hours for its own check-in — the gap that left one machine six releases
+                // behind, still hitting a bug every one of those releases had fixed.
+                var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
+                              ?? new Version(0, 0, 0, 0);
+                TDPdf.Services.UpdateCheck.StartBackgroundCheck(running);
+
+                // #134: an update CAN land under a running instance — Windows refuses to overwrite
+                // an executing file but permits renaming it aside, which is exactly what the
+                // installer does. It works, and the person carries on in the old build none the
+                // wiser. Say so.
+                if (App.InstalledExePath is { } installedExe
+                    && TDPdf.Services.UpdateCheck.IsRestartPending(installedExe, running))
+                {
+                    SetStatusHeld("An update has been installed - restart TDPdf to use it.", 10000);
+                    Telemetry.TrackEvent("Update.RestartPending");
+                }
             };
         }
 
@@ -551,59 +580,72 @@ namespace TDPdf
             return brush;
         }
 
-        private bool ShouldIgnoreGlobalShortcut() => _activeTextBox is not null && _activeTextBox.IsFocused;
+        /// <summary>
+        /// True when a DOCUMENT-level undo must stand aside for the text box the user is typing in.
+        /// </summary>
+        /// <remarks>
+        /// Ported from upstream KillerPDF #237, and narrowed. This used to gate nine commands —
+        /// Open, Save, Save As, New, Close, Print, Find, About and Undo — so none of them worked
+        /// while an annotation text box had focus. Typing an annotation and reaching for Ctrl+S did
+        /// nothing at all, silently.
+        ///
+        /// That was invisible until 1.24.1.0, because until then the editor was destroyed a few
+        /// hundred milliseconds after it appeared (#131) and nobody was ever typing in one long
+        /// enough to reach for a shortcut. Fixing the text box is what made this reachable, so it
+        /// is fixed in the same breath.
+        ///
+        /// Undo is the one that genuinely must not pass. Ctrl+Z inside a TextBox means "undo my
+        /// typing", which WPF already handles; letting the document handler win would silently
+        /// revert an annotation, a crop or a page rotation while the user believed they were
+        /// correcting a word. The rest are application commands with no text-editing meaning, and
+        /// each already routes through the CommitActiveTextBox chokepoint, so the box in progress
+        /// is settled rather than lost.
+        /// </remarks>
+        private bool ShouldDeferUndoToTextBox() => _activeTextBox is not null && _activeTextBox.IsFocused;
 
         private void OpenCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             Open_Click(sender, e);
         }
 
         private void SaveCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             SaveInPlace_Click(sender, e);
         }
 
         private void PrintCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             Print_Click(sender, e);
         }
 
         private void FindCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             ToggleSearchBar();
         }
 
         private void NewCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             New_Click(sender, e);
         }
 
         private void CloseFileCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             CloseFile();
         }
 
         private void UndoCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
+            if (ShouldDeferUndoToTextBox()) return;
             Undo_Click(sender, e);
         }
 
         private void SaveAsCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             SaveAs_Click(sender, e);
         }
 
         private void AboutCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             ShowAboutDialog();
         }
 
