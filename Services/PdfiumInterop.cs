@@ -40,10 +40,17 @@ namespace TDPdf.Services
 
         // ---- Document / page lifecycle ------------------------------------------------------
 
+        // UTF-8, not LPStr. Ported from upstream KillerPDF ("Direct PDFium loading now uses
+        // explicit UTF-8 marshalling for document paths and passwords"). PDFium takes both of these
+        // as UTF-8 byte strings on every platform, but UnmanagedType.LPStr marshals through the
+        // machine's ANSI code page — so any character the local code page cannot represent was
+        // mangled before PDFium ever saw it. The document then failed to load with no error worth
+        // showing: a filename or a password outside CP1252 simply did not work, and the page came
+        // back blank. LPUTF8Str is the whole fix.
         [DllImport("pdfium.dll", EntryPoint = "FPDF_LoadDocument", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr FPDF_LoadDocumentRaw(
-            [MarshalAs(UnmanagedType.LPStr)] string filePath,
-            [MarshalAs(UnmanagedType.LPStr)] string? password);
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string filePath,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
         private static IntPtr FPDF_LoadDocument(string filePath, string? password)
         { lock (PdfiumLock) return FPDF_LoadDocumentRaw(filePath, password); }
 

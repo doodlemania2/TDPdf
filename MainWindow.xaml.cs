@@ -580,59 +580,72 @@ namespace TDPdf
             return brush;
         }
 
-        private bool ShouldIgnoreGlobalShortcut() => _activeTextBox is not null && _activeTextBox.IsFocused;
+        /// <summary>
+        /// True when a DOCUMENT-level undo must stand aside for the text box the user is typing in.
+        /// </summary>
+        /// <remarks>
+        /// Ported from upstream KillerPDF #237, and narrowed. This used to gate nine commands —
+        /// Open, Save, Save As, New, Close, Print, Find, About and Undo — so none of them worked
+        /// while an annotation text box had focus. Typing an annotation and reaching for Ctrl+S did
+        /// nothing at all, silently.
+        ///
+        /// That was invisible until 1.24.1.0, because until then the editor was destroyed a few
+        /// hundred milliseconds after it appeared (#131) and nobody was ever typing in one long
+        /// enough to reach for a shortcut. Fixing the text box is what made this reachable, so it
+        /// is fixed in the same breath.
+        ///
+        /// Undo is the one that genuinely must not pass. Ctrl+Z inside a TextBox means "undo my
+        /// typing", which WPF already handles; letting the document handler win would silently
+        /// revert an annotation, a crop or a page rotation while the user believed they were
+        /// correcting a word. The rest are application commands with no text-editing meaning, and
+        /// each already routes through the CommitActiveTextBox chokepoint, so the box in progress
+        /// is settled rather than lost.
+        /// </remarks>
+        private bool ShouldDeferUndoToTextBox() => _activeTextBox is not null && _activeTextBox.IsFocused;
 
         private void OpenCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             Open_Click(sender, e);
         }
 
         private void SaveCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             SaveInPlace_Click(sender, e);
         }
 
         private void PrintCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             Print_Click(sender, e);
         }
 
         private void FindCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             ToggleSearchBar();
         }
 
         private void NewCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             New_Click(sender, e);
         }
 
         private void CloseFileCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             CloseFile();
         }
 
         private void UndoCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
+            if (ShouldDeferUndoToTextBox()) return;
             Undo_Click(sender, e);
         }
 
         private void SaveAsCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             SaveAs_Click(sender, e);
         }
 
         private void AboutCommand_Executed(object sender, ExecutedRoutedEventArgs e)
         {
-            if (ShouldIgnoreGlobalShortcut()) return;
             ShowAboutDialog();
         }
 
