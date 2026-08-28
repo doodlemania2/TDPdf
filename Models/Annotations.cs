@@ -46,6 +46,16 @@ namespace TDPdf
         public Point Position { get; set; }
         public string Content { get; set; } = "";
         public double FontSize { get; set; } = 14;
+
+        /// <summary>
+        /// Character styling. All three default to off, so an annotation written by any earlier
+        /// build deserializes to exactly the appearance it has always had — the same forward
+        /// compatibility rule <see cref="SavedSignature"/> relies on. #135.
+        /// </summary>
+        public bool Bold { get; set; }
+        public bool Italic { get; set; }
+        public bool Underline { get; set; }
+
         public byte ColorR { get; set; } = 0;
         public byte ColorG { get; set; } = 0;
         public byte ColorB { get; set; } = 0;

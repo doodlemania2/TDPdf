@@ -128,6 +128,12 @@ namespace TDPdf
         private double _textFontSize = 14;
         private Color _textColor = Colors.Black;
         private bool _textWhiteout;
+        // #135 (upstream KillerPDF v1.7.5): the tool's current character styling, inherited by the
+        // next text box placed. Upstream's own note on shipping these is worth keeping: they "were
+        // listed in the shortcuts for weeks without ever being wired up" — and ours were too.
+        private bool _textBold;
+        private bool _textItalic;
+        private bool _textUnderline;
         private Color _textFillColor = Colors.White;
         private Border? _textSettingsBar;
 
@@ -582,6 +588,18 @@ namespace TDPdf
                 }
             };
         }
+
+        /// <summary>
+        /// The one typeface every text-annotation measurement goes through. #135: bold and italic
+        /// change glyph advances, so if the on-screen TextBlock, <see cref="MeasureTextAnnotation"/>,
+        /// <see cref="WrapTextToWidth"/> and the PDF burn-in do not all ask the same question, a
+        /// styled box wraps in one place and not the other and the text moves when you save.
+        /// </summary>
+        private static Typeface TextTypeface(bool bold, bool italic) =>
+            new(new FontFamily(PdfFontStyle.DefaultFamily),
+                italic ? FontStyles.Italic : FontStyles.Normal,
+                bold ? FontWeights.Bold : FontWeights.Normal,
+                FontStretches.Normal);
 
         private static SolidColorBrush FrozenSolidColorBrush(Color color)
         {
@@ -11656,6 +11674,9 @@ namespace TDPdf
                 _textColor = existing.GetColor();
                 _textFontSize = existing.FontSize;
                 _textWhiteout = existing.HasFill;
+                _textBold = existing.Bold;              // #135
+                _textItalic = existing.Italic;
+                _textUnderline = existing.Underline;
                 if (existing.HasFill) _textFillColor = existing.GetFillColor();
                 if (existing.Width > 0) width = existing.Width;
 
@@ -11672,8 +11693,13 @@ namespace TDPdf
                 Foreground = new SolidColorBrush(_textColor),
                 BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                 BorderThickness = new Thickness(1),
-                FontFamily = new FontFamily("Segoe UI"),
+                FontFamily = new FontFamily(PdfFontStyle.DefaultFamily),
                 FontSize = _textFontSize,
+                // #135: a WPF TextBox carries all three natively, so the editor shows the real thing
+                // rather than a preview of it.
+                FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal,
+                FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal,
+                TextDecorations = _textUnderline ? TextDecorations.Underline : null,
                 CaretBrush = new SolidColorBrush(_textColor),
                 SelectionBrush = (SolidColorBrush)FindResource("AccentGreen"),
                 Width = width,
@@ -11742,6 +11768,35 @@ namespace TDPdf
 
         private void TextBox_KeyDown(object sender, KeyEventArgs e)
         {
+            // #135 (upstream KillerPDF v1.7.5): bold / italic / underline while editing. Applied to
+            // the live TextBox AND mirrored onto the tool state, so the next box you place inherits
+            // what you last chose — the same way size, colour and fill already behave.
+            // Ctrl+I is also the window's Invert Colors binding (MainWindow.xaml). That resolves
+            // correctly and on purpose: KeyDown bubbles from the TextBox outward, so this runs and
+            // marks the event handled before it ever reaches the Window's InputBindings. Inside a
+            // text box Ctrl+I means italic; everywhere else it still means night mode.
+            if (Keyboard.Modifiers == ModifierKeys.Control && sender is TextBox styled)
+            {
+                switch (e.Key)
+                {
+                    case Key.B:
+                        _textBold = styled.FontWeight != FontWeights.Bold;
+                        styled.FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal;
+                        e.Handled = true;
+                        return;
+                    case Key.I:
+                        _textItalic = styled.FontStyle != FontStyles.Italic;
+                        styled.FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal;
+                        e.Handled = true;
+                        return;
+                    case Key.U:
+                        _textUnderline = styled.TextDecorations is not { Count: > 0 };
+                        styled.TextDecorations = _textUnderline ? TextDecorations.Underline : null;
+                        e.Handled = true;
+                        return;
+                }
+            }
+
             if (e.Key == Key.Escape)
             {
                 CancelActiveTextBox();
@@ -11864,6 +11919,11 @@ namespace TDPdf
                     Position = new Point(x, y),
                     Content = content,
                     FontSize = tb.FontSize,
+                    // #135: read back off the editor, not off the tool state — the user may have
+                    // toggled Ctrl+B mid-sentence and the box in front of them is the truth.
+                    Bold = tb.FontWeight == FontWeights.Bold,
+                    Italic = tb.FontStyle == FontStyles.Italic,
+                    Underline = tb.TextDecorations is { Count: > 0 },
                     Width = double.IsNaN(width) || width <= 0 ? 0 : width,
                     HasFill = _textWhiteout
                 };
@@ -12367,8 +12427,11 @@ namespace TDPdf
             {
                 Text = ta.Content,
                 Foreground = new SolidColorBrush(ta.GetColor()),
-                FontFamily = new FontFamily("Segoe UI"),
+                FontFamily = new FontFamily(PdfFontStyle.DefaultFamily),
                 FontSize = ta.FontSize,
+                FontWeight = ta.Bold ? FontWeights.Bold : FontWeights.Normal,        // #135
+                FontStyle = ta.Italic ? FontStyles.Italic : FontStyles.Normal,
+                TextDecorations = ta.Underline ? TextDecorations.Underline : null,
                 Padding = new Thickness(2),
                 // #156: annotation visuals must never intercept the mouse — selection and dragging
                 // hit-test the _annotations data, not the visuals, and the form-field overlays now
@@ -12400,7 +12463,7 @@ namespace TDPdf
             var ft = new FormattedText(
                 string.IsNullOrEmpty(ta.Content) ? " " : ta.Content,
                 System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-                new Typeface("Segoe UI"), ta.FontSize, Brushes.Black, dpi);
+                TextTypeface(ta.Bold, ta.Italic), ta.FontSize, Brushes.Black, dpi);   // #135
             if (ta.Width > 0) ft.MaxTextWidth = Math.Max(1, ta.Width - 4);
             double w = ta.Width > 0 ? ta.Width : ft.Width + 8;
             double h = ta.Height > 0 ? ta.Height : ft.Height + 8;
@@ -12412,12 +12475,13 @@ namespace TDPdf
         /// given font size, using the same WPF font metrics as the on-screen TextBlock so the baked PDF
         /// breaks at the same points. Over-long single words are hard-broken by character.
         /// </summary>
-        private List<string> WrapTextToWidth(string text, double fontSize, double maxWidth)
+        private List<string> WrapTextToWidth(string text, double fontSize, double maxWidth,
+                                             bool bold = false, bool italic = false)
         {
             var lines = new List<string>();
             if (maxWidth <= 0) { lines.Add(text); return lines; }
             double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
-            var typeface = new Typeface("Segoe UI");
+            var typeface = TextTypeface(bold, italic);   // #135: bold/italic change the advances
             double W(string s) => new FormattedText(
                 string.IsNullOrEmpty(s) ? " " : s,
                 System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
@@ -14896,6 +14960,28 @@ namespace TDPdf
         private bool HasPendingFormValues =>
             _formTextValues.Count > 0 || _formCheckValues.Count > 0 || _formRadioValues.Count > 0;
 
+        /// <summary>
+        /// Draws the underline for a burned text annotation, when it has one.
+        /// </summary>
+        /// <remarks>
+        /// #135: <c>XFontStyle.Underline</c> exists in the enum but PdfSharpCore's
+        /// <c>DrawString</c> does not act on it — an underlined annotation would have looked right
+        /// on screen and saved without the line, which is the same class of silent screen/PDF
+        /// divergence that <c>WrapTextToWidth</c> exists to prevent. So draw it: one thin filled
+        /// rectangle just under the baseline, scaled with the font so it stays proportional at any
+        /// size or render resolution.
+        /// </remarks>
+        private static void DrawTextUnderline(XGraphics gfx, TextAnnotation ta, string line,
+                                              XFont font, XBrush brush, double x, double baselineY,
+                                              double sy)
+        {
+            if (!ta.Underline || string.IsNullOrEmpty(line)) return;
+            double width = gfx.MeasureString(line, font).Width;
+            if (width <= 0) return;
+            double em = ta.FontSize * sy;
+            gfx.DrawRectangle(brush, x, baselineY + em * 0.12, width, Math.Max(0.5, em * 0.06));
+        }
+
         /// <summary>Bold/italic flags as the PdfSharpCore font style flags used when burning text (#182).</summary>
         private static XFontStyle ToXFontStyle(bool bold, bool italic) =>
             (bold ? XFontStyle.Bold : XFontStyle.Regular) | (italic ? XFontStyle.Italic : XFontStyle.Regular);
@@ -14960,7 +15046,7 @@ namespace TDPdf
                             // Latin annotation, so nothing existing moves.
                             var font = TdpFontResolver.TryCreate(
                                 FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, ta.Content),
-                                ta.FontSize * sy, XFontStyle.Regular);
+                                ta.FontSize * sy, ToXFontStyle(ta.Bold, ta.Italic));   // #135
                             // Nothing resolvable at all (no readable font directory, or a degenerate
                             // size): skip this ONE annotation rather than throw out of the save.
                             if (font is null) break;
@@ -14972,7 +15058,8 @@ namespace TDPdf
                             {
                                 // Fixed-width wrapping box: mirror the on-screen wrap (same font metrics)
                                 // and the whiteout fill so the saved PDF matches the screen.
-                                var wrapped = WrapTextToWidth(ta.Content, ta.FontSize, ta.Width - pad * 2);
+                                var wrapped = WrapTextToWidth(ta.Content, ta.FontSize, ta.Width - pad * 2,
+                                                              ta.Bold, ta.Italic);
                                 double boxH = ta.Height > 0 ? ta.Height : wrapped.Count * (ta.FontSize * 1.2) + pad * 2;
                                 if (ta.HasFill)
                                 {
@@ -14986,7 +15073,11 @@ namespace TDPdf
                                 foreach (var line in wrapped)
                                 {
                                     if (!string.IsNullOrEmpty(line))
+                                    {
                                         gfx.DrawString(line, font, taBrush, (ta.Position.X + pad) * sx, ty);
+                                        DrawTextUnderline(gfx, ta, line, font, taBrush,
+                                                          (ta.Position.X + pad) * sx, ty, sy);
+                                    }
                                     ty += lineH;
                                 }
                             }
@@ -15007,7 +15098,11 @@ namespace TDPdf
                                 foreach (var line in lines)
                                 {
                                     if (!string.IsNullOrEmpty(line))
+                                    {
                                         gfx.DrawString(line, font, taBrush, ta.Position.X * sx, ty);
+                                        DrawTextUnderline(gfx, ta, line, font, taBrush,
+                                                          ta.Position.X * sx, ty, sy);
+                                    }
                                     ty += lineH;
                                 }
                             }
