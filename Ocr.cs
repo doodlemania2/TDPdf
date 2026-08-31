@@ -145,9 +145,15 @@ namespace TDPdf
                 return;
             }
 
-            int pageIdx = Math.Max(0, PageList.SelectedIndex);
-            root.Items.Add(MakeMenuItem("OCR Current _Page to Clipboard", (_, _) => OcrPageToClipboard(pageIdx),
-                "Ctrl+Shift+O", "Recognize the current page's text and copy it to the clipboard", "\uEE6F"));
+            int selectedForOcr = PageList.SelectedItems.Count;
+            root.Items.Add(MakeMenuItem(
+                selectedForOcr > 1 ? $"OCR {selectedForOcr} Selected _Pages to Clipboard"
+                                   : "OCR Current _Page to Clipboard",
+                (_, _) => OcrPagesToClipboard(SelectedPageIndicesForOcr()),
+                "Ctrl+Shift+O",
+                selectedForOcr > 1
+                    ? "Recognize every selected page and copy the combined text to the clipboard"
+                    : "Recognize the current page's text and copy it to the clipboard", "\uEE6F"));
             root.Items.Add(MakeMenuItem("OCR _Region to Clipboard", (_, _) => BeginOcrRegion(),
                 null, "Drag a box over an area to recognize just that region", "\uE7A8"));
             root.Items.Add(new Separator());
@@ -447,40 +453,81 @@ namespace TDPdf
         // OCR are both slow, so they run inside Task.Run behind the busy state; the clipboard write happens back
         // on the UI thread. Rotations are already baked into the working file (SaveTempAndReload writes /Rotate,
         // which PDFium honors on render), so no pixel rotation is needed here.
-        private async void OcrPageToClipboard(int pageIdx)
+        private void OcrPageToClipboard(int pageIdx) => OcrPagesToClipboard([pageIdx]);
+
+        /// <summary>
+        /// The page indices currently selected in the sidebar, in document order. Falls back to the
+        /// current page so the OCR actions behave the same when nothing is multi-selected.
+        /// </summary>
+        private int[] SelectedPageIndicesForOcr()
+        {
+            int[] pages = PageList.SelectedItems.Cast<object>()
+                .Select(o => PageList.Items.IndexOf(o))
+                .Where(i => i >= 0)
+                .OrderBy(i => i)
+                .ToArray();
+            return pages.Length > 0 ? pages : [Math.Max(0, PageList.SelectedIndex)];
+        }
+
+        // Upstream KillerPDF #297: OCR every selected page and combine the text, rather than only
+        // the current one. The document reader and the recognition engine are built ONCE for the
+        // whole batch — constructing an OcrService per page is the expensive part, and on a ten-page
+        // selection that alone is the difference between usable and not.
+        private async void OcrPagesToClipboard(IReadOnlyList<int> pageIndices)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
-            if (pageIdx < 0 || pageIdx >= _doc.PageCount) return;
+            int[] pages = [.. pageIndices.Distinct().Where(p => p >= 0 && p < _doc.PageCount).OrderBy(p => p)];
+            if (pages.Length == 0) return;
             if (!await EnsureOcrModelsReadyAsync()) return;
 
             string file = _currentFile;
             string lang = CurrentOcrLanguageString();
 
-            var ct = BeginCancellableOp("Running OCR...  (Esc to cancel)");
+            var ct = BeginCancellableOp(pages.Length == 1
+                ? "Running OCR...  (Esc to cancel)"
+                : $"Running OCR on {pages.Length} pages...  (Esc to cancel)");
             try
             {
-                OcrResult result = await Task.Run(() =>
+                List<OcrResult> results = await Task.Run(() =>
                 {
                     using var docReader = DocLib.Instance.GetDocReader(file, new PageDimensions(OcrRenderMax, OcrRenderMax));
-                    using var pageReader = docReader.GetPageReader(pageIdx);
-
-                    int w = pageReader.GetPageWidth();
-                    int h = pageReader.GetPageHeight();
-                    byte[] bgra = pageReader.GetImage();
-
                     using var ocr = new OcrService(language: lang);   // engine is not thread-safe: one per operation
-                    return ocr.RecognizeBgra(bgra, w, h);
+                    var recognized = new List<OcrResult>(pages.Length);
+                    for (int i = 0; i < pages.Length; i++)
+                    {
+                        // Checked between pages: a single page still cannot be interrupted
+                        // mid-recognition, but a long selection now stops at the next boundary.
+                        if (ct.IsCancellationRequested) break;
+                        if (pages.Length > 1)
+                            SetWorkerStatus($"Running OCR... page {i + 1} of {pages.Length}  (Esc to cancel)");
+
+                        using var pageReader = docReader.GetPageReader(pages[i]);
+                        int w = pageReader.GetPageWidth();
+                        int h = pageReader.GetPageHeight();
+                        byte[] bgra = pageReader.GetImage();
+                        recognized.Add(ocr.RecognizeBgra(bgra, w, h));
+                    }
+                    return recognized;
                 });
 
-                // Cooperative cancel: a single page can't be interrupted mid-recognition, so we just discard
-                // the result if the user cancelled.
+                // Cooperative cancel: discard a partial batch rather than copying half of it.
                 if (ct.IsCancellationRequested) { SetStatus("OCR cancelled"); return; }
 
-                string text = result.Text.Trim();
-                if (text.Length == 0) { SetStatus($"OCR: no text found on page {pageIdx + 1}"); return; }
+                string text = string.Join(Environment.NewLine + Environment.NewLine,
+                    results.Select(r => r.Text.Trim()).Where(t => t.Length > 0));
+                if (text.Length == 0)
+                {
+                    SetStatus(pages.Length == 1
+                        ? $"OCR: no text found on page {pages[0] + 1}"
+                        : $"OCR: no text found on the {pages.Length} selected pages");
+                    return;
+                }
 
                 Clipboard.SetText(text);
-                SetStatus($"OCR: copied {text.Length} chars from page {pageIdx + 1} ({result.MeanConfidence:P0} confidence)");
+                double confidence = results.Count == 0 ? 0 : results.Average(r => r.MeanConfidence);
+                SetStatus(pages.Length == 1
+                    ? $"OCR: copied {text.Length} chars from page {pages[0] + 1} ({confidence:P0} confidence)"
+                    : $"OCR: copied {text.Length} chars from {pages.Length} pages ({confidence:P0} mean confidence)");
             }
             catch (Exception ex)
             {

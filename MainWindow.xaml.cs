@@ -1695,7 +1695,9 @@ namespace TDPdf
             var menu = new ContextMenu();
 
             menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard", "\uE8C8"));
-            menu.Items.Add(MakeMenuItem("OCR Page to Clip_board", (s, e) => OcrPageToClipboard(Math.Max(0, PageList.SelectedIndex)),
+            menu.Items.Add(MakeMenuItem(
+                PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
+                (s, e) => OcrPagesToClipboard(SelectedPageIndicesForOcr()),
                 "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
             menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
             menu.Items.Add(new Separator());
@@ -4167,7 +4169,16 @@ namespace TDPdf
             // spec makes mutually exclusive), so anything downstream may divide by MaxLen whenever
             // IsComb is true. MaxLen is also the typing cap.
             bool   IsComb,
-            int    MaxLen);
+            int    MaxLen,
+            // A /Btn with the Pushbutton flag (/Ff bit 17) holds no value and must never get a
+            // fill-in control. Without this it fell through to the text-field branch and a form's
+            // Submit / Print / Reset button became an editable box that wrote a /V on save.
+            bool   IsPushButton = false,
+            // /Opt entries may be [export, display] pairs: the list shows the display string but
+            // /V must carry the EXPORT value. Options holds what the user sees, OptionExports the
+            // value at the same index that gets written back. For a plain string entry the two are
+            // identical, which is why every existing single-string form still behaves the same.
+            List<string>? OptionExports = null);
 
         /// <summary>
         /// Scans the current page's /Annots for Widget subtypes and overlays interactive
@@ -4206,6 +4217,13 @@ namespace TDPdf
             foreach (var f in fields)
             {
                 UIElement? ctrl = null;
+
+                // -- Push button ---------------------------------------------------
+                // Holds no value, so there is nothing to fill in and no overlay to draw. Left to
+                // the rendered page, where its own appearance stream already shows the button.
+                // This must come FIRST: a pushbutton is neither checkbox nor radio nor /Ch, so it
+                // otherwise satisfied the text-field test below and became an editable box.
+                if (f.IsPushButton) continue;
 
                 // -- Text field ----------------------------------------------------
                 if (!f.IsCheckBox && !f.IsRadio && f.FieldType != "/Ch")
@@ -4271,11 +4289,24 @@ namespace TDPdf
                         ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
                     };
                     foreach (var opt in f.Options) combo.Items.Add(opt);
-                    combo.SelectedItem = cur;
+
+                    // The list shows display strings; /V carries export values. Select by INDEX so
+                    // the two never have to be equal: match the stored/current value against the
+                    // exports first, then fall back to the display text for files whose /V already
+                    // holds the label (and for plain-string /Opt, where the two are the same).
+                    var exports = f.OptionExports ?? f.Options;
+                    int selIdx = exports.IndexOf(cur);
+                    if (selIdx < 0) selIdx = f.Options.IndexOf(cur);
+                    combo.SelectedIndex = selIdx;   // -1 when /V matches nothing: leave it unset
+
                     int capturedKey = f.ObjNum;
                     combo.SelectionChanged += (_, _) =>
                     {
-                        if (combo.SelectedItem is string s) { _formTextValues[capturedKey] = s; MarkDirty(); }
+                        int i = combo.SelectedIndex;
+                        if (i < 0) return;
+                        // Write the export value, which is what other viewers read back.
+                        _formTextValues[capturedKey] = i < exports.Count ? exports[i] : f.Options[i];
+                        MarkDirty();
                     };
                     ctrl = combo;
                 }
@@ -4478,6 +4509,7 @@ namespace TDPdf
                     int flags = 0;
                     int maxLen = 0;   // #158: /MaxLen, the comb cell count
                     var options = new List<string>();
+                    var optionExports = new List<string>();
 
                     PdfDictionary? node = ann;
                     while (node is not null)
@@ -4503,9 +4535,16 @@ namespace TDPdf
                             for (int j = 0; j < optArr.Elements.Count; j++)
                             {
                                 var o = optArr.Elements[j];
-                                if (o is PdfString ps2) options.Add(ps2.Value);
+                                // A pair is [export, display]: show the second, save the first.
+                                // A bare string is both at once.
+                                if (o is PdfString ps2) { options.Add(ps2.Value); optionExports.Add(ps2.Value); }
                                 else if (o is PdfArray pa2 && pa2.Elements.Count >= 2)
-                                    options.Add((pa2.Elements[1] as PdfString)?.Value ?? "");
+                                {
+                                    string export  = (pa2.Elements[0] as PdfString)?.Value ?? "";
+                                    string display = (pa2.Elements[1] as PdfString)?.Value ?? "";
+                                    options.Add(display);
+                                    optionExports.Add(export);
+                                }
                             }
                         }
 
@@ -4547,7 +4586,7 @@ namespace TDPdf
 
                     result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
                         name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options,
-                        isComb, maxLen));
+                        isComb, maxLen, isPushBtn, optionExports));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
@@ -12154,7 +12193,7 @@ namespace TDPdf
 
             if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
             {
-                OcrPageToClipboard(Math.Max(0, PageList.SelectedIndex));
+                OcrPagesToClipboard(SelectedPageIndicesForOcr());
                 e.Handled = true;
             }
             else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
