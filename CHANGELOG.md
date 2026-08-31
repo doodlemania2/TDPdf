@@ -6,6 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.28.0.0] - 2026-08-31
+
+**Form fields stop lying about what they contain, and OCR can read a form as a form.**
+
+Both items came out of the v1.8.x fork-sync review. Neither was portable from upstream — one is a defect that review exposed in TDPdf's own code, the other needed building against our form path rather than their engine.
+
+### Fixed
+
+- **A form value containing non-Latin text is no longer saved as `?`** (#140). The field's `/V` kept the real text, but the **appearance stream** — what Acrobat, Preview, print, flatten and image export actually draw — was written as a WinAnsi literal against the field's `/DA` base font, which is not embedded. Anything WinAnsi cannot express was folded to `?`. Type `Привет` into a form field and it looked correct in TDPdf and was wrong everywhere else, silently and only visibly at the point someone else opened the file. Values needing more than WinAnsi are now drawn through PdfSharpCore, which embeds a real font (Type0 / Identity-H, subset, with a `/ToUnicode` map) and emits glyph IDs. Smart punctuation and currency symbols were always fine — those are what `WinAnsiHighMap` folds — so the change is confined to genuinely non-Latin scripts. **Anything representable in WinAnsi keeps the byte-identical output it has always produced,** so comb (#158) and multiline (#180) layout are untouched; the two paths share one decision function so they cannot disagree about which values are safe. If no covering font resolves, it falls back rather than leaving the field with no appearance at all.
+
+### Added
+
+- **Form-aware OCR** (#141, from upstream KillerPDF #242). *Tools → OCR → OCR Form Fields to Clipboard.* Whole-page OCR on a form returns the labels interleaved with the values in reading order and no association between them; this recognises each field's own rectangle and labels the result with the field's name. It uses what the form already declares rather than guessing: **numeric fields** restrict recognition to digits and separators (where `O`, `l` and `S` are the usual misreads), read from the standard `/AA` format action rather than inferred from the field name; **comb fields** are read one printed cell at a time, because Tesseract reading the whole comb as a word splits or joins the evenly spaced glyphs; and **dropdown values** are snapped onto their real `/Opt` entry. Plain OCR remains the default everywhere — this is an additional action.
+
+  Snapping is deliberately conservative, because the two failure modes are not equally bad: failing to snap leaves a visibly imperfect reading that gets checked, while snapping to the wrong option silently replaces a value with a confident-looking lie. A candidate has to be within 40% of its own length in edits *and* unambiguously better than the runner-up, so a value that is merely nearest to something — a state that is not on the list at all — is left exactly as read.
+
+### Notes
+
+- The vendored PdfSharpCore carries one new marked patch: an `InternalsVisibleTo` so the app can reach `XForm.PdfForm`. PdfSharpCore already builds a correct embedded CID font for `DrawString`; the only thing missing was a way to get at the resulting XObject, and one line there is far less risk than hand-rolling CID embedding in the app.
+
+
 ## [1.27.0.0] - 2026-08-31
 
 **A curated sync with upstream KillerPDF v1.8.0, v1.8.1 and v1.8.2 — seven fixes ported, and seven candidates rejected because TDPdf already had them or does them better.**
@@ -961,7 +982,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.27.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.28.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.27.0.0...v1.28.0.0
 [1.27.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.26.0.0...v1.27.0.0
 [1.26.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.25.0.0...v1.26.0.0
 [1.25.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.1.0...v1.25.0.0
