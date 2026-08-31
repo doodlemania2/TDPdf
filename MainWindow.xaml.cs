@@ -1695,7 +1695,9 @@ namespace TDPdf
             var menu = new ContextMenu();
 
             menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard", "\uE8C8"));
-            menu.Items.Add(MakeMenuItem("OCR Page to Clip_board", (s, e) => OcrPageToClipboard(Math.Max(0, PageList.SelectedIndex)),
+            menu.Items.Add(MakeMenuItem(
+                PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
+                (s, e) => OcrPagesToClipboard(SelectedPageIndicesForOcr()),
                 "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
             menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
             menu.Items.Add(new Separator());
@@ -2766,6 +2768,9 @@ namespace TDPdf
             // invisible while still being the active one.
             CommitActiveTextBox();
             _viewMode = mode;
+            // The scroll surface underneath the wheel just changed, so a half-accumulated
+            // page-flip gesture from the previous mode must not complete against the new one.
+            _wheelFlipGate.Reset();
             _gridViewToggle.IsChecked = mode == ViewMode.Grid;
             try
             {
@@ -4164,7 +4169,16 @@ namespace TDPdf
             // spec makes mutually exclusive), so anything downstream may divide by MaxLen whenever
             // IsComb is true. MaxLen is also the typing cap.
             bool   IsComb,
-            int    MaxLen);
+            int    MaxLen,
+            // A /Btn with the Pushbutton flag (/Ff bit 17) holds no value and must never get a
+            // fill-in control. Without this it fell through to the text-field branch and a form's
+            // Submit / Print / Reset button became an editable box that wrote a /V on save.
+            bool   IsPushButton = false,
+            // /Opt entries may be [export, display] pairs: the list shows the display string but
+            // /V must carry the EXPORT value. Options holds what the user sees, OptionExports the
+            // value at the same index that gets written back. For a plain string entry the two are
+            // identical, which is why every existing single-string form still behaves the same.
+            List<string>? OptionExports = null);
 
         /// <summary>
         /// Scans the current page's /Annots for Widget subtypes and overlays interactive
@@ -4203,6 +4217,13 @@ namespace TDPdf
             foreach (var f in fields)
             {
                 UIElement? ctrl = null;
+
+                // -- Push button ---------------------------------------------------
+                // Holds no value, so there is nothing to fill in and no overlay to draw. Left to
+                // the rendered page, where its own appearance stream already shows the button.
+                // This must come FIRST: a pushbutton is neither checkbox nor radio nor /Ch, so it
+                // otherwise satisfied the text-field test below and became an editable box.
+                if (f.IsPushButton) continue;
 
                 // -- Text field ----------------------------------------------------
                 if (!f.IsCheckBox && !f.IsRadio && f.FieldType != "/Ch")
@@ -4268,11 +4289,24 @@ namespace TDPdf
                         ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
                     };
                     foreach (var opt in f.Options) combo.Items.Add(opt);
-                    combo.SelectedItem = cur;
+
+                    // The list shows display strings; /V carries export values. Select by INDEX so
+                    // the two never have to be equal: match the stored/current value against the
+                    // exports first, then fall back to the display text for files whose /V already
+                    // holds the label (and for plain-string /Opt, where the two are the same).
+                    var exports = f.OptionExports ?? f.Options;
+                    int selIdx = exports.IndexOf(cur);
+                    if (selIdx < 0) selIdx = f.Options.IndexOf(cur);
+                    combo.SelectedIndex = selIdx;   // -1 when /V matches nothing: leave it unset
+
                     int capturedKey = f.ObjNum;
                     combo.SelectionChanged += (_, _) =>
                     {
-                        if (combo.SelectedItem is string s) { _formTextValues[capturedKey] = s; MarkDirty(); }
+                        int i = combo.SelectedIndex;
+                        if (i < 0) return;
+                        // Write the export value, which is what other viewers read back.
+                        _formTextValues[capturedKey] = i < exports.Count ? exports[i] : f.Options[i];
+                        MarkDirty();
                     };
                     ctrl = combo;
                 }
@@ -4475,6 +4509,7 @@ namespace TDPdf
                     int flags = 0;
                     int maxLen = 0;   // #158: /MaxLen, the comb cell count
                     var options = new List<string>();
+                    var optionExports = new List<string>();
 
                     PdfDictionary? node = ann;
                     while (node is not null)
@@ -4500,9 +4535,16 @@ namespace TDPdf
                             for (int j = 0; j < optArr.Elements.Count; j++)
                             {
                                 var o = optArr.Elements[j];
-                                if (o is PdfString ps2) options.Add(ps2.Value);
+                                // A pair is [export, display]: show the second, save the first.
+                                // A bare string is both at once.
+                                if (o is PdfString ps2) { options.Add(ps2.Value); optionExports.Add(ps2.Value); }
                                 else if (o is PdfArray pa2 && pa2.Elements.Count >= 2)
-                                    options.Add((pa2.Elements[1] as PdfString)?.Value ?? "");
+                                {
+                                    string export  = (pa2.Elements[0] as PdfString)?.Value ?? "";
+                                    string display = (pa2.Elements[1] as PdfString)?.Value ?? "";
+                                    options.Add(display);
+                                    optionExports.Add(export);
+                                }
                             }
                         }
 
@@ -4544,7 +4586,7 @@ namespace TDPdf
 
                     result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
                         name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options,
-                        isComb, maxLen));
+                        isComb, maxLen, isPushBtn, optionExports));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
@@ -12072,6 +12114,32 @@ namespace TDPdf
                 && e.Key != Key.Escape && (e.Key < Key.F1 || e.Key > Key.F12))
                 return;
 
+            // The Pages panel owns Ctrl+A and Delete while it has keyboard focus (upstream
+            // KillerPDF #289, #296). This has to be decided here rather than on the ListBox: this
+            // handler is a PREVIEW on the window, so it tunnels down and reaches Ctrl+A first —
+            // the list never saw the key, and Ctrl+A in the sidebar selected the document's TEXT
+            // instead of its pages. Both keys are structural to the panel, so they are claimed
+            // ahead of the general shortcut chain rather than added to it.
+            if (_doc is not null && PageList.IsKeyboardFocusWithin
+                && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Control)
+            {
+                if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
+                {
+                    PageList.SelectAll();
+                    SetStatus($"Selected all {PageList.Items.Count} page(s)");
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None
+                    && PageList.SelectedItems.Count > 0)
+                {
+                    // Same confirmed, reload-backed path as the context menu's Delete Page(s).
+                    Delete_Click(this, new RoutedEventArgs());
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             // Standard shortcuts (Ctrl+N/O/S/W/Z, Ctrl+Shift+S, Ctrl+P, Ctrl+F, F1, Alt+F/E/V/T/H)
             // are routed via CommandBindings and the Menu's access keys — no need to intercept
             // them here. We still handle the genuinely context-sensitive keys below.
@@ -12125,7 +12193,7 @@ namespace TDPdf
 
             if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
             {
-                OcrPageToClipboard(Math.Max(0, PageList.SelectedIndex));
+                OcrPagesToClipboard(SelectedPageIndicesForOcr());
                 e.Handled = true;
             }
             else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
@@ -13889,6 +13957,14 @@ namespace TDPdf
             var doc = _doc;
             var selected = PageList.SelectedItems;
             if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to delete."); return; }
+            // A PDF cannot have zero pages, and Ctrl+A followed by Delete now makes that a single
+            // gesture. Refuse rather than write a document nothing can reopen.
+            if (selected.Count >= doc.PageCount)
+            {
+                TdpDialog.Show(this, "A PDF must keep at least one page.\n\nTo discard the whole document, close it instead.",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
             var result = TdpDialog.Show(this, $"Delete {selected.Count} {(selected.Count == 1 ? "page" : "pages")}?", "TDPdf",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (result != MessageBoxResult.Yes) return;
@@ -15480,9 +15556,12 @@ namespace TDPdf
             // through to page navigation so the user can reach adjacent pages without the sidebar.
             if (PagePreviewPanel.ScrollableHeight <= 0)
             {
-                // No scrollable content — wheel navigates pages directly.
+                // No scrollable content — the wheel navigates pages directly. Still gated, so a
+                // touchpad flick over a fitted page advances one page per deliberate gesture
+                // instead of one per delta event (#205).
                 e.Handled = true;
-                NavigatePageByWheel(e.Delta);
+                if (_wheelFlipGate.TryConfirm(e.Delta, DateTime.UtcNow))
+                    NavigatePageByWheel(e.Delta);
                 return;
             }
 
@@ -15490,24 +15569,43 @@ namespace TDPdf
             bool atBottom = PagePreviewPanel.VerticalOffset >= PagePreviewPanel.ScrollableHeight - 1;
             if ((atTop && e.Delta > 0) || (atBottom && e.Delta < 0))
             {
+                // Arriving at the boundary is not the same as asking to leave the page: a fast
+                // scroll gets here with notches still in flight. The gate drops that momentum and
+                // asks for one further deliberate gesture (#205).
                 e.Handled = true;
-                NavigatePageByWheel(e.Delta);
+                if (_wheelFlipGate.TryConfirm(e.Delta, DateTime.UtcNow))
+                    NavigatePageByWheel(e.Delta);
                 return;
             }
             ScrollWheel(e);   // normal scroll, boosted
         }
 
-        // The ScrollViewer default (3 lines = 48 DIP per wheel notch) feels slow on tall documents,
-        // so scroll WheelScrollFactor times that instead. e.Delta is ±120 per notch on a standard
+        // Separates a fast scroll's momentum tail from a deliberate page turn at the scroll
+        // boundary (#205). See Services/WheelPageFlipGate.cs for the two conditions it applies.
+        private readonly Services.WheelPageFlipGate _wheelFlipGate = new();
+
+        // Horizontal scrolling and the page sidebar keep the established speed multiplier: the
+        // ScrollViewer default (3 lines = 48 DIP per notch) is slow on tall documents, so those
+        // scroll WheelScrollFactor times that instead. e.Delta is ±120 per notch on a standard
         // wheel (precision touchpads send smaller, more frequent deltas, which scale the same way).
-        // ScrollToVerticalOffset clamps to the valid range itself.
         private const double WheelScrollFactor = 3.0;
 
         private void ScrollWheel(MouseWheelEventArgs e)
         {
             e.Handled = true;
+
+            // Document scrolling follows the Wheel tab in Windows Mouse Properties rather than a
+            // fixed distance, so a user who has set 1 line or "one screen at a time" — including
+            // for accessibility — gets what they asked for. -1 is the sentinel for one screen.
+            // Scaling by the raw delta keeps precision-touchpad movement smooth.
+            int lines = SystemParameters.WheelScrollLines;
+            double distance = lines < 0 ? PagePreviewPanel.ViewportHeight : lines * 16.0;
             PagePreviewPanel.ScrollToVerticalOffset(
-                PagePreviewPanel.VerticalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
+                PagePreviewPanel.VerticalOffset - e.Delta * (distance / 120.0));
+
+            // Any real content scroll starts the quiet period, so this gesture's tail cannot flip
+            // the page when it reaches the boundary.
+            _wheelFlipGate.NoteContentScroll(DateTime.UtcNow);
         }
 
         private void NavigatePageByWheel(int delta)

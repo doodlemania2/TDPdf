@@ -104,19 +104,31 @@ namespace TDPdf
 
         // Rasterizes the given pages with the chosen perspective/flip/scale/rotate/levels and swaps each in
         // for the original (undoable as one whole-document step).
-        private void ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
+        // Upstream KillerPDF #290 added per-page progress here. Two changes were needed rather than
+        // one, because rasterizing every selected page at 2200px is slow enough that a batch used to
+        // freeze the window outright with no feedback and no way out.
+        //
+        // The loop is also split into two phases now. It used to swap each transformed page into
+        // _doc as it went, which is fine when nothing can interrupt it — but the moment Esc can
+        // cancel mid-batch, that would strand the document half transformed in memory with no save
+        // behind it. So phase one only RENDERS, into one-page temp PDFs, touching nothing; phase two
+        // swaps them all in at once. Cancelling during phase one now leaves the document untouched,
+        // and the undo snapshot is not pushed for a transform that never happened.
+        private async void ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
             bool flipH, bool flipV, Point[] perspectiveCorners,
             int levelBlack = 0, int levelWhite = 255, double levelGamma = 1.0)
         {
             if (_doc is null || _currentFile is null) return;
             if (pageIndices.Count == 0) return;
 
+            var pages = pageIndices.Distinct().Where(p => p >= 0 && p < _doc.PageCount).OrderBy(p => p).ToList();
+            if (pages.Count == 0) return;
+
+            var ct = BeginCancellableOp(pages.Count == 1
+                ? "Transforming page...  (Esc to cancel)"
+                : $"Transforming {pages.Count} pages...  (Esc to cancel)");
             try
             {
-                // Snapshot the whole document for undo BEFORE mutating, so one Ctrl+Z reverts the transform
-                // (same document-level snapshot as Crop / Rotate / Delete).
-                PushDocUndo();
-
                 // Bake annotations into a temp copy so the transformed pages' annotations follow the transform
                 // (the pages are rasterized anyway, and the user was warned). Non-destructive: _doc is restored
                 // to a clean state and we render the target pages from the burned copy. Every render reads this
@@ -125,9 +137,20 @@ namespace TDPdf
                 string renderSrc = burned ?? _currentFile;
 
                 int restoreIdx = PageList.SelectedIndex;
-                int done = 0;
-                foreach (int pageIdx in pageIndices)
+
+                // ---- Phase 1: render every page into a one-page temp PDF. Nothing is mutated. ----
+                var replacements = new Dictionary<int, string>();
+                for (int i = 0; i < pages.Count; i++)
                 {
+                    if (ct.IsCancellationRequested) { SetStatus("Transform cancelled"); return; }
+                    int pageIdx = pages[i];
+
+                    if (pages.Count > 1)
+                        SetStatus($"Transforming page {i + 1} of {pages.Count}...  (Esc to cancel)");
+                    // Let the status line and the busy state actually paint. The window is disabled
+                    // for the duration, so yielding cannot let the document change underneath us.
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+
                     if (pageIdx < 0 || pageIdx >= _doc.PageCount) continue;
                     var src = RenderPageBitmap(pageIdx, 2200, renderSrc);
                     if (src is null) continue;
@@ -164,9 +187,25 @@ namespace TDPdf
                         one.Save(tmp);
                     }
 
+                    replacements[pageIdx] = tmp;
+                }
+
+                if (ct.IsCancellationRequested) { SetStatus("Transform cancelled"); return; }
+                if (replacements.Count == 0) { SetStatus("Transform: no pages could be rendered."); return; }
+
+                // ---- Phase 2: swap the rendered pages in. Fast, and past the point of cancelling. ----
+                // Snapshot the whole document for undo BEFORE mutating, so one Ctrl+Z reverts the transform
+                // (same document-level snapshot as Crop / Rotate / Delete). Pushed here rather than up front
+                // so a cancelled transform leaves no undo entry behind.
+                PushDocUndo();
+
+                int done = 0;
+                foreach (var (pageIdx, tmpPath) in replacements.OrderBy(kv => kv.Key))
+                {
+                    if (pageIdx < 0 || pageIdx >= _doc.PageCount) continue;
                     // Import that page and swap it in for the original (mirrors the duplicate-page index dance:
                     // AddPage clones into _doc at the end, then we reposition the clone and drop the original).
-                    using (var srcDoc = PdfReader.Open(tmp, PdfDocumentOpenMode.Import))
+                    using (var srcDoc = PdfReader.Open(tmpPath, PdfDocumentOpenMode.Import))
                     {
                         var imported = _doc.AddPage(srcDoc.Pages[0]);
                         _doc.Pages.RemoveAt(_doc.PageCount - 1);
@@ -196,15 +235,21 @@ namespace TDPdf
                 // A transform changes the page aspect ratio; fit-to-page so the full result is visible, and
                 // re-fit once the new page bitmap has laid out.
                 FitToPage();
-                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, (Action)FitToPage);
+                // Discarded rather than awaited: the re-fit is deliberately fire-and-forget, and the
+                // method became async for the progress yield above (CS4014).
+                _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, (Action)FitToPage);
                 MarkDirty(true);
                 SetStatus(done == 1
-                    ? $"Transformed page {pageIndices[0] + 1} (rasterized to an image)"
+                    ? $"Transformed page {pages[0] + 1} (rasterized to an image)"
                     : $"Transformed {done} pages (rasterized to images)");
             }
             catch (Exception ex)
             {
                 TdpDialog.Show(this, $"Transform failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                EndCancellableOp();
             }
         }
 

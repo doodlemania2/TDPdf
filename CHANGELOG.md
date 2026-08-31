@@ -6,6 +6,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.27.0.0] - 2026-08-31
+
+**A curated sync with upstream KillerPDF v1.8.0, v1.8.1 and v1.8.2 — seven fixes ported, and seven candidates rejected because TDPdf already had them or does them better.**
+
+Upstream's headline for 1.8.0 is The KillerPDF.Engine, a bespoke .NET 10 PDF pipeline replacing PdfSharpCore. That remains **declined**: it is a fork-defining decision rather than a sync, and it takes page reordering, saving, flattening, printing and repair with it. Everything below was checked against our own tree first, because most of what looked like a gap was not one.
+
+### Fixed
+
+- **A fast scroll no longer overshoots into the next page** (upstream v1.8.0, #205). In Single Page and Two-Page views the wheel falls through to page navigation once the scroll reaches the page boundary — but a quick flick arrives there with notches still in flight, so the document jumped onward unasked. Momentum arriving within 250 ms of a real content scroll is now discarded, and a page turn afterwards needs one deliberate gesture: a single geared notch, or the equivalent accumulated from a precision touchpad within 650 ms. Reversing direction or pausing restarts the count, so hesitant nudges never add up across unrelated gestures. Scrolling speed itself is unchanged. The gate also covers a page that fits the viewport entirely, where a touchpad flick previously advanced one page per delta event.
+- **Document scrolling follows the Wheel tab in Windows Mouse Properties** (upstream v1.8.1, #301). The distance was hardcoded at three times the WPF default, which ignored the system setting outright — including for users who deliberately set one line, or one screen at a time, for accessibility. The setting is now read per event, with `-1` honoured as one viewport. Horizontal (Shift+wheel) scrolling and the page sidebar keep the established multiplier.
+- **Ctrl+A in the Pages panel selects pages, not the document's text** (upstream v1.8.1, #289, #296). The window's shortcut handler is a *preview*, so it tunnelled down and claimed Ctrl+A before the page list ever saw it. With the Pages panel focused, Ctrl+A now selects every page and Delete removes the selection through the same confirmed, reload-backed path as the context menu's Delete Page(s).
+- **OCR reads every selected page, not just the current one** (upstream v1.8.1, #297). Selecting a range in the Pages panel and running OCR recognised exactly one page. It now recognises the whole selection in document order and copies the combined text, separated by blank lines, reporting the mean confidence. The document reader and the Tesseract engine are built **once** for the batch rather than per page, which is the expensive part; Esc stops it at the next page boundary and discards the partial result rather than copying half of it. Upstream also rotates each page's pixel buffer here — **deliberately not ported**, because our working file already carries `/Rotate` and PDFium honours it on render, so rotating again would turn every rotated page the wrong way.
+- **A multi-page Transform no longer freezes the window** (upstream v1.8.1, #290). Rasterising each selected page at 2200 px is slow, and the batch ran synchronously with no progress and no way out — on a long selection the app simply stopped responding. It now reports `page N of M`, and Esc cancels. Cancelling is clean rather than partial: the loop was split so that phase one only renders into temporary one-page PDFs and phase two swaps them all in at once, which means a cancelled transform leaves the document untouched and pushes no undo entry. Previously each page was swapped in as it was produced, so an interruptible version of the old shape would have stranded a half-transformed document in memory.
+- **Push buttons in a PDF form are no longer turned into editable text boxes.** A `/Btn` with the Pushbutton flag holds no value, but it is neither checkbox nor radio nor `/Ch`, so it satisfied the text-field test and every Submit / Print / Reset button on a form got a fill-in overlay — which then wrote a `/V` onto a field that must not have one. Push buttons are now left to the page's own appearance stream. Found by auditing our form code against upstream's #245 rather than shipped by them.
+- **Dropdown form fields save the export value, not the label shown on screen.** A `/Opt` entry may be an `[export, display]` pair: the list shows the second, but `/V` must carry the first. We stored and saved the display string, so any form whose options distinguish the two — the common case for coded values like a state or plan code — was written back with a value other viewers do not recognise. The overlay now selects and saves by index, matching `/V` against the export values first and falling back to the display text for files that already store the label. Plain single-string `/Opt` arrays, where the two are identical, are unaffected.
+
+### Changed
+
+- **Deleting every page is refused rather than performed.** A PDF cannot have zero pages, and Ctrl+A followed by Delete turned that into a single gesture. The delete path now keeps at least one page and points at closing the document instead.
+
+### Not ported — verified against our own code rather than assumed
+
+Each of these was a candidate from upstream's 1.8.x release notes, and each was checked in TDPdf before any work started:
+
+- **Two-sided printing overriding the driver default** (#284) — already correct here; `PrintPreviewWindow` has always set `Duplexing.OneSided` explicitly on the off branch rather than leaving the ticket untouched.
+- **Multi-column text highlighting** (v1.8.2) — **ours is better and was kept.** Upstream now tie-breaks nearest-line by horizontal distance using a floating-point equality test. `TextRunService.CaretFromPoint` has short-circuited on true containment since #185, and also handles right-to-left lines (#170), which upstream's version does not.
+- **Application shortcuts staying live inside a focused text box** (#237) — **already ported, and narrowed further than upstream has now gone.** TDPdf took this in 1.24.1.0: the gate that once blocked nine commands was cut back to Undo alone, because Ctrl+Z inside a `TextBox` means "undo my typing" and everything else routes through the `CommitActiveTextBox` chokepoint anyway. Upstream's 1.8.0 version keeps a maintained allow-list of editing keys; ours needs none, because Ctrl+S, Ctrl+P and Ctrl+F are window-level `KeyBinding`s a focused `TextBox` never consumes. Adopting their policy class would have re-entangled the `_activeTextBox` focus path for no behavioural gain.
+- **The title-bar logo crash** (#298) — cannot occur here. Upstream's `SendMessage` is a source-generated `[LibraryImport]`, which resolves the exact name and finds no `SendMessage` export in `user32`. TDPdf's is a classic `[DllImport]`, which probes and binds `SendMessageA`.
+- **Images flipping vertically on burn-in** (#311) and **text edits saving as see-through covers** (v1.8.2) — neither is our bug class. Both are artifacts of upstream writing content streams directly: PdfSharpCore's `XGraphics.DrawImage` resolves PDF page orientation itself, and our text-edit cover has always been a solid `XColors.White` rectangle with no blend mode to inherit.
+- **The context-menu zoom shortcut reading Ctrl+= instead of Ctrl++** (#312) — **ours is better and was kept.** Upstream swapped one hardcoded label for another. `KeyLayout.ZoomInChar()` picks the character that is actually unshifted on the active keyboard layout, and rewrites the menu item, the app-size items and the toolbar tooltip from that one source at startup.
+- **Microsoft Office hybrid-reference PDFs** (#314) — engine-only. The fix lives entirely in their `PdfCrossReferenceTable`; we read through PdfSharpCore and PDFium.
+- **Transform's file-size and colour fixes** (#287, #305, and the superseded-resource work in v1.8.2) — **moot here, and one of them structurally impossible.** Upstream's 1.8.0 added grayscale, black-and-white, DPI resampling and JPEG quality to Transform; the 1.8.1/1.8.2 items are fixes *to those* features, and TDPdf's Transform does geometry and Levels only. #287 in particular — superseded page-image data surviving in the saved file — cannot happen here: PdfSharpCore's `PrepareForSave` already calls `_irefTable.Compact()`, which drops every object unreachable from the catalog, including the content of pages a transform replaced. Their new engine had to grow that; ours has always had it.
+- **Transform recovering from a malformed bookmark tree** (v1.8.2) — not our failure mode. Their recovery exists because the engine's incremental page editor rebuilds the bookmark graph when it replaces pages. We swap pages inside the existing page tree and never rebuild the outline, so a broken `/Outlines` is simply carried through untouched.
+- **Fillable text field authoring** (#295, #307) — no equivalent surface. Upstream's 1.8.x adds a tool for *creating* form fields, then fixes selecting, moving, resizing, recolouring and deleting them. TDPdf fills in fields a PDF already has and has never authored them, so there is nothing to select or move.
+- **Form-aware OCR** (#242) and **Unicode form-font handling** (#256) — both read or write through their engine's form and font services, so neither ports. Each is now tracked on its own: [#141](https://github.com/doodlemania2/TDPdf/issues/141) for form-aware OCR, which is more portable than it first appeared (the only engine-coupled piece reads form geometry, and `GetPageFormFields` already provides it), and [#140](https://github.com/doodlemania2/TDPdf/issues/140) for the underlying defect the font work exposed here — form values outside WinAnsi are written into the field appearance as `?`, so a non-Latin entry looks right in TDPdf and is wrong everywhere else.
+
+Auditing our own form code against upstream's #245 cluster did, however, turn up two genuine defects of the same class in TDPdf — push buttons becoming editable text boxes, and dropdowns saving the display label instead of the export value. Both are fixed above. Upstream's remaining #245 items (bounded list-box appearances, multi-select choice values) are not ported: we render `/Ch` as a dropdown regardless of the Combo flag, and multi-select choice fields remain unsupported rather than half-supported.
+
+Also skipped, unchanged from the standing policy: all localization, the landing page and packaging, the split-pane/`PdfViewer` extraction and everything built on it (dual-pane comparison #160, cross-document page copying #213), upstream's Transform and OCR work where it now runs on their engine, the reworked installer (#285) — ours is a per-user self-installer — and the `killerpdf://` protocol handler.
+
+Letter spacing (#232) and the measurement tool (#162) remain deferred and tracked in issue #135.
+
+
 ## [1.26.0.0] - 2026-08-27
 
 **The zoom storm is over, text boxes can be styled, and page reordering works the way the list always implied it did.**
@@ -918,7 +961,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.26.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.27.0.0...HEAD
+[1.27.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.26.0.0...v1.27.0.0
 [1.26.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.25.0.0...v1.26.0.0
 [1.25.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.1.0...v1.25.0.0
 [1.24.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.24.0.0...v1.24.1.0
