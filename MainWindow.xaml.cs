@@ -4775,6 +4775,18 @@ namespace TDPdf
             {
                 const double pad = 2;   // left/right inset, matching the Td origin below
 
+                // #140: the shared path below writes the value as a WinAnsi literal against the
+                // field's /DA base font, which is NOT embedded — so anything WinAnsi cannot express
+                // was folded to '?' and saved that way. /V kept the real text, so the value looked
+                // correct in TDPdf and was wrong in every other viewer, in print, and in flatten.
+                // A value that needs more than WinAnsi is drawn instead through PdfSharpCore, which
+                // embeds a covering font. Everything representable keeps the byte-identical output
+                // it has always produced, so comb (#158) and multiline (#180) are untouched.
+                if (NeedsEmbeddedFont(text)
+                    && TryGenerateUnicodeFieldAppearance(widgetAnn, text, da, fieldW, fieldH,
+                                                        isMultiLine, combLen, pad))
+                    return;
+
                 var (fontName, fontSize) = ParseDaString(da);
                 if (fontSize <= 0) fontSize = Math.Max(6, Math.Min(fieldH * 0.65, 12));
                 // The "no taller than 85% of the box" clamp is a single-line rule: a multiline
@@ -4941,6 +4953,104 @@ namespace TDPdf
         /// Creates an indirect PdfDictionary stream object representing a Form XObject,
         /// suitable for use as an /AP /N appearance stream.
         /// </summary>
+        /// <summary>
+        /// True when <paramref name="text"/> contains a character the WinAnsi appearance path
+        /// cannot represent, and would therefore write as '?'. Deliberately mirrors
+        /// <see cref="EscapePdfString"/>'s decision exactly — anything below U+0100 passes straight
+        /// through, and above that only what <c>WinAnsiHighMap</c> folds — so the two can never
+        /// disagree about which values are safe for the literal path.
+        /// </summary>
+        private static bool NeedsEmbeddedFont(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            foreach (char c in text)
+                if (c >= 256 && !WinAnsiHighMap.ContainsKey(c)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Draws a form field's /AP /N appearance through PdfSharpCore so the value is set in a real
+        /// EMBEDDED font (Type0 / Identity-H with a subset and a /ToUnicode map) instead of a WinAnsi
+        /// literal. Used only for values the literal path would mangle (#140).
+        /// </summary>
+        /// <returns>
+        /// False when no covering font could be resolved, which lets the caller fall through to the
+        /// legacy path — a '?' appearance is poor, but it beats a field with no appearance at all.
+        /// </returns>
+        private bool TryGenerateUnicodeFieldAppearance(PdfDictionary widgetAnn, string text, string? da,
+            double fieldW, double fieldH, bool isMultiLine, int combLen, double pad)
+        {
+            if (_doc is null || fieldW <= 0 || fieldH <= 0) return false;
+            try
+            {
+                var (_, fontSize) = ParseDaString(da);
+                if (fontSize <= 0) fontSize = Math.Max(6, Math.Min(fieldH * 0.65, 12));
+                fontSize = isMultiLine ? Math.Max(6, fontSize)
+                                       : Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
+
+                // Same family choice the annotation burn-in makes, so a value rendered here and the
+                // same text placed as an annotation resolve to one face rather than two.
+                var font = TdpFontResolver.TryCreate(
+                    FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text), fontSize, XFontStyle.Regular);
+                if (font is null) return false;
+
+                var form = new XForm(_doc, new XSize(fieldW, fieldH));
+                using (var gfx = XGraphics.FromForm(form))
+                {
+                    // XGraphics is top-down where the hand-written stream is bottom-up, so the
+                    // layout is expressed as rectangles plus an alignment rather than baselines.
+                    // The clip matches the legacy path's "re W n": an over-full value is cut off at
+                    // the field edge exactly as a viewer would cut it.
+                    gfx.IntersectClip(new XRect(0, 0, fieldW, fieldH));
+
+                    if (combLen > 0)
+                    {
+                        // #158: one character per printed cell. Centre each in its own cell so the
+                        // run cannot drift, matching the per-glyph Tm the legacy comb path uses.
+                        double cellW = fieldW / combLen;
+                        fontSize = Math.Max(6, Math.Min(fontSize, Math.Min(fieldH * 0.85, cellW * 1.4)));
+                        var combFont = TdpFontResolver.TryCreate(
+                            FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text), fontSize, XFontStyle.Regular);
+                        if (combFont is null) return false;
+
+                        string oneLine = text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
+                        if (oneLine.Length > combLen) oneLine = oneLine[..combLen];
+                        for (int i = 0; i < oneLine.Length; i++)
+                        {
+                            if (oneLine[i] == ' ') continue;
+                            gfx.DrawString(oneLine[i].ToString(), combFont, XBrushes.Black,
+                                new XRect(i * cellW, 0, cellW, fieldH), XStringFormats.Center);
+                        }
+                    }
+                    else if (isMultiLine)
+                    {
+                        // Wrapping and the top-down start are XTextFormatter's job here; the legacy
+                        // path does the same with WrapFieldText plus TL/T*.
+                        new PdfSharpCore.Drawing.Layout.XTextFormatter(gfx).DrawString(text, font, XBrushes.Black,
+                            new XRect(pad, 0, Math.Max(1, fieldW - pad * 2), fieldH));
+                    }
+                    else
+                    {
+                        gfx.DrawString(text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' '),
+                            font, XBrushes.Black,
+                            new XRect(pad, 0, Math.Max(1, fieldW - pad * 2), fieldH),
+                            XStringFormats.CenterLeft);
+                    }
+                }
+
+                // Read the XObject only after the XGraphics is disposed: the content stream is
+                // finalized on dispose, and an XForm must not be touched once it has been drawn.
+                AttachAppearance(widgetAnn, form.PdfForm);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Never let this fail the save — fall back to the legacy literal path.
+                System.Diagnostics.Debug.WriteLine($"TryGenerateUnicodeFieldAppearance: {ex}");
+                return false;
+            }
+        }
+
         private PdfDictionary? BuildFormXObject(string fontName, double w, double h, string content, bool isZaDb = false)
         {
             if (_doc is null) return null;

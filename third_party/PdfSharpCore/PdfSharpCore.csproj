@@ -26,6 +26,18 @@ PdfSharpCore is a partial port of PdfSharp.Xamarin for .NET Core Additionally Mi
     <Version>1.0.1</Version>
   </PropertyGroup>
 
+  <!-- TDPdf patch (#140): expose internals to the app. Writing a form field's /AP appearance for a
+       value containing non-WinAnsi text needs a real EMBEDDED font, and PdfSharpCore already builds
+       one (Type0 / Identity-H, subset, with a /ToUnicode map) for XGraphics.DrawString. The only
+       thing missing is a way to reach the resulting XObject: XForm.PdfForm is internal, and this is
+       a ProjectReference rather than a compiled-in source set, so the app cannot see it. One line
+       here is far less risk than hand-rolling CID font embedding in the app. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>TDPdf</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
   <!-- TDPdf: key DefineConstants off Configuration only (not Platform), so they apply for both
        AnyCPU and x64 builds of this ProjectReference. -->
   <PropertyGroup Condition="'$(Configuration)'=='Debug'">
