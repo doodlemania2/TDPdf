@@ -156,6 +156,13 @@ namespace TDPdf
                     : "Recognize the current page's text and copy it to the clipboard", "\uEE6F"));
             root.Items.Add(MakeMenuItem("OCR _Region to Clipboard", (_, _) => BeginOcrRegion(),
                 null, "Drag a box over an area to recognize just that region", "\uE7A8"));
+            root.Items.Add(MakeMenuItem("OCR _Form Fields to Clipboard",
+                (_, _) => OcrFormFieldsToClipboard(SelectedPageIndicesForOcr()),
+                null,
+                "Recognize each form field's own box and copy the values labelled by field name. "
+                + "Uses what the form declares \u2014 digits only for numeric fields, one glyph per comb "
+                + "cell, and dropdown answers snapped to their real options",
+                "\uE9D5"));
             root.Items.Add(new Separator());
             root.Items.Add(MakeMenuItem("Make _Searchable PDF…", (_, _) => MakeSearchablePdf(),
                 null, "OCR every page and save a copy with an invisible, searchable text layer", "\uE721"));
@@ -537,6 +544,144 @@ namespace TDPdf
             {
                 EndCancellableOp();
             }
+        }
+
+        // ============================================================
+        // Form-aware OCR (upstream KillerPDF #242)
+        // ============================================================
+
+        // Recognizes each form field's own rectangle instead of the page as a whole, under the
+        // constraints the PDF already declares for that field. Whole-page OCR on a form returns the
+        // labels interleaved with the values in reading order and no association between them; this
+        // returns a value FOR a named field, which is the difference between text on a clipboard and
+        // something a human can check against the form.
+        //
+        // Plain OCR remains the default everywhere — this is an additional action, exactly as
+        // upstream kept it.
+        private async void OcrFormFieldsToClipboard(IReadOnlyList<int> pageIndices)
+        {
+            if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            int[] pages = [.. pageIndices.Distinct().Where(p => p >= 0 && p < _doc.PageCount).OrderBy(p => p)];
+            if (pages.Length == 0) return;
+            if (!await EnsureOcrModelsReadyAsync()) return;
+
+            string file = _currentFile;
+            string lang = CurrentOcrLanguageString();
+
+            var ct = BeginCancellableOp("Reading form fields...  (Esc to cancel)");
+            try
+            {
+                var lines = new List<string>();
+                int fieldCount = 0;
+
+                await Task.Run(() =>
+                {
+                    using var docReader = DocLib.Instance.GetDocReader(file, new PageDimensions(OcrRenderMax, OcrRenderMax));
+                    using var ocr = new OcrService(language: lang);
+
+                    for (int i = 0; i < pages.Length; i++)
+                    {
+                        if (ct.IsCancellationRequested) break;
+                        int pageIdx = pages[i];
+                        if (pages.Length > 1)
+                            SetWorkerStatus($"Reading form fields... page {i + 1} of {pages.Length}  (Esc to cancel)");
+
+                        using var pageReader = docReader.GetPageReader(pageIdx);
+                        int w = pageReader.GetPageWidth();
+                        int h = pageReader.GetPageHeight();
+                        byte[] bgra = pageReader.GetImage();
+
+                        // Field geometry comes from the existing overlay parser, asked for the OCR
+                        // raster's own pixel size — it already resolves the rendered box, walks the
+                        // page tree for an inherited one, and accounts for /Rotate, so the rects land
+                        // on this bitmap with no extra mapping. _doc is UI-thread state, hence the
+                        // Invoke; the window is disabled for the operation so it cannot change.
+                        var fields = Dispatcher.Invoke(() => GetPageFormFields(pageIdx, w, h));
+
+                        var pageLines = new List<string>();
+                        foreach (var f in fields)
+                        {
+                            if (ct.IsCancellationRequested) break;
+                            // Nothing to read from a button, and a read-only field is not user input.
+                            if (f.IsPushButton || f.IsCheckBox || f.IsRadio) continue;
+                            if (f.Cw < 2 || f.Ch < 2) continue;
+
+                            string value = f.IsComb && f.MaxLen > 0
+                                ? RecognizeCombCells(ocr, bgra, w, h, f)
+                                : RecognizeFieldBox(ocr, bgra, w, h, f);
+
+                            value = FormOcrPolicy.Normalize(value, f.IsMultiLine, f.MaxLen,
+                                f.Options.Count > 0 ? f.Options : null);
+                            if (value.Length == 0) continue;
+
+                            string label = string.IsNullOrWhiteSpace(f.FieldName) ? "(unnamed)" : f.FieldName;
+                            pageLines.Add($"{label}: {value}");
+                            fieldCount++;
+                        }
+
+                        if (pageLines.Count > 0)
+                        {
+                            if (pages.Length > 1) lines.Add($"--- Page {pageIdx + 1} ---");
+                            lines.AddRange(pageLines);
+                        }
+                    }
+                });
+
+                if (ct.IsCancellationRequested) { SetStatus("Form OCR cancelled"); return; }
+                if (fieldCount == 0)
+                {
+                    SetStatus(pages.Length == 1
+                        ? "Form OCR: no readable form fields on this page"
+                        : "Form OCR: no readable form fields on the selected pages");
+                    return;
+                }
+
+                string text = string.Join(Environment.NewLine, lines);
+                Clipboard.SetText(text);
+                SetStatus($"Form OCR: copied {fieldCount} field(s) from {pages.Length} page(s)");
+            }
+            catch (Exception ex)
+            {
+                TdpDialog.Show(this, $"Form OCR failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                EndCancellableOp();
+            }
+        }
+
+        /// <summary>Recognizes one field's rectangle as a single line (or block, when multiline).</summary>
+        private static string RecognizeFieldBox(OcrService ocr, byte[] bgra, int w, int h, FormFieldInfo f)
+        {
+            byte[] crop = CropBgra(bgra, w, h,
+                (int)Math.Round(f.Cx), (int)Math.Round(f.Cy),
+                (int)Math.Round(f.Cw), (int)Math.Round(f.Ch), out int cw, out int chh);
+            var layout = f.IsMultiLine ? OcrLayout.Block : OcrLayout.SingleLine;
+            return ocr.RecognizeBgra(crop, cw, chh, layout,
+                FormOcrPolicy.WhitelistFor(f.IsNumeric, f.IsComb)).Text;
+        }
+
+        /// <summary>
+        /// Reads a comb field one printed cell at a time (#158 geometry, #242 recognition). Tesseract
+        /// reading the whole comb as a word splits or joins the evenly spaced glyphs unpredictably;
+        /// each cell is unambiguous on its own.
+        /// </summary>
+        private static string RecognizeCombCells(OcrService ocr, byte[] bgra, int w, int h, FormFieldInfo f)
+        {
+            double cellW = f.Cw / f.MaxLen;
+            if (cellW < 2) return RecognizeFieldBox(ocr, bgra, w, h, f);
+
+            string? whitelist = FormOcrPolicy.WhitelistFor(f.IsNumeric, f.IsComb);
+            var sb = new StringBuilder(f.MaxLen);
+            for (int c = 0; c < f.MaxLen; c++)
+            {
+                byte[] crop = CropBgra(bgra, w, h,
+                    (int)Math.Round(f.Cx + c * cellW), (int)Math.Round(f.Cy),
+                    (int)Math.Round(cellW), (int)Math.Round(f.Ch), out int cw, out int chh);
+                string cell = ocr.RecognizeBgra(crop, cw, chh, OcrLayout.SingleChar, whitelist).Text.Trim();
+                sb.Append(cell.Length > 0 ? cell[0] : ' ');
+            }
+            return sb.ToString().TrimEnd();
         }
 
         // ============================================================

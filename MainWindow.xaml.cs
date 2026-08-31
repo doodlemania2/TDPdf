@@ -4178,7 +4178,11 @@ namespace TDPdf
             // /V must carry the EXPORT value. Options holds what the user sees, OptionExports the
             // value at the same index that gets written back. For a plain string entry the two are
             // identical, which is why every existing single-string form still behaves the same.
-            List<string>? OptionExports = null);
+            List<string>? OptionExports = null,
+            // #242: true when the field's /AA additional-action JavaScript formats it as a number
+            // (Acrobat and LiveCycle both write AFNumber_*). Form-aware OCR uses it to restrict
+            // recognition to digits and separators, where O/l/S are the usual misreads.
+            bool   IsNumeric = false);
 
         /// <summary>
         /// Scans the current page's /Annots for Widget subtypes and overlays interactive
@@ -4580,13 +4584,33 @@ namespace TDPdf
                     }
                     catch { }
 
+                    // #242: the field's format action, walked up the parent chain like /Ff and
+                    // /MaxLen because /AA is inherited the same way. Read only as a signal — the
+                    // JavaScript itself is never executed.
+                    bool isNumeric = false;
+                    try
+                    {
+                        node = ann;
+                        while (node is not null && !isNumeric)
+                        {
+                            var aaDict = node.Elements.GetDictionary("/AA");
+                            var fmtDict = aaDict?.Elements.GetDictionary("/F");
+                            if (fmtDict?.Elements["/JS"] is PdfString jsStr)
+                                isNumeric = FormOcrPolicy.LooksNumeric(jsStr.Value);
+                            var api = node.Elements["/Parent"];
+                            if (api is null) break;
+                            node = api as PdfDictionary ?? DerefItem(api) as PdfDictionary;
+                        }
+                    }
+                    catch { /* a malformed /AA must never break field parsing */ }
+
                     int objNum = GetObjectNumber(elem);
                     if (objNum < 0)
                         objNum = -(pageIndex * 10000 + i); // synthetic key for inline dicts
 
                     result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
                         name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options,
-                        isComb, maxLen, isPushBtn, optionExports));
+                        isComb, maxLen, isPushBtn, optionExports, isNumeric));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
