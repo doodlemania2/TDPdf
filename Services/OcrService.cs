@@ -15,6 +15,23 @@ namespace TDPdf.Services
         public int Bottom { get; set; }
     }
 
+    /// <summary>
+    /// How a crop should be segmented. Deliberately neutral: the callers in Ocr.cs describe the
+    /// SHAPE of what they are reading, and the Tesseract page-segmentation modes stay contained in
+    /// this file alongside every other reference to the engine.
+    /// </summary>
+    internal enum OcrLayout
+    {
+        /// <summary>Whatever the engine decides — the default for a whole page.</summary>
+        Auto,
+        /// <summary>One line of text, e.g. an ordinary single-line form field.</summary>
+        SingleLine,
+        /// <summary>A block of lines, e.g. a multiline form field.</summary>
+        Block,
+        /// <summary>Exactly one glyph, e.g. one cell of a comb field.</summary>
+        SingleChar,
+    }
+
     /// <summary>Result of recognizing one image/page: full text, mean confidence, and per-word boxes.</summary>
     internal sealed class OcrResult
     {
@@ -63,9 +80,42 @@ namespace TDPdf.Services
         public OcrResult RecognizeBgra(byte[] bgra, int width, int height)
             => RecognizeImageBytes(EncodePng(bgra, width, height));
 
-        private OcrResult Run(Pix pix)
+        /// <summary>
+        /// Recognize a crop under the constraints a PDF form field declares (#242): a segmentation
+        /// mode suited to the field's shape, and optionally the only characters it may contain.
+        /// </summary>
+        /// <remarks>
+        /// The whitelist is an engine-level variable and STICKY, so it is always cleared afterwards
+        /// — one numeric field must not silently constrain every field recognized after it through
+        /// the same engine, and the batch deliberately reuses one engine for speed.
+        /// </remarks>
+        public OcrResult RecognizeBgra(byte[] bgra, int width, int height,
+            OcrLayout layout, string? charWhitelist)
         {
-            using var page = _engine.Process(pix);
+            bool applied = !string.IsNullOrEmpty(charWhitelist);
+            if (applied) _engine.SetVariable("tessedit_char_whitelist", charWhitelist);
+            try
+            {
+                using var pix = Pix.LoadFromMemory(EncodePng(bgra, width, height));
+                return Run(pix, ToPageSegMode(layout));
+            }
+            finally
+            {
+                if (applied) _engine.SetVariable("tessedit_char_whitelist", "");
+            }
+        }
+
+        private static PageSegMode? ToPageSegMode(OcrLayout layout) => layout switch
+        {
+            OcrLayout.SingleLine => PageSegMode.SingleLine,
+            OcrLayout.Block      => PageSegMode.SingleBlock,
+            OcrLayout.SingleChar => PageSegMode.SingleChar,
+            _                    => null,
+        };
+
+        private OcrResult Run(Pix pix, PageSegMode? mode = null)
+        {
+            using var page = mode is null ? _engine.Process(pix) : _engine.Process(pix, mode.Value);
             var res = new OcrResult
             {
                 Text = page.GetText() ?? "",
