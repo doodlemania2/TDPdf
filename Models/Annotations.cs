@@ -48,6 +48,13 @@ namespace TDPdf
         public double FontSize { get; set; } = 14;
 
         /// <summary>
+        /// Family name from the curated picker in the text style bar (TextFontFamilies). Defaults to
+        /// PdfFontStyle.DefaultFamily, so an annotation written before this existed deserializes to
+        /// exactly the font it has always rendered in.
+        /// </summary>
+        public string FontName { get; set; } = TDPdf.Services.PdfFontStyle.DefaultFamily;
+
+        /// <summary>
         /// Character styling. All three default to off, so an annotation written by any earlier
         /// build deserializes to exactly the appearance it has always had — the same forward
         /// compatibility rule <see cref="SavedSignature"/> relies on. #135.
@@ -88,6 +95,7 @@ namespace TDPdf
         public override PageAnnotation Clone() => new TextAnnotation
         {
             PageIndex = PageIndex, Position = Position, Content = Content, FontSize = FontSize,
+            FontName = FontName, Bold = Bold, Italic = Italic, Underline = Underline,
             ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA,
             Width = Width, Height = Height,
             HasFill = HasFill, FillR = FillR, FillG = FillG, FillB = FillB, FillA = FillA

@@ -136,6 +136,7 @@ namespace TDPdf
 
         // Text (typewriter) tool settings
         private double _textFontSize = 14;
+        private string _textFontFamily = PdfFontStyle.DefaultFamily;
         private Color _textColor = Colors.Black;
         private bool _textWhiteout;
         // #135 (upstream KillerPDF v1.7.5): the tool's current character styling, inherited by the
@@ -7179,6 +7180,15 @@ namespace TDPdf
 
         private static readonly double[] TextFontSizes = [8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72];
 
+        // Curated, not "every installed font": each of these ships with Windows and is already a
+        // known-good entry in PdfFontStyle's PS-name map / FontCoverage's fallback chains, so picking
+        // one here can never produce a family that fails to embed or that a colleague's machine lacks
+        // when they later reopen the same file. FontCoverage.PickFamily still silently upgrades the
+        // choice for a script it can't cover (CJK, Arabic, etc.) — this list is what a Latin-script
+        // annotation actually gets held to, not a hard ceiling on what the saved PDF can contain.
+        private static readonly string[] TextFontFamilies =
+            [PdfFontStyle.DefaultFamily, "Arial", "Times New Roman", "Courier New", "Calibri"];
+
         private void ShowTextSettings()
         {
             HideTextSettings();
@@ -7190,10 +7200,17 @@ namespace TDPdf
             var target = _styleTarget as TextAnnotation;
             var editTarget = _styleTarget as TextEditAnnotation;
             double curSize = target?.FontSize ?? editTarget?.FontSize ?? _textFontSize;
+            string curFont = target?.FontName ?? editTarget?.FontName ?? _textFontFamily;
             Color curColor = target?.GetColor() ?? editTarget?.GetColor() ?? _textColor;
             bool curFill = target?.HasFill ?? _textWhiteout;
             Color curFillColor = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
 
+            void ApplyFont(string f)
+            {
+                _textFontFamily = f;
+                if (target is not null) { target.FontName = f; RestyleLive(target); }
+                else if (editTarget is not null) { editTarget.FontName = f; RestyleLive(editTarget); }
+            }
             void ApplySize(double v)
             {
                 _textFontSize = v;
@@ -7226,6 +7243,41 @@ namespace TDPdf
             }
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 4) };
+
+            // Font family label
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Font:",
+                Foreground = (SolidColorBrush)FindResource("TextSecondary"),
+                FontFamily = new FontFamily("Segoe UI"), FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0)
+            });
+
+            // Font family dropdown — a curated, always-installed list (see TextFontFamilies) rather
+            // than every system font: every option here is a known-good entry in PdfFontStyle's
+            // PS-name map and FontCoverage's fallback chains, so nothing pickable here can fail to
+            // embed, and a colleague reopening the same file on a different machine always has it.
+            var fontBox = new ComboBox
+            {
+                Width = 130, Height = 24,
+                Style = (Style)FindResource("DarkComboBox"),
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            foreach (var family in TextFontFamilies)
+                fontBox.Items.Add(family);
+            fontBox.SelectedItem = TextFontFamilies.Contains(curFont) ? curFont : TextFontFamilies[0];
+            fontBox.SelectionChanged += (_, _) =>
+            {
+                if (fontBox.SelectedItem is string f) ApplyFont(f);
+            };
+            panel.Children.Add(fontBox);
+
+            // Separator
+            panel.Children.Add(new Rectangle
+            {
+                Width = 1, Fill = (SolidColorBrush)FindResource("BorderDim"),
+                Margin = new Thickness(8, 2, 8, 2)
+            });
 
             // Font size label
             panel.Children.Add(new TextBlock
@@ -12048,6 +12100,7 @@ namespace TDPdf
                 // Adopt the box's style so the box (and the Text-tool settings bar, if visible) reflect it.
                 _textColor = existing.GetColor();
                 _textFontSize = existing.FontSize;
+                _textFontFamily = existing.FontName;
                 _textWhiteout = existing.HasFill;
                 _textBold = existing.Bold;              // #135
                 _textItalic = existing.Italic;
@@ -12068,7 +12121,7 @@ namespace TDPdf
                 Foreground = new SolidColorBrush(_textColor),
                 BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                 BorderThickness = new Thickness(1),
-                FontFamily = new FontFamily(PdfFontStyle.DefaultFamily),
+                FontFamily = new FontFamily(_textFontFamily),
                 FontSize = _textFontSize,
                 // #135: a WPF TextBox carries all three natively, so the editor shows the real thing
                 // rather than a preview of it.
@@ -12351,6 +12404,8 @@ namespace TDPdf
                     Position = new Point(x, y),
                     Content = content,
                     FontSize = tb.FontSize,
+                    // Same reasoning as Bold/Italic/Underline below: read back off the editor.
+                    FontName = tb.FontFamily.Source,
                     // #135: read back off the editor, not off the tool state — the user may have
                     // toggled Ctrl+B mid-sentence and the box in front of them is the truth.
                     Bold = tb.FontWeight == FontWeights.Bold,
@@ -12909,7 +12964,7 @@ namespace TDPdf
             {
                 Text = ta.Content,
                 Foreground = new SolidColorBrush(ta.GetColor()),
-                FontFamily = new FontFamily(PdfFontStyle.DefaultFamily),
+                FontFamily = new FontFamily(ta.FontName),
                 FontSize = ta.FontSize,
                 FontWeight = ta.Bold ? FontWeights.Bold : FontWeights.Normal,        // #135
                 FontStyle = ta.Italic ? FontStyles.Italic : FontStyles.Normal,
@@ -15838,13 +15893,12 @@ namespace TDPdf
                             // #168: the editor is a WPF TextBox and falls back per CHARACTER across
                             // every installed font, so anything typed looks right on screen;
                             // PdfSharpCore resolves ONE face and emits an empty box for every
-                            // codepoint that face lacks. Segoe UI — hardcoded here before — carries
-                            // no CJK, so Japanese text was displayed correctly and then saved as
-                            // boxes. Pick a family that actually covers THIS annotation's text;
-                            // PickFamily keeps Segoe UI whenever it can carry it, which is every
-                            // Latin annotation, so nothing existing moves.
+                            // codepoint that face lacks. Pick a family that actually covers THIS
+                            // annotation's text; PickFamily keeps the annotation's own chosen family
+                            // whenever it can carry it, which is every Latin annotation, so nothing
+                            // existing moves.
                             var font = TdpFontResolver.TryCreate(
-                                FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, ta.Content),
+                                FontCoverage.PickFamily(ta.FontName, ta.Content),
                                 ta.FontSize * sy, ToXFontStyle(ta.Bold, ta.Italic));   // #135
                             // Nothing resolvable at all (no readable font directory, or a degenerate
                             // size): skip this ONE annotation rather than throw out of the save.
