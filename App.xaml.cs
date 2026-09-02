@@ -277,7 +277,15 @@ namespace TDPdf
             // path to the already-running window (opened there as a new tab)
             // instead of spawning a second window. Best-effort: any failure falls
             // back to the normal one-window-per-process behavior.
-            if (TDPdf.Properties.Settings.Default.SingleInstanceTabs)
+            //
+            // --new-window (MainWindow's tab tear-off / "Move to New Window") always skips this
+            // block: the whole point of that gesture is a genuinely separate window, so folding it
+            // back into whichever window happens to hold the mutex would silently undo the user's
+            // drag. MainWindow's own startup path strips the flag back off before looking at args[1]
+            // for the file to open.
+            bool isTearOffLaunch = e.Args.Length > 0 &&
+                string.Equals(e.Args[0], "--new-window", StringComparison.OrdinalIgnoreCase);
+            if (!isTearOffLaunch && TDPdf.Properties.Settings.Default.SingleInstanceTabs)
             {
                 try
                 {
