@@ -721,6 +721,22 @@ namespace TDPdf
             _hwndSource = HwndSource.FromHwnd(hwnd);
             _hwndSource?.AddHook(WndProc);
             ApplyNativeTitleBarTheme(hwnd);
+
+            // Custom chrome (AllowsTransparency=True, see ApplyInitialWindowChromeSettings) makes
+            // this a layered window, and DWM cannot generate its own live taskbar thumbnail /
+            // Aero Peek preview for a layered window — every TDPdf window shows the same blank/
+            // generic image there instead of its own content, which is indistinguishable from "only
+            // one window's preview is showing" when several are open. Opting into iconic
+            // representation hands DWM a bitmap WE render on request instead (WM_DWMSENDICONICTHUMBNAIL
+            // / WM_DWMSENDICONICLIVEPREVIEWBITMAP below), which is the sanctioned way apps with custom/
+            // layered chrome restore this. Not needed under the native frame — that window isn't
+            // layered, so DWM already has a real live thumbnail for it.
+            if (!_useNativeWindowFrame && hwnd != IntPtr.Zero)
+            {
+                int trueVal = 1;
+                DwmSetWindowAttribute(hwnd, DWMWA_FORCE_ICONIC_REPRESENTATION, ref trueVal, sizeof(int));
+                DwmSetWindowAttribute(hwnd, DWMWA_HAS_ICONIC_BITMAP, ref trueVal, sizeof(int));
+            }
         }
 
         private const int WM_GETMINMAXINFO = 0x0024;
@@ -733,6 +749,10 @@ namespace TDPdf
         private const uint SWP_NOACTIVATE = 0x0010;
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+        private const int DWMWA_FORCE_ICONIC_REPRESENTATION = 7;
+        private const int DWMWA_HAS_ICONIC_BITMAP = 10;
+        private const int WM_DWMSENDICONICTHUMBNAIL = 0x0323;
+        private const int WM_DWMSENDICONICLIVEPREVIEWBITMAP = 0x0326;
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
@@ -760,7 +780,77 @@ namespace TDPdf
                 SetStatus("Cancelling...");
                 handled = true;
             }
+            else if (msg == WM_DWMSENDICONICTHUMBNAIL && !_useNativeWindowFrame)
+            {
+                // lParam: HIWORD = requested max width, LOWORD = requested max height.
+                long l = lParam.ToInt64();
+                int maxW = (int)((l >> 16) & 0xFFFF);
+                int maxH = (int)(l & 0xFFFF);
+                SendIconicThumbnail(hwnd, maxW, maxH);
+                handled = true;
+            }
+            else if (msg == WM_DWMSENDICONICLIVEPREVIEWBITMAP && !_useNativeWindowFrame)
+            {
+                SendIconicLivePreview(hwnd);
+                handled = true;
+            }
             return IntPtr.Zero;
+        }
+
+        // Renders the window's current content to an HBITMAP DWM can copy for a taskbar hover
+        // thumbnail or Aero Peek preview. Best-effort and purely visual: any failure here means the
+        // fallback is what every window already showed before this existed (a blank/generic image),
+        // never a functional problem, so failures are swallowed rather than surfaced anywhere.
+        private void SendIconicThumbnail(IntPtr hwnd, int maxWidth, int maxHeight)
+        {
+            try
+            {
+                if (maxWidth <= 0 || maxHeight <= 0) return;
+                double w = ActualWidth, h = ActualHeight;
+                if (w <= 0 || h <= 0) return;
+                double scale = Math.Min(maxWidth / w, maxHeight / h);
+                IntPtr hBitmap = RenderToHBitmap(scale);
+                if (hBitmap == IntPtr.Zero) return;
+                try { DwmSetIconicThumbnail(hwnd, hBitmap, 0); }
+                finally { DeleteObject(hBitmap); }
+            }
+            catch { /* best-effort visual only */ }
+        }
+
+        private void SendIconicLivePreview(IntPtr hwnd)
+        {
+            try
+            {
+                IntPtr hBitmap = RenderToHBitmap(1.0);
+                if (hBitmap == IntPtr.Zero) return;
+                try
+                {
+                    var origin = new POINT { x = 0, y = 0 };
+                    DwmSetIconicLivePreviewBitmap(hwnd, hBitmap, ref origin, 0);
+                }
+                finally { DeleteObject(hBitmap); }
+            }
+            catch { /* best-effort visual only */ }
+        }
+
+        // Rounds through a BMP encode/decode rather than a raw CreateDIBSection: the window's
+        // content is always fully opaque (it paints its own themed background), so nothing here
+        // needs an alpha channel, and going through System.Drawing.Bitmap.GetHbitmap avoids hand
+        // building a DIB section and BITMAPINFO by hand for a purely cosmetic feature.
+        private IntPtr RenderToHBitmap(double scale)
+        {
+            int pw = Math.Max(1, (int)(ActualWidth * scale));
+            int ph = Math.Max(1, (int)(ActualHeight * scale));
+            var rtb = new RenderTargetBitmap(pw, ph, 96 * scale, 96 * scale, PixelFormats.Pbgra32);
+            rtb.Render(this);
+            var frame = BitmapFrame.Create(rtb);
+            var encoder = new BmpBitmapEncoder();
+            encoder.Frames.Add(frame);
+            using var ms = new MemoryStream();
+            encoder.Save(ms);
+            ms.Position = 0;
+            using var gdiBmp = new System.Drawing.Bitmap(ms);
+            return gdiBmp.GetHbitmap();
         }
 
         private bool WmMouseHWheel(IntPtr wParam, IntPtr lParam)
@@ -891,6 +981,15 @@ namespace TDPdf
 
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetIconicThumbnail(IntPtr hwnd, IntPtr hbitmap, uint flags);
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetIconicLivePreviewBitmap(IntPtr hwnd, IntPtr hbitmap, ref POINT ptClient, uint flags);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr hObject);
 
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
@@ -1803,6 +1902,26 @@ namespace TDPdf
             {
                 TdpDialog.Show(this, $"Rotate failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        // Rotate was previously reachable only via right-click on a page thumbnail in the Pages
+        // panel — reported back as "the rotate command is missing" when someone went looking for it
+        // on the toolbar instead. Left-click here does the common case (clockwise); right-click
+        // opens the same CW / CCW / Transform menu the page-list context menu already offers, so
+        // the two entry points stay in sync rather than drifting into two different feature sets.
+        private void RotateBtn_Click(object sender, RoutedEventArgs e) => RotatePages_Click(90);
+
+        private void RotateBtn_RightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+            var menu = new ContextMenu();
+            menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
+            menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
+            menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
+                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", ""));
+            menu.PlacementTarget = (UIElement)sender;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            menu.IsOpen = true;
         }
 
         private static (int w, int h) AnnotationCanvasSize(PdfPage page)
