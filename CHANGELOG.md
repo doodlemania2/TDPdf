@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.1.0] - 2026-09-02
+
+### Fixed
+
+- **Toolbar buttons no longer overlap at a narrow window width or a higher UI scale.** The two button groups sat in one unconstrained layout cell with no scroll or wrap; the group in constant use (tools/zoom) now always keeps its full width, and the file-operations group scrolls horizontally instead of overlapping it.
+- **A newly placed Text annotation can now be moved and resized immediately.** It's auto-selected on placement (matching how Image and Signature placement already worked), instead of silently requiring a manual switch to the Select tool with no visual hint that was necessary.
+- **A multi-select or multi-drop file open no longer stops partway through silently.** If any one file in the batch failed, every file after it used to go unattempted with nothing said about it; each file's open is now independent and a status message reports how many of the batch actually opened.
+
+### Notes
+
+- Confirmed working as designed, no change made: Rotate is reachable via right-click on a page thumbnail in the Pages panel — it was never a toolbar button. The taskbar-preview-shows-only-one-window report has an existing fix: Settings → "Use native window frame."
+
 ## [1.29.0.1] - 2026-09-02
 
 ### Added
@@ -1006,6 +1018,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.1...v1.29.1.0
 [1.29.0.1]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.0...v1.29.0.1
 [1.29.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.1.0...v1.29.0.0
 [1.28.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...v1.28.1.0
