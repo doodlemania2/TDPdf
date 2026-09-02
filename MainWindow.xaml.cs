@@ -7043,9 +7043,13 @@ namespace TDPdf
             HideTextSettings();
 
             // When a text annotation is selected, the bar restyles THAT box; otherwise it sets tool defaults.
+            // TextEditAnnotation (the Edit-Text tool, for existing PDF text) shares the Size/Color
+            // controls below but has no whiteout toggle — the whiteout there isn't optional, it's
+            // what hides the original text — so editTarget skips the Fill section entirely.
             var target = _styleTarget as TextAnnotation;
-            double curSize = target?.FontSize ?? _textFontSize;
-            Color curColor = target?.GetColor() ?? _textColor;
+            var editTarget = _styleTarget as TextEditAnnotation;
+            double curSize = target?.FontSize ?? editTarget?.FontSize ?? _textFontSize;
+            Color curColor = target?.GetColor() ?? editTarget?.GetColor() ?? _textColor;
             bool curFill = target?.HasFill ?? _textWhiteout;
             Color curFillColor = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
 
@@ -7053,11 +7057,13 @@ namespace TDPdf
             {
                 _textFontSize = v;
                 if (target is not null) { target.FontSize = v; RestyleLive(target); }
+                else if (editTarget is not null) { editTarget.FontSize = v; RestyleLive(editTarget); }
             }
             void ApplyColor(Color c)
             {
                 _textColor = c;
                 if (target is not null) { target.SetColor(c); RestyleReselect(target); }
+                else if (editTarget is not null) { editTarget.SetColor(c); RestyleReselect(editTarget); }
                 else ShowTextSettings();
             }
             void ApplyFill(bool on)
@@ -7153,51 +7159,54 @@ namespace TDPdf
             panel.Children.Add(MakeCustomColorSwatch(
                 Color.FromRgb(curColor.R, curColor.G, curColor.B), ApplyColor));
 
-            // Separator
-            panel.Children.Add(new Rectangle
+            if (editTarget is null)
             {
-                Width = 1, Fill = (SolidColorBrush)FindResource("BorderDim"),
-                Margin = new Thickness(8, 2, 8, 2)
-            });
-
-            // Whiteout fill toggle (+ fill color swatches when on).
-            panel.Children.Add(MakeLabel("Fill:"));
-            var fillToggle = new CheckBox
-            {
-                Content = "On",
-                IsChecked = curFill,
-                Foreground = (SolidColorBrush)FindResource("TextPrimary"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 6, 0),
-                ToolTip = "Paint an opaque background behind the text (whiteout)"
-            };
-            fillToggle.Checked += (_, _) => ApplyFill(true);
-            fillToggle.Unchecked += (_, _) => ApplyFill(false);
-            panel.Children.Add(fillToggle);
-
-            if (curFill)
-            {
-                foreach (var color in SwatchColors)
+                // Separator
+                panel.Children.Add(new Rectangle
                 {
-                    var c = color;
-                    bool selected = c.R == curFillColor.R && c.G == curFillColor.G && c.B == curFillColor.B;
-                    var swatch = new Border
+                    Width = 1, Fill = (SolidColorBrush)FindResource("BorderDim"),
+                    Margin = new Thickness(8, 2, 8, 2)
+                });
+
+                // Whiteout fill toggle (+ fill color swatches when on).
+                panel.Children.Add(MakeLabel("Fill:"));
+                var fillToggle = new CheckBox
+                {
+                    Content = "On",
+                    IsChecked = curFill,
+                    Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    ToolTip = "Paint an opaque background behind the text (whiteout)"
+                };
+                fillToggle.Checked += (_, _) => ApplyFill(true);
+                fillToggle.Unchecked += (_, _) => ApplyFill(false);
+                panel.Children.Add(fillToggle);
+
+                if (curFill)
+                {
+                    foreach (var color in SwatchColors)
                     {
-                        Width = 18, Height = 18,
-                        Background = new SolidColorBrush(c),
-                        BorderBrush = selected
-                            ? (SolidColorBrush)FindResource("AccentGreen")
-                            : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                        BorderThickness = new Thickness(selected ? 2 : 1),
-                        CornerRadius = new CornerRadius(3),
-                        Margin = new Thickness(1),
-                        Cursor = Cursors.Hand
-                    };
-                    swatch.MouseLeftButtonDown += (_, _) => ApplyFillColor(c);
-                    panel.Children.Add(swatch);
+                        var c = color;
+                        bool selected = c.R == curFillColor.R && c.G == curFillColor.G && c.B == curFillColor.B;
+                        var swatch = new Border
+                        {
+                            Width = 18, Height = 18,
+                            Background = new SolidColorBrush(c),
+                            BorderBrush = selected
+                                ? (SolidColorBrush)FindResource("AccentGreen")
+                                : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
+                            BorderThickness = new Thickness(selected ? 2 : 1),
+                            CornerRadius = new CornerRadius(3),
+                            Margin = new Thickness(1),
+                            Cursor = Cursors.Hand
+                        };
+                        swatch.MouseLeftButtonDown += (_, _) => ApplyFillColor(c);
+                        panel.Children.Add(swatch);
+                    }
+                    panel.Children.Add(MakeCustomColorSwatch(
+                        Color.FromRgb(curFillColor.R, curFillColor.G, curFillColor.B), ApplyFillColor));
                 }
-                panel.Children.Add(MakeCustomColorSwatch(
-                    Color.FromRgb(curFillColor.R, curFillColor.G, curFillColor.B), ApplyFillColor));
             }
 
             _textSettingsBar = new Border
@@ -8924,7 +8933,7 @@ namespace TDPdf
                                 {
                                     var a = pageAnnotsList[i];
                                     if (a is PlacedAnnotation) continue;
-                                    if (a is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation
+                                    if (a is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation or TextEditAnnotation
                                         && HitTestAnnotation(a, pos, out Rect aBounds))
                                     {
                                         underPress = a;
@@ -9299,6 +9308,7 @@ namespace TDPdf
             HighlightAnnotation h => h.Bounds,
             InkAnnotation i => new List<Point>(i.Points),
             TextAnnotation t => (Position: t.Position, Width: t.Width, Height: t.Height),
+            TextEditAnnotation tea => (Position: tea.Position, Bounds: tea.OriginalBounds),
             _ => 0
         };
 
@@ -9334,6 +9344,8 @@ namespace TDPdf
                     return true;
                 case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
                     return t.Position == tp.Item1 && t.Width == tp.Item2 && t.Height == tp.Item3;
+                case TextEditAnnotation tea when original is ValueTuple<Point, Rect> teo:
+                    return tea.Position == teo.Item1 && tea.OriginalBounds == teo.Item2;
                 default:
                     return false;
             }
@@ -9372,6 +9384,14 @@ namespace TDPdf
                     break;
                 case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
                     t.Position = new Point(tp.Item1.X + dx, tp.Item1.Y + dy);
+                    break;
+                // In-place text edits carry two anchors that must move together: Position (where the
+                // replacement glyphs draw) and OriginalBounds (the whiteout + hit-test region). Moving
+                // only one would desync the visible text from the box that hides the old content.
+                case TextEditAnnotation tea when original is ValueTuple<Point, Rect> teo:
+                    tea.Position = new Point(teo.Item1.X + dx, teo.Item1.Y + dy);
+                    tea.OriginalBounds = new Rect(
+                        teo.Item2.X + dx, teo.Item2.Y + dy, teo.Item2.Width, teo.Item2.Height);
                     break;
             }
         }
@@ -9450,6 +9470,17 @@ namespace TDPdf
                     // Anchor top-left; drag bottom-right to set the wrap Width and box Height.
                     t.Width = Math.Max(32, tp.Item2 + (cur.X - start.X));
                     t.Height = Math.Max(t.FontSize + 6, tp.Item3 + (cur.Y - start.Y));
+                    break;
+                }
+                case TextEditAnnotation tea when original is ValueTuple<Point, Rect> teo:
+                {
+                    // Anchor top-left; drag bottom-right to grow/shrink the whiteout + hit-test box —
+                    // lets a default sized too generously (e.g. bleeding into a nearby table border)
+                    // be pulled back in by hand. Position (where the replacement text draws) is left
+                    // alone, matching the top-left anchor.
+                    double newW = Math.Max(16, teo.Item2.Width + (cur.X - start.X));
+                    double newH = Math.Max(tea.FontSize + 4, teo.Item2.Height + (cur.Y - start.Y));
+                    tea.OriginalBounds = new Rect(teo.Item2.X, teo.Item2.Y, newW, newH);
                     break;
                 }
             }
@@ -10528,7 +10559,7 @@ namespace TDPdf
                 string label = annot is SignatureAnnotation ? "Signature" : "Image";
                 SetStatus($"{label} selected — drag corner handle to resize, Delete to remove");
             }
-            else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation)
+            else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation or TextEditAnnotation)
             {
                 const double hSize = 10;
                 _annotResizeHandle = new Rectangle
@@ -10561,6 +10592,7 @@ namespace TDPdf
                     HighlightAnnotation => "highlight",
                     InkAnnotation => "drawing",
                     TextAnnotation => "text box",
+                    TextEditAnnotation => "edited text",
                     _ => "annotation"
                 };
                 SetStatus($"Selected {kind} — drag to move, corner handle to resize, Delete to remove");
@@ -10584,6 +10616,7 @@ namespace TDPdf
             switch (annot)
             {
                 case TextAnnotation:
+                case TextEditAnnotation:
                     HideShapeSettings(); HideDrawSettings(); ShowTextSettings();
                     break;
                 case ShapeAnnotation:
@@ -10654,6 +10687,7 @@ namespace TDPdf
             HighlightAnnotation h => new Point(h.Bounds.X + 1, h.Bounds.Y + 1),
             InkAnnotation i when i.Points.Count > 0 => i.Points[0],
             TextAnnotation t => new Point(t.Position.X + 1, t.Position.Y + 1),
+            TextEditAnnotation tea => new Point(tea.OriginalBounds.X + 1, tea.OriginalBounds.Y + 1),
             SignatureAnnotation sg => new Point(sg.Position.X + 1, sg.Position.Y + 1),
             ImageAnnotation ig => new Point(ig.Position.X + 1, ig.Position.Y + 1),
             _ => new Point(0, 0)
@@ -11302,13 +11336,13 @@ namespace TDPdf
                     var rewo = new Rectangle
                     {
                         Fill = Brushes.White,
-                        Width = reb.Width + 4,
-                        Height = reb.Height + 4,
+                        Width = reb.Width + 2,
+                        Height = reb.Height + 2,
                         IsHitTestVisible = false,
                         Tag = "EditWhiteout"
                     };
-                    Canvas.SetLeft(rewo, reb.X - 2);
-                    Canvas.SetTop(rewo, reb.Y - 2);
+                    Canvas.SetLeft(rewo, reb.X - 1);
+                    Canvas.SetTop(rewo, reb.Y - 1);
                     _textEditorCanvas.Children.Insert(_textEditorCanvas.Children.IndexOf(retb), rewo);
                     retb.KeyDown += EditTextBox_KeyDown;
                     FocusTextEditorWhenLoaded(retb, selectAll: true, EditTextBox_LostFocus);
@@ -11363,13 +11397,13 @@ namespace TDPdf
                 var whiteout = new Rectangle
                 {
                     Fill = Brushes.White,
-                    Width = hit.CanvasBounds.Width + 4,
-                    Height = hit.CanvasBounds.Height + 4,
+                    Width = hit.CanvasBounds.Width + 2,
+                    Height = hit.CanvasBounds.Height + 2,
                     IsHitTestVisible = false,
                     Tag = "EditWhiteout"
                 };
-                Canvas.SetLeft(whiteout, hit.CanvasBounds.X - 2);
-                Canvas.SetTop(whiteout, hit.CanvasBounds.Y - 2);
+                Canvas.SetLeft(whiteout, hit.CanvasBounds.X - 1);
+                Canvas.SetTop(whiteout, hit.CanvasBounds.Y - 1);
                 int tbIdx = _textEditorCanvas.Children.IndexOf(tb);
                 _textEditorCanvas.Children.Insert(tbIdx, whiteout);
 
@@ -12835,22 +12869,25 @@ namespace TDPdf
                         break;
                     case TextEditAnnotation tea:
                         if (!IsFinite(tea.OriginalBounds.Width) || !IsFinite(tea.OriginalBounds.Height)) continue;
-                        // White-out original text
+                        // White-out original text. The overhang used to be +4/-2 (2px each side), which
+                        // was enough to bleed into a table border sitting close to the text — trimmed
+                        // to a 1px overhang, and the box is now user-resizable (SelectAnnotation /
+                        // ApplyResizeTo) so a still-too-generous default can be shrunk by hand.
                         var wo = new Rectangle
                         {
                             Fill = Brushes.White,
-                            Width = tea.OriginalBounds.Width + 4,
-                            Height = tea.OriginalBounds.Height + 4,
+                            Width = tea.OriginalBounds.Width + 2,
+                            Height = tea.OriginalBounds.Height + 2,
                             IsHitTestVisible = false
                         };
-                        Canvas.SetLeft(wo, tea.OriginalBounds.X - 2);
-                        Canvas.SetTop(wo, tea.OriginalBounds.Y - 2);
+                        Canvas.SetLeft(wo, tea.OriginalBounds.X - 1);
+                        Canvas.SetTop(wo, tea.OriginalBounds.Y - 1);
                         _annotationCanvas.Children.Add(wo);
                         // Draw replacement text
                         var etb = new TextBlock
                         {
                             Text = tea.NewContent,
-                            Foreground = Brushes.Black,
+                            Foreground = FrozenSolidColorBrush(tea.GetColor()),
                             FontFamily = new FontFamily(tea.FontName),
                             FontSize = tea.FontSize,
                             FontWeight = tea.Bold ? FontWeights.Bold : FontWeights.Normal,
@@ -15468,10 +15505,12 @@ namespace TDPdf
                             if (editFont is null) break;
                             var whiteRect = new XSolidBrush(XColors.White);
                             gfx.DrawRectangle(whiteRect,
-                                (tea.OriginalBounds.X - 2) * sx, (tea.OriginalBounds.Y - 2) * sy,
-                                (tea.OriginalBounds.Width + 4) * sx, (tea.OriginalBounds.Height + 4) * sy);
+                                (tea.OriginalBounds.X - 1) * sx, (tea.OriginalBounds.Y - 1) * sy,
+                                (tea.OriginalBounds.Width + 2) * sx, (tea.OriginalBounds.Height + 2) * sy);
                             double ety = tea.Position.Y * sy + tea.FontSize * sy;
-                            gfx.DrawString(tea.NewContent, editFont, XBrushes.Black, tea.Position.X * sx, ety);
+                            var teaColor = tea.GetColor();
+                            var teaBrush = new XSolidBrush(XColor.FromArgb(teaColor.A, teaColor.R, teaColor.G, teaColor.B));
+                            gfx.DrawString(tea.NewContent, editFont, teaBrush, tea.Position.X * sx, ety);
                             break;
 
                         case ImageEditAnnotation iea:

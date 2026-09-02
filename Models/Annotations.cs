@@ -257,11 +257,24 @@ namespace TDPdf
         public bool Bold { get; set; }
         public bool Italic { get; set; }
 
+        /// <summary>
+        /// Replacement-text color. Defaults to black, matching every edit made before this
+        /// existed (the renderer and PDF writer both hardcoded black).
+        /// </summary>
+        public byte ColorR { get; set; } = 0;
+        public byte ColorG { get; set; } = 0;
+        public byte ColorB { get; set; } = 0;
+        public byte ColorA { get; set; } = 255;
+
+        public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
+        public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
+
         public override PageAnnotation Clone() => new TextEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, Position = Position,
             NewContent = NewContent, OriginalContent = OriginalContent,
-            FontSize = FontSize, FontName = FontName, Bold = Bold, Italic = Italic
+            FontSize = FontSize, FontName = FontName, Bold = Bold, Italic = Italic,
+            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
         };
     }
 
