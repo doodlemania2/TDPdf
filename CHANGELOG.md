@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.5.0] - 2026-09-02
+
+### Added
+
+- **A font-family picker for placed text and Edit Existing Text.** Text was always drawn in one fixed system font with no way to change it. The style bar now has a "Font:" dropdown next to Size, with a curated list (the previous default, Arial, Times New Roman, Courier New, Calibri) — each guaranteed to embed correctly and to still be available if someone else opens the same file on a different machine.
+
+### Fixed
+
+- **`TextAnnotation.Clone()` was silently dropping Bold/Italic/Underline.** Found while wiring up the font picker; a cloned copy (used by the undo/redo snapshot system) lost character styling that the original annotation had. Fixed alongside adding the new font field to the same clone.
+
 ## [1.29.4.0] - 2026-09-02
 
 ### Fixed
@@ -1043,6 +1053,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.4.0...v1.29.5.0
 [1.29.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.3.0...v1.29.4.0
 [1.29.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.2.0...v1.29.3.0
 [1.29.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.1.0...v1.29.2.0
