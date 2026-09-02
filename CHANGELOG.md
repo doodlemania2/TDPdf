@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.2.0] - 2026-09-02
+
+### Added
+
+- **Rotate is now a toolbar button** (next to Move Up/Move Down), instead of being reachable only via right-click on a page thumbnail. Left-click rotates clockwise; right-click opens the same CW / CCW / Transform menu the page-list context menu already had.
+
+### Fixed
+
+- **Taskbar hover previews and Aero Peek now show each TDPdf window's own content**, not a blank/generic image for every window but the active one. Root cause: the default custom-chrome mode is a layered window (`AllowsTransparency=True`), which DWM cannot generate a live thumbnail for on its own. TDPdf now supplies that bitmap itself via DWM's iconic-representation contract, the same mechanism other custom-chrome apps use for this — no setting change required. ("Use native window frame" still works as before; it was never layered and already had a real thumbnail.)
+
 ## [1.29.1.0] - 2026-09-02
 
 ### Fixed
@@ -1018,6 +1028,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.1.0...v1.29.2.0
 [1.29.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.1...v1.29.1.0
 [1.29.0.1]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.0...v1.29.0.1
 [1.29.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.1.0...v1.29.0.0
