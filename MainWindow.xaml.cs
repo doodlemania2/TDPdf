@@ -9161,13 +9161,27 @@ namespace TDPdf
                        break;
                    }
                     CommitActiveTextBox();
-                    PlaceTextBox(pos, pageIdx);
+                    // Clicking directly on a text box you already placed almost never means "stack
+                    // a second, empty one exactly on top of it" — it means "let me get back into
+                    // this one". Select-tool double-click already did this via TryReeditPlacedText;
+                    // reported back as a real gap that the Text tool itself didn't, so placing was
+                    // easy but coming back to fix a typo meant knowing to switch tools first.
+                    if (!TryReeditPlacedText(pos, pageIdx))
+                        PlaceTextBox(pos, pageIdx);
                     e.Handled = true;
                     break;
 
                 case EditTool.EditText:
                     CommitActiveTextBox();
-                    EditTextAtPosition(pos, pageIdx);
+                    // Same reasoning as the Text tool above: a TextAnnotation placed by Insert Text
+                    // is TDPdf's own overlay, not yet part of the PDF's actual content stream (that
+                    // only happens at Save), so EditTextAtPosition's PdfPig-based text-run search
+                    // could never find it — "Edit Existing Text" is exactly where someone would
+                    // naturally try to fix it, and every attempt fell through to "No text found at
+                    // this position". Check TDPdf's own overlay first; only fall back to real PDF
+                    // content when the click isn't on one of TDPdf's own placed boxes.
+                    if (!TryReeditPlacedText(pos, pageIdx))
+                        EditTextAtPosition(pos, pageIdx);
                     e.Handled = true;
                     break;
 
