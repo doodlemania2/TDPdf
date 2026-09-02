@@ -6241,8 +6241,10 @@ namespace TDPdf
             else
                 HideDrawSettings();
 
-            // Show/hide text tool settings bar
-            if (tool == EditTool.Text)
+            // Show/hide text tool settings bar. Edit Existing Text shares it with the Text tool —
+            // it used to never show it at all outside of an active SelectAnnotation binding, which
+            // read as the bar "not reappearing" when switching into or back onto that tool.
+            if (tool is EditTool.Text or EditTool.EditText)
                 ShowTextSettings();
             else
                 HideTextSettings();
@@ -7210,38 +7212,45 @@ namespace TDPdf
             bool curFill = target?.HasFill ?? _textWhiteout;
             Color curFillColor = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
 
+            // None of target/editTarget selected means there's either nothing placed yet (tool
+            // defaults only) OR a live, uncommitted TextBox is open (Text or Edit-Text tool) —
+            // _styleTarget is null for the whole duration of a live edit (ClearSelection sets it
+            // so on entry). Without pushing onto the live box too, every one of these silently
+            // changed only the NEXT box's defaults while leaving the box on screen untouched.
             void ApplyFont(string f)
             {
                 _textFontFamily = f;
                 if (target is not null) { target.FontName = f; RestyleLive(target); }
                 else if (editTarget is not null) { editTarget.FontName = f; RestyleLive(editTarget); }
+                else UpdateActiveTextBoxStyle();
             }
             void ApplySize(double v)
             {
                 _textFontSize = v;
                 if (target is not null) { target.FontSize = v; RestyleLive(target); }
                 else if (editTarget is not null) { editTarget.FontSize = v; RestyleLive(editTarget); }
+                else UpdateActiveTextBoxStyle();
             }
             void ApplyColor(Color c)
             {
                 _textColor = c;
                 if (target is not null) { target.SetColor(c); RestyleReselect(target); }
                 else if (editTarget is not null) { editTarget.SetColor(c); RestyleReselect(editTarget); }
-                else ShowTextSettings();
+                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
             }
             void ApplyBold(bool on)
             {
                 _textBold = on;
                 if (target is not null) { target.Bold = on; RestyleReselect(target); }
                 else if (editTarget is not null) { editTarget.Bold = on; RestyleReselect(editTarget); }
-                else ShowTextSettings();
+                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
             }
             void ApplyItalic(bool on)
             {
                 _textItalic = on;
                 if (target is not null) { target.Italic = on; RestyleReselect(target); }
                 else if (editTarget is not null) { editTarget.Italic = on; RestyleReselect(editTarget); }
-                else ShowTextSettings();
+                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
             }
             void ApplyFill(bool on)
             {
@@ -11563,12 +11572,21 @@ namespace TDPdf
                     .FirstOrDefault(a => a.OriginalBounds.Contains(canvasPos));
                 if (existingEdit is not null)
                 {
+                    // Seed the tool-default style fields from what's actually on this run, so the
+                    // style bar (shown below) reflects its real style rather than stale leftovers
+                    // from whatever was last edited — same as PlaceTextBox's re-edit path (#135).
+                    _textFontFamily = existingEdit.FontName;
+                    _textFontSize = existingEdit.FontSize;
+                    _textBold = existingEdit.Bold;
+                    _textItalic = existingEdit.Italic;
+                    _textColor = existingEdit.GetColor();
+
                     var reb = existingEdit.OriginalBounds;
                     var retb = new TextBox
                     {
                         Text = existingEdit.NewContent,
                         Background = new SolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
-                        Foreground = Brushes.Black,
+                        Foreground = new SolidColorBrush(_textColor),
                         BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                         BorderThickness = new Thickness(2),
                         FontFamily = new FontFamily(existingEdit.FontName),
@@ -11597,6 +11615,10 @@ namespace TDPdf
                     Canvas.SetTop(retb, reb.Y);
                     _textEditorCanvas.Children.Add(retb);
                     _activeTextBox = retb;
+                    // Neither this re-edit branch nor the fresh-hit branch below ever called this —
+                    // the style bar (font/color/bold/italic) never appeared for the Edit-Text tool
+                    // at all, which is what made it look like it "didn't reappear" on reselect.
+                    ShowTextSettings();
                     var rewo = new Rectangle
                     {
                         Fill = Brushes.White,
@@ -11621,12 +11643,22 @@ namespace TDPdf
                 var hit = _contentEditor.FindTextRunAt(_currentFile, pageIdx, canvasPos, renderW, renderH);
                 if (hit is null) { SetStatus("No text found at this position"); return; }
 
+                // Seed the tool-default style fields from what was detected on this run (see the
+                // matching comment in the re-edit branch above). TextRunHit doesn't carry a
+                // detected color — PDF text color isn't recovered here — so black, matching the
+                // hardcoded Foreground this replaces.
+                _textFontFamily = hit.FontName;
+                _textFontSize = hit.FontSize;
+                _textBold = hit.Bold;
+                _textItalic = hit.Italic;
+                _textColor = Colors.Black;
+
                 // Show editable TextBox over the line
                 var tb = new TextBox
                 {
                     Text = hit.Text,
                     Background = FrozenSolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
-                    Foreground = Brushes.Black,
+                    Foreground = new SolidColorBrush(_textColor),
                     BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                     BorderThickness = new Thickness(2),
                     FontFamily = new FontFamily(hit.FontName),
@@ -11656,6 +11688,7 @@ namespace TDPdf
                 Canvas.SetTop(tb, hit.CanvasBounds.Y);
                 _textEditorCanvas.Children.Add(tb);
                 _activeTextBox = tb;
+                ShowTextSettings();
 
                 // Show white-out behind the edit box so original text is hidden
                 var whiteout = new Rectangle
@@ -11756,17 +11789,40 @@ namespace TDPdf
             if (whiteout is not null)
                _textEditorCanvas.Children.Remove(whiteout);
 
-            if (string.IsNullOrEmpty(newText) || newText == ctx.OriginalText)
+            if (string.IsNullOrEmpty(newText))
             {
-                SetStatus(newText == ctx.OriginalText ? "No changes made" : "Text edit cancelled (empty)");
+                SetStatus("Text edit cancelled (empty)");
+                return;
+            }
+
+            // The style bar can change font/size/color/bold/italic without the wording changing at
+            // all (e.g. just recoloring existing text) — bailing out purely on unchanged TEXT used
+            // to silently discard every style-only edit before it ever reached the code below.
+            Color tbColor = tb.Foreground is SolidColorBrush scb ? scb.Color : Colors.Black;
+            bool styleChanged = tb.FontFamily.Source != ctx.FontName
+                || Math.Abs(tb.FontSize - ctx.FontSize) > 0.01
+                || (tb.FontWeight == FontWeights.Bold) != ctx.Bold
+                || (tb.FontStyle == FontStyles.Italic) != ctx.Italic
+                || tbColor != (ctx.ExistingAnnotation?.GetColor() ?? Colors.Black);
+            if (newText == ctx.OriginalText && !styleChanged)
+            {
+                SetStatus("No changes made");
                 return;
             }
 
             if (ctx.ExistingAnnotation is not null)
             {
-                // Update the existing annotation in place — avoids duplicate whiteout layers
+                // Update the existing annotation in place — avoids duplicate whiteout layers.
+                // Style is read back off the live box, not the pre-edit ctx values — the user may
+                // have changed font/size/color/bold/italic in the style bar mid-edit, and the box
+                // in front of them is the truth (same reasoning as CommitActiveTextBox's #135 fix).
                 PushPageSnapshot(ctx.ExistingAnnotation.PageIndex);
                 ctx.ExistingAnnotation.NewContent = newText;
+                ctx.ExistingAnnotation.FontSize = tb.FontSize;
+                ctx.ExistingAnnotation.FontName = tb.FontFamily.Source;
+                ctx.ExistingAnnotation.Bold = tb.FontWeight == FontWeights.Bold;
+                ctx.ExistingAnnotation.Italic = tb.FontStyle == FontStyles.Italic;
+                ctx.ExistingAnnotation.SetColor(tbColor);
                 MarkDirty();
             }
             else
@@ -11778,11 +11834,12 @@ namespace TDPdf
                     Position = ctx.Position,
                     NewContent = newText,
                     OriginalContent = ctx.OriginalText,
-                    FontSize = ctx.FontSize,
-                    FontName = ctx.FontName,
-                    Bold = ctx.Bold,
-                    Italic = ctx.Italic
+                    FontSize = tb.FontSize,
+                    FontName = tb.FontFamily.Source,
+                    Bold = tb.FontWeight == FontWeights.Bold,
+                    Italic = tb.FontStyle == FontStyles.Italic
                 };
+                edit.SetColor(tbColor);
                 AddAnnotation(edit);
             }
             RenderAllAnnotations(ctx.PageIndex);
@@ -12306,6 +12363,25 @@ namespace TDPdf
             _activeTextBox.Background = _textWhiteout
                 ? FrozenSolidColorBrush(_textFillColor)
                 : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
+        }
+
+        /// <summary>
+        /// Reflects font/size/color/bold/italic/underline onto the live editing box, if any — for
+        /// BOTH a freshly-placed box (PlacedTextContext) and an in-progress PDF-text edit
+        /// (TextEditContext), since the style bar applies to both tools identically. Without this,
+        /// the settings bar only ever updated the NEXT box's defaults while a currently-open box
+        /// sat on screen unchanged.
+        /// </summary>
+        private void UpdateActiveTextBoxStyle()
+        {
+            if (_activeTextBox is not { } tb || tb.Tag is not (PlacedTextContext or TextEditContext)) return;
+            tb.FontFamily = new FontFamily(_textFontFamily);
+            tb.FontSize = _textFontSize;
+            tb.FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal;
+            tb.FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal;
+            tb.TextDecorations = _textUnderline ? TextDecorations.Underline : null;
+            tb.Foreground = new SolidColorBrush(_textColor);
+            tb.CaretBrush = new SolidColorBrush(_textColor);
         }
 
         private void TextBox_KeyDown(object sender, KeyEventArgs e)
