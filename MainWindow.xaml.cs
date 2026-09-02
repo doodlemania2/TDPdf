@@ -2858,9 +2858,12 @@ namespace TDPdf
             // Continuous manages its own rendering through SetupContinuousView; nothing to do here.
             if (_viewMode == ViewMode.Continuous) return;
 
-            // Grid wraps to fit the viewport (no horizontal scrollbar); other modes use Auto.
-            PagePreviewPanel.HorizontalScrollBarVisibility =
-                _viewMode == ViewMode.Grid ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+            // Row-wrapping in Grid/TwoPage comes from the explicit _pageContentPanel.Width set in
+            // RenderAdditionalPages, not from constraining the ScrollViewer's available width — so
+            // Auto never breaks the wrap. Disabling it here used to hide real overflow whenever a
+            // page's rendered width (pagesPerRow is clamped to a minimum of 1) exceeded the shrunk
+            // viewport at a manual zoom, clipping content with no way to scroll to it.
+            PagePreviewPanel.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
 
             if (_viewMode == ViewMode.Grid || _viewMode == ViewMode.TwoPage)
             {
@@ -3111,10 +3114,10 @@ namespace TDPdf
             // lay out, so bail after clearing any stale tiles.
             if (_doc.PageCount == 0) return;
 
-            // Upstream v1.6.3: entering Continuous must restore its own scrollbar setup. Grid disables
-            // the horizontal scrollbar (RefreshPageView), and because RefreshPageView early-returns for
-            // Continuous that override would otherwise leak in and clip zoomed pages with no way to
-            // scroll sideways. Reset to Auto.
+            // Upstream v1.6.3: entering Continuous must restore its own scrollbar setup, since
+            // RefreshPageView (which now always leaves this Auto) early-returns for Continuous and
+            // never gets a chance to set it. Explicit here so Continuous doesn't inherit whatever a
+            // prior mode left behind.
             PagePreviewPanel.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
             PagePreviewPanel.VerticalScrollBarVisibility   = ScrollBarVisibility.Auto;
 
@@ -7202,6 +7205,8 @@ namespace TDPdf
             double curSize = target?.FontSize ?? editTarget?.FontSize ?? _textFontSize;
             string curFont = target?.FontName ?? editTarget?.FontName ?? _textFontFamily;
             Color curColor = target?.GetColor() ?? editTarget?.GetColor() ?? _textColor;
+            bool curBold = target?.Bold ?? editTarget?.Bold ?? _textBold;
+            bool curItalic = target?.Italic ?? editTarget?.Italic ?? _textItalic;
             bool curFill = target?.HasFill ?? _textWhiteout;
             Color curFillColor = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
 
@@ -7224,6 +7229,20 @@ namespace TDPdf
                 else if (editTarget is not null) { editTarget.SetColor(c); RestyleReselect(editTarget); }
                 else ShowTextSettings();
             }
+            void ApplyBold(bool on)
+            {
+                _textBold = on;
+                if (target is not null) { target.Bold = on; RestyleReselect(target); }
+                else if (editTarget is not null) { editTarget.Bold = on; RestyleReselect(editTarget); }
+                else ShowTextSettings();
+            }
+            void ApplyItalic(bool on)
+            {
+                _textItalic = on;
+                if (target is not null) { target.Italic = on; RestyleReselect(target); }
+                else if (editTarget is not null) { editTarget.Italic = on; RestyleReselect(editTarget); }
+                else ShowTextSettings();
+            }
             void ApplyFill(bool on)
             {
                 _textWhiteout = on;
@@ -7243,6 +7262,33 @@ namespace TDPdf
             }
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 4) };
+
+            // Bold / italic toggle, styled like the shape-kind toggles in ShowShapeSettings.
+            void AddStyleToggle(string glyph, bool active, Action<bool> apply, string tip, FontWeight fw, FontStyle fs)
+            {
+                var btn = new Button
+                {
+                    Content = glyph,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    FontWeight = fw,
+                    FontStyle = fs,
+                    FontSize = 13,
+                    Width = 26, Height = 24,
+                    Margin = new Thickness(2, 0, 2, 0),
+                    ToolTip = tip,
+                    Cursor = Cursors.Hand,
+                    Background = active
+                        ? (SolidColorBrush)FindResource("AccentGreenDim")
+                        : Brushes.Transparent,
+                    Foreground = active
+                        ? (SolidColorBrush)FindResource("AccentGreen")
+                        : (SolidColorBrush)FindResource("TextPrimary"),
+                    BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
+                    BorderThickness = new Thickness(1)
+                };
+                btn.Click += (_, _) => apply(!active);
+                panel.Children.Add(btn);
+            }
 
             // Font family label
             panel.Children.Add(new TextBlock
@@ -7310,6 +7356,17 @@ namespace TDPdf
                     ApplySize(v);
             };
             panel.Children.Add(sizeBox);
+
+            // Separator
+            panel.Children.Add(new Rectangle
+            {
+                Width = 1, Fill = (SolidColorBrush)FindResource("BorderDim"),
+                Margin = new Thickness(8, 2, 8, 2)
+            });
+
+            // Bold / Italic
+            AddStyleToggle("B", curBold, ApplyBold, "Bold", FontWeights.Bold, FontStyles.Normal);
+            AddStyleToggle("I", curItalic, ApplyItalic, "Italic", FontWeights.Normal, FontStyles.Italic);
 
             // Separator
             panel.Children.Add(new Rectangle
