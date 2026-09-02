@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.3.0] - 2026-09-02
+
+### Fixed
+
+- **A newly placed text box can now be moved before you've typed into it.** Fleet telemetry from a real 1.29.2.0 session identified the actual bug: clicking near a just-placed, still-empty text box to reposition it discarded it and started a new one at the click point every time — since clicking inside a `TextBox` only moves the caret, there was never an actual drag target on the live editor. The editor now has a small drag handle at its top-left corner for exactly this.
+
 ## [1.29.2.0] - 2026-09-02
 
 ### Added
@@ -1028,6 +1034,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.2.0...v1.29.3.0
 [1.29.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.1.0...v1.29.2.0
 [1.29.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.1...v1.29.1.0
 [1.29.0.1]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.0...v1.29.0.1
