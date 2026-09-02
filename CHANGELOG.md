@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.28.1.0] - 2026-09-02
+
+### Fixed
+
+- **Edit-Text (editing existing PDF text in place) can now be moved, resized, and recolored, and no longer eats nearby content by default.** Editing existing text on a tightly spaced form (e.g. a table with a claimed-count row) could paint an opaque whiteout rectangle right over the row's border lines, with no way to undo it — the annotation had no font/color picker, and drag-to-move/resize were silent no-ops even though it looked selectable. The Select tool's click handler was also filtering it out of the "annotation under the cursor" list entirely, so a single click could never even select it. Edit-Text annotations now share the same move/resize/style-bar machinery as placed text boxes, and the default whiteout overhang is halved so a still-too-generous default can be pulled back in by hand.
+
 ## [1.28.0.0] - 2026-08-31
 
 **Form fields stop lying about what they contain, and OCR can read a form as a form.**
@@ -983,6 +989,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.28.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...v1.28.1.0
 [1.28.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.27.0.0...v1.28.0.0
 [1.27.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.26.0.0...v1.27.0.0
 [1.26.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.25.0.0...v1.26.0.0
