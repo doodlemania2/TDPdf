@@ -6,7 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
-## [1.28.1.0] - 2026-09-02
+## [1.29.0.0] - 2026-09-02
+
+### Added
+
+- **The open document is now identifiable from outside the app.** The native window title (what Alt-Tab and the taskbar hover/thumbnail actually show) was hardcoded "TDPdf" for the entire session; it now reflects the active tab's filename, plus a tab count when more than one document is open in that window — the in-app title-bar label already showed this, but it never reached the OS-level title at all.
+- **Tab chips show their full filename on hover**, so a long name truncated by the tab strip's ellipsis doesn't have to be guessed at.
+- **A new dropdown lists every open tab by name** (the "▾" button on the tab strip), for finding a document without scrolling through a long run of same-width chips.
+- **Drag a tab onto another TDPdf window to move the document there, or drop it anywhere else (or use "Move to New Window") to tear it off into a brand-new window** — each TDPdf window already runs as its own process, so this makes grouping documents into separate windows (e.g. "5 files in one window, 8 in another") a drag instead of a manual close-and-reopen. A document with unsaved changes is saved to its real file first (prompting, like closing a dirty tab already does); an untitled document is asked to be saved first rather than moved silently.
+
+### Notes
+
+- Multi-file open was already fully supported before this release — File → Open's dialog and drag-and-drop both already accept multiple files at once, opening one tab per file.
 
 ### Fixed
 
@@ -989,6 +1000,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.1.0...v1.29.0.0
 [1.28.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...v1.28.1.0
 [1.28.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.27.0.0...v1.28.0.0
 [1.27.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.26.0.0...v1.27.0.0
