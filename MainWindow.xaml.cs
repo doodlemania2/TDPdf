@@ -114,6 +114,7 @@ namespace TDPdf
         private InkAnnotation? _activeInk;
         private CropAnnotation? _activeCrop;
         private TextBox? _activeTextBox;
+        private Border? _activeTextBoxGrip;
         private PageAnnotation? _selectedAnnotation;
         private Border? _selectionBorder;
         private Rectangle? _imageResizeHandle;
@@ -11910,10 +11911,16 @@ namespace TDPdf
             return true;
         }
 
-        private static void RemoveTextEditorElement(UIElement element)
+        private void RemoveTextEditorElement(UIElement element)
         {
             if (element is FrameworkElement { Parent: Panel parent })
                 parent.Children.Remove(element);
+            // The move grip (see PlaceTextBox) only ever exists alongside the active placed-text
+            // editor, so whichever path is tearing that editor down also owns tearing this down —
+            // one blanket cleanup here instead of touching every call site individually.
+            if (_activeTextBoxGrip is { Parent: Panel gripParent } grip)
+                gripParent.Children.Remove(grip);
+            _activeTextBoxGrip = null;
         }
 
         private static Dictionary<string, string> TextEditorTelemetry(string outcome, string? via = null)
@@ -12109,6 +12116,63 @@ namespace TDPdf
                         });
                 });
             _textEditorCanvas.Children.Add(tb);
+
+            // Telemetry from the field (session 3d521d3552e14bb0b9853db69306e844, 1.29.2.0) showed
+            // the actual failure: every TextEditorClosed while the box was still empty fired with
+            // Via=Canvas_MouseLeftButtonDown, over and over, a couple of seconds apart — someone
+            // repeatedly clicking near a just-placed, still-empty box trying to reposition it before
+            // typing. Clicking a TextBox only moves the caret; there was and is no way to drag it
+            // while it's still the live editor, so every attempt discarded the box (a click while
+            // EditTool.Text is active commits-then-places-a-new-one) and started over in the same
+            // spot. This grip is a real drag target for exactly that moment, before Select-tool
+            // auto-select (see CommitActiveTextBox) ever gets a chance to help.
+            var grip = new Border
+            {
+                Width = 16,
+                Height = 16,
+                Background = (SolidColorBrush)FindResource("AccentGreen"),
+                CornerRadius = new CornerRadius(8),
+                Cursor = Cursors.SizeAll,
+                ToolTip = "Drag to move this box"
+            };
+            void PositionGrip(double left, double top)
+            {
+                Canvas.SetLeft(grip, left - 8);
+                Canvas.SetTop(grip, top - 8);
+            }
+            PositionGrip(Canvas.GetLeft(tb), Canvas.GetTop(tb));
+            bool draggingBox = false;
+            Point dragAnchorScreen = default;
+            double dragStartLeft = 0, dragStartTop = 0;
+            grip.PreviewMouseLeftButtonDown += (_, ev) =>
+            {
+                draggingBox = true;
+                dragAnchorScreen = ev.GetPosition(_textEditorCanvas);
+                dragStartLeft = Canvas.GetLeft(tb);
+                dragStartTop = Canvas.GetTop(tb);
+                grip.CaptureMouse();
+                ev.Handled = true;
+            };
+            grip.PreviewMouseMove += (_, ev) =>
+            {
+                if (!draggingBox) return;
+                var now = ev.GetPosition(_textEditorCanvas);
+                double gMaxX = Math.Max(0, _textEditorCanvas.Width - tb.Width);
+                double gMaxY = Math.Max(0, _textEditorCanvas.Height - Math.Max(tb.MinHeight, 24));
+                double newLeft = Math.Clamp(dragStartLeft + (now.X - dragAnchorScreen.X), 0, gMaxX);
+                double newTop = Math.Clamp(dragStartTop + (now.Y - dragAnchorScreen.Y), 0, gMaxY);
+                Canvas.SetLeft(tb, newLeft);
+                Canvas.SetTop(tb, newTop);
+                PositionGrip(newLeft, newTop);
+            };
+            grip.PreviewMouseLeftButtonUp += (_, _) =>
+            {
+                draggingBox = false;
+                grip.ReleaseMouseCapture();
+            };
+            grip.LostMouseCapture += (_, _) => draggingBox = false;
+            _activeTextBoxGrip = grip;
+            _textEditorCanvas.Children.Add(grip);
         }
 
         /// <summary>Reflects the current whiteout setting onto the live placed-text editing box, if any.</summary>
