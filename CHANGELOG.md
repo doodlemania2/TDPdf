@@ -54,6 +54,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 - Multi-file open was already fully supported before this release — File → Open's dialog and drag-and-drop both already accept multiple files at once, opening one tab per file.
 
+## [1.28.1.0] - 2026-09-02
+
 ### Fixed
 
 - **Edit-Text (editing existing PDF text in place) can now be moved, resized, and recolored, and no longer eats nearby content by default.** Editing existing text on a tightly spaced form (e.g. a table with a claimed-count row) could paint an opaque whiteout rectangle right over the row's border lines, with no way to undo it — the annotation had no font/color picker, and drag-to-move/resize were silent no-ops even though it looked selectable. The Select tool's click handler was also filtering it out of the "annotation under the cursor" list entirely, so a single click could never even select it. Edit-Text annotations now share the same move/resize/style-bar machinery as placed text boxes, and the default whiteout overhang is halved so a still-too-generous default can be pulled back in by hand.
