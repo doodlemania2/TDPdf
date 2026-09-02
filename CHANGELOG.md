@@ -11,6 +11,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 ### Fixed
 
 - **A newly placed text box can now be moved before you've typed into it.** Fleet telemetry from a real 1.29.2.0 session identified the actual bug: clicking near a just-placed, still-empty text box to reposition it discarded it and started a new one at the click point every time — since clicking inside a `TextBox` only moves the caret, there was never an actual drag target on the live editor. The editor now has a small drag handle at its top-left corner for exactly this.
+- **No toolbar button can be scrolled out of sight anymore.** The two-column layout from 1.29.1.0 fixed button overlap by making the file-operations group (which the new Rotate button landed in) scroll horizontally — but at the app's own default window size the two groups together need roughly 1400px, well past what a thin auto-hiding scrollbar makes discoverable. The toolbar now wraps to a second row instead, so every button is always on screen with no scroll or hunt gesture required.
 
 ## [1.29.2.0] - 2026-09-02
 
