@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
-## [1.29.1.0] - 2026-09-02
+## [1.29.0.1] - 2026-09-02
 
 ### Added
 
@@ -1006,7 +1006,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
-[1.29.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.0...v1.29.1.0
+[1.29.0.1]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.0...v1.29.0.1
 [1.29.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.1.0...v1.29.0.0
 [1.28.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...v1.28.1.0
 [1.28.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.27.0.0...v1.28.0.0
