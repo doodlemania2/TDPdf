@@ -1183,6 +1183,17 @@
         <Border x:Name="ToolbarBorder" Grid.Row="2" Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,0,1" Padding="4,2"
                 KeyboardNavigation.TabNavigation="Continue">
             <Grid>
+                <!-- Two real columns, not two Left/Right-anchored children sharing one cell: the
+                     old single-cell layout let the two groups' natural widths overlap at a narrow
+                     window width or high UI scale, with the second (tool) group drawing over the
+                     first (file) group wherever they intersected. The tool group keeps its full
+                     width (Auto) since those are the buttons in constant use; the file-ops group
+                     gets whatever is left and scrolls horizontally — same pattern the tab strip
+                     already uses — instead of ever overlapping. -->
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
                 <Grid x:Name="ToolbarA11yLabels" Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
                     <TextBlock x:Name="OpenButtonLabel" Text="Open"/><TextBlock x:Name="CloseFileButtonLabel" Text="Close file"/>
                     <TextBlock x:Name="MergeButtonLabel" Text="Merge PDFs"/><TextBlock x:Name="SplitButtonLabel" Text="Extract pages"/>
@@ -1198,7 +1209,8 @@
                     <TextBlock x:Name="ClearAnnotationsButtonLabel" Text="Clear annotations"/><TextBlock x:Name="ZoomLabel" Text="Zoom level"/>
                 </Grid>
                 <!-- File operations -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                <ScrollViewer Grid.Column="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                <StackPanel Orientation="Horizontal">
                     <Button Content="&#xE7C3;" Style="{StaticResource ToolbarButton}" Click="New_Click" ToolTip="New Blank Document (Ctrl+N)" KeyboardNavigation.TabIndex="3" AutomationProperties.Name="New blank document" AutomationProperties.HelpText="Create a single blank A4 page as a new document. Shortcut Ctrl+N." AutomationProperties.AccessKey="N"/>
                     <Button x:Name="OpenBtn" Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O) — right-click for recent files" KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
                     <Button x:Name="CloseFileBtn" Content="&#xE711;" Style="{StaticResource ToolbarButton}" Click="CloseFile_Click" ToolTip="Close File (Ctrl+W, Alt+W)" IsEnabled="False" KeyboardNavigation.TabIndex="5" AutomationProperties.Name="Close file" AutomationProperties.HelpText="Close the current PDF and return to the start view. Shortcut Ctrl+W. Access key Alt+W." AutomationProperties.AccessKey="W" AutomationProperties.LabeledBy="{Binding ElementName=CloseFileButtonLabel}"/>
@@ -1216,12 +1228,15 @@
                     <Button Content="&#xE749;" Style="{StaticResource ToolbarButton}" Click="Print_Click" ToolTip="Print (Ctrl+P, Alt+P)" KeyboardNavigation.TabIndex="13" AutomationProperties.Name="Print" AutomationProperties.HelpText="Print the current PDF. Shortcut Ctrl+P. Access key Alt+P." AutomationProperties.AccessKey="P" AutomationProperties.LabeledBy="{Binding ElementName=PrintButtonLabel}"/>
                     <Button Content="&#xE713;" Style="{StaticResource ToolbarButton}" Click="Settings_Click" ToolTip="Settings" KeyboardNavigation.TabIndex="27" AutomationProperties.Name="Settings" AutomationProperties.HelpText="Open theme and window frame settings." AutomationProperties.LabeledBy="{Binding ElementName=SettingsButtonLabel}"/>
                 </StackPanel>
+                </ScrollViewer>
                 <!-- Edit tools + zoom.
                      Each tool advertises its 1.19 single-key shortcut alongside the Alt access key,
                      in the same "(key, Alt+key)" style the file buttons use. The digits mirror this
                      strip left to right — 1 at the Text tool through 0 at the Eraser — while Select,
-                     Pan, Signature and Crop are letter-only (see OnPreviewKeyDown). -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                     Pan, Signature and Crop are letter-only (see OnPreviewKeyDown). Grid.Column="1"
+                     (Auto-width) so this group always keeps its full size — it's the buttons in
+                     constant use, so the file-ops group is the one that gives way and scrolls. -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button x:Name="ToolSelectBtn" Content="&#xE8B3;" Style="{StaticResource ToolbarButton}" Click="ToolSelect_Click" ToolTip="Select Tool (V, Alt+Q)" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Select tool" AutomationProperties.HelpText="Select annotations, drag to select text, or double-click text to edit. Shortcut V. Access key Alt+Q." AutomationProperties.AccessKey="Q" AutomationProperties.LabeledBy="{Binding ElementName=SelectToolButtonLabel}"/>
                     <Button x:Name="ToolPanBtn" Content="&#xE7C9;" Style="{StaticResource ToolbarButton}" Click="ToolPan_Click" ToolTip="Pan / Hand Tool (P) — drag the page; middle-click to pan in any tool" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Pan tool" AutomationProperties.HelpText="Drag the page to scroll. Middle-mouse drag also pans while any tool is active. Shortcut P."/>
                     <Button x:Name="ToolTextBtn" Content="&#xE8D2;" Style="{StaticResource ToolbarButton}" Click="ToolText_Click" ToolTip="Text Tool (1 or T, Alt+T)" KeyboardNavigation.TabIndex="15" AutomationProperties.Name="Text tool" AutomationProperties.HelpText="Click the page to add text. Shortcut 1 or T. Access key Alt+T." AutomationProperties.AccessKey="T" AutomationProperties.LabeledBy="{Binding ElementName=TextToolButtonLabel}"/>

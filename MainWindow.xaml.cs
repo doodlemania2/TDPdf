@@ -12180,6 +12180,20 @@ namespace TDPdf
                     RenderTextAnnotation(ta);
                 }
 
+                // Auto-select so the user can immediately drag it off whatever it landed on top of,
+                // or resize it, without first having to know to switch to the Select tool — Image
+                // and Signature placement already do this (see PlaceImageFromDialog / the signature
+                // "Reddit/KillerPDF feedback" comment); Text was the one placement flow that didn't,
+                // and a text box with no visible border once committed gave no hint that dragging
+                // it required a tool switch at all. SetTool's own CommitActiveTextBox() re-entry
+                // is a no-op here (_activeTextBox is already null by this point) — and if this
+                // commit was itself triggered by the user clicking a DIFFERENT tool, that tool wins:
+                // SetTool always finishes by assigning _currentTool to what it was actually called
+                // with, after this nested call returns.
+                SetTool(EditTool.Select);
+                var placedSize = MeasureTextAnnotation(ta);
+                SelectAnnotation(ta, new Rect(ta.Position.X, ta.Position.Y, placedSize.Width, placedSize.Height));
+
                 // #168: say it NOW, not after saving and reopening. The burn resolves the same
                 // family this checks (DrawAnnotationsOnDocument), so the two never disagree.
                 WarnIfGlyphsWillBeLost(PdfFontStyle.DefaultFamily, ta.Content);
@@ -14187,9 +14201,31 @@ namespace TDPdf
         {
             Telemetry.TrackEvent("File.Open");
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Open PDF", Multiselect = true };
-            if (dlg.ShowDialog() == true)
-                foreach (var file in dlg.FileNames)
+            if (dlg.ShowDialog() != true) return;
+
+            // OpenFileAsync (inside OpenInTabAsync) already handles the common failure cases itself
+            // (bad file, wrong password) with its own dialog and keeps going. But OpenInTabAsync's
+            // OWN bookkeeping around it — EnsureActiveTabRegistered / ActivateContext /
+            // RebuildTabStrip — has no try/catch of its own, so an exception from any of those for
+            // file N used to silently abort the whole batch: a multi-select Open of five files could
+            // open one and never attempt the other four, with nothing telling the user why.
+            int failed = 0;
+            foreach (var file in dlg.FileNames)
+            {
+                try
+                {
                     await OpenInTabAsync(file);
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    Telemetry.TrackCrash(ex, "Open.MultiSelect", recoverable: true);
+                }
+            }
+            if (failed > 0)
+                SetStatus(dlg.FileNames.Length == 1
+                    ? "That file could not be opened."
+                    : $"Opened {dlg.FileNames.Length - failed} of {dlg.FileNames.Length} selected file(s) — {failed} failed.");
         }
 
         private void Merge_Click(object sender, RoutedEventArgs e)
@@ -16731,23 +16767,37 @@ namespace TDPdf
 
         private async Task OpenSeparatelyAsync(List<string> found, List<string> tempDirs)
         {
+            // Same reasoning as Open_Click: OpenInTabAsync's own bookkeeping has no try/catch of its
+            // own, so one bad item in the drop used to be able to abort every item after it with no
+            // indication why fewer tabs than expected showed up.
+            int failed = 0;
             foreach (var f in found)
             {
-                if (IsPdfPath(f))
+                try
                 {
-                    await OpenInTabAsync(f);
-                    // A PDF that came out of a dropped .zip lives in an extraction folder TDPdf made
-                    // under %TEMP% and that the OS eventually clears — a working file, not the user's
-                    // document, so it must never be an in-place save target. Dropping OriginalPath
-                    // routes Ctrl+S to Save As. Files dropped directly keep their real path and save
-                    // normally, including the ones a user genuinely keeps under %TEMP%.
-                    if (IsUnderAnyDirectory(f, tempDirs) && _doc is not null &&
-                        string.Equals(_currentFile, f, StringComparison.OrdinalIgnoreCase))
-                        _ctx.OriginalPath = null;
+                    if (IsPdfPath(f))
+                    {
+                        await OpenInTabAsync(f);
+                        // A PDF that came out of a dropped .zip lives in an extraction folder TDPdf made
+                        // under %TEMP% and that the OS eventually clears — a working file, not the user's
+                        // document, so it must never be an in-place save target. Dropping OriginalPath
+                        // routes Ctrl+S to Save As. Files dropped directly keep their real path and save
+                        // normally, including the ones a user genuinely keeps under %TEMP%.
+                        if (IsUnderAnyDirectory(f, tempDirs) && _doc is not null &&
+                            string.Equals(_currentFile, f, StringComparison.OrdinalIgnoreCase))
+                            _ctx.OriginalPath = null;
+                    }
+                    else await OpenImagesAsImportedTabAsync(new[] { f }, System.IO.Path.GetFileName(f));
                 }
-                else await OpenImagesAsImportedTabAsync(new[] { f }, System.IO.Path.GetFileName(f));
+                catch (Exception ex)
+                {
+                    failed++;
+                    Telemetry.TrackCrash(ex, "Open.DroppedSeparately", recoverable: true);
+                }
             }
-            SetStatus($"Opened {found.Count} item(s) in separate tabs");
+            SetStatus(failed == 0
+                ? $"Opened {found.Count} item(s) in separate tabs"
+                : $"Opened {found.Count - failed} of {found.Count} item(s) in separate tabs — {failed} failed");
             // Extracted-zip temp dirs are intentionally NOT deleted here: an imported-image tab keeps
             // no handle, but a PDF opened directly from an extracted folder is read lazily, so the
             // extracted files must survive for the session. The OS clears %TEMP% eventually.
