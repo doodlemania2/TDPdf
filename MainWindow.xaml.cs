@@ -13845,6 +13845,7 @@ namespace TDPdf
             string label = string.IsNullOrEmpty(ctx.DisplayName) ? "Untitled.pdf" : ctx.DisplayName;
             _tabDragGhost = new TabDragGhost(label);
             _tabDragGhost.Show();
+            Telemetry.TrackEvent("TabDrag.Started");
         }
 
         private void UpdateTabDrag(Point screenPos)
@@ -13865,6 +13866,7 @@ namespace TDPdf
             if (pid is int ownPid && ownPid == Environment.ProcessId)
             {
                 // Dropped back on this same window. No in-strip reordering yet — just leave it.
+                Telemetry.TrackEvent("TabDrag.DroppedSameWindow");
                 return;
             }
             if (pid is int otherPid && WindowHitTest.IsOtherTdpdfProcess(otherPid))
@@ -13895,22 +13897,33 @@ namespace TDPdf
             if (ctx.OriginalPath is null)
             {
                 SetStatus("Save this document (Ctrl+Shift+S) before moving it to another window.");
+                Telemetry.TrackEvent("TabDrag.Blocked", new Dictionary<string, string> { ["Reason"] = "Untitled" });
                 return null;
             }
             var res = TdpDialog.ShowYesNo(this,
                 "This document has unsaved changes. Save it and move it to the other window?",
                 "Save && Move", "Cancel",
                 "TDPdf", MessageBoxImage.Question);
-            if (res != MessageBoxResult.Yes) return null;
+            if (res != MessageBoxResult.Yes)
+            {
+                Telemetry.TrackEvent("TabDrag.Blocked", new Dictionary<string, string> { ["Reason"] = "Declined" });
+                return null;
+            }
             await SaveInPlaceAsync();
             // SaveInPlaceAsync already reported the failure via its own dialog/status.
-            return ctx.IsDirty ? null : ctx.OriginalPath;
+            if (ctx.IsDirty)
+            {
+                Telemetry.TrackEvent("TabDrag.Blocked", new Dictionary<string, string> { ["Reason"] = "SaveFailed" });
+                return null;
+            }
+            return ctx.OriginalPath;
         }
 
         private async Task TransferTabToWindowAsync(DocumentContext ctx, int destPid)
         {
+            using var op = Telemetry.StartOperation("TabDrag.TransferToWindow");
             string? path = await ResolveTransferPathAsync(ctx);
-            if (path is null) return;
+            if (path is null) { op.Fail(); return; }   // ResolveTransferPathAsync already tracked why
             string displayName = ctx.DisplayName;
             var (ok, err) = await Task.Run(() =>
             {
@@ -13924,14 +13937,18 @@ namespace TDPdf
             }
             else
             {
+                // err is a pipe/IO failure string (timeout, broken pipe, "no response") — never a
+                // path or document name — and TrackOperation's properties are scrubbed regardless.
+                op.With("PipeError", err ?? "no response").Fail();
                 SetStatus($"Could not move \"{displayName}\" to that window ({err ?? "no response"}).");
             }
         }
 
         private async Task TearOffTabToNewWindowAsync(DocumentContext ctx)
         {
+            using var op = Telemetry.StartOperation("TabDrag.TearOff");
             string? path = await ResolveTransferPathAsync(ctx);
-            if (path is null) return;
+            if (path is null) { op.Fail(); return; }   // ResolveTransferPathAsync already tracked why
             string displayName = ctx.DisplayName;
             try
             {
@@ -13948,6 +13965,10 @@ namespace TDPdf
             }
             catch (Exception ex)
             {
+                // Spawning our own already-installed exe should never fail — if it does, that is
+                // worth a real crash record (sanitized), not just a status line nobody sees again.
+                Telemetry.TrackCrash(ex, "TabDrag.TearOff", recoverable: true);
+                op.Fail(ex);
                 SetStatus($"Could not open a new window: {ex.Message}");
             }
         }
@@ -13958,16 +13979,25 @@ namespace TDPdf
         /// tab genuinely exists here.</summary>
         private async Task<bool> ImportTabFromAnotherWindowAsync(string path)
         {
-            if (!_uiReady || !File.Exists(path)) return false;
+            using var op = Telemetry.StartOperation("TabDrag.Import");
+            if (!_uiReady || !File.Exists(path))
+            {
+                op.With("Reason", !_uiReady ? "NotReady" : "PathMissing").Fail();
+                return false;
+            }
             try
             {
                 if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
                 Activate();
                 await OpenInTabAsync(path);
-                return _ctx.Doc is not null;
+                bool ok = _ctx.Doc is not null;
+                if (!ok) op.Fail();
+                return ok;
             }
-            catch
+            catch (Exception ex)
             {
+                Telemetry.TrackCrash(ex, "TabDrag.Import", recoverable: true);
+                op.Fail(ex);
                 return false;
             }
         }
