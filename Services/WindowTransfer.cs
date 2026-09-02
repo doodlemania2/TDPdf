@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using TDPdf.Diagnostics;
 
 namespace TDPdf.Services
 {
@@ -90,6 +91,12 @@ namespace TDPdf.Services
         private static string PipeNameFor(int processId) =>
             "TDPdf.Window.Pipe." + Environment.UserName + "." + processId;
 
+        // Set once per failure streak, not per retry — the loop backs off and re-tries every
+        // 150ms, and a genuine outage (e.g. the pipe name colliding, or a permissions problem)
+        // would otherwise write one crash record roughly seven times a second for as long as the
+        // window stays open.
+        private bool _loopFailureReported;
+
         private void ServerLoop()
         {
             string pipeName = PipeNameFor(Environment.ProcessId);
@@ -100,6 +107,7 @@ namespace TDPdf.Services
                     using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
                         PipeTransmissionMode.Byte, PipeOptions.None);
                     server.WaitForConnection();
+                    _loopFailureReported = false;   // a connection got through — the outage, if any, is over
                     using var reader = new StreamReader(server);
                     using var writer = new StreamWriter(server) { AutoFlush = true };
                     string? line = reader.ReadLine();
@@ -121,6 +129,11 @@ namespace TDPdf.Services
                         }
                         catch (Exception ex)
                         {
+                            // The import handler itself (MainWindow.ImportTabFromAnotherWindowAsync)
+                            // already tracks its own failures; reaching here means the DISPATCH
+                            // failed — e.g. the UI dispatcher shutting down mid-request — which is
+                            // a different, rarer fault worth its own record.
+                            Telemetry.TrackCrash(ex, "TabDrag.ServerDispatch", recoverable: true);
                             err = ex.Message;
                             ok = false;
                         }
@@ -131,9 +144,14 @@ namespace TDPdf.Services
                         writer.WriteLine("FAIL:bad request");
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
                     if (_stopping) break;
+                    if (!_loopFailureReported)
+                    {
+                        _loopFailureReported = true;
+                        Telemetry.TrackCrash(ex, "TabDrag.ServerLoop", recoverable: true);
+                    }
                     try { Thread.Sleep(150); } catch { /* shutting down */ }
                 }
             }

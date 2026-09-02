@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.0.1] - 2026-09-02
+
+### Added
+
+- **Telemetry for the cross-window tab drag feature added in 1.29.0.0**, which shipped without any: every failure path (a pipe timeout, the target window rejecting the import, `Process.Start` failing to spawn a new window, an unhandled exception in the dispatch) either surfaced only as a status line or was silently swallowed. Drag lifecycle events, timed success/failure operations, and sanitized crash records now cover it, matching every other operation in the app. No behavior changes.
+
 ## [1.29.0.0] - 2026-09-02
 
 ### Added
@@ -1000,6 +1006,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.0.1]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.0...v1.29.0.1
 [1.29.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.1.0...v1.29.0.0
 [1.28.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...v1.28.1.0
 [1.28.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.27.0.0...v1.28.0.0
