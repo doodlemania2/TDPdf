@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.4.0] - 2026-09-02
+
+### Fixed
+
+- **A placed text box can now be reopened for editing from the Text or Edit Existing Text tools.** After being able to move/resize a placed text box, going back to fix its wording didn't work: the Text tool always stacked a new empty box on top of it, and Edit Existing Text reported nothing there — because that tool only searches the PDF's actual saved content, and a placed-but-unsaved text box isn't part of that yet. Both tools now recognize a click on one of your own placed boxes and reopen it, the way Select-tool double-click already did.
+
 ## [1.29.3.0] - 2026-09-02
 
 ### Fixed
@@ -1037,6 +1043,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.3.0...v1.29.4.0
 [1.29.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.2.0...v1.29.3.0
 [1.29.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.1.0...v1.29.2.0
 [1.29.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.1...v1.29.1.0
