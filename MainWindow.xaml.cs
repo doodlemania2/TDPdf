@@ -66,6 +66,15 @@ namespace TDPdf
         private Border _tabStripBorder = null!;
         private StackPanel _tabStrip = null!;
 
+        // Cross-window tab drag (see Services/WindowTransfer.cs). _windowTransferServer answers
+        // another TDPdf window's drop of a tab onto ours; the rest track a drag started FROM one of
+        // our own chips.
+        private WindowTransferServer? _windowTransferServer;
+        private DocumentContext? _tabDragCandidate;
+        private Point _tabDragStartScreen;
+        private bool _isDraggingTab;
+        private TabDragGhost? _tabDragGhost;
+
         private PdfDocument? _doc { get => _ctx.Doc; set => _ctx.Doc = value; }
         private string? _currentFile { get => _ctx.CurrentFile; set => _ctx.CurrentFile = value; }
         private Point _dragStartPoint;
@@ -426,6 +435,10 @@ namespace TDPdf
             ApplyInitialWindowChromeSettings();
             InitializeComponent();
             _tabs.Add(_ctx);
+            // Always on, regardless of the SingleInstanceTabs setting: that one only governs
+            // whether a second LAUNCH folds into this window, but once two windows exist (via a
+            // tab tear-off, or SingleInstanceTabs being off) either one can be a drop target.
+            _windowTransferServer = new WindowTransferServer(Dispatcher, ImportTabFromAnotherWindowAsync);
             var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             if (v != null) VersionLabel.Text = $"v{v.Major}.{v.Minor}.{v.Build}";
             _annotationCanvas = (Canvas)FindName("AnnotationCanvas")!;
@@ -562,9 +575,16 @@ namespace TDPdf
                 SyncSidebarToDocState(hasDoc: _doc is not null, startup: true);
 
                 var args = Environment.GetCommandLineArgs();
-                if (args.Length > 1 && System.IO.File.Exists(args[1]))
-                    await OpenInTabAsync(args[1]);   // an explicitly-requested file wins over the saved session
-                else
+                // GetCommandLineArgs()[0] is always the exe path; --new-window (tab tear-off /
+                // "Move to New Window") shifts the file argument over by one and, being a
+                // single-purpose window spun up around one specific document, must not then pull in
+                // whatever multi-tab session was last saved from some unrelated window.
+                bool isTearOffLaunch = args.Length > 1 &&
+                    string.Equals(args[1], "--new-window", StringComparison.OrdinalIgnoreCase);
+                int fileArgIndex = isTearOffLaunch ? 2 : 1;
+                if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
+                    await OpenInTabAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
+                else if (!isTearOffLaunch)
                     await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 
                 if (App.IsPortable())
@@ -1244,6 +1264,7 @@ namespace TDPdf
             HandleSessionOnClose();
             ThemeManager.ThemeChanged -= ThemeManager_ThemeChanged;
             _hwndSource?.RemoveHook(WndProc);
+            _windowTransferServer?.Dispose();
             base.OnClosing(e);
         }
 
@@ -12250,6 +12271,16 @@ namespace TDPdf
         {
             base.OnPreviewKeyDown(e);
 
+            // A manual (non-OLE) mouse-captured drag doesn't get Escape-to-cancel for free the way
+            // DragDrop.DoDragDrop would — release capture ourselves; LostMouseCapture on the chip
+            // does the rest (drops the ghost window, clears drag state, no transfer attempted).
+            if (_isDraggingTab && e.Key == Key.Escape)
+            {
+                Mouse.Capture(null);
+                e.Handled = true;
+                return;
+            }
+
             // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
             // modifier layer on the board. (upstream KillerPDF v1.6.4)
             KbSyncLayerFromModifiers();
@@ -13519,6 +13550,34 @@ namespace TDPdf
             UpdateTabChrome();
         }
 
+        // Lists every open tab by name in a dropdown, so a document doesn't have to be hunted for
+        // by scrolling past a long run of same-width, ellipsis-truncated chips once many files are
+        // open (the tab strip's ScrollViewer keeps every chip reachable, but not visible at once).
+        private void TabOverflowBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var menu = new ContextMenu
+            {
+                PlacementTarget = (UIElement)sender,
+                Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom
+            };
+            foreach (var ctx in _tabs)
+            {
+                string name = string.IsNullOrEmpty(ctx.DisplayName) ? "Untitled.pdf" : ctx.DisplayName;
+                bool active = ReferenceEquals(ctx, _ctx);
+                var c = ctx;
+                var item = new MenuItem
+                {
+                    Header = (c.IsDirty ? "● " : "") + name,
+                    FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal,
+                    ToolTip = c.OriginalPath ?? name
+                };
+                if (active) item.SetResourceReference(MenuItem.ForegroundProperty, "AccentGreen");
+                item.Click += (_, _) => { if (!ReferenceEquals(_ctx, c)) ActivateContext(c); };
+                menu.Items.Add(item);
+            }
+            menu.IsOpen = true;
+        }
+
         /// <summary>Rebuilds every tab chip and toggles strip visibility.</summary>
         private void RebuildTabStrip()
         {
@@ -13578,9 +13637,56 @@ namespace TDPdf
                 Cursor = Cursors.Hand,
                 Tag = ctx
             };
-            chip.MouseLeftButtonUp += (_, e) =>
+            // Drag this chip onto another TDPdf window to move the document there, or onto empty
+            // desktop / any other app to tear it off into a brand-new TDPdf window \u2014 see
+            // BeginTabDrag/EndTabDrag. A plain click (no drag distance) still just activates the
+            // tab, exactly as before.
+            chip.PreviewMouseLeftButtonDown += (_, e) =>
             {
-                if (!ReferenceEquals(_ctx, ctx)) ActivateContext(ctx);
+                // The close "x" is a child of this chip, so the tunneling Preview event reaches us
+                // first; let it fall through untouched rather than arming a drag over top of it.
+                if (e.OriginalSource is DependencyObject src && IsDescendantOf(src, close)) return;
+                _tabDragCandidate = ctx;
+                _tabDragStartScreen = chip.PointToScreen(e.GetPosition(chip));
+            };
+            chip.PreviewMouseMove += (_, e) =>
+            {
+                if (e.LeftButton != MouseButtonState.Pressed || !ReferenceEquals(_tabDragCandidate, ctx)) return;
+                var nowScreen = chip.PointToScreen(e.GetPosition(chip));
+                if (!_isDraggingTab)
+                {
+                    if (Math.Abs(nowScreen.X - _tabDragStartScreen.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                        Math.Abs(nowScreen.Y - _tabDragStartScreen.Y) < SystemParameters.MinimumVerticalDragDistance)
+                        return;
+                    BeginTabDrag(ctx, chip);
+                }
+                UpdateTabDrag(nowScreen);
+            };
+            chip.PreviewMouseLeftButtonUp += (_, e) =>
+            {
+                if (_isDraggingTab && ReferenceEquals(_tabDragCandidate, ctx))
+                {
+                    EndTabDrag(chip.PointToScreen(e.GetPosition(chip)));
+                    e.Handled = true;
+                }
+                else if (ReferenceEquals(_tabDragCandidate, ctx) && !ReferenceEquals(_ctx, ctx))
+                {
+                    ActivateContext(ctx);
+                }
+                _tabDragCandidate = null;
+            };
+            chip.LostMouseCapture += (_, _) =>
+            {
+                // Reached two ways: our own EndTabDrag already released capture (isDraggingTab is
+                // already false by then, so this is a no-op) or capture was pulled out from under
+                // us \u2014 Escape, Alt-Tab, a dialog stealing focus. Either way, drop the cancel.
+                if (_isDraggingTab)
+                {
+                    _isDraggingTab = false;
+                    _tabDragGhost?.Close();
+                    _tabDragGhost = null;
+                }
+                _tabDragCandidate = null;
             };
 
             // Right-click menu. Rebuilt with the strip on every tab change, so "Close Other Tabs"
@@ -13592,6 +13698,8 @@ namespace TDPdf
                 "Close every open document except this one", "\uE711");
             closeOthers.IsEnabled = _tabs.Count > 1;
             chipMenu.Items.Add(closeOthers);
+            chipMenu.Items.Add(MakeMenuItem("Move to New Window", (_, _) => _ = TearOffTabToNewWindowAsync(ctx), null,
+                "Open this document alone in a new TDPdf window", "\uE78B"));
             chip.ContextMenu = chipMenu;
             return chip;
         }
@@ -13600,6 +13708,7 @@ namespace TDPdf
         private void UpdateTabChrome()
         {
             if (_tabStrip is null) return;
+            UpdateWindowTitle();
             foreach (var ctx in _tabs)
             {
                 if (ctx.Chip is null) continue;
@@ -13612,8 +13721,24 @@ namespace TDPdf
                     tb.Text = (ctx.IsDirty ? "● " : "") + name;
                     tb.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
                     tb.Foreground = active ? BrushResource("TextPrimary") : BrushResource("TextSecondary");
+                    // Chip text truncates at 180px (TextTrimming.CharacterEllipsis in BuildTabChip),
+                    // so a long filename needs a hover to read in full — this is the only place that
+                    // ever refreshes, so it also picks up a rename (e.g. Save As) after tab creation.
+                    ctx.Chip.ToolTip = ctx.OriginalPath ?? name;
                 }
             }
+        }
+
+        // The native window title — what Alt-Tab, the taskbar hover preview and the taskbar
+        // thumbnail label actually show — stayed the static "TDPdf" from XAML forever, so every
+        // open window/instance looked identical there even though the in-app title bar already
+        // carries FileNameLabel. Reflect the active document (and how many other tabs share this
+        // window) so windows become distinguishable at the OS level, not just inside the app.
+        private void UpdateWindowTitle()
+        {
+            if (_ctx.Doc is null) { Title = "TDPdf"; return; }
+            string name = string.IsNullOrEmpty(_ctx.DisplayName) ? "Untitled.pdf" : _ctx.DisplayName;
+            Title = _tabs.Count > 1 ? $"{name} - TDPdf ({_tabs.Count} tabs)" : $"{name} - TDPdf";
         }
 
         /// <summary>Closes a tab (prompting if it has unsaved changes) and activates a neighbor.</summary>
@@ -13640,6 +13765,19 @@ namespace TDPdf
                     "TDPdf", MessageBoxImage.Warning);
                 if (res != MessageBoxResult.Yes) return;
             }
+
+            RemoveTabSilently(ctx);
+            SetStatus("Ready");
+        }
+
+        /// <summary>
+        /// The actual tab-removal mechanics, with no dirty-changes prompt — CloseTab gates on that
+        /// itself before calling this; the cross-window transfer path (below) calls this too, once
+        /// the document is already safely handed to the other window, so nothing is lost either way.
+        /// </summary>
+        private void RemoveTabSilently(DocumentContext ctx)
+        {
+            if (!_tabs.Contains(ctx)) return;
 
             int removedIndex = _tabs.IndexOf(ctx);
             bool closingActive = ReferenceEquals(_ctx, ctx);
@@ -13684,7 +13822,154 @@ namespace TDPdf
                 ActivateContext(_tabs[next]);
             }
             RebuildTabStrip();
-            SetStatus("Ready");
+        }
+
+        // ============================================================
+        // Cross-window tab drag (Services/WindowTransfer.cs)
+        // ============================================================
+        // Each running TDPdf.exe is its own window AND its own process — MainWindow is only ever
+        // constructed once per process (see App.xaml.cs). So "move a tab to another window" and
+        // "tear a tab off into a new window" both mean handing a FILE PATH to a different OS
+        // process, not reparenting a live in-memory document — there is no such thing as a live
+        // TextAnnotation object crossing a process boundary. A dirty tab is therefore saved to its
+        // real file first (prompting, exactly like closing a dirty tab already does) so the target
+        // window opens the same on-disk content the source was showing; what does NOT survive the
+        // move is in-progress undo/redo history, which is an acceptable, explicit trade for the
+        // alternative of either silently flattening annotations behind the user's back or building
+        // a full cross-process document-object serializer.
+
+        private void BeginTabDrag(DocumentContext ctx, Border chip)
+        {
+            _isDraggingTab = true;
+            chip.CaptureMouse();
+            string label = string.IsNullOrEmpty(ctx.DisplayName) ? "Untitled.pdf" : ctx.DisplayName;
+            _tabDragGhost = new TabDragGhost(label);
+            _tabDragGhost.Show();
+        }
+
+        private void UpdateTabDrag(Point screenPos)
+        {
+            _tabDragGhost?.MoveTo(new Point(screenPos.X + 14, screenPos.Y + 18));
+        }
+
+        private void EndTabDrag(Point screenPos)
+        {
+            var ctx = _tabDragCandidate;
+            _isDraggingTab = false;
+            _tabDragGhost?.Close();
+            _tabDragGhost = null;
+            Mouse.Capture(null);
+            if (ctx is null) return;
+
+            int? pid = WindowHitTest.ProcessIdAtScreenPoint(screenPos);
+            if (pid is int ownPid && ownPid == Environment.ProcessId)
+            {
+                // Dropped back on this same window. No in-strip reordering yet — just leave it.
+                return;
+            }
+            if (pid is int otherPid && WindowHitTest.IsOtherTdpdfProcess(otherPid))
+                _ = TransferTabToWindowAsync(ctx, otherPid);
+            else
+                _ = TearOffTabToNewWindowAsync(ctx);
+        }
+
+        /// <summary>
+        /// Resolves a portable, on-disk path for ctx's CURRENT content, saving first if needed.
+        /// Returns null — having left ctx untouched and said why via SetStatus/a dialog — when the
+        /// move should not proceed: an untitled tab with nowhere to save to, a declined save
+        /// prompt, or a save failure.
+        /// </summary>
+        private async Task<string?> ResolveTransferPathAsync(DocumentContext ctx)
+        {
+            // Tab-switch chokepoint: settle whatever the CURRENTLY active tab has in flight before
+            // touching _ctx, exactly like every other tab-switch path in the app.
+            CommitActiveTextBox();
+            ResolveShapePolygon(commit: true);
+            if (!ReferenceEquals(_ctx, ctx)) ActivateContext(ctx);
+
+            if (!ctx.IsDirty)
+            {
+                string? clean = ctx.OriginalPath ?? ctx.CurrentFile;
+                if (clean is not null && File.Exists(clean)) return clean;
+            }
+            if (ctx.OriginalPath is null)
+            {
+                SetStatus("Save this document (Ctrl+Shift+S) before moving it to another window.");
+                return null;
+            }
+            var res = TdpDialog.ShowYesNo(this,
+                "This document has unsaved changes. Save it and move it to the other window?",
+                "Save && Move", "Cancel",
+                "TDPdf", MessageBoxImage.Question);
+            if (res != MessageBoxResult.Yes) return null;
+            await SaveInPlaceAsync();
+            // SaveInPlaceAsync already reported the failure via its own dialog/status.
+            return ctx.IsDirty ? null : ctx.OriginalPath;
+        }
+
+        private async Task TransferTabToWindowAsync(DocumentContext ctx, int destPid)
+        {
+            string? path = await ResolveTransferPathAsync(ctx);
+            if (path is null) return;
+            string displayName = ctx.DisplayName;
+            var (ok, err) = await Task.Run(() =>
+            {
+                bool success = WindowTransferServer.TryImport(destPid, path!, out string? error);
+                return (success, error);
+            });
+            if (ok)
+            {
+                SetStatus($"Moved \"{displayName}\" to another window.");
+                RemoveTabSilently(ctx);
+            }
+            else
+            {
+                SetStatus($"Could not move \"{displayName}\" to that window ({err ?? "no response"}).");
+            }
+        }
+
+        private async Task TearOffTabToNewWindowAsync(DocumentContext ctx)
+        {
+            string? path = await ResolveTransferPathAsync(ctx);
+            if (path is null) return;
+            string displayName = ctx.DisplayName;
+            try
+            {
+                // Assembly.Location always reads empty for a single-file-published exe (IL3000),
+                // so this has to be ProcessPath, not a Location fallback — and it needs no fallback
+                // of its own since ProcessPath is reliably set for the process that is running us.
+                string exePath = Environment.ProcessPath!;
+                var psi = new ProcessStartInfo(exePath) { UseShellExecute = false };
+                psi.ArgumentList.Add("--new-window");
+                psi.ArgumentList.Add(path!);
+                Process.Start(psi);
+                SetStatus($"Opened \"{displayName}\" in a new window.");
+                RemoveTabSilently(ctx);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Could not open a new window: {ex.Message}");
+            }
+        }
+
+        /// <summary>Handles an IMPORT request arriving on this window's WindowTransferServer pipe —
+        /// i.e. another TDPdf window's drag landed on us. Runs on the UI thread (dispatched there by
+        /// the server); the pipe thread blocks on the returned Task so it only replies OK once the
+        /// tab genuinely exists here.</summary>
+        private async Task<bool> ImportTabFromAnotherWindowAsync(string path)
+        {
+            if (!_uiReady || !File.Exists(path)) return false;
+            try
+            {
+                if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+                Activate();
+                await OpenInTabAsync(path);
+                return _ctx.Doc is not null;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private void CancelDocumentWork(bool cancelWindowOperation)

@@ -1269,9 +1269,25 @@
                 Background="{DynamicResource PanelBackground}"
                 BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,0,1"
                 Padding="8,0,8,0">
-            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                <StackPanel x:Name="TabStrip" Orientation="Horizontal"/>
-            </ScrollViewer>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ScrollViewer Grid.Column="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="TabStrip" Orientation="Horizontal"/>
+                </ScrollViewer>
+                <!-- Every open tab by name, so a document doesn't have to be hunted for by scrolling
+                     past a long run of truncated, same-width chips once many files are open. -->
+                <Button x:Name="TabOverflowBtn" Grid.Column="1" Content="&#xE70D;"
+                        FontFamily="Segoe MDL2 Assets" FontSize="10"
+                        Width="24" Height="24" Margin="4,4,0,4" Padding="0"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="{DynamicResource TextSecondary}" Cursor="Hand"
+                        Click="TabOverflowBtn_Click"
+                        ToolTip="List all open tabs"
+                        AutomationProperties.Name="List all open tabs"/>
+            </Grid>
         </Border>
 
         <Grid Grid.Row="4" x:Name="MainContentGrid" KeyboardNavigation.TabNavigation="Continue">
