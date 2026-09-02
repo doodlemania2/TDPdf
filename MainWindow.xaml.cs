@@ -7277,6 +7277,13 @@ namespace TDPdf
             {
                 var btn = new Button
                 {
+                    // A bare Button with no Style falls back to the OS default chrome, which does
+                    // not reliably respect Background/Foreground on this theme — it rendered as an
+                    // unreadable solid block. ToolbarButton's Template is a plain
+                    // Border+ContentPresenter bound to Background/BorderBrush/Foreground via
+                    // TemplateBinding, so it actually shows what's set below.
+                    Style = (Style)FindResource("ToolbarButton"),
+                    Padding = new Thickness(0),
                     Content = glyph,
                     FontFamily = new FontFamily("Segoe UI"),
                     FontWeight = fw,
@@ -7571,6 +7578,10 @@ namespace TDPdf
             {
                 var btn = new Button
                 {
+                    // See the matching comment on ShowTextSettings' AddStyleToggle: a bare Button
+                    // with no Style uses the OS default chrome, not this Background/Foreground.
+                    Style = (Style)FindResource("ToolbarButton"),
+                    Padding = new Thickness(0),
                     Content = glyph,
                     FontFamily = new FontFamily("Segoe MDL2 Assets"),
                     FontSize = 14,
