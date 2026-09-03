@@ -11766,8 +11766,13 @@ namespace TDPdf
                     System.Windows.Threading.DispatcherPriority.Background,
                     () =>
                     {
-                        if (ReferenceEquals(_activeTextBox, tb))
-                            CommitTextEdit();
+                        if (!ReferenceEquals(_activeTextBox, tb)) return;
+                        // Same reasoning as TextBox_LostFocus: the style bar is part of this same
+                        // edit, not a click-away.
+                        if (Keyboard.FocusedElement is DependencyObject nf && _textSettingsBar is not null
+                            && IsDescendantOf(nf, _textSettingsBar))
+                            return;
+                        CommitTextEdit();
                     });
             }
         }
@@ -12451,8 +12456,16 @@ namespace TDPdf
                     System.Windows.Threading.DispatcherPriority.Background,
                     () =>
                     {
-                        if (ReferenceEquals(_activeTextBox, tb))
-                            CommitActiveTextBox();
+                        if (!ReferenceEquals(_activeTextBox, tb)) return;
+                        // Clicking Font/Size/Bold/Italic in the style bar moves keyboard focus off
+                        // this box, which used to read as "the user clicked away" and silently
+                        // committed mid-edit — ending the session and switching to Select the
+                        // instant someone tried to tweak a style. Interacting with the bar is the
+                        // SAME editing session, not leaving it.
+                        if (Keyboard.FocusedElement is DependencyObject nf && _textSettingsBar is not null
+                            && IsDescendantOf(nf, _textSettingsBar))
+                            return;
+                        CommitActiveTextBox();
                     });
             }
         }
