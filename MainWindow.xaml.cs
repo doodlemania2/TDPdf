@@ -7282,6 +7282,12 @@ namespace TDPdf
                     // unreadable solid block. ToolbarButton's Template is a plain
                     // Border+ContentPresenter bound to Background/BorderBrush/Foreground via
                     // TemplateBinding, so it actually shows what's set below.
+                    //
+                    // Inactive state deliberately does NOT use a literal Transparent background —
+                    // it read as an illegible solid black square against the settings bar's own
+                    // near-black fill even after the Style fix above. Every other button in the app
+                    // that reliably shows its glyph (the main toolbar, ColorPicker's OK/Cancel) uses
+                    // a real, if subtle, panel color at rest instead of true transparency.
                     Style = (Style)FindResource("ToolbarButton"),
                     Padding = new Thickness(0),
                     Content = glyph,
@@ -7295,7 +7301,7 @@ namespace TDPdf
                     Cursor = Cursors.Hand,
                     Background = active
                         ? (SolidColorBrush)FindResource("AccentGreenDim")
-                        : Brushes.Transparent,
+                        : (SolidColorBrush)FindResource("BgPanel"),
                     Foreground = active
                         ? (SolidColorBrush)FindResource("AccentGreen")
                         : (SolidColorBrush)FindResource("TextPrimary"),
