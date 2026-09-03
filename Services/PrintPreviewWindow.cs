@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Printing;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -364,7 +366,7 @@ namespace TDPdf.Services
             int secPrinter = panel.Children.Count;
 
             panel.Children.Add(Label("Printer"));
-            var printerCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            var printerCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 0), Height = 26 };
             ApplyComboStyle(printerCombo);
             printerCombo.SelectionChanged += (s, _) =>
             {
@@ -384,7 +386,21 @@ namespace TDPdf.Services
                 }
             };
             _printerCombo = printerCombo;
-            panel.Children.Add(printerCombo);
+
+            // Opens the selected printer's own driver UI (paper/quality/color/tray settings) —
+            // the same "Properties"/"Preferences" dialog every native Windows print dialog exposes.
+            // We don't model that UI ourselves; it's entirely the driver's, reached via DocumentProperties.
+            var printerPropsBtn = MakeButton("Properties…", false);
+            printerPropsBtn.Padding = new Thickness(8, 4, 8, 4);
+            printerPropsBtn.FontSize = 11;
+            printerPropsBtn.Margin = new Thickness(6, 0, 0, 0);
+            printerPropsBtn.Click += (_, _) => ShowPrinterProperties();
+
+            var printerRow = new DockPanel { Margin = new Thickness(0, 4, 0, 12), LastChildFill = true };
+            DockPanel.SetDock(printerPropsBtn, Dock.Right);
+            printerRow.Children.Add(printerPropsBtn);
+            printerRow.Children.Add(printerCombo);
+            panel.Children.Add(printerRow);
 
             // Paper size. "Match document" keeps today's automatic behavior (driver default media);
             // any other choice drives both the preview sheet and the spooled ticket.
@@ -827,6 +843,49 @@ namespace TDPdf.Services
             _duplexCombo.Opacity   = ok ? 1.0 : 0.5;
             _duplexCombo.ToolTip   = ok ? null : "The selected printer doesn't report two-sided support.";
             if (!ok) { _duplexCombo.SelectedIndex = 0; _duplex = false; }
+        }
+
+        // ---- Printer driver "Properties" dialog -------------------------------
+        // The driver-specific preferences dialog (paper/quality/color/tray, an "Advanced..."
+        // button inside it) — not the shell's multi-tab "Printer Properties" from Devices &
+        // Printers. This is what every native print dialog's own "Properties"/"Preferences"
+        // button opens, via the classic winspool DocumentProperties round-trip: query the
+        // devmode buffer size, allocate it, then prompt with DM_IN_PROMPT | DM_OUT_BUFFER.
+
+        [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
+
+        [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern bool ClosePrinter(IntPtr hPrinter);
+
+        [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern int DocumentProperties(
+            IntPtr hwnd, IntPtr hPrinter, string pDeviceName,
+            IntPtr pDevModeOutput, IntPtr pDevModeInput, int fMode);
+
+        private const int DM_IN_PROMPT  = 4;
+        private const int DM_OUT_BUFFER = 2;
+
+        private void ShowPrinterProperties()
+        {
+            if (_queue == null) return;
+            string printerName = _queue.FullName;
+
+            if (!OpenPrinter(printerName, out IntPtr hPrinter, IntPtr.Zero)) return;
+            try
+            {
+                IntPtr owner = new WindowInteropHelper(this).Handle;
+                int size = DocumentProperties(owner, hPrinter, printerName, IntPtr.Zero, IntPtr.Zero, 0);
+                if (size <= 0) return;
+
+                IntPtr devMode = Marshal.AllocHGlobal(size);
+                try
+                {
+                    DocumentProperties(owner, hPrinter, printerName, devMode, devMode, DM_IN_PROMPT | DM_OUT_BUFFER);
+                }
+                finally { Marshal.FreeHGlobal(devMode); }
+            }
+            finally { ClosePrinter(hPrinter); }
         }
 
         // Fills the paper combo from the current queue's capabilities. Index 0 is always the
