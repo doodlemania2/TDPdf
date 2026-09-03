@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.6.0] - 2026-09-02
+
+### Added
+
+- **Bold and Italic toggle buttons in the text style bar**, next to Font and Size. Character styling already existed end-to-end (rendering, saving, undo) — Ctrl+B/Ctrl+I while actively typing was the only way to set it. The bar now has real buttons for it.
+
+### Fixed
+
+- **Font, size, color, bold, and italic changes made while a text box was still open (not yet committed) didn't apply.** Every style control only ever updated the *next* box's defaults — the box on screen never changed. Only the whiteout-fill toggle had a live-update path; the others now share it.
+- **Changing only the style of existing PDF text (Edit Existing Text tool), with no wording change, was silently discarded.** The commit path bailed out early on "no changes" whenever the *text* was unchanged, even if color/bold/italic were — and when it didn't bail, it rebuilt the saved annotation from the original detected style instead of what was actually set, so even a style change that reached commit was thrown away. Color was never captured at all (hardcoded black).
+- **The style bar never appeared for the Edit Existing Text tool.** It only showed for the Text tool; Edit Existing Text relied entirely on a shared selection state that isn't set during a live edit, so the bar simply never showed up as you'd expect switching into or working in that tool.
+- **Clicking a Font/Size/Bold/Italic control in the style bar while a text box was open silently ended the edit.** Those controls can take keyboard focus, and losing focus was already treated as "user clicked away, commit it" — so adjusting a style mid-edit finished the box early and switched to Select mode. It then showed as the box's selection highlight (a translucent green fill) wrapping a short box, which read as the whole thing turning green. The style bar is now recognized as part of the same edit, not a click-away.
+- **The new Bold/Italic buttons (and, it turns out, the Shape tool's existing rectangle/ellipse/line/polygon buttons) rendered as illegible solid blocks.** A bare button with no explicit style falls back to Windows' default chrome, which doesn't reliably respect this app's dark colors. Both now use the toolbar's real button template.
+- **The text and shape style bars used a hardcoded near-black background** instead of a theme color — darker than every other surface in the app and never actually themed (would have rendered black-on-white in Light/HighContrast). Now uses the same panel color as the rest of the UI.
+- **Grid view page display had no horizontal scrollbar**, so a page rendered wider than a shrunk window (e.g. a high manual zoom) clipped content with no way to scroll to see it. The scrollbar was disabled on the theory it was needed for page wrapping; wrapping is actually driven by an explicit panel width, so disabling it only ever hid genuine overflow.
+- **A corrupted `user.config` could crash the app on startup even after the existing self-heal ran.** The self-heal correctly detects and resets a corrupt settings file on the *first* settings read, but a .NET quirk means the configuration system can keep failing identically for every later read in the same process even after the file is gone. The next read after the self-heal — checking single-instance mode — wasn't guarded and crashed before any window existed. Found via fleet telemetry.
+- **Typing certain text and committing it could freeze the app for a second**, and clicks made during the freeze would appear to do nothing until several had queued up. The glyph-coverage check that runs on every text commit reads a font file from disk on a cache miss — real, unbounded disk I/O that was running synchronously on the UI thread, directly in the mouse-click handler that commits the box. Moved off the UI thread.
+
 ## [1.29.5.0] - 2026-09-02
 
 ### Added
@@ -1053,6 +1071,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.5.0...v1.29.6.0
 [1.29.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.4.0...v1.29.5.0
 [1.29.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.3.0...v1.29.4.0
 [1.29.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.2.0...v1.29.3.0

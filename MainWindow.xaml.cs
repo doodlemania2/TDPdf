@@ -2858,9 +2858,12 @@ namespace TDPdf
             // Continuous manages its own rendering through SetupContinuousView; nothing to do here.
             if (_viewMode == ViewMode.Continuous) return;
 
-            // Grid wraps to fit the viewport (no horizontal scrollbar); other modes use Auto.
-            PagePreviewPanel.HorizontalScrollBarVisibility =
-                _viewMode == ViewMode.Grid ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+            // Row-wrapping in Grid/TwoPage comes from the explicit _pageContentPanel.Width set in
+            // RenderAdditionalPages, not from constraining the ScrollViewer's available width — so
+            // Auto never breaks the wrap. Disabling it here used to hide real overflow whenever a
+            // page's rendered width (pagesPerRow is clamped to a minimum of 1) exceeded the shrunk
+            // viewport at a manual zoom, clipping content with no way to scroll to it.
+            PagePreviewPanel.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
 
             if (_viewMode == ViewMode.Grid || _viewMode == ViewMode.TwoPage)
             {
@@ -3111,10 +3114,10 @@ namespace TDPdf
             // lay out, so bail after clearing any stale tiles.
             if (_doc.PageCount == 0) return;
 
-            // Upstream v1.6.3: entering Continuous must restore its own scrollbar setup. Grid disables
-            // the horizontal scrollbar (RefreshPageView), and because RefreshPageView early-returns for
-            // Continuous that override would otherwise leak in and clip zoomed pages with no way to
-            // scroll sideways. Reset to Auto.
+            // Upstream v1.6.3: entering Continuous must restore its own scrollbar setup, since
+            // RefreshPageView (which now always leaves this Auto) early-returns for Continuous and
+            // never gets a chance to set it. Explicit here so Continuous doesn't inherit whatever a
+            // prior mode left behind.
             PagePreviewPanel.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
             PagePreviewPanel.VerticalScrollBarVisibility   = ScrollBarVisibility.Auto;
 
@@ -6238,8 +6241,10 @@ namespace TDPdf
             else
                 HideDrawSettings();
 
-            // Show/hide text tool settings bar
-            if (tool == EditTool.Text)
+            // Show/hide text tool settings bar. Edit Existing Text shares it with the Text tool —
+            // it used to never show it at all outside of an active SelectAnnotation binding, which
+            // read as the bar "not reappearing" when switching into or back onto that tool.
+            if (tool is EditTool.Text or EditTool.EditText)
                 ShowTextSettings();
             else
                 HideTextSettings();
@@ -7149,7 +7154,10 @@ namespace TDPdf
 
             _cropPopup = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a)),
+                // Was a hardcoded near-black (#1a1a1a) - darker than every other surface in the
+                // app's own dark palette and dead wrong in Light/HighContrast (never actually
+                // themed). BgPanel is the same resource already used for inputs/panels elsewhere.
+                Background = (SolidColorBrush)FindResource("BgPanel"),
                 BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                 BorderThickness = new Thickness(0, 0, 0, 1),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -7202,27 +7210,50 @@ namespace TDPdf
             double curSize = target?.FontSize ?? editTarget?.FontSize ?? _textFontSize;
             string curFont = target?.FontName ?? editTarget?.FontName ?? _textFontFamily;
             Color curColor = target?.GetColor() ?? editTarget?.GetColor() ?? _textColor;
+            bool curBold = target?.Bold ?? editTarget?.Bold ?? _textBold;
+            bool curItalic = target?.Italic ?? editTarget?.Italic ?? _textItalic;
             bool curFill = target?.HasFill ?? _textWhiteout;
             Color curFillColor = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
 
+            // None of target/editTarget selected means there's either nothing placed yet (tool
+            // defaults only) OR a live, uncommitted TextBox is open (Text or Edit-Text tool) —
+            // _styleTarget is null for the whole duration of a live edit (ClearSelection sets it
+            // so on entry). Without pushing onto the live box too, every one of these silently
+            // changed only the NEXT box's defaults while leaving the box on screen untouched.
             void ApplyFont(string f)
             {
                 _textFontFamily = f;
                 if (target is not null) { target.FontName = f; RestyleLive(target); }
                 else if (editTarget is not null) { editTarget.FontName = f; RestyleLive(editTarget); }
+                else UpdateActiveTextBoxStyle();
             }
             void ApplySize(double v)
             {
                 _textFontSize = v;
                 if (target is not null) { target.FontSize = v; RestyleLive(target); }
                 else if (editTarget is not null) { editTarget.FontSize = v; RestyleLive(editTarget); }
+                else UpdateActiveTextBoxStyle();
             }
             void ApplyColor(Color c)
             {
                 _textColor = c;
                 if (target is not null) { target.SetColor(c); RestyleReselect(target); }
                 else if (editTarget is not null) { editTarget.SetColor(c); RestyleReselect(editTarget); }
-                else ShowTextSettings();
+                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
+            }
+            void ApplyBold(bool on)
+            {
+                _textBold = on;
+                if (target is not null) { target.Bold = on; RestyleReselect(target); }
+                else if (editTarget is not null) { editTarget.Bold = on; RestyleReselect(editTarget); }
+                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
+            }
+            void ApplyItalic(bool on)
+            {
+                _textItalic = on;
+                if (target is not null) { target.Italic = on; RestyleReselect(target); }
+                else if (editTarget is not null) { editTarget.Italic = on; RestyleReselect(editTarget); }
+                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
             }
             void ApplyFill(bool on)
             {
@@ -7243,6 +7274,48 @@ namespace TDPdf
             }
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 4) };
+
+            // Bold / italic toggle, styled like the shape-kind toggles in ShowShapeSettings.
+            void AddStyleToggle(string glyph, bool active, Action<bool> apply, string tip, FontWeight fw, FontStyle fs)
+            {
+                var btn = new Button
+                {
+                    // A bare Button with no Style falls back to the OS default chrome, which does
+                    // not reliably respect Background/Foreground on this theme — it rendered as an
+                    // unreadable solid block. ToolbarButton's Template is a plain
+                    // Border+ContentPresenter bound to Background/BorderBrush/Foreground via
+                    // TemplateBinding, so it actually shows what's set below.
+                    //
+                    // Inactive state deliberately does NOT use a literal Transparent background —
+                    // it read as an illegible solid black square against the settings bar's own
+                    // near-black fill even after the Style fix above. Every other button in the app
+                    // that reliably shows its glyph (the main toolbar, ColorPicker's OK/Cancel) uses
+                    // a real, if subtle, panel color at rest instead of true transparency.
+                    Style = (Style)FindResource("ToolbarButton"),
+                    Padding = new Thickness(0),
+                    Content = glyph,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    FontWeight = fw,
+                    FontStyle = fs,
+                    FontSize = 13,
+                    Width = 26, Height = 24,
+                    Margin = new Thickness(2, 0, 2, 0),
+                    ToolTip = tip,
+                    Cursor = Cursors.Hand,
+                    // BgHover, not BgPanel: the settings bar's own background is BgPanel now, so
+                    // matching it here would blend this control back into the bar.
+                    Background = active
+                        ? (SolidColorBrush)FindResource("AccentGreenDim")
+                        : (SolidColorBrush)FindResource("BgHover"),
+                    Foreground = active
+                        ? (SolidColorBrush)FindResource("AccentGreen")
+                        : (SolidColorBrush)FindResource("TextPrimary"),
+                    BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
+                    BorderThickness = new Thickness(1)
+                };
+                btn.Click += (_, _) => apply(!active);
+                panel.Children.Add(btn);
+            }
 
             // Font family label
             panel.Children.Add(new TextBlock
@@ -7310,6 +7383,17 @@ namespace TDPdf
                     ApplySize(v);
             };
             panel.Children.Add(sizeBox);
+
+            // Separator
+            panel.Children.Add(new Rectangle
+            {
+                Width = 1, Fill = (SolidColorBrush)FindResource("BorderDim"),
+                Margin = new Thickness(8, 2, 8, 2)
+            });
+
+            // Bold / Italic
+            AddStyleToggle("B", curBold, ApplyBold, "Bold", FontWeights.Bold, FontStyles.Normal);
+            AddStyleToggle("I", curItalic, ApplyItalic, "Italic", FontWeights.Normal, FontStyles.Italic);
 
             // Separator
             panel.Children.Add(new Rectangle
@@ -7404,7 +7488,10 @@ namespace TDPdf
 
             _textSettingsBar = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a)),
+                // Was a hardcoded near-black (#1a1a1a) - darker than every other surface in the
+                // app's own dark palette and dead wrong in Light/HighContrast (never actually
+                // themed). BgPanel is the same resource already used for inputs/panels elsewhere.
+                Background = (SolidColorBrush)FindResource("BgPanel"),
                 BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                 BorderThickness = new Thickness(0, 0, 0, 1),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -7505,6 +7592,10 @@ namespace TDPdf
             {
                 var btn = new Button
                 {
+                    // See the matching comment on ShowTextSettings' AddStyleToggle: a bare Button
+                    // with no Style uses the OS default chrome, not this Background/Foreground.
+                    Style = (Style)FindResource("ToolbarButton"),
+                    Padding = new Thickness(0),
                     Content = glyph,
                     FontFamily = new FontFamily("Segoe MDL2 Assets"),
                     FontSize = 14,
@@ -7512,9 +7603,12 @@ namespace TDPdf
                     Margin = new Thickness(2, 0, 2, 0),
                     ToolTip = toolTip,
                     Cursor = Cursors.Hand,
+                    // BgHover, not Transparent: the settings bar's own background is BgPanel, so a
+                    // literal-transparent button would blend back into it (see ShowTextSettings'
+                    // AddStyleToggle, which hit exactly this).
                     Background = curKind == kind
                         ? (SolidColorBrush)FindResource("AccentGreenDim")
-                        : Brushes.Transparent,
+                        : (SolidColorBrush)FindResource("BgHover"),
                     Foreground = curKind == kind
                         ? (SolidColorBrush)FindResource("AccentGreen")
                         : (SolidColorBrush)FindResource("TextPrimary"),
@@ -7642,7 +7736,10 @@ namespace TDPdf
 
             _shapeSettingsBar = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a)),
+                // Was a hardcoded near-black (#1a1a1a) - darker than every other surface in the
+                // app's own dark palette and dead wrong in Light/HighContrast (never actually
+                // themed). BgPanel is the same resource already used for inputs/panels elsewhere.
+                Background = (SolidColorBrush)FindResource("BgPanel"),
                 BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                 BorderThickness = new Thickness(0, 0, 0, 1),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -11506,12 +11603,21 @@ namespace TDPdf
                     .FirstOrDefault(a => a.OriginalBounds.Contains(canvasPos));
                 if (existingEdit is not null)
                 {
+                    // Seed the tool-default style fields from what's actually on this run, so the
+                    // style bar (shown below) reflects its real style rather than stale leftovers
+                    // from whatever was last edited — same as PlaceTextBox's re-edit path (#135).
+                    _textFontFamily = existingEdit.FontName;
+                    _textFontSize = existingEdit.FontSize;
+                    _textBold = existingEdit.Bold;
+                    _textItalic = existingEdit.Italic;
+                    _textColor = existingEdit.GetColor();
+
                     var reb = existingEdit.OriginalBounds;
                     var retb = new TextBox
                     {
                         Text = existingEdit.NewContent,
                         Background = new SolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
-                        Foreground = Brushes.Black,
+                        Foreground = new SolidColorBrush(_textColor),
                         BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                         BorderThickness = new Thickness(2),
                         FontFamily = new FontFamily(existingEdit.FontName),
@@ -11540,6 +11646,10 @@ namespace TDPdf
                     Canvas.SetTop(retb, reb.Y);
                     _textEditorCanvas.Children.Add(retb);
                     _activeTextBox = retb;
+                    // Neither this re-edit branch nor the fresh-hit branch below ever called this —
+                    // the style bar (font/color/bold/italic) never appeared for the Edit-Text tool
+                    // at all, which is what made it look like it "didn't reappear" on reselect.
+                    ShowTextSettings();
                     var rewo = new Rectangle
                     {
                         Fill = Brushes.White,
@@ -11564,12 +11674,22 @@ namespace TDPdf
                 var hit = _contentEditor.FindTextRunAt(_currentFile, pageIdx, canvasPos, renderW, renderH);
                 if (hit is null) { SetStatus("No text found at this position"); return; }
 
+                // Seed the tool-default style fields from what was detected on this run (see the
+                // matching comment in the re-edit branch above). TextRunHit doesn't carry a
+                // detected color — PDF text color isn't recovered here — so black, matching the
+                // hardcoded Foreground this replaces.
+                _textFontFamily = hit.FontName;
+                _textFontSize = hit.FontSize;
+                _textBold = hit.Bold;
+                _textItalic = hit.Italic;
+                _textColor = Colors.Black;
+
                 // Show editable TextBox over the line
                 var tb = new TextBox
                 {
                     Text = hit.Text,
                     Background = FrozenSolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
-                    Foreground = Brushes.Black,
+                    Foreground = new SolidColorBrush(_textColor),
                     BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                     BorderThickness = new Thickness(2),
                     FontFamily = new FontFamily(hit.FontName),
@@ -11599,6 +11719,7 @@ namespace TDPdf
                 Canvas.SetTop(tb, hit.CanvasBounds.Y);
                 _textEditorCanvas.Children.Add(tb);
                 _activeTextBox = tb;
+                ShowTextSettings();
 
                 // Show white-out behind the edit box so original text is hidden
                 var whiteout = new Rectangle
@@ -11665,8 +11786,13 @@ namespace TDPdf
                     System.Windows.Threading.DispatcherPriority.Background,
                     () =>
                     {
-                        if (ReferenceEquals(_activeTextBox, tb))
-                            CommitTextEdit();
+                        if (!ReferenceEquals(_activeTextBox, tb)) return;
+                        // Same reasoning as TextBox_LostFocus: the style bar is part of this same
+                        // edit, not a click-away.
+                        if (Keyboard.FocusedElement is DependencyObject nf && _textSettingsBar is not null
+                            && IsDescendantOf(nf, _textSettingsBar))
+                            return;
+                        CommitTextEdit();
                     });
             }
         }
@@ -11699,17 +11825,40 @@ namespace TDPdf
             if (whiteout is not null)
                _textEditorCanvas.Children.Remove(whiteout);
 
-            if (string.IsNullOrEmpty(newText) || newText == ctx.OriginalText)
+            if (string.IsNullOrEmpty(newText))
             {
-                SetStatus(newText == ctx.OriginalText ? "No changes made" : "Text edit cancelled (empty)");
+                SetStatus("Text edit cancelled (empty)");
+                return;
+            }
+
+            // The style bar can change font/size/color/bold/italic without the wording changing at
+            // all (e.g. just recoloring existing text) — bailing out purely on unchanged TEXT used
+            // to silently discard every style-only edit before it ever reached the code below.
+            Color tbColor = tb.Foreground is SolidColorBrush scb ? scb.Color : Colors.Black;
+            bool styleChanged = tb.FontFamily.Source != ctx.FontName
+                || Math.Abs(tb.FontSize - ctx.FontSize) > 0.01
+                || (tb.FontWeight == FontWeights.Bold) != ctx.Bold
+                || (tb.FontStyle == FontStyles.Italic) != ctx.Italic
+                || tbColor != (ctx.ExistingAnnotation?.GetColor() ?? Colors.Black);
+            if (newText == ctx.OriginalText && !styleChanged)
+            {
+                SetStatus("No changes made");
                 return;
             }
 
             if (ctx.ExistingAnnotation is not null)
             {
-                // Update the existing annotation in place — avoids duplicate whiteout layers
+                // Update the existing annotation in place — avoids duplicate whiteout layers.
+                // Style is read back off the live box, not the pre-edit ctx values — the user may
+                // have changed font/size/color/bold/italic in the style bar mid-edit, and the box
+                // in front of them is the truth (same reasoning as CommitActiveTextBox's #135 fix).
                 PushPageSnapshot(ctx.ExistingAnnotation.PageIndex);
                 ctx.ExistingAnnotation.NewContent = newText;
+                ctx.ExistingAnnotation.FontSize = tb.FontSize;
+                ctx.ExistingAnnotation.FontName = tb.FontFamily.Source;
+                ctx.ExistingAnnotation.Bold = tb.FontWeight == FontWeights.Bold;
+                ctx.ExistingAnnotation.Italic = tb.FontStyle == FontStyles.Italic;
+                ctx.ExistingAnnotation.SetColor(tbColor);
                 MarkDirty();
             }
             else
@@ -11721,11 +11870,12 @@ namespace TDPdf
                     Position = ctx.Position,
                     NewContent = newText,
                     OriginalContent = ctx.OriginalText,
-                    FontSize = ctx.FontSize,
-                    FontName = ctx.FontName,
-                    Bold = ctx.Bold,
-                    Italic = ctx.Italic
+                    FontSize = tb.FontSize,
+                    FontName = tb.FontFamily.Source,
+                    Bold = tb.FontWeight == FontWeights.Bold,
+                    Italic = tb.FontStyle == FontStyles.Italic
                 };
+                edit.SetColor(tbColor);
                 AddAnnotation(edit);
             }
             RenderAllAnnotations(ctx.PageIndex);
@@ -11748,25 +11898,38 @@ namespace TDPdf
         /// </summary>
         private void WarnIfGlyphsWillBeLost(string preferredFamily, string? text)
         {
-            try
+            if (string.IsNullOrEmpty(text)) return;
+
+            // FontCoverage.PickFamily/UncoveredChars are synchronous disk I/O on a cache miss (its
+            // own comment: "a miss costs a full read of the font file, and a CJK collection is
+            // tens of megabytes"). This is called from CommitActiveTextBox/CommitTextEdit, which
+            // run directly on the UI thread from the mouse-click handler that committed the box —
+            // so a cold-cache lookup blocked every click on the page for however long that read
+            // took, felt like a hang, and any clicks made during it queued up and landed on
+            // whatever the UI looked like once it unblocked. Off the UI thread entirely; only the
+            // status text and dialog (already deferred below) touch it.
+            Task.Run(() =>
             {
-                if (string.IsNullOrEmpty(text)) return;
-                string family = FontCoverage.PickFamily(preferredFamily, text);
-                string missing = FontCoverage.UncoveredChars(family, text);
+                string missing;
+                try
+                {
+                    string family = FontCoverage.PickFamily(preferredFamily, text);
+                    missing = FontCoverage.UncoveredChars(family, text);
+                }
+                catch { return; /* the warning must never be the thing that breaks placing text */ }
                 if (missing.Length == 0) return;
 
-                SetStatus($"No installed font can draw: {missing} - these will save as empty boxes");
-
-                // Deferred rather than shown inline: CommitActiveTextBox / CommitTextEdit are the
-                // app's "settle any in-progress edit" chokepoint and run from inside save, print,
-                // close, tool-switch and tab-switch paths. A modal dialog on that stack would block
-                // the operation that asked for the settle. Background priority lets the caller
-                // finish, then raises the warning.
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     try
                     {
                         if (!IsLoaded || PresentationSource.FromVisual(this) is null) return;
+                        SetStatus($"No installed font can draw: {missing} - these will save as empty boxes");
+                        // Deferred rather than shown inline: CommitActiveTextBox / CommitTextEdit
+                        // are the app's "settle any in-progress edit" chokepoint and run from
+                        // inside save, print, close, tool-switch and tab-switch paths. A modal
+                        // dialog on that stack would block the operation that asked for the settle.
+                        // Background priority lets the caller finish, then raises the warning.
                         TdpDialog.Show(this,
                             "Some characters in this text have no glyph in any installed font:\n\n" +
                             missing + "\n\n" +
@@ -11778,8 +11941,7 @@ namespace TDPdf
                     }
                     catch { /* window went away between the commit and the dispatch */ }
                 }), System.Windows.Threading.DispatcherPriority.Background);
-            }
-            catch { /* the warning must never be the thing that breaks placing text */ }
+            });
         }
 
         private void EditImageAtPosition(Point canvasPos, int pageIdx)
@@ -12251,6 +12413,25 @@ namespace TDPdf
                 : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
         }
 
+        /// <summary>
+        /// Reflects font/size/color/bold/italic/underline onto the live editing box, if any — for
+        /// BOTH a freshly-placed box (PlacedTextContext) and an in-progress PDF-text edit
+        /// (TextEditContext), since the style bar applies to both tools identically. Without this,
+        /// the settings bar only ever updated the NEXT box's defaults while a currently-open box
+        /// sat on screen unchanged.
+        /// </summary>
+        private void UpdateActiveTextBoxStyle()
+        {
+            if (_activeTextBox is not { } tb || tb.Tag is not (PlacedTextContext or TextEditContext)) return;
+            tb.FontFamily = new FontFamily(_textFontFamily);
+            tb.FontSize = _textFontSize;
+            tb.FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal;
+            tb.FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal;
+            tb.TextDecorations = _textUnderline ? TextDecorations.Underline : null;
+            tb.Foreground = new SolidColorBrush(_textColor);
+            tb.CaretBrush = new SolidColorBrush(_textColor);
+        }
+
         private void TextBox_KeyDown(object sender, KeyEventArgs e)
         {
             // #135 (upstream KillerPDF v1.7.5): bold / italic / underline while editing. Applied to
@@ -12307,8 +12488,16 @@ namespace TDPdf
                     System.Windows.Threading.DispatcherPriority.Background,
                     () =>
                     {
-                        if (ReferenceEquals(_activeTextBox, tb))
-                            CommitActiveTextBox();
+                        if (!ReferenceEquals(_activeTextBox, tb)) return;
+                        // Clicking Font/Size/Bold/Italic in the style bar moves keyboard focus off
+                        // this box, which used to read as "the user clicked away" and silently
+                        // committed mid-edit — ending the session and switching to Select the
+                        // instant someone tried to tweak a style. Interacting with the bar is the
+                        // SAME editing session, not leaving it.
+                        if (Keyboard.FocusedElement is DependencyObject nf && _textSettingsBar is not null
+                            && IsDescendantOf(nf, _textSettingsBar))
+                            return;
+                        CommitActiveTextBox();
                     });
             }
         }
