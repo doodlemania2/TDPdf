@@ -7154,7 +7154,10 @@ namespace TDPdf
 
             _cropPopup = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a)),
+                // Was a hardcoded near-black (#1a1a1a) - darker than every other surface in the
+                // app's own dark palette and dead wrong in Light/HighContrast (never actually
+                // themed). BgPanel is the same resource already used for inputs/panels elsewhere.
+                Background = (SolidColorBrush)FindResource("BgPanel"),
                 BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                 BorderThickness = new Thickness(0, 0, 0, 1),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -7299,9 +7302,11 @@ namespace TDPdf
                     Margin = new Thickness(2, 0, 2, 0),
                     ToolTip = tip,
                     Cursor = Cursors.Hand,
+                    // BgHover, not BgPanel: the settings bar's own background is BgPanel now, so
+                    // matching it here would blend this control back into the bar.
                     Background = active
                         ? (SolidColorBrush)FindResource("AccentGreenDim")
-                        : (SolidColorBrush)FindResource("BgPanel"),
+                        : (SolidColorBrush)FindResource("BgHover"),
                     Foreground = active
                         ? (SolidColorBrush)FindResource("AccentGreen")
                         : (SolidColorBrush)FindResource("TextPrimary"),
@@ -7483,7 +7488,10 @@ namespace TDPdf
 
             _textSettingsBar = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a)),
+                // Was a hardcoded near-black (#1a1a1a) - darker than every other surface in the
+                // app's own dark palette and dead wrong in Light/HighContrast (never actually
+                // themed). BgPanel is the same resource already used for inputs/panels elsewhere.
+                Background = (SolidColorBrush)FindResource("BgPanel"),
                 BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                 BorderThickness = new Thickness(0, 0, 0, 1),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -7595,9 +7603,12 @@ namespace TDPdf
                     Margin = new Thickness(2, 0, 2, 0),
                     ToolTip = toolTip,
                     Cursor = Cursors.Hand,
+                    // BgHover, not Transparent: the settings bar's own background is BgPanel, so a
+                    // literal-transparent button would blend back into it (see ShowTextSettings'
+                    // AddStyleToggle, which hit exactly this).
                     Background = curKind == kind
                         ? (SolidColorBrush)FindResource("AccentGreenDim")
-                        : Brushes.Transparent,
+                        : (SolidColorBrush)FindResource("BgHover"),
                     Foreground = curKind == kind
                         ? (SolidColorBrush)FindResource("AccentGreen")
                         : (SolidColorBrush)FindResource("TextPrimary"),
@@ -7725,7 +7736,10 @@ namespace TDPdf
 
             _shapeSettingsBar = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a)),
+                // Was a hardcoded near-black (#1a1a1a) - darker than every other surface in the
+                // app's own dark palette and dead wrong in Light/HighContrast (never actually
+                // themed). BgPanel is the same resource already used for inputs/panels elsewhere.
+                Background = (SolidColorBrush)FindResource("BgPanel"),
                 BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                 BorderThickness = new Thickness(0, 0, 0, 1),
                 HorizontalAlignment = HorizontalAlignment.Left,
