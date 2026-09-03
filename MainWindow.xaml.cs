@@ -11884,25 +11884,38 @@ namespace TDPdf
         /// </summary>
         private void WarnIfGlyphsWillBeLost(string preferredFamily, string? text)
         {
-            try
+            if (string.IsNullOrEmpty(text)) return;
+
+            // FontCoverage.PickFamily/UncoveredChars are synchronous disk I/O on a cache miss (its
+            // own comment: "a miss costs a full read of the font file, and a CJK collection is
+            // tens of megabytes"). This is called from CommitActiveTextBox/CommitTextEdit, which
+            // run directly on the UI thread from the mouse-click handler that committed the box —
+            // so a cold-cache lookup blocked every click on the page for however long that read
+            // took, felt like a hang, and any clicks made during it queued up and landed on
+            // whatever the UI looked like once it unblocked. Off the UI thread entirely; only the
+            // status text and dialog (already deferred below) touch it.
+            Task.Run(() =>
             {
-                if (string.IsNullOrEmpty(text)) return;
-                string family = FontCoverage.PickFamily(preferredFamily, text);
-                string missing = FontCoverage.UncoveredChars(family, text);
+                string missing;
+                try
+                {
+                    string family = FontCoverage.PickFamily(preferredFamily, text);
+                    missing = FontCoverage.UncoveredChars(family, text);
+                }
+                catch { return; /* the warning must never be the thing that breaks placing text */ }
                 if (missing.Length == 0) return;
 
-                SetStatus($"No installed font can draw: {missing} - these will save as empty boxes");
-
-                // Deferred rather than shown inline: CommitActiveTextBox / CommitTextEdit are the
-                // app's "settle any in-progress edit" chokepoint and run from inside save, print,
-                // close, tool-switch and tab-switch paths. A modal dialog on that stack would block
-                // the operation that asked for the settle. Background priority lets the caller
-                // finish, then raises the warning.
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     try
                     {
                         if (!IsLoaded || PresentationSource.FromVisual(this) is null) return;
+                        SetStatus($"No installed font can draw: {missing} - these will save as empty boxes");
+                        // Deferred rather than shown inline: CommitActiveTextBox / CommitTextEdit
+                        // are the app's "settle any in-progress edit" chokepoint and run from
+                        // inside save, print, close, tool-switch and tab-switch paths. A modal
+                        // dialog on that stack would block the operation that asked for the settle.
+                        // Background priority lets the caller finish, then raises the warning.
                         TdpDialog.Show(this,
                             "Some characters in this text have no glyph in any installed font:\n\n" +
                             missing + "\n\n" +
@@ -11914,8 +11927,7 @@ namespace TDPdf
                     }
                     catch { /* window went away between the commit and the dispatch */ }
                 }), System.Windows.Threading.DispatcherPriority.Background);
-            }
-            catch { /* the warning must never be the thing that breaks placing text */ }
+            });
         }
 
         private void EditImageAtPosition(Point canvasPos, int pageIdx)
