@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.29.7.0] - 2026-09-03
+
+### Added
+
+- **A Properties button next to the printer picker in File > Print.** There was no way to reach a printer's own advanced settings (paper tray, print quality, color, duplex) from TDPdf's print dialog — every native Windows print dialog exposes this next to the printer selector, ours didn't. Opens the driver's own preferences dialog for the currently selected printer.
+
 ## [1.29.6.0] - 2026-09-02
 
 ### Added
@@ -1071,6 +1077,7 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 _Historical entries to be backfilled._
 
 [Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[1.29.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.6.0...v1.29.7.0
 [1.29.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.5.0...v1.29.6.0
 [1.29.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.4.0...v1.29.5.0
 [1.29.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.3.0...v1.29.4.0
