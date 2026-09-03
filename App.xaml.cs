@@ -285,7 +285,7 @@ namespace TDPdf
             // for the file to open.
             bool isTearOffLaunch = e.Args.Length > 0 &&
                 string.Equals(e.Args[0], "--new-window", StringComparison.OrdinalIgnoreCase);
-            if (!isTearOffLaunch && TDPdf.Properties.Settings.Default.SingleInstanceTabs)
+            if (!isTearOffLaunch && SafeSetting(() => TDPdf.Properties.Settings.Default.SingleInstanceTabs, true))
             {
                 try
                 {
@@ -314,7 +314,7 @@ namespace TDPdf
                 }
             }
 
-            ThemeManager.Initialize(ParseThemeSetting(TDPdf.Properties.Settings.Default.Theme));
+            ThemeManager.Initialize(ParseThemeSetting(SafeSetting(() => TDPdf.Properties.Settings.Default.Theme, "")));
 
             string installScope = DetectInstalledScope() switch
             {
@@ -388,6 +388,25 @@ namespace TDPdf
                 // Any other failure: ignore. Downstream reads fall back to
                 // defaults or are individually guarded.
             }
+        }
+
+        /// <summary>
+        /// Reads one Settings.Default property, falling back to <paramref name="fallback"/> on a
+        /// <see cref="System.Configuration.ConfigurationErrorsException"/>. The recovery above
+        /// only proves the FIRST settings access after a corrupt user.config works again —
+        /// ConfigurationManager's underlying config-system init state is cached process-wide once
+        /// PrepareConfigSystem fails, so <c>Reload()</c> does not reliably un-poison it, and every
+        /// later property read can keep throwing the identical exception for the rest of the
+        /// process even though the corrupt file is already gone. A crash observed in the field
+        /// (2026-09-02, DEREKHOMEVM) hit exactly this: EnsureSettingsHealthy healed the first
+        /// Theme read and logged Settings.Recovered, then the very next Settings.Default access —
+        /// SingleInstanceTabs, below — threw the same ConfigurationErrorsException uncaught and
+        /// took the process down before any window existed.
+        /// </summary>
+        private static T SafeSetting<T>(Func<T> getter, T fallback)
+        {
+            try { return getter(); }
+            catch (System.Configuration.ConfigurationErrorsException) { return fallback; }
         }
 
         private static void DeleteCorruptUserConfig(System.Configuration.ConfigurationErrorsException ex)
