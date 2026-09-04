@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using Docnet.Core;
+using TDPdf.Diagnostics;
 
 namespace TDPdf.Services
 {
@@ -421,6 +422,133 @@ namespace TDPdf.Services
             finally { gch.Free(); }
             File.WriteAllBytes(destPath, ms.ToArray());
             return true;
+        }
+
+        // ---- Content editing: runtime capability probe -----------------------------------------
+        //
+        // Redaction and real text editing both need to REMOVE objects from a page and have PDFium
+        // regenerate the content stream. Whether that is possible at all depends entirely on which
+        // pdfium.dll is loaded, and TDPdf does not build its own — it uses the one Docnet.Core
+        // ships. Docnet 2.6.0 last shipped in September 2023, and its build is missing several
+        // fpdf_edit.h entry points, most consequentially FPDFFormObj_RemoveObject: an object inside
+        // a Form XObject can be enumerated but not removed. OCR'd scans routinely wrap their text
+        // layer in exactly such a Form XObject, which is the document people most want to redact.
+        //
+        // So capability is PROBED rather than assumed. Swapping the native (for a current bblanchon
+        // build, or PDFiumCore) then lights the surgical path up on its own; an older native
+        // degrades to rasterising instead of throwing EntryPointNotFoundException in the middle of
+        // a save; and the reason a given machine took the fallback becomes a reportable fact rather
+        // than a guess.
+        //
+        // NOTE for whoever does swap it: never ship two natives with the simple name "pdfium". The
+        // first LoadLibrary wins and BOTH DllImport sets bind to it, and under PublishSingleFile
+        // with IncludeNativeLibrariesForSelfExtract you get whichever copy lands in the extraction
+        // directory. That failure is silent and machine-dependent.
+
+        [Flags]
+        internal enum EditApi
+        {
+            None = 0,
+            /// <summary>Enumerate, remove and regenerate objects on a page.</summary>
+            PageObjects = 1 << 0,
+            /// <summary>Descend into a Form XObject and remove objects from it.</summary>
+            FormObjects = 1 << 1,
+            /// <summary>Read a text object's rendering mode — how an OCR layer is identified.</summary>
+            TextRenderMode = 1 << 2,
+            /// <summary>Read a page object's bounding box.</summary>
+            ObjectBounds = 1 << 3,
+            /// <summary>Mark an object inactive rather than removing it: no ownership dance.</summary>
+            SetIsActive = 1 << 4,
+        }
+
+        /// <summary>
+        /// What the pdfium.dll actually loaded in this process can do. Probed once, on first use —
+        /// deliberately not at startup, since Docnet does not load pdfium until the first document
+        /// is opened and forcing that load early would slow cold start for no benefit.
+        /// </summary>
+        internal static EditApi AvailableEditApi => s_editApi.Value;
+
+        private static readonly Lazy<EditApi> s_editApi = new(ProbeEditApi);
+
+        /// <summary>
+        /// The minimum needed to remove glyphs from a page at all. False means redaction and text
+        /// editing have no surgical path on this build and must rasterise instead.
+        /// </summary>
+        internal static bool CanEditPageContent =>
+            AvailableEditApi.HasFlag(EditApi.PageObjects) && AvailableEditApi.HasFlag(EditApi.ObjectBounds);
+
+        /// <summary>
+        /// True when an object nested inside a Form XObject can be removed — the OCR'd-scan case,
+        /// and the specific thing Docnet 2.6.0's build cannot do.
+        /// </summary>
+        internal static bool CanEditFormXObjectContent =>
+            CanEditPageContent && AvailableEditApi.HasFlag(EditApi.FormObjects);
+
+        private static EditApi ProbeEditApi()
+        {
+            var api = EditApi.None;
+            IntPtr handle;
+            try
+            {
+                // Resolves the module already in the process rather than loading a second copy:
+                // by the time anything asks this, Docnet has pdfium loaded.
+                if (!NativeLibrary.TryLoad("pdfium.dll", typeof(PdfiumInterop).Assembly, null, out handle))
+                    handle = IntPtr.Zero;
+            }
+            catch { handle = IntPtr.Zero; }
+
+            if (handle != IntPtr.Zero)
+            {
+                bool Has(params string[] names)
+                {
+                    foreach (var n in names)
+                    {
+                        try { if (!NativeLibrary.TryGetExport(handle, n, out _)) return false; }
+                        catch { return false; }
+                    }
+                    return true;
+                }
+
+                if (Has("FPDFPage_CountObjects", "FPDFPage_GetObject", "FPDFPageObj_GetType",
+                        "FPDFPage_RemoveObject", "FPDFPage_GenerateContent", "FPDFPageObj_Destroy"))
+                    api |= EditApi.PageObjects;
+                if (Has("FPDFFormObj_CountObjects", "FPDFFormObj_GetObject", "FPDFFormObj_RemoveObject"))
+                    api |= EditApi.FormObjects;
+                if (Has("FPDFTextObj_GetTextRenderMode")) api |= EditApi.TextRenderMode;
+                if (Has("FPDFPageObj_GetBounds")) api |= EditApi.ObjectBounds;
+                if (Has("FPDFPageObj_SetIsActive")) api |= EditApi.SetIsActive;
+            }
+
+            // Reported once per session, and only once something actually cares. This is the
+            // question "does the native we ship support surgical editing?" answered from the fleet
+            // rather than from a changelog.
+            try
+            {
+                Telemetry.TrackEvent("Pdfium.EditCapability", new Dictionary<string, string>
+                {
+                    ["Api"] = api.ToString(),
+                    ["CanEditPageContent"] = (api.HasFlag(EditApi.PageObjects) &&
+                                              api.HasFlag(EditApi.ObjectBounds)) ? "true" : "false",
+                    ["CanEditFormXObject"] = api.HasFlag(EditApi.FormObjects) ? "true" : "false",
+                    ["Loaded"] = handle != IntPtr.Zero ? "true" : "false",
+                });
+            }
+            catch { /* telemetry is opt-in and best-effort; never let it decide whether we can edit */ }
+
+            return api;
+        }
+
+        /// <summary>
+        /// A short reason, fit to show a user, why surgical editing is unavailable on this build.
+        /// </summary>
+        internal static string DescribeEditApi()
+        {
+            var api = AvailableEditApi;
+            if (api == EditApi.None) return "this build's PDF engine cannot edit page content";
+            if (!CanEditPageContent) return "this build's PDF engine cannot remove page objects";
+            if (!CanEditFormXObjectContent)
+                return "this build's PDF engine cannot edit inside form objects, which is where scanned pages keep their text";
+            return "full";
         }
     }
 }
