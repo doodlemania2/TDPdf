@@ -930,8 +930,22 @@ namespace TDPdf
                 mmi.ptMaxPosition.y = Math.Abs(work.top - mon.top);
                 mmi.ptMaxSize.x = Math.Abs(work.right - work.left);
                 mmi.ptMaxSize.y = Math.Abs(work.bottom - work.top);
-                mmi.ptMaxTrackSize.x = mmi.ptMaxSize.x;
-                mmi.ptMaxTrackSize.y = mmi.ptMaxSize.y;
+                // ptMaxSize is the MAXIMIZED size and is correctly the work area, so a maximized
+                // window never covers the taskbar. ptMaxTrackSize is different: it caps how large
+                // the window can EVER be sized, by any means. Pinning it to this monitor's work
+                // area was wrong twice over.
+                //
+                // Windows arrives here with desktop-wide tracking limits already filled in. Shrink
+                // them to the source monitor and a drag that begins on a small monitor and
+                // maximizes onto a larger one in the same gesture is silently clamped to the small
+                // one's dimensions. It also clamps the explicit whole-monitor bounds full screen
+                // sets (ToggleFullScreen deliberately avoids maximizing for exactly this reason),
+                // so the taskbar could survive F11.
+                //
+                // Math.Max keeps whatever Windows supplied and only ever raises the ceiling.
+                // Ported from upstream KillerPDF v1.8.4 (#363).
+                mmi.ptMaxTrackSize.x = Math.Max(mmi.ptMaxTrackSize.x, mmi.ptMaxSize.x);
+                mmi.ptMaxTrackSize.y = Math.Max(mmi.ptMaxTrackSize.y, mmi.ptMaxSize.y);
                 Marshal.StructureToPtr(mmi, lParam, true);
             }
         }
