@@ -1453,6 +1453,18 @@ namespace PdfSharpCore.Drawing  // #??? aufräumen
         }
 
         /// <summary>
+        /// TDPdf patch: sets the PDF text rendering mode (PDF 32000-1 9.3.6) for subsequent
+        /// DrawString calls on a PDF render target. No-op on other targets. 0 = fill (the
+        /// default), 3 = neither fill nor stroke, i.e. invisible but still extractable.
+        /// Scope it with Save()/Restore() - the grestore returns the mode to 0.
+        /// </summary>
+        public void SetPdfTextRenderMode(int mode)
+        {
+            if (_renderer is PdfSharpCore.Drawing.Pdf.XGraphicsPdfRenderer pdfRenderer)
+                pdfRenderer.SetTextRenderMode(mode);
+        }
+
+        /// <summary>
         /// Restores the state of this XGraphics object to the state represented by the specified 
         /// XGraphicsState object.
         /// </summary>
