@@ -247,7 +247,12 @@ namespace TDPdf
         /// first selected character to last, browser-style. Shared by the quad painter and the
         /// markup commit, so a committed highlight lands exactly where the drag preview showed it.
         /// </summary>
-        private List<Rect> SelectionLineRectsForPage(int page)
+        /// <param name="clampToGestureBand">
+        /// Drop lines outside the vertical band the pointer actually crossed. See the comment on
+        /// the clamp itself. True for the markup tools; false for the Select tool, whose quads must
+        /// keep showing the full reading-order run that Ctrl+C is about to copy.
+        /// </param>
+        private List<Rect> SelectionLineRectsForPage(int page, bool clampToGestureBand)
         {
             var result = new List<Rect>();
             if (_currentFile is null) return result;
@@ -266,6 +271,32 @@ namespace TDPdf
             double sx = rd.w / runs.PdfWidth;
             double sy = rd.h / runs.PdfHeight;
 
+            // Caret order is READING order, and since column-aware ordering landed that is no
+            // longer visual order: on a two-column layout — a label column and a count column, as
+            // on a punch list — TextRunService.Build emits an entire column before starting the
+            // next. So a drag between two points a few pixels apart on screen can walk every row of
+            // both columns, and the markup commit then paints one band per line it crossed. To the
+            // user that reads as "the strikethrough crossed out multiple lines of text".
+            //
+            // The gesture the user actually made is vertical: from the line pressed to the line
+            // released. Clamping to that band means markup can never cover a line the pointer never
+            // crossed, whatever order the carets came back in. Computed in PDF space (y-up, so Top
+            // is the larger value) before the flip into canvas space below.
+            double bandTop = double.MaxValue, bandBottom = double.MinValue;
+            if (clampToGestureBand)
+            {
+                int startLineIdx = runs.Chars[start].Line;
+                int endLineIdx = runs.Chars[end - 1].Line;
+                if (startLineIdx >= 0 && startLineIdx < runs.Lines.Count &&
+                    endLineIdx >= 0 && endLineIdx < runs.Lines.Count)
+                {
+                    var a = runs.Lines[startLineIdx];
+                    var b = runs.Lines[endLineIdx];
+                    bandTop = Math.Max(a.Top, b.Top);
+                    bandBottom = Math.Min(a.Bottom, b.Bottom);
+                }
+            }
+
             int i = start;
             while (i < end)
             {
@@ -274,6 +305,17 @@ namespace TDPdf
                 var line = runs.Lines[lineIdx];
                 int segEnd = Math.Min(end, line.End);
                 if (segEnd <= i) break;   // defensive: never spin on malformed geometry
+
+                if (clampToGestureBand && bandTop < double.MaxValue)
+                {
+                    // Half a line of slack, so a band that clips a descender still counts as crossed.
+                    double slack = (line.Top - line.Bottom) * 0.5;
+                    if (line.Bottom > bandTop + slack || line.Top < bandBottom - slack)
+                    {
+                        i = segEnd;
+                        continue;
+                    }
+                }
 
                 // A selected caret slice runs left-to-right on an LTR line and right-to-left on an
                 // RTL one, so take the slice's physical extremes instead of assuming the first
@@ -304,7 +346,9 @@ namespace TDPdf
         {
             if (!_txtSelActive && !_txtSelHasRange) return;
             if (_annotationCanvas is null) return;
-            foreach (var r in SelectionLineRectsForPage(page))
+            // Markup tools preview exactly what they will commit, so the clamp must apply to
+            // the quads too; the Select tool shows the full run it is about to copy.
+            foreach (var r in SelectionLineRectsForPage(page, _txtSelCommitTool is not null))
             {
                 var quad = new Rectangle
                 {
@@ -348,7 +392,7 @@ namespace TDPdf
         private void CommitFlowingMarkup(EditTool tool)
         {
             int page = _txtSelAnchor.Page;
-            var rects = SelectionLineRectsForPage(page);
+            var rects = SelectionLineRectsForPage(page, clampToGestureBand: true);
             ClearTextSelection();
             if (rects.Count == 0)
             {
