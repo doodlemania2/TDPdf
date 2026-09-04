@@ -140,6 +140,10 @@ jobs:
           cp publish/TDPdf.exe "dist/TDPdf-${{ steps.tag.outputs.name }}-win-x64.exe"
           # GPLv3 corresponding-source zip, produced by the BundleSource target.
           cp publish/*-src.zip dist/ 2>/dev/null || echo "::warning::No source zip found — check the BundleSource target."
+          # Third-party notices. Also embedded in the exe (Help > Third-Party Licenses), but BSD-3
+          # asks for reproduction "in the documentation or other materials provided with the
+          # distribution", and a Release page is the only documentation a binary-only download has.
+          cp THIRD-PARTY-NOTICES.md dist/ || { echo "::error::THIRD-PARTY-NOTICES.md missing — regenerate with build/generate-third-party-notices.ps1"; exit 1; }
           ( cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
           ls -la dist
 

@@ -1349,9 +1349,18 @@ namespace TDPdf
                 $"{versionLine}\n\n" +
                 "Released under the GNU General Public License v3.0.\n" +
                 "Forked from SteveTheKiller/KillerPDF.\n\n" +
+                // Named here because these are the components a reader would expect to see
+                // credited; the full notices, which several of these licences require be
+                // distributed with the binary, are under Help > Third-Party Licenses.
+                "Built with PDFium, PdfSharpCore, PdfPig, Tesseract, ImageSharp\n" +
+                "and OpenTelemetry. See Help > Third-Party Licenses for the\n" +
+                "full notices.\n\n" +
                 "https://github.com/doodlemania2/TDPdf";
             TdpDialog.Show(this, message, "About TDPdf", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+
+        private void HelpThirdPartyLicenses_Click(object sender, RoutedEventArgs e) =>
+            ThirdPartyLicensesWindow.Show(this);
 
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)

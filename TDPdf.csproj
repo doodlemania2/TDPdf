@@ -92,6 +92,19 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- Third-party licence notices. MIT and BSD both require their copyright notice to travel
+       with binary distributions, and Apache-2.0 section 4(a) requires a copy of the licence
+       itself; TDPdf ships as a single self-contained exe, so those components are physically
+       inside the binary the user receives and the notices have to be inside it too. A loose
+       file beside the exe would not survive single-file publish, hence EmbeddedResource.
+       Regenerate with build/generate-third-party-notices.ps1; read at runtime by
+       ThirdPartyLicensesWindow. -->
+  <ItemGroup>
+    <EmbeddedResource Include="THIRD-PARTY-NOTICES.md">
+      <LogicalName>TDPdf.THIRD-PARTY-NOTICES.md</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Local pdfium.dll override hook. Current builds normally get pdfium.dll from Docnet.Core's runtime assets. -->
     <None Include="pdfium.dll" Condition="Exists('pdfium.dll')">

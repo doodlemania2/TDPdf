@@ -1172,6 +1172,9 @@
                 <MenuItem Header="View _Changelog"                                  Click="HelpChangelog_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE81C;"/></MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="_Third-Party Licenses"                            Click="HelpThirdPartyLicenses_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A5;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="_About TDPdf"     InputGestureText="F1"           Command="{x:Static local:MainWindow.AboutCommand}">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE897;"/></MenuItem.Icon>
