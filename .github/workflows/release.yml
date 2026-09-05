@@ -75,6 +75,14 @@ jobs:
           [ -f "$NOTES" ] || { echo "::error::Missing $NOTES — release.yml passes it to --notes-file. Commit it and re-tag."; exit 1; }
           echo "Found $NOTES"
 
+      # The ARC runner image ships the .NET 9 SDK, which cannot target net10.0 at all
+      # (NETSDK1045 at restore). Pinning the SDK here rather than waiting on a runner image
+      # rebuild keeps the workflow self-sufficient: it works on the self-hosted runner, on a
+      # GitHub-hosted one, and on whatever the image happens to carry next month.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Publish (Release, win-x64, single-file, self-contained)
         run: |
           dotnet publish TDPdf.csproj \
