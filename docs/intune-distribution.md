@@ -112,7 +112,7 @@ The script will:
 
 1. Prompt for the PFX password via `Read-Host -AsSecureString`.
 2. `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true
-   -p:SelfContained=true` → `bin\Release\net9.0-windows\win-x64\publish\TDPdf.exe`.
+   -p:SelfContained=true` → `bin\Release\net10.0-windows\win-x64\publish\TDPdf.exe`.
 3. Sign with `signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256
    /f <pfx> /p <pw>` and verify with `signtool verify /pa /v`.
 4. Print the SHA256 of the signed EXE.

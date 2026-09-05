@@ -876,6 +876,26 @@ namespace TDPdf
                 double sx = page.Width.Point / w;
                 double sy = page.Height.Point / h;
 
+                // The OCR layer is written in text rendering mode 3 (neither fill nor stroke) AND
+                // with a zero-alpha brush. Belt and braces is deliberate - if either mechanism is
+                // ever stripped, the layer stays invisible rather than suddenly printing over the
+                // scan.
+                //
+                // Mode 3 is what makes it *identifiable*, which the zero-alpha brush alone never
+                // was, and that matters in three places:
+                //   * Redaction has to be able to find an OCR layer to remove it. A scan's
+                //     invisible text survives any pixel-level edit, and text painted at alpha 0 is
+                //     indistinguishable from real text - FPDFTextObj_GetTextRenderMode() == 3 is.
+                //   * PDFium's content generator re-emits the render mode explicitly, so a page
+                //     regenerated during an edit can never accidentally make this layer visible.
+                //   * OCRmyPDF's --mode redo documents that it cannot distinguish "technically
+                //     printable" OCR text from real text and will not redo it. An alpha-0 layer
+                //     lands squarely in that trap; a mode-3 layer does not.
+                //
+                // Scoped by Save/Restore so the grestore returns the mode to 0 for anything drawn
+                // on this page afterwards.
+                var ocrTextState = gfx.Save();
+                gfx.SetPdfTextRenderMode(3);
                 foreach (var word in result.Words)
                 {
                     double bx = word.Left * sx;
@@ -889,6 +909,7 @@ namespace TDPdf
                     }
                     catch { /* a single word that won't lay out should not abort the page */ }
                 }
+                gfx.Restore(ocrTextState);
             }
 
             outDoc.Save(outPath);

@@ -1,19 +1,19 @@
 # TDPdf — Copilot instructions
 
-TDPdf is a Windows-only WPF PDF editor distributed as a single, portable, self-contained `TDPdf.exe`. It is a fork of [SteveTheKiller/KillerPDF](https://github.com/SteveTheKiller/KillerPDF) (GPLv3); see `NOTICE` for the §5(a) attribution. The repo targets `net9.0-windows`; building and publishing require Windows plus the .NET 9 SDK.
+TDPdf is a Windows-only WPF PDF editor distributed as a single, portable, self-contained `TDPdf.exe`. It is a fork of [SteveTheKiller/KillerPDF](https://github.com/SteveTheKiller/KillerPDF) (GPLv3); see `NOTICE` for the §5(a) attribution. The repo targets `net10.0-windows`; building and publishing require Windows plus the .NET 10 SDK.
 
 ## Build / publish / release
 
 - Dev build: `dotnet build -c Release` (from repo root on Windows). Project is `TDPdf.csproj`.
-- Publish (single-EXE bundle): `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true` → output in `bin/Release/net9.0-windows/win-x64/publish/TDPdf.exe`.
+- Publish (single-EXE bundle): `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true` → output in `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`.
   - Publish triggers the `BundleSource` MSBuild target which runs `build/bundle-source.ps1` to produce `TDPdf-<Version>-src.zip` (GPLv3 corresponding source) next to the EXE. It uses `git ls-files`, so an unstaged file will not be included.
   - Publish uses SDK single-file properties in `TDPdf.csproj` (`PublishSingleFile`, `SelfContained`, `IncludeNativeLibrariesForSelfExtract`, and compression enabled); do not reintroduce Costura/Fody bundling.
-- Full release (Windows only, requires Certum cert + Windows SDK signtool): `./release.ps1` (or `./release.ps1 -SkipSign` for a test run). Publishes with `dotnet publish`, signs and verifies `bin/Release/net9.0-windows/win-x64/publish/TDPdf.exe`, prints SHA256, and reminds you to paste it into `pdf-landing/index.html`.
+- Full release (Windows only, requires Certum cert + Windows SDK signtool): `./release.ps1` (or `./release.ps1 -SkipSign` for a test run). Publishes with `dotnet publish`, signs and verifies `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`, prints SHA256, and reminds you to paste it into `pdf-landing/index.html`.
 - No test suite or linter is configured. `dotnet build` warnings are the only lint signal — do not introduce new warnings (nullable reference types are enabled).
 
 ## Cross-platform caveat
 
-The repo often lives on macOS/Linux in automation, but the project is a Windows-targeted WPF app (`UseWPF=true`, `net9.0-windows`, `win-x64`, native `pdfium.dll` P/Invoke). Cross-targeting from Linux requires `-p:EnableWindowsTargeting=true`; otherwise build on Windows with the .NET 9 SDK.
+The repo often lives on macOS/Linux in automation, but the project is a Windows-targeted WPF app (`UseWPF=true`, `net10.0-windows`, `win-x64`, native `pdfium.dll` P/Invoke). Cross-targeting from Linux requires `-p:EnableWindowsTargeting=true`; otherwise build on Windows with the .NET 10 SDK.
 
 ## Architecture
 
@@ -32,7 +32,7 @@ The repo often lives on macOS/Linux in automation, but the project is a Windows-
 
 ## Conventions
 
-- `net9.0-windows` target with `LangVersion=latest`. Modern C# and current BCL APIs such as `Math.Clamp` are available; no PolySharp workarounds are needed.
+- `net10.0-windows` target with `LangVersion=latest`. Modern C# and current BCL APIs such as `Math.Clamp` are available; no PolySharp workarounds are needed.
 - Nullable reference types are enabled project-wide. New code must be null-annotated; do not silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
 - XAML-defined controls that the codegen can't resolve are re-fetched in the constructor via `FindName(...)!` and stored in `_camelCase` fields (see the block under `// Manual element refs`). Follow that pattern for new named XAML elements rather than fighting the generator.
 - UI palette is centralized in `MainWindow.xaml` resources (`BgDark`, `BgPanel`, `AccentGreen`, `DangerRed`, etc.) and theme dictionaries under `Themes/`. Use those brushes; don't hardcode new hex colors. Toolbar glyphs are `Segoe MDL2 Assets`.

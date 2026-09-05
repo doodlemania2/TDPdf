@@ -1229,6 +1229,16 @@ namespace PdfSharpCore.Drawing.Pdf
             AppendFormatString("{0} gs\n", gs);
         }
 
+        // TDPdf patch: emits the text rendering mode operator (PDF 32000-1 9.3.6). Tr is a text
+        // state parameter, so it is legal in either graphics or text mode and persists across
+        // BT/ET until changed or until the enclosing grestore - scope it with Save()/Restore().
+        // Added for the OCR text layer, which must be mode 3 (invisible) rather than merely
+        // painted with a zero-alpha brush; see the call site in Ocr.cs for why that matters.
+        internal void SetTextRenderMode(int mode)
+        {
+            AppendFormatInt("{0} Tr\n", mode);
+        }
+
         internal void AppendFormatArgs(string format, params object[] args)
         {
             _content.AppendFormat(CultureInfo.InvariantCulture, format, args);

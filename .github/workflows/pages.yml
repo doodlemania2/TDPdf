@@ -1,0 +1,134 @@
+name: pages
+
+# Publishes PRIVACY.md as a real hosted page at
+# https://doodlemania2.github.io/TDPdf/privacy/
+#
+# WHY THIS EXISTS
+# The Microsoft Store requires a privacy policy at a working URL, and the requirement is
+# categorical for Win32 products regardless of what the app actually collects. The App
+# Developer Agreement also wants a link to it from inside the app. A repository blob URL
+# technically satisfies "a working URL" but renders as a source listing, which is not the
+# impression to give on a store listing.
+#
+# The policy text has exactly one home — PRIVACY.md at the repo root. This renders it; it
+# never becomes a second copy that can drift out of date.
+#
+# Rendering goes through GitHub's own Markdown API rather than a converter package, so there
+# is no dependency here to rot and no build step to maintain. GITHUB_TOKEN is already
+# present, and the only permission it needs for that call is the read it already has.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'PRIVACY.md'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Least privilege: id-token and pages are what deploy-pages needs; contents stays read.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. Do NOT cancel a running deploy — a half-finished Pages publish is
+# worse than a queued one, and this runs rarely enough that queueing costs nothing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render PRIVACY.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p site/privacy
+
+          BODY=$(gh api --method POST /markdown \
+                   -f mode=gfm -f context=doodlemania2/TDPdf \
+                   -f text="$(cat PRIVACY.md)")
+          [ -n "$BODY" ] || { echo "::error::Markdown API returned nothing."; exit 1; }
+
+          # Written inline rather than kept as a template file so the page and the reason for
+          # the page live together. Theme-aware, because a privacy policy read at night on a
+          # phone should not be a white flash.
+          {
+            cat <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>TDPdf Privacy Policy</title>
+            <meta name="description" content="How TDPdf handles your data. Telemetry is opt-in and off by default.">
+            <style>
+              :root{color-scheme:light dark;--bg:#f5f7f4;--fg:#141815;--muted:#68726b;--rule:#dce1dc;--accent:#12784a;--code:#eef1ee}
+              @media (prefers-color-scheme:dark){
+                :root{--bg:#141613;--fg:#e3e7e3;--muted:#8b948c;--rule:#2c312d;--accent:#4ade80;--code:#232724}
+              }
+              *{box-sizing:border-box}
+              body{margin:0;background:var(--bg);color:var(--fg);
+                   font:17px/1.65 "Source Serif 4",Georgia,"Times New Roman",serif;
+                   -webkit-font-smoothing:antialiased}
+              .wrap{max-width:44rem;margin:0 auto;padding:4rem 1.5rem 6rem}
+              h1,h2,h3{line-height:1.2;text-wrap:balance;letter-spacing:-.015em}
+              h1{font-size:2.4rem;margin:0 0 .5rem}
+              h2{font-size:1.4rem;margin:2.5rem 0 .6rem;padding-bottom:.4rem;border-bottom:1px solid var(--rule)}
+              h3{font-size:1.1rem;margin:1.8rem 0 .4rem}
+              a{color:var(--accent)}
+              code{background:var(--code);padding:.1em .35em;border-radius:3px;
+                   font:.85em ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+              pre{background:var(--code);padding:1rem;border-radius:5px;overflow-x:auto}
+              pre code{background:none;padding:0}
+              table{border-collapse:collapse;width:100%;font-size:.92rem;display:block;overflow-x:auto}
+              th,td{text-align:left;padding:.5rem .7rem;border-bottom:1px solid var(--rule)}
+              blockquote{margin:1rem 0;padding-left:1rem;border-left:3px solid var(--rule);color:var(--muted)}
+              img{max-width:100%}
+              footer{margin-top:4rem;padding-top:1.25rem;border-top:1px solid var(--rule);
+                     color:var(--muted);font-size:.88rem}
+            </style>
+          </head>
+          <body><div class="wrap">
+          HTML
+            printf '%s' "$BODY"
+            cat <<'HTML'
+          <footer>
+            TDPdf is free software released under the
+            <a href="https://github.com/doodlemania2/TDPdf/blob/main/LICENSE">GNU General Public License v3.0</a>.
+            Source: <a href="https://github.com/doodlemania2/TDPdf">github.com/doodlemania2/TDPdf</a>.
+          </footer>
+          </div></body></html>
+          HTML
+          } > site/privacy/index.html
+
+          # Root redirect: the only page here is the policy, so / should go to it rather than 404.
+          cat > site/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8">
+          <title>TDPdf</title>
+          <meta http-equiv="refresh" content="0; url=./privacy/">
+          <link rel="canonical" href="./privacy/">
+          <p><a href="./privacy/">TDPdf Privacy Policy</a></p>
+          HTML
+
+          echo "Rendered $(wc -c < site/privacy/index.html) bytes"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

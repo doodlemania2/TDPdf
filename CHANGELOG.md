@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [1.30.0.0] - 2026-09-04
+
+Groundwork for redaction and real text editing, plus three defects reported from the field.
+
+### Added
+
+- **The OCR text layer is now written in PDF text rendering mode 3** (neither fill nor stroke) rather than merely painted with a fully transparent brush. It stays exactly as invisible — the transparent brush is kept as well, so stripping either mechanism cannot make it print — but it is now *identifiable*, which it never was. That matters in three places: redaction has to be able to find an OCR layer in order to remove it, and a scan's invisible text survives any pixel-level edit; PDFium re-emits the render mode when regenerating a page, so an edit can never accidentally make the layer visible; and OCRmyPDF's `--mode redo` documents that it cannot tell "technically printable" OCR text from real text and will not redo it, which is exactly the trap a transparent-brush layer falls into.
+- **A pre-flight check for content-stream editing.** Removing objects from a page and having PDFium rebuild the content stream is lossy in ways it never reports: non-RGB colour (CMYK, spot, ICC), gradients, inline images and soft masks are silently dropped, so editing one word on an invoice can recolour or delete something else on the page. Pages carrying any of that are now detected up front, so the coming redaction and text-editing features can rasterise instead of quietly corrupting the file.
+- **Help > Third-Party Licenses**, and a `THIRD-PARTY-NOTICES.md` shipped with every release. TDPdf is a single self-contained executable, so around 35 components — PDFium and the eleven libraries bundled inside it, Leptonica, the Tesseract engine, PdfPig, PdfSharpCore, ImageSharp, OpenTelemetry and the .NET runtime packages — are physically inside the binary. Their licences (MIT, BSD-2, BSD-3, Apache-2.0) require the copyright notices and licence texts travel with it, and previously only PdfSharpCore was credited, in a repository file that binary-only downloads never saw. The notices are now embedded in the executable, attached to each GitHub release, and included in the GPLv3 source bundle. Every bundled licence is GPLv3-compatible; nothing changed about what ships, only about what is disclosed.
+- **A runtime capability probe for the bundled PDF engine.** Which editing operations are possible depends on the exact `pdfium.dll` shipped, and the current one cannot remove objects nested inside form objects — which is where scanned pages keep their text. Capability is now detected on the running machine rather than assumed, so a future engine update enables the better path on its own instead of failing mid-save.
+
+### Changed
+
+- **TDPdf now runs on .NET 10.** .NET 9 reached end of support in May 2026, so this is a security-support move rather than a feature one. Nothing about how the app is distributed changes — still a single self-contained `TDPdf.exe` with no runtime to install.
+- **The About box no longer says "Forked from SteveTheKiller/KillerPDF".** The attribution has moved to Help > Third-Party Licenses, alongside the GPLv3 section 5(a) modification statement, and remains in `NOTICE` and `THIRD-PARTY-NOTICES.md`. It has not been reduced — TDPdf has simply diverged far enough (its own multi-document architecture, telemetry, themes, settings and save pipeline; upstream has since replaced its PDF engine wholesale) that a one-line "forked from" no longer described the relationship usefully.
+- **Help > Privacy Policy** opens the policy as a proper hosted page rather than a file in the repository. `PRIVACY.md` remains the single source of the text and is rendered on publish.
+
+### Fixed
+
+- **Editing replacement text erased a strikethrough next to it.** With a line like `Gathering Area Windows (5) (4)` — the old number struck through, the new one typed beside it — changing the new number removed the strikethrough. Replacement text is drawn without a width limit, so text longer than what it replaced overhangs its own box; clicking those overhanging characters missed the "re-edit the existing change" check and created a *second* edit instead, whose white backing then covered the strikethrough. Clicks now land on the text as drawn, and white backings are always painted underneath other markup rather than in whatever order annotations happened to be added. (#156)
+- **Strikethrough crossed out unrelated lines on documents laid out in columns.** On a list with labels at the left and numbers at the right, the app reads all the labels and then all the numbers, so a short drag between two nearby points could span dozens of rows. Markup is now limited to the lines the pointer actually crossed. This is also the reason strikethrough seemed to need several attempts before it worked: the gesture had a very narrow target and no feedback when it missed, so retrying eventually hit it. (#157)
+- **Dragging the window from a smaller monitor onto a larger one clamped it to the smaller monitor's size.** The custom window frame told Windows the largest the window could ever be sized was the *starting* monitor's work area, so a drag that crosses monitors and maximizes in the same gesture was silently capped. The same cap could also let the taskbar survive full screen. Windows already supplies desktop-wide limits; TDPdf now only ever raises them, never lowers them. Ported from upstream KillerPDF v1.8.4 (#363).
+- **The Line tool appeared to be missing from the Shape bar.** It was always there, drawn with an icon that renders as an empty square — two buttons away from the actual Rectangle tool, so it read as a duplicate. The four shape buttons are now drawn as their actual shapes. (#155)
+
 ## [1.29.7.0] - 2026-09-03
 
 ### Added
@@ -1076,7 +1100,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.28.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.30.0.0...HEAD
+[1.30.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.7.0...v1.30.0.0
 [1.29.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.6.0...v1.29.7.0
 [1.29.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.5.0...v1.29.6.0
 [1.29.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.4.0...v1.29.5.0

@@ -26,6 +26,10 @@ on:
         description: "Build and release, but do not touch Intune"
         type: boolean
         default: false
+      skip_store:
+        description: "Build and release, but do not update the Microsoft Store listing"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -39,6 +43,7 @@ jobs:
     env:
       HAS_PFX:       ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
       HAS_INTUNE:    ${{ secrets.INTUNE_APP_ID != '' }}
+      HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,6 +74,22 @@ jobs:
           NOTES=".github/release-notes/${{ steps.tag.outputs.name }}.md"
           [ -f "$NOTES" ] || { echo "::error::Missing $NOTES — release.yml passes it to --notes-file. Commit it and re-tag."; exit 1; }
           echo "Found $NOTES"
+
+      # The ARC runner image ships the .NET 9 SDK, which cannot target net10.0 at all
+      # (NETSDK1045 at restore). Pinning the SDK here rather than waiting on a runner image
+      # rebuild keeps the workflow self-sufficient: it works on the self-hosted runner, on a
+      # GitHub-hosted one, and on whatever the image happens to carry next month.
+      #
+      # DOTNET_INSTALL_DIR is required on the self-hosted runner specifically: setup-dotnet
+      # installs to /usr/share/dotnet by default, the ARC container runs unprivileged, and the
+      # install fails with "cp: cannot create directory ... Permission denied" — while still
+      # reporting success, so the next step fails confusingly on the OLD SDK instead. Installing
+      # into RUNNER_TEMP sidesteps it and is harmless on a hosted runner.
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          dotnet-version: '10.0.x'
 
       - name: Publish (Release, win-x64, single-file, self-contained)
         run: |
@@ -140,6 +161,10 @@ jobs:
           cp publish/TDPdf.exe "dist/TDPdf-${{ steps.tag.outputs.name }}-win-x64.exe"
           # GPLv3 corresponding-source zip, produced by the BundleSource target.
           cp publish/*-src.zip dist/ 2>/dev/null || echo "::warning::No source zip found — check the BundleSource target."
+          # Third-party notices. Also embedded in the exe (Help > Third-Party Licenses), but BSD-3
+          # asks for reproduction "in the documentation or other materials provided with the
+          # distribution", and a Release page is the only documentation a binary-only download has.
+          cp THIRD-PARTY-NOTICES.md dist/ || { echo "::error::THIRD-PARTY-NOTICES.md missing — regenerate with build/generate-third-party-notices.ps1"; exit 1; }
           ( cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
           ls -la dist
 
@@ -156,6 +181,72 @@ jobs:
               --target "${GITHUB_SHA}"
           fi
           gh release upload "$TAG" dist/* --clobber
+
+      # Points the Microsoft Store listing at the release asset just published.
+      #
+      # TDPdf is listed as an "EXE or MSI app", not MSIX — the Store holds a URL to our own
+      # installer rather than a package. That choice is what lets the single-file exe, the
+      # self-installer, this Linux runner and the Intune channel all stay exactly as they are;
+      # MSIX would have forked every one of them. The trade is that the Store does NOT re-sign
+      # our binary, so the exe must already carry a publicly-trusted signature.
+      #
+      # There is therefore no upload here. The whole submission is "here is a new immutable
+      # URL", which GitHub release assets already are.
+      #
+      # Gated on its secret like every other optional stage, so a missing or rotated credential
+      # degrades to build-and-release rather than failing the run. Skipped entirely for an
+      # unsigned build: submitting one would be rejected at certification, and burning a
+      # submission on a guaranteed rejection is worse than not submitting.
+      - name: Update Microsoft Store listing
+        if: env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+          PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
+        run: |
+          set -euo pipefail
+          # The CLI is a .NET tool and cross-platform, which is why this can live on the Linux
+          # runner alongside everything else.
+          dotnet tool install --global MSStore.CLI >/dev/null 2>&1 || dotnet tool update --global MSStore.CLI >/dev/null 2>&1
+          export PATH="$PATH:$HOME/.dotnet/tools"
+
+          msstore reconfigure \
+            --tenantId "${{ secrets.MSSTORE_TENANT_ID }}" \
+            --clientId "${{ secrets.MSSTORE_CLIENT_ID }}" \
+            --clientSecret "${{ secrets.MSSTORE_CLIENT_SECRET }}" \
+            --sellerId "${{ secrets.MSSTORE_SELLER_ID }}"
+
+          ASSET="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/TDPdf-${TAG}-win-x64.exe"
+          echo "Installer URL: $ASSET"
+          # Fail here rather than at certification if the asset is not actually reachable:
+          # the Store downloads and re-scans this URL, and a 404 wastes a submission.
+          curl -sfIL --max-time 60 "$ASSET" >/dev/null || {
+            echo "::error::Release asset not reachable at $ASSET"; exit 1; }
+
+          # Read the current submission, swap only the installer URL, and send it back. Editing
+          # the live shape rather than posting a hand-written one means listing copy, screenshots
+          # and the GPLv3 licence terms are carried forward untouched.
+          msstore submission get "$PRODUCT_ID" > submission.json
+          python3 - "$ASSET" <<'PY'
+          import json, sys
+          url = sys.argv[1]
+          d = json.load(open('submission.json'))
+          pkgs = d.get('packages') or []
+          if not pkgs:
+              print("::error::No packages array in the current submission — check MSSTORE_PRODUCT_ID.")
+              raise SystemExit(1)
+          for p in pkgs:
+              p['packageUrl'] = url
+          json.dump(d, open('submission.json', 'w'), indent=2)
+          print(f"Repointed {len(pkgs)} package entr{'y' if len(pkgs)==1 else 'ies'} at {url}")
+          PY
+
+          msstore submission update "$PRODUCT_ID" "$(cat submission.json)"
+          msstore submission publish "$PRODUCT_ID"
+          echo "Submitted. Certification is typically up to three business days."
+
+      - name: Note why the Store step was skipped
+        if: env.HAS_STORE == 'true' && steps.sign.outputs.signed != 'true'
+        run: echo "::warning::Store submission skipped — the exe is unsigned, and the Store requires a publicly-trusted signature for EXE/MSI listings."
 
       # Updates the EXISTING app: adds a content version and repoints
       # committedContentVersion. Assignments live on the app, not on the content
@@ -184,4 +275,5 @@ jobs:
             echo "| Version (from csproj) | ${{ steps.ver.outputs.version }} |"
             echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes' || 'NO — unsigned' }} |"
             echo "| Intune | ${{ (env.HAS_INTUNE == 'true' && github.event.inputs.skip_intune != 'true') && 'updated' || 'skipped' }} |"
+            echo "| Store | ${{ (env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true') && 'submitted' || 'skipped' }} |"
           } >> "$GITHUB_STEP_SUMMARY"

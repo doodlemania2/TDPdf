@@ -930,8 +930,22 @@ namespace TDPdf
                 mmi.ptMaxPosition.y = Math.Abs(work.top - mon.top);
                 mmi.ptMaxSize.x = Math.Abs(work.right - work.left);
                 mmi.ptMaxSize.y = Math.Abs(work.bottom - work.top);
-                mmi.ptMaxTrackSize.x = mmi.ptMaxSize.x;
-                mmi.ptMaxTrackSize.y = mmi.ptMaxSize.y;
+                // ptMaxSize is the MAXIMIZED size and is correctly the work area, so a maximized
+                // window never covers the taskbar. ptMaxTrackSize is different: it caps how large
+                // the window can EVER be sized, by any means. Pinning it to this monitor's work
+                // area was wrong twice over.
+                //
+                // Windows arrives here with desktop-wide tracking limits already filled in. Shrink
+                // them to the source monitor and a drag that begins on a small monitor and
+                // maximizes onto a larger one in the same gesture is silently clamped to the small
+                // one's dimensions. It also clamps the explicit whole-monitor bounds full screen
+                // sets (ToggleFullScreen deliberately avoids maximizing for exactly this reason),
+                // so the taskbar could survive F11.
+                //
+                // Math.Max keeps whatever Windows supplied and only ever raises the ceiling.
+                // Ported from upstream KillerPDF v1.8.4 (#363).
+                mmi.ptMaxTrackSize.x = Math.Max(mmi.ptMaxTrackSize.x, mmi.ptMaxSize.x);
+                mmi.ptMaxTrackSize.y = Math.Max(mmi.ptMaxTrackSize.y, mmi.ptMaxSize.y);
                 Marshal.StructureToPtr(mmi, lParam, true);
             }
         }
@@ -1313,6 +1327,13 @@ namespace TDPdf
         private void HelpChangelog_Click(object sender, RoutedEventArgs e) =>
             OpenExternalUrl("https://github.com/doodlemania2/TDPdf/blob/main/CHANGELOG.md");
 
+        // Points at the rendered Pages copy, not the repository blob: the Microsoft Store requires
+        // a privacy policy at a working URL and the developer agreement wants a link to it from
+        // inside the app as well. Published by .github/workflows/pages.yml from PRIVACY.md, which
+        // stays the single source of the text.
+        private void HelpPrivacy_Click(object sender, RoutedEventArgs e) =>
+            OpenExternalUrl("https://doodlemania2.github.io/TDPdf/privacy/");
+
         private void OpenExternalUrl(string url)
         {
             try
@@ -1333,11 +1354,27 @@ namespace TDPdf
             var message =
                 $"TDPdf — A Windows PDF editor by The Doodle Project.\n\n" +
                 $"{versionLine}\n\n" +
-                "Released under the GNU General Public License v3.0.\n" +
-                "Forked from SteveTheKiller/KillerPDF.\n\n" +
+                "Released under the GNU General Public License v3.0.\n\n" +
+                // The upstream-project credit moved to Help > Third-Party Licenses, alongside the
+                // GPLv3 section 5(a) modification statement. TDPdf has diverged materially — its
+                // own multi-document architecture, telemetry, themes and settings — and upstream
+                // has since replaced its PDF engine wholesale, so "forked from" no longer
+                // describes the relationship usefully on a one-line About box. The attribution
+                // itself is untouched: it is required, and it is still in the app, in NOTICE, and
+                // in THIRD-PARTY-NOTICES.md.
+                //
+                // Named here because these are the components a reader would expect to see
+                // credited; the full notices, which several of these licences require be
+                // distributed with the binary, are under Help > Third-Party Licenses.
+                "Built with PDFium, PdfSharpCore, PdfPig, Tesseract, ImageSharp\n" +
+                "and OpenTelemetry. See Help > Third-Party Licenses for the\n" +
+                "full notices.\n\n" +
                 "https://github.com/doodlemania2/TDPdf";
             TdpDialog.Show(this, message, "About TDPdf", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+
+        private void HelpThirdPartyLicenses_Click(object sender, RoutedEventArgs e) =>
+            ThirdPartyLicensesWindow.Show(this);
 
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -7588,17 +7625,50 @@ namespace TDPdf
 
             // Shape kind toggle
             panel.Children.Add(MakeLabel("Shape:"));
-            void AddKindToggle(string glyph, ShapeKind kind, string toolTip)
+            // These four toggles depict geometry, so they are drawn as vectors rather than with
+            // Segoe MDL2 glyphs as the rest of the toolbar does. Segoe MDL2 has no glyph that
+            // reads as a plain line: Line shipped as "\uE739", which is Checkbox - an empty
+            // square. Sitting two slots from the Rectangle button, users read it as a second
+            // rectangle and reported the Line tool as missing (it never was). A drawn line
+            // cannot be misread, and it cannot silently become the wrong icon again.
+            static System.Windows.Shapes.Path MakeKindIcon(ShapeKind kind, Brush stroke)
             {
+                // Geometry is authored in a 16x16 box, matching the Width/Height set below.
+                Geometry geo = kind switch
+                {
+                    ShapeKind.Rectangle => new RectangleGeometry(new Rect(2, 4, 12, 8)),
+                    ShapeKind.Ellipse   => new EllipseGeometry(new Rect(2, 4, 12, 8)),
+                    ShapeKind.Line      => new LineGeometry(new Point(2.5, 12.5), new Point(13.5, 3.5)),
+                    _                   => Geometry.Parse("M 2,12 L 4.5,4 L 11,6.5 L 14,11 Z"),
+                };
+                return new System.Windows.Shapes.Path
+                {
+                    Data = geo,
+                    Stroke = stroke,
+                    StrokeThickness = 1.4,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                    StrokeLineJoin = PenLineJoin.Round,
+                    Fill = null,
+                    Width = 16, Height = 16,
+                    Stretch = Stretch.None,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    SnapsToDevicePixels = true,
+                };
+            }
+            void AddKindToggle(ShapeKind kind, string toolTip)
+            {
+                var fg = curKind == kind
+                    ? (SolidColorBrush)FindResource("AccentGreen")
+                    : (SolidColorBrush)FindResource("TextPrimary");
                 var btn = new Button
                 {
                     // See the matching comment on ShowTextSettings' AddStyleToggle: a bare Button
                     // with no Style uses the OS default chrome, not this Background/Foreground.
                     Style = (Style)FindResource("ToolbarButton"),
                     Padding = new Thickness(0),
-                    Content = glyph,
-                    FontFamily = new FontFamily("Segoe MDL2 Assets"),
-                    FontSize = 14,
+                    Content = MakeKindIcon(kind, fg),
                     Width = 26, Height = 24,
                     Margin = new Thickness(2, 0, 2, 0),
                     ToolTip = toolTip,
@@ -7609,19 +7679,18 @@ namespace TDPdf
                     Background = curKind == kind
                         ? (SolidColorBrush)FindResource("AccentGreenDim")
                         : (SolidColorBrush)FindResource("BgHover"),
-                    Foreground = curKind == kind
-                        ? (SolidColorBrush)FindResource("AccentGreen")
-                        : (SolidColorBrush)FindResource("TextPrimary"),
+                    Foreground = fg,
                     BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                     BorderThickness = new Thickness(1)
                 };
+                AutomationProperties.SetName(btn, toolTip);
                 btn.Click += (_, _) => ApplyKind(kind);
                 panel.Children.Add(btn);
             }
-            AddKindToggle("\uE91A", ShapeKind.Rectangle, "Rectangle");
-            AddKindToggle("\uEA3A", ShapeKind.Ellipse, "Ellipse");
-            AddKindToggle("\uE739", ShapeKind.Line, "Line");
-            AddKindToggle("\uE734", ShapeKind.Polygon,
+            AddKindToggle(ShapeKind.Rectangle, "Rectangle");
+            AddKindToggle(ShapeKind.Ellipse, "Ellipse");
+            AddKindToggle(ShapeKind.Line, "Line");
+            AddKindToggle(ShapeKind.Polygon,
                 "Freeform polygon \u2014 click to place points, click the first point or double-click to close");
 
             panel.Children.Add(new Rectangle
@@ -10753,8 +10822,13 @@ namespace TDPdf
                     return false;
 
                 case TextEditAnnotation tea:
+                    // bounds stays OriginalBounds — it drives the selection rect and the resize
+                    // handles, which size the whiteout, so widening it here would silently grow
+                    // the whiteout on every resize. Only the HIT is widened, so a click on
+                    // replacement glyphs that overhang the original run still lands. See
+                    // TextEditHitBounds.
                     bounds = tea.OriginalBounds;
-                    return bounds.Contains(pos);
+                    return TextEditHitBounds(tea).Contains(pos);
 
                 case ImageEditAnnotation iea:
                     bounds = iea.TargetBounds;
@@ -11600,7 +11674,7 @@ namespace TDPdf
             if (_annotations.TryGetValue(pageIdx, out var existingPage))
             {
                 var existingEdit = existingPage.OfType<TextEditAnnotation>()
-                    .FirstOrDefault(a => a.OriginalBounds.Contains(canvasPos));
+                    .FirstOrDefault(a => TextEditHitBounds(a).Contains(canvasPos));
                 if (existingEdit is not null)
                 {
                     // Seed the tool-default style fields from what's actually on this run, so the
@@ -13183,6 +13257,65 @@ namespace TDPdf
         /// Bounding size (canvas px, including padding) of a text annotation: the fixed Width/Height when
         /// set, otherwise the measured extent of the (optionally wrapped) content.
         /// </summary>
+        /// <summary>
+        /// The region a <see cref="TextEditAnnotation"/> actually occupies on the canvas: its
+        /// whiteout box unioned with the replacement text drawn from <c>Position</c>.
+        /// </summary>
+        /// <remarks>
+        /// <c>OriginalBounds</c> alone is NOT the hit region. The replacement TextBlock is drawn
+        /// from <c>Position</c> with no Width and no Clip, so as soon as the replacement is longer
+        /// than the text it replaced, its glyphs extend past <c>OriginalBounds.Right</c>.
+        ///
+        /// Hit-testing on <c>OriginalBounds</c> then misses exactly the glyphs the user can see and
+        /// is aiming at. In <see cref="EditTextAtPosition"/> that miss is expensive: the re-edit
+        /// guard falls through to the fresh branch, which re-reads the ORIGINAL pdf and appends a
+        /// SECOND TextEditAnnotation. Being last in the list, its whiteout paints over anything
+        /// underneath — which is the "changing #4 to #3 removes the strikethrough on #5" report.
+        /// </remarks>
+        private Rect TextEditHitBounds(TextEditAnnotation tea)
+        {
+            var bounds = tea.OriginalBounds;
+            if (string.IsNullOrEmpty(tea.NewContent)) return bounds;
+            if (!IsFinite(bounds.Width) || !IsFinite(bounds.Height)) return bounds;
+
+            double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
+            // Measured with the annotation's OWN family, unlike MeasureTextAnnotation, which pins
+            // PdfFontStyle.DefaultFamily — a text edit inherits the font of the run it replaced and
+            // renders with it, so measuring anything else would under-read the overhang.
+            var ft = new FormattedText(
+                tea.NewContent,
+                System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                new Typeface(new FontFamily(tea.FontName),
+                             tea.Italic ? FontStyles.Italic : FontStyles.Normal,
+                             tea.Bold ? FontWeights.Bold : FontWeights.Normal,
+                             FontStretches.Normal),
+                tea.FontSize, Brushes.Black, dpi);
+
+            if (!IsFinite(ft.Width) || !IsFinite(ft.Height)) return bounds;
+            return Rect.Union(bounds, new Rect(tea.Position.X, tea.Position.Y, ft.Width, ft.Height));
+        }
+
+        /// <summary>
+        /// A page's annotations in paint order: whiteout-bearing edits first, everything else after.
+        /// </summary>
+        /// <remarks>
+        /// Z-order is otherwise plain list insertion order, on screen and in the saved PDF alike,
+        /// and a <see cref="TextEditAnnotation"/>'s first act is to paint an OPAQUE white rectangle
+        /// over its OriginalBounds. So any annotation added BEFORE the edit — in practice a
+        /// strikethrough on the very text being replaced — was erased by it in both places.
+        ///
+        /// A whiteout is a background layer, not a peer, so it is ordered as one. Both passes walk
+        /// the list in order, so annotations within each group keep their existing relative z-order
+        /// and already-annotated documents render unchanged apart from the bug being fixed.
+        /// </remarks>
+        private static IEnumerable<PageAnnotation> InPaintOrder(IList<PageAnnotation> annots)
+        {
+            for (int i = 0; i < annots.Count; i++)
+                if (annots[i] is TextEditAnnotation or ImageEditAnnotation) yield return annots[i];
+            for (int i = 0; i < annots.Count; i++)
+                if (annots[i] is not (TextEditAnnotation or ImageEditAnnotation)) yield return annots[i];
+        }
+
         private Size MeasureTextAnnotation(TextAnnotation ta)
         {
             double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
@@ -13295,7 +13428,7 @@ namespace TDPdf
                 return;
             }
 
-            foreach (var annot in _annotations[pageIndex])
+            foreach (var annot in InPaintOrder(_annotations[pageIndex]))
             {
                 switch (annot)
                 {
@@ -16072,7 +16205,7 @@ namespace TDPdf
                 if (VisualToPageMatrix(rot, box, page.Height.Point) is XMatrix visualToPage)
                     gfx.MultiplyTransform(visualToPage, XMatrixOrder.Prepend);
 
-                foreach (var annot in annots)
+                foreach (var annot in InPaintOrder(annots))
                 {
                     switch (annot)
                     {

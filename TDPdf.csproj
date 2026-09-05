@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -12,9 +12,9 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\tdpdf-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.29.7.0</Version>
-    <AssemblyVersion>1.29.7.0</AssemblyVersion>
-    <FileVersion>1.29.7.0</FileVersion>
+    <Version>1.30.0.0</Version>
+    <AssemblyVersion>1.30.0.0</AssemblyVersion>
+    <FileVersion>1.30.0.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- The vendored PdfSharpCore (netstandard2.0, AnyCPU) is referenced by this x64 app. By default
          the SDK unsets the parent's Configuration/Platform when building the ProjectReference, so the
@@ -58,10 +58,9 @@
          backend, which is what made that retirement a dependency deletion rather than a rewrite. -->
     <PackageReference Include="OpenTelemetry" Version="1.17.0" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
-    <PackageReference Include="System.Configuration.ConfigurationManager" Version="9.0.0" />
-    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
-    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.0" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -89,6 +88,19 @@
     </EmbeddedResource>
     <EmbeddedResource Include="$(PkgTesseract)\x64\leptonica-1.82.0.dll" Condition="'$(PkgTesseract)' != ''">
       <LogicalName>TDPdf.OcrNative.leptonica-1.82.0.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- Third-party licence notices. MIT and BSD both require their copyright notice to travel
+       with binary distributions, and Apache-2.0 section 4(a) requires a copy of the licence
+       itself; TDPdf ships as a single self-contained exe, so those components are physically
+       inside the binary the user receives and the notices have to be inside it too. A loose
+       file beside the exe would not survive single-file publish, hence EmbeddedResource.
+       Regenerate with build/generate-third-party-notices.ps1; read at runtime by
+       ThirdPartyLicensesWindow. -->
+  <ItemGroup>
+    <EmbeddedResource Include="THIRD-PARTY-NOTICES.md">
+      <LogicalName>TDPdf.THIRD-PARTY-NOTICES.md</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 
