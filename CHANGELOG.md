@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+### Changed
+
+- **New application icon.** TDPdf's icon was the Doodle Project logo at full bleed, so every window, taskbar button and Alt-Tab entry read as the company rather than the app. It is now a document carrying that same mark — the silhouette says what the app is, the colour says whose it is. Generated from the brand logo at build time so the two cannot drift apart, with separate artwork at small sizes because a thin-stroked mark goes sub-pixel at 16px. The `.pdf` file-association icon is unchanged; PDFs should still look like PDFs.
+- **Add/Remove Programs now reports the installed size, install date, and links to the project and issue tracker.** Previously it carried only the name, version, publisher and uninstall commands.
+
+### Added
+
+- **`/S`, `/quiet`, `/verysilent` and `--silent` are accepted as synonyms for `/install /silent`**, so the switch most deployment tooling reaches for by habit now works. The unattended install is documented in the README.
+
+### Fixed
+
+- **Running `TDPdf.exe /silent` tried to open a file literally named `/silent`** instead of installing. A bare silent switch now installs, which is what anyone passing it meant.
+
 ## [1.30.0.0] - 2026-09-04
 
 Groundwork for redaction and real text editing, plus three defects reported from the field.
