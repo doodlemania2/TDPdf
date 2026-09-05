@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Proves that redaction REMOVES content rather than covering it.
+
+    WHY THIS EXISTS
+    TDPdf is a Windows WPF app and cannot run on the machines this repo usually lives on, so
+    the PDF-editing core would otherwise ship unexercised. But PDFium itself is cross-platform,
+    and bblanchon publishes the SAME revision the app ships (154.0.8035) for macOS and Linux.
+    So this compiles the real Services/PdfiumInterop.cs - not a copy - and drives it against
+    that native.
+
+    It is a plain console exe returning a non-zero exit code on failure, so it needs no test
+        cd tests/Redaction && dotnet run
+    runner is Linux, which this supports.
+
+    RUN
+        cd tests/Redaction && dotnet run
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Redaction.Tests</AssemblyName>
+    <!-- The file under test is written for the app's nullable settings, not this project's. -->
+    <NoWarn>CS8600;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- All three natives so this runs wherever the repo is checked out; the resolver in
+         Program.cs loads whichever one this machine can. -->
+    <PackageReference Include="bblanchon.PDFium.macOS" Version="154.0.8035" />
+    <PackageReference Include="bblanchon.PDFium.Linux" Version="154.0.8035" />
+    <PackageReference Include="bblanchon.PDFium.Win32" Version="154.0.8035" />
+    <PackageReference Include="PdfPig" Version="0.1.14" />
+    <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
+    <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
+    <Compile Include="..\..\Services\PdfiumInterop.cs" />
+  </ItemGroup>
+
+</Project>
