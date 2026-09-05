@@ -35,7 +35,15 @@ jobs:
       # (NETSDK1045 at restore). Pinning the SDK here rather than waiting on a runner image
       # rebuild keeps the workflow self-sufficient: it works on the self-hosted runner, on a
       # GitHub-hosted one, and on whatever the image happens to carry next month.
+      #
+      # DOTNET_INSTALL_DIR is required on the self-hosted runner specifically: setup-dotnet
+      # installs to /usr/share/dotnet by default, the ARC container runs unprivileged, and the
+      # install fails with "cp: cannot create directory ... Permission denied" — while still
+      # reporting success, so the next step fails confusingly on the OLD SDK instead. Installing
+      # into RUNNER_TEMP sidesteps it and is harmless on a hosted runner.
       - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: '10.0.x'
 
