@@ -140,6 +140,10 @@ namespace TDPdf
             // `/install` and `/uninstall` accept an optional `/silent` second arg used by
             // the Intune Win32 app install/uninstall commands and by the QuietUninstallString
             // in the Add/Remove Programs entry.
+            // Install is headless either way — see DoInstall; only uninstall genuinely branches
+            // on it. A bare `/S`, `/silent`, `/quiet`, `/verysilent` or `--silent` is ALSO
+            // accepted as "install silently", for the unattended installers and store
+            // certification harnesses that expect one of those spellings rather than this app's own.
             //
             // `/clear-telemetry` is the admin/SYSTEM-only device opt-out. It outranks every
             // configuration source, including the managed Intune policy, so a machine can be
@@ -152,8 +156,23 @@ namespace TDPdf
                 bool silent = e.Args.Length > 1 &&
                               string.Equals(e.Args[1], "/silent", StringComparison.OrdinalIgnoreCase);
 
-                if (string.Equals(e.Args[0], "/install", StringComparison.OrdinalIgnoreCase))
+                // Unattended-install aliases. TDPdf's own switch is `/install /silent`, which
+                // nobody outside this repo would guess, and Microsoft Store certification runs the
+                // installer with NO UI permitted — a reviewer reaches for whichever spelling the
+                // ecosystem taught them (`/S` is NSIS, `/quiet` is MSI, `/verysilent` is Inno).
+                // Accepting the common ones costs nothing and is the difference between a working
+                // submission and a rejected one.
+                //
+                // This also fixes a real bug in passing: a bare `/silent` previously fell through
+                // to the document-open path, so TDPdf tried to open a file literally named
+                // "/silent". Only an argument list of exactly one is treated as an alias, so
+                // `/install /silent` and a genuine file path are both unaffected.
+                bool bareSilentInstall = e.Args.Length == 1 && IsSilentInstallAlias(e.Args[0]);
+
+                if (bareSilentInstall ||
+                    string.Equals(e.Args[0], "/install", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (bareSilentInstall) silent = true;
                     InstallLog.WriteHeader("INSTALL", e.Args);
                     // SYSTEM-context install is the right moment to retire a legacy
                     // telemetry.dat, since this is the one path that reliably runs elevated.
@@ -162,7 +181,7 @@ namespace TDPdf
                     Telemetry.TrackEvent("Install.Start", InstallProps(silent));
                     try
                     {
-                        DoInstall(wantDesktop: false, silent: silent);
+                        DoInstall(wantDesktop: false);
                         InstallLog.Write("INSTALL OK");
                         Telemetry.TrackEvent("Install.Success", InstallProps(silent));
                         Telemetry.Flush();
@@ -678,7 +697,7 @@ namespace TDPdf
         {
             try
             {
-                DoInstall(wantDesktop, silent: false);
+                DoInstall(wantDesktop);
             }
             catch (Exception ex)
             {
@@ -1042,7 +1061,32 @@ namespace TDPdf
             InstallLog.Write("Could not displace the locked destination under any name.");
         }
 
-        private static void DoInstall(bool wantDesktop, bool silent = false)
+        /// <summary>
+        /// The spellings accepted as "install silently, no UI", in addition to
+        /// <c>/install /silent</c>. See the call site for why these exist.
+        /// </summary>
+        private static bool IsSilentInstallAlias(string arg) =>
+            arg is not null &&
+            (arg.Equals("/S", StringComparison.OrdinalIgnoreCase) ||
+             arg.Equals("/silent", StringComparison.OrdinalIgnoreCase) ||
+             arg.Equals("/quiet", StringComparison.OrdinalIgnoreCase) ||
+             arg.Equals("/verysilent", StringComparison.OrdinalIgnoreCase) ||
+             arg.Equals("--silent", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// Installs TDPdf. <b>Always headless</b> — there is no interactive variant of this, and
+        /// no argument that makes it show UI.
+        /// </summary>
+        /// <remarks>
+        /// This deliberately takes no <c>silent</c> parameter. It used to, and never read it,
+        /// which made the install path look conditionally quiet when it never was. The
+        /// distinction is real for <see cref="Uninstall"/>, which genuinely does branch on it,
+        /// so the asymmetry is worth stating rather than papering over with a dead parameter.
+        ///
+        /// Anything interactive belongs to the CALLER — the first-run Install / Run Portable
+        /// prompt lives in the startup path, not here.
+        /// </remarks>
+        private static void DoInstall(bool wantDesktop)
         {
             var scope = NewInstallScope;
             string installDir   = InstallDirFor(scope);
@@ -1124,6 +1168,15 @@ namespace TDPdf
                 key.SetValue("QuietUninstallString", $"\"{installExe}\" /uninstall /silent");
                 key.SetValue("NoModify",             1);
                 key.SetValue("NoRepair",             1);
+                // Microsoft Store certification queries the Add/Remove Programs entry and checks
+                // that the installer's details are actually there — a missing or obviously wrong
+                // size is a documented failure. EstimatedSize is in KB and is a DWORD; Explorer
+                // renders it as the "Size" column. InstallDate is yyyyMMdd, which is the only
+                // format the Settings app parses.
+                key.SetValue("EstimatedSize",        (int)Math.Max(1, fi.Length / 1024), RegistryValueKind.DWord);
+                key.SetValue("InstallDate",          DateTime.Now.ToString("yyyyMMdd"));
+                key.SetValue("URLInfoAbout",         "https://github.com/doodlemania2/TDPdf");
+                key.SetValue("HelpLink",             "https://github.com/doodlemania2/TDPdf/issues");
             }
             InstallLog.Write("Wrote Add/Remove Programs entry");
 
