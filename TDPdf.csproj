@@ -45,8 +45,30 @@
          NuGet PackageReference PdfSharpCore 1.3.67. -->
     <ProjectReference Include="third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <PackageReference Include="PdfPig" Version="0.1.14" />
-    <!-- Docnet.Core supplies pdfium.dll as a win-x64 native runtime asset; the SDK bundles it for single-file publish. -->
-    <PackageReference Include="Docnet.Core" Version="2.6.0" />
+    <!-- Docnet.Core is used for its MANAGED wrapper only; its pdfium.dll is excluded and
+         bblanchon.PDFium.Win32 supplies the native instead. Docnet 2.6.0 last shipped in
+         September 2023 and its build (426 exports) is missing FPDFFormObj_RemoveObject, so an
+         object inside a Form XObject can be enumerated but not removed - and an OCR'd scan keeps
+         its text layer in exactly such an object, which is the document people most want to
+         redact. It also lacks FPDFPageObj_SetIsActive, FPDFText_GetTextObject and
+         FPDFPage_InsertObjectAtIndex. Verified by parsing both DLLs' PE export tables, not by
+         reading changelogs.
+
+         BOTH `native` and `build` must be excluded. Docnet ships build/net45/Docnet.Core.targets
+         which copies runtimes/$(DocnetRuntime)/native/pdfium.* as Content with
+         CopyToOutputDirectory=Always, so excluding only `native` would still leave a second
+         pdfium.dll in the output.
+
+         Shipping two natives with the simple name `pdfium` is the failure this avoids: the first
+         LoadLibrary wins and BOTH DllImport sets bind to it, and under PublishSingleFile with
+         IncludeNativeLibrariesForSelfExtract you get whichever copy lands in the extraction
+         directory - silent and machine-dependent. There must be exactly one. -->
+    <PackageReference Include="Docnet.Core" Version="2.6.0" ExcludeAssets="native;build;buildTransitive" />
+    <!-- The native, pinned. 154.0.8035 is the same build published at
+         github.com/bblanchon/pdfium-binaries chromium/8035; the package payload is byte-identical
+         to that release asset (sha256 ccfac1aa...). Standard runtimes/<rid>/native layout, so the
+         SDK bundles it for single-file publish exactly as Docnet's was. -->
+    <PackageReference Include="bblanchon.PDFium.Win32" Version="154.0.8035" />
     <!-- OCR engine. We embed the x64 natives as resources and self-extract them at runtime
          (Services/OcrNativeBootstrap), so the package's loose x86/x64 native copies in the output are dead
          weight. ExcludeAssets stops that copy while keeping the managed assembly (compile/runtime) and the
