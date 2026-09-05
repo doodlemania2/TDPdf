@@ -3,7 +3,7 @@ name: CodeQL
 # CodeQL analysis for TDPdf.
 #
 # Required by the doodlemania2/TDPdf main-branch ruleset (must report
-# results before merge). Runs on the in-cluster ARC runner; net9.0-windows
+# results before merge). Runs on the in-cluster ARC runner; net10.0-windows
 # cross-targeting from Linux requires EnableWindowsTargeting=true.
 
 on:

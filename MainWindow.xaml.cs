@@ -1327,6 +1327,13 @@ namespace TDPdf
         private void HelpChangelog_Click(object sender, RoutedEventArgs e) =>
             OpenExternalUrl("https://github.com/doodlemania2/TDPdf/blob/main/CHANGELOG.md");
 
+        // Points at the rendered Pages copy, not the repository blob: the Microsoft Store requires
+        // a privacy policy at a working URL and the developer agreement wants a link to it from
+        // inside the app as well. Published by .github/workflows/pages.yml from PRIVACY.md, which
+        // stays the single source of the text.
+        private void HelpPrivacy_Click(object sender, RoutedEventArgs e) =>
+            OpenExternalUrl("https://doodlemania2.github.io/TDPdf/privacy/");
+
         private void OpenExternalUrl(string url)
         {
             try
@@ -1347,8 +1354,15 @@ namespace TDPdf
             var message =
                 $"TDPdf — A Windows PDF editor by The Doodle Project.\n\n" +
                 $"{versionLine}\n\n" +
-                "Released under the GNU General Public License v3.0.\n" +
-                "Forked from SteveTheKiller/KillerPDF.\n\n" +
+                "Released under the GNU General Public License v3.0.\n\n" +
+                // The upstream-project credit moved to Help > Third-Party Licenses, alongside the
+                // GPLv3 section 5(a) modification statement. TDPdf has diverged materially — its
+                // own multi-document architecture, telemetry, themes and settings — and upstream
+                // has since replaced its PDF engine wholesale, so "forked from" no longer
+                // describes the relationship usefully on a one-line About box. The attribution
+                // itself is untouched: it is required, and it is still in the app, in NOTICE, and
+                // in THIRD-PARTY-NOTICES.md.
+                //
                 // Named here because these are the components a reader would expect to see
                 // credited; the full notices, which several of these licences require be
                 // distributed with the binary, are under Help > Third-Party Licenses.

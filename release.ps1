@@ -3,7 +3,7 @@
 .SYNOPSIS
     TDPdf release script: build → sign → SHA256 → print summary.
 .DESCRIPTION
-    1. Publishes for net9.0-windows/win-x64 — also runs bundle-source.ps1 to zip the source.
+    1. Publishes for net10.0-windows/win-x64 — also runs bundle-source.ps1 to zip the source.
     2. Signs TDPdf.exe with your code-signing cert via signtool. Supports a
        Certum cert in the Windows cert store (default), any other store cert
        by thumbprint, or a .pfx file (e.g. an internal/Intune signing cert).
@@ -71,7 +71,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $proj       = Join-Path $PSScriptRoot "TDPdf.csproj"
-$publishDir = Join-Path $PSScriptRoot "bin\Release\net9.0-windows\win-x64\publish"
+$publishDir = Join-Path $PSScriptRoot "bin\Release\net10.0-windows\win-x64\publish"
 $exe        = Join-Path $publishDir "TDPdf.exe"
 $hash       = $null
 $srcZip     = $null
@@ -109,7 +109,7 @@ try {
 
     # ── 1. Build / Publish ──────────────────────────────────────────────────────
     try {
-        Write-Host "`n==> Building (Release, net9.0-windows, win-x64)..." -ForegroundColor Cyan
+        Write-Host "`n==> Building (Release, net10.0-windows, win-x64)..." -ForegroundColor Cyan
 
         & dotnet publish $proj -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true
 
