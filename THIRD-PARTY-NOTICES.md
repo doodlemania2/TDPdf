@@ -43,7 +43,7 @@ These ship as native libraries inside the executable and are extracted at runtim
 
 | Component | Version | Licence | Upstream |
 |---|---|---|---|
-| PDFium (`pdfium.dll`, via Docnet.Core) | 2.6.0 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |
+| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 154.0.8035 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |
 | Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |
 | Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |
 
@@ -1408,6 +1408,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 | SixLabors.ImageSharp | 2.1.13 | https://github.com/SixLabors/ImageSharp |
 | SixLabors.Fonts | 1.0.0-beta17 | https://github.com/SixLabors/Fonts |
 | OpenTelemetry .NET | 1.17.0 | https://github.com/open-telemetry/opentelemetry-dotnet |
+| bblanchon.PDFium.Win32 (PDFium build and packaging) | 154.0.8035 | https://github.com/bblanchon/pdfium-binaries |
 | Tesseract trained data (downloaded on demand, not bundled) | n/a | https://github.com/tesseract-ocr/tessdata_fast |
 
 The Tesseract trained-data models are **not** bundled. TDPdf downloads them from the
@@ -1649,7 +1650,7 @@ OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Docnet.Core 2.6.0
+### Docnet.Core (managed wrapper only) 2.6.0
 
 https://github.com/GowenGit/docnet
 

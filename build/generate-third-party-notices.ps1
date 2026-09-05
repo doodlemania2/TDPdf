@@ -57,7 +57,7 @@ function Get-PackageFile {
 
 $mitComponents = @(
     @{ Name = 'PdfSharpCore (vendored, modified)'; Version = '1.3.67'; Url = 'https://github.com/ststeiger/PdfSharpCore'; Holder = 'Copyright (c) 2005-2007 empira Software GmbH, Cologne (Germany)' + [Environment]::NewLine + 'Modified work Copyright (c) 2016 David Dunscombe' }
-    @{ Name = 'Docnet.Core';                       Version = '2.6.0';  Url = 'https://github.com/GowenGit/docnet';        Holder = 'Copyright (c) 2018 GowenGit' }
+    @{ Name = 'Docnet.Core (managed wrapper only)'; Version = '2.6.0'; Url = 'https://github.com/GowenGit/docnet'; Holder = 'Copyright (c) 2018 GowenGit' }
     @{ Name = 'SharpZipLib';                       Version = '1.4.2';  Url = 'https://github.com/icsharpcode/SharpZipLib'; Holder = 'Copyright (c) 2000-2018 SharpZipLib Contributors' }
     @{ Name = 'CommunityToolkit.Mvvm';             Version = '8.4.2';  Url = 'https://github.com/CommunityToolkit/dotnet'; Holder = 'Copyright (c) .NET Foundation and Contributors' }
     @{ Name = 'Microsoft.Extensions.* and System.* runtime packages'; Version = '10.0.0'; Url = 'https://github.com/dotnet/runtime'; Holder = 'Copyright (c) .NET Foundation and Contributors' }
@@ -70,6 +70,7 @@ $apacheComponents = @(
     @{ Name = 'SixLabors.ImageSharp';      Version = '2.1.13';        Url = 'https://github.com/SixLabors/ImageSharp' }
     @{ Name = 'SixLabors.Fonts';           Version = '1.0.0-beta17';  Url = 'https://github.com/SixLabors/Fonts' }
     @{ Name = 'OpenTelemetry .NET';        Version = '1.17.0';        Url = 'https://github.com/open-telemetry/opentelemetry-dotnet' }
+    @{ Name = 'bblanchon.PDFium.Win32 (PDFium build and packaging)'; Version = '154.0.8035'; Url = 'https://github.com/bblanchon/pdfium-binaries' }
     @{ Name = 'Tesseract trained data (downloaded on demand, not bundled)'; Version = 'n/a'; Url = 'https://github.com/tesseract-ocr/tessdata_fast' }
 )
 
@@ -80,6 +81,12 @@ $apacheText = Get-PackageFile -Package 'opentelemetry' -Version '1.17.0' -Relati
 
 # The PDFium aggregate. Copied whole and never summarised: it is itself a bundle of eleven
 # upstream licences, and abridging it would drop notices that must be reproduced.
+#
+# Read out of the Docnet package even though the DLL we ship now comes from
+# bblanchon.PDFium.Win32, which carries no licence file of its own. This is PDFium's own
+# notice and applies to any build of it; Docnet simply happens to be a package already on
+# disk that vendors a verbatim copy. Docnet is still referenced for its managed wrapper, so
+# the path is always present after restore.
 $pdfiumText = Get-PackageFile -Package 'docnet.core' -Version '2.6.0' -RelativePath 'runtimes/win-x64/native/LICENSE'
 
 # Carried forward from packages that ship their own downstream notices.
@@ -180,7 +187,7 @@ Add-Line 'These ship as native libraries inside the executable and are extracted
 Add-Line ''
 Add-Line '| Component | Version | Licence | Upstream |'
 Add-Line '|---|---|---|---|'
-Add-Line '| PDFium (`pdfium.dll`, via Docnet.Core) | 2.6.0 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |'
+Add-Line '| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 154.0.8035 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |'
 Add-Line '| Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |'
 Add-Line '| Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |'
 Add-Line ''

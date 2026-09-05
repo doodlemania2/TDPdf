@@ -8,6 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ### Changed
 
+- **Updated the bundled PDF engine to PDFium 154.0.8035** (from a September 2023 build). This is what makes real redaction possible: the old build could find content inside a page's embedded objects but not remove it, and an OCR'd scan keeps its invisible text layer in exactly such an object — which is the document people most want to redact. It also unblocks genuine text editing. Rendering and OCR are unaffected; the engine is a drop-in with a stable published interface.
 - **New application icon.** TDPdf's icon was the Doodle Project logo at full bleed, so every window, taskbar button and Alt-Tab entry read as the company rather than the app. It is now a document carrying that same mark — the silhouette says what the app is, the colour says whose it is. Generated from the brand logo at build time so the two cannot drift apart, with separate artwork at small sizes because a thin-stroked mark goes sub-pixel at 16px. The `.pdf` file-association icon is unchanged; PDFs should still look like PDFs.
 - **Add/Remove Programs now reports the installed size, install date, and links to the project and issue tracker.** Previously it carried only the name, version, publisher and uninstall commands.
 
