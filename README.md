@@ -40,6 +40,24 @@ PDF editor for Windows. View, annotate, merge, split, edit text, draw, sign, pri
 
 Grab the latest signed `TDPdf.exe` from the [Releases page](https://github.com/doodlemania2/TDPdf/releases/latest).
 
+## Unattended install
+
+TDPdf installs itself — there is no separate installer. Running `TDPdf.exe` from outside the
+install location offers Install or Run Portable; for scripted deployment, skip that prompt:
+
+```
+TDPdf.exe /install /silent      # install, no UI
+TDPdf.exe /uninstall /silent    # remove, no UI
+```
+
+`/S`, `/quiet`, `/verysilent` and `--silent` on their own are accepted as synonyms for
+`/install /silent`, so the switch most deployment tooling reaches for by habit works.
+
+Installs per user to `%LOCALAPPDATA%\Programs\TDPdf\` with **no elevation required**, or
+per machine to `%ProgramFiles%\TDPdf\` when run as SYSTEM (which is how Intune deploys it).
+Either way it registers the `.pdf` handler, adds a Start menu entry and a single Add/Remove
+Programs entry, and uninstalls cleanly.
+
 ## Build from source
 
 ```powershell
