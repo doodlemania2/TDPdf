@@ -118,7 +118,12 @@ jobs:
 
           echo "Rendered $(wc -c < site/privacy/index.html) bytes"
 
+      # enablement: true so the workflow provisions Pages itself if it is not already on.
+      # Without it the first run fails with a bare "Get Pages site failed ... Not Found",
+      # which reads like a broken workflow rather than an unset repository setting.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
