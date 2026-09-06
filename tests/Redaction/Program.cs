@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Runtime.InteropServices;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Fonts;
@@ -19,42 +18,46 @@ using TDPdf.Services;
             if (!NativeLibrary.TryLoad(c, out var probe)) continue;   // wrong architecture
             NativeLibrary.Free(probe);
             File.Copy(c, want, overwrite: true);
-            Console.WriteLine($"using native: {Path.GetRelativePath(AppContext.BaseDirectory, c)}");
+            Console.WriteLine($"native: {Path.GetRelativePath(AppContext.BaseDirectory, c)}");
             break;
         }
     }
 }
 
-// ── Make DllImport("pdfium.dll") resolve to that same file ─────────────────────────────
 NativeLibrary.SetDllImportResolver(typeof(PdfiumInterop).Assembly, (name, asm, path) =>
 {
     if (!name.StartsWith("pdfium", StringComparison.OrdinalIgnoreCase)) return IntPtr.Zero;
-    // Non-RID builds nest natives under runtimes/<rid>/native/, so search recursively.
     foreach (var c in Directory.GetFiles(AppContext.BaseDirectory, "*pdfium*", SearchOption.AllDirectories))
         if (NativeLibrary.TryLoad(c, out var h)) return h;
     return IntPtr.Zero;
 });
 
-// ── A minimal font resolver so PdfSharpCore can lay out text headlessly ────────────────
 GlobalFontSettings.FontResolver = new R();
 
 int failures = 0;
 void Check(string label, bool ok, string detail = "")
 {
     if (!ok) failures++;
-    Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {label}{(detail.Length > 0 ? "  — " + detail : "")}");
+    Console.WriteLine($"  {(ok ? "PASS" : "FAIL")}  {label}{(detail.Length > 0 ? "  — " + detail : "")}");
 }
 
 string tmp = Path.Combine(Path.GetTempPath(), "tdpdf-redact-test");
 Directory.CreateDirectory(tmp);
 
-// ── Build a page with three text runs at known positions ───────────────────────────────
-// PdfSharpCore's origin is top-left; PDFium page space is bottom-left. A 792pt-tall page
-// means a run drawn at y=100 sits at PDF y≈692.
+Console.WriteLine($"pdfium edit API: {PdfiumInterop.AvailableEditApi}");
+Console.WriteLine($"  page content={PdfiumInterop.CanEditPageContent} formXObjects={PdfiumInterop.CanEditFormXObjectContent}");
+Console.WriteLine();
+
+// ── Fixture ────────────────────────────────────────────────────────────────────────────
+// Three separate runs, plus metadata carrying the same secret — redacting a name from the
+// body while leaving it in the Title is the classic miss.
 string src = Path.Combine(tmp, "src.pdf");
 {
     var doc = new PdfSharpCore.Pdf.PdfDocument();
-    var page = doc.AddPage();          // 595 x 842 (A4) by default
+    doc.Info.Title = "SECRETPASSWORD12345 quarterly report";
+    doc.Info.Author = "SECRETPASSWORD12345";
+    doc.Info.Subject = "confidential";
+    var page = doc.AddPage();
     using var gfx = XGraphics.FromPdfPage(page);
     var font = new XFont("Helvetica", 14);
     gfx.DrawString("SECRETPASSWORD12345", font, XBrushes.Black, 60, 100);
@@ -62,53 +65,100 @@ string src = Path.Combine(tmp, "src.pdf");
     gfx.DrawString("ALSOKEEPTHIS", font, XBrushes.Black, 60, 500);
     doc.Save(src);
 }
-Console.WriteLine($"pdfium edit API: {PdfiumInterop.AvailableEditApi}");
-Console.WriteLine($"  CanEditPageContent      : {PdfiumInterop.CanEditPageContent}");
-Console.WriteLine($"  CanEditFormXObjectContent: {PdfiumInterop.CanEditFormXObjectContent}");
-Console.WriteLine();
 
-static (string text, double height) Extract(string path)
+static (string text, double height) Read(string path)
 {
     using var d = UglyToad.PdfPig.PdfDocument.Open(path);
     var p = d.GetPage(1);
     return (p.Text, p.Height);
 }
 
-var (beforeText, h) = Extract(src);
-Check("fixture contains all three runs",
-      beforeText.Contains("SECRETPASSWORD12345") && beforeText.Contains("KEEPTHISVISIBLE") && beforeText.Contains("ALSOKEEPTHIS"),
-      beforeText.Replace("\n", " "));
-
-// PdfSharpCore drew the secret at top-y=100 with a 14pt font, so in PDF space it spans
-// roughly y = h-100-14 .. h-100. Take a generous band around it, but one that must not
-// reach the run at top-y=300.
-var band = new PdfiumInterop.PdfRect(Left: 0, Bottom: h - 130, Right: 595, Top: h - 80);
-Console.WriteLine($"page height {h:F1}pt; redaction band y {band.Bottom:F1}..{band.Top:F1}\n");
-
-string dest = Path.Combine(tmp, "redacted.pdf");
-var outcome = PdfiumInterop.RemoveObjectsIntersecting(
-    src, dest,
-    new Dictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>> { [0] = new[] { band } },
-    removePartialOverlaps: true);
-
-Check("apply succeeded", outcome.Ok, outcome.Error ?? "");
-Console.WriteLine($"      objects removed={outcome.ObjectsRemoved} invisibleText={outcome.InvisibleTextRemoved} partial={outcome.Partial.Count}");
-
-if (outcome.Ok && File.Exists(dest))
+static string MetaOf(string path)
 {
-    var (afterText, _) = Extract(dest);
-    Console.WriteLine($"      text after: \"{afterText.Replace("\n", " ")}\"");
-
-    Check("THE SECRET IS GONE from extracted text", !afterText.Contains("SECRETPASSWORD12345"));
-    Check("untouched run survives (KEEPTHISVISIBLE)", afterText.Contains("KEEPTHISVISIBLE"));
-    Check("untouched run survives (ALSOKEEPTHIS)", afterText.Contains("ALSOKEEPTHIS"));
-
-    // The bytes, not just the text layer: a covered-not-removed redaction would still
-    // have the string somewhere in the file.
-    var raw = File.ReadAllBytes(dest);
-    bool literal = System.Text.Encoding.ASCII.GetString(raw).Contains("SECRETPASSWORD12345");
-    Check("secret not present as a literal string in the file bytes", !literal);
+    using var d = PdfSharpCore.Pdf.IO.PdfReader.Open(path, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.InformationOnly);
+    return $"{d.Info.Title}|{d.Info.Author}|{d.Info.Subject}";
 }
+
+var (beforeText, h) = Read(src);
+Console.WriteLine("Fixture");
+Check("all three runs present",
+      beforeText.Contains("SECRETPASSWORD12345") && beforeText.Contains("KEEPTHISVISIBLE") && beforeText.Contains("ALSOKEEPTHIS"));
+Check("metadata carries the secret too", MetaOf(src).Contains("SECRETPASSWORD12345"), MetaOf(src));
+
+// Derive the geometry from the actual glyph boxes rather than guessing at font metrics —
+// a hand-picked rectangle silently became the wrong shape once already.
+static (double L, double B, double R, double T) BoxOf(string path, string word)
+{
+    using var d = UglyToad.PdfPig.PdfDocument.Open(path);
+    var w = d.GetPage(1).GetWords().First(x => x.Text.Contains(word, StringComparison.Ordinal));
+    var b = w.BoundingBox;
+    return (b.Left, b.Bottom, b.Right, b.Top);
+}
+
+var secret = BoxOf(src, "SECRETPASSWORD12345");
+Console.WriteLine($"secret glyph box: L={secret.L:F1} B={secret.B:F1} R={secret.R:F1} T={secret.T:F1}");
+
+// Comfortably around the whole run, and nowhere near the next one.
+var band = new PdfiumInterop.PdfRect(
+    Left: secret.L - 10, Bottom: secret.B - 6, Right: secret.R + 10, Top: secret.T + 6);
+Console.WriteLine($"\nRedacting band y {band.Bottom:F1}..{band.Top:F1} of a {h:F0}pt page\n");
+
+// ── 1. The happy path, through the full pipeline ───────────────────────────────────────
+Console.WriteLine("Apply");
+string dest = Path.Combine(tmp, "redacted.pdf");
+if (File.Exists(dest)) File.Delete(dest);
+
+var res = PdfRedaction.Apply(src, dest, new PdfRedaction.Request
+{
+    RectsByPage = new Dictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>> { [0] = new[] { band } },
+    RemovePartialOverlaps = true,
+    ScrubMetadata = true,
+});
+
+Check("succeeded", res.Ok, res.Error ?? "");
+Console.WriteLine($"        removed={res.ObjectsRemoved} invisible={res.InvisibleTextRemoved} partial={res.Partial.Count} survivors={res.Survivors.Count}");
+
+if (res.Ok && File.Exists(dest))
+{
+    var (after, _) = Read(dest);
+    Console.WriteLine($"        text after: \"{after.Replace("\n", " ")}\"");
+    Check("secret gone from extracted text", !after.Contains("SECRETPASSWORD12345"));
+    Check("untouched run survives (KEEPTHISVISIBLE)", after.Contains("KEEPTHISVISIBLE"));
+    Check("untouched run survives (ALSOKEEPTHIS)", after.Contains("ALSOKEEPTHIS"));
+    Check("metadata scrubbed", !MetaOf(dest).Contains("SECRETPASSWORD12345"), MetaOf(dest));
+
+    // The check that separates real redaction from theatre.
+    var raw = System.Text.Encoding.ASCII.GetString(File.ReadAllBytes(dest));
+    Check("secret absent from the raw file bytes", !raw.Contains("SECRETPASSWORD12345"));
+}
+
+// ── 2. The refusal path ────────────────────────────────────────────────────────────────
+// A rectangle that covers a run's centre but only partially overlaps its object, with
+// partial removal switched OFF. The object survives, so text remains inside the redacted
+// area — and the pipeline must REFUSE to produce a file rather than hand back one the user
+// would reasonably believe was safe.
+Console.WriteLine("\nRefusal when content would survive");
+string refused = Path.Combine(tmp, "should-not-exist.pdf");
+if (File.Exists(refused)) File.Delete(refused);
+
+// Straddles the run: contains its CENTRE (so verification must see a survivor) but not its
+// full extent (so the object is only a partial overlap and is therefore left in place).
+double cx = (secret.L + secret.R) / 2.0;
+var narrow = new PdfiumInterop.PdfRect(
+    Left: cx - 25, Bottom: secret.B - 4, Right: cx + 25, Top: secret.T + 4);
+Console.WriteLine($"  straddling rect L={narrow.Left:F1} R={narrow.Right:F1} (run is {secret.L:F1}..{secret.R:F1})");
+var res2 = PdfRedaction.Apply(src, refused, new PdfRedaction.Request
+{
+    RectsByPage = new Dictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>> { [0] = new[] { narrow } },
+    RemovePartialOverlaps = false,          // leave partially-overlapping objects in place
+    ScrubMetadata = true,
+});
+
+Console.WriteLine($"        removed={res2.ObjectsRemoved} partial={res2.Partial.Count} survivors={res2.Survivors.Count}");
+Check("reported not-ok", !res2.Ok, res2.Error ?? "(no error given)");
+Check("named the surviving text", res2.Survivors.Count > 0,
+      res2.Survivors.Count > 0 ? string.Join(",", res2.Survivors) : "none");
+Check("NO output file was written", !File.Exists(refused));
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
@@ -121,7 +171,8 @@ file sealed class R : IFontResolver
     {
         foreach (var p in new[] { "/System/Library/Fonts/Supplemental/Arial.ttf",
                                   "/Library/Fonts/Arial.ttf",
-                                  "/System/Library/Fonts/Supplemental/Times New Roman.ttf" })
+                                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                  "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" })
             if (File.Exists(p)) return File.ReadAllBytes(p);
         throw new FileNotFoundException("no usable system font");
     }
