@@ -53,13 +53,19 @@ namespace TDPdf.Services
         ///     the image's x axis runs along the PDF y axis, so a naive mapping lands the rectangle
         ///     in empty space.
         ///
-        /// That last failure is caught rather than shipped — <see cref="Apply"/> verifies the output
+        /// That last failure is caught rather than shipped — <see cref="PdfRedaction.Apply"/> verifies the output
         /// and refuses to write a file when marked text survives — but "safely refuses every time"
         /// is not a working feature, so the geometry is pinned by tests that render each quarter
         /// turn through PDFium and map the ink back. See tests/Redaction.
         ///
         /// The corners are mapped individually and re-normalised, because every quarter turn except
         /// 0 swaps or flips at least one axis.
+        ///
+        /// This is the one place the table is written in the canvas-to-PDF direction;
+        /// <see cref="RectToCanvas"/> is the other direction and everything else goes through one
+        /// of the two. They are kept side by side, and the tests assert that composing them is the
+        /// identity, precisely because an inverse written independently is an inverse until someone
+        /// edits one of them.
         ///
         /// Both /Rotate and the page boxes are INHERITABLE attributes: a document is entitled to
         /// set them once on the page tree and never on a page. PdfSharpCore's own accessors read
@@ -94,45 +100,26 @@ namespace TDPdf.Services
         /// </summary>
         /// <remarks>
         /// Used by the rasteriser to paint over exactly the areas the object pass would have
-        /// removed. Deliberately derived from the same rotation table rather than re-derived, so
-        /// the two directions cannot drift apart; the round trip is asserted in the tests.
+        /// removed. It goes through <see cref="RectToCanvas"/> — the same table the link and
+        /// form-field overlays use — rather than carrying an inverse of its own, so the two
+        /// directions cannot drift apart. The round trip is asserted in the tests as well.
         ///
         /// Returned in image pixels, clamped to the image, with y measured DOWN from the top.
         /// </remarks>
         internal static (int X, int Y, int W, int H) PdfRectToCanvas(
             PdfPage page, PdfiumInterop.PdfRect rect, double renderW, double renderH)
         {
-            var box = VisibleBox(page);
-            double bx = box.X, by = box.Y, bw = box.Width, bh = box.Height;
-            int rotate = Rotation(page);
+            var (cx, cy, cw, ch) = RectToCanvas(
+                VisibleBox(page), Rotation(page), renderW, renderH,
+                rect.Left, rect.Bottom, rect.Right, rect.Top);
 
-            // Inverse of Map() in CanvasRectToPdf, term for term.
-            (double U, double V) Unmap(double X, double Y)
-            {
-                double fx = (X - bx) / bw;      // fraction along the PDF x axis
-                double fy = (Y - by) / bh;      // fraction along the PDF y axis
-                return rotate switch
-                {
-                    90  => (fy, fx),
-                    180 => (1 - fx, fy),
-                    270 => (1 - fy, 1 - fx),
-                    _   => (fx, 1 - fy),
-                };
-            }
-
-            var a = Unmap(rect.Left, rect.Bottom);
-            var b = Unmap(rect.Right, rect.Top);
-
-            double u0 = Math.Min(a.U, b.U), u1 = Math.Max(a.U, b.U);
-            double v0 = Math.Min(a.V, b.V), v1 = Math.Max(a.V, b.V);
-
-            // Outward rounding. A redaction rectangle that lands half a pixel short leaves a sliver
-            // of the original showing, and half a pixel of a 200 dpi scan is still readable when
-            // it is the top of a digit.
-            int x0 = (int)Math.Floor(Math.Clamp(u0, 0, 1) * renderW);
-            int y0 = (int)Math.Floor(Math.Clamp(v0, 0, 1) * renderH);
-            int x1 = (int)Math.Ceiling(Math.Clamp(u1, 0, 1) * renderW);
-            int y1 = (int)Math.Ceiling(Math.Clamp(v1, 0, 1) * renderH);
+            // Outward rounding, then clamp to the image. A redaction rectangle that lands half a
+            // pixel short leaves a sliver of the original showing, and half a pixel of a 200 dpi
+            // scan is still readable when it is the top of a digit.
+            int x0 = (int)Math.Floor(Math.Clamp(cx, 0, renderW));
+            int y0 = (int)Math.Floor(Math.Clamp(cy, 0, renderH));
+            int x1 = (int)Math.Ceiling(Math.Clamp(cx + cw, 0, renderW));
+            int y1 = (int)Math.Ceiling(Math.Clamp(cy + ch, 0, renderH));
 
             return (x0, y0, Math.Max(0, x1 - x0), Math.Max(0, y1 - y0));
         }
