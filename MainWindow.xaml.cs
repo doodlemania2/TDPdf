@@ -12854,12 +12854,16 @@ namespace TDPdf
                 return;
             }
 
+            string? whyNot = null;
             if (ctx.ExistingAnnotation is not null)
             {
                 // Update the existing annotation in place — avoids duplicate whiteout layers.
                 // Style is read back off the live box, not the pre-edit ctx values — the user may
                 // have changed font/size/color/bold/italic in the style bar mid-edit, and the box
                 // in front of them is the truth (same reasoning as CommitActiveTextBox's #135 fix).
+                //
+                // Re-editing an existing overlay stays an overlay: the original text is still under
+                // it, and the run this annotation replaced is no longer the thing being changed.
                 PushPageSnapshot(ctx.ExistingAnnotation.PageIndex);
                 ctx.ExistingAnnotation.NewContent = newText;
                 ctx.ExistingAnnotation.FontSize = tb.FontSize;
@@ -12869,8 +12873,18 @@ namespace TDPdf
                 ctx.ExistingAnnotation.SetColor(tbColor);
                 MarkDirty();
             }
+            // A style change cannot be done in place — see TryEditTextInPlace — so it goes straight
+            // to the overlay without a round trip through PDFium that could only fail.
+            else if (!styleChanged && TryEditTextInPlace(ctx, newText, out whyNot))
+            {
+                // Done for real: the original words are gone from the file, so there is nothing to
+                // draw over and no annotation to keep.
+                SetStatus($"Replaced \"{ctx.OriginalText}\" with \"{newText}\" in the document itself");
+                return;
+            }
             else
             {
+                if (whyNot is not null) _pendingOverlayReason = whyNot;
                 var edit = new TextEditAnnotation
                 {
                     PageIndex = ctx.PageIndex,
@@ -12887,10 +12901,132 @@ namespace TDPdf
                 AddAnnotation(edit);
             }
             RenderAllAnnotations(ctx.PageIndex);
-            SetStatus($"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\"");
+            // Say WHICH kind of edit this was. The overlay leaves the original text in the file —
+            // fine for a correction, not fine if the user thought the old words had gone — so the
+            // difference is never left implicit.
+            SetStatus(_pendingOverlayReason is null
+                ? $"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\" (drawn over the original)"
+                : $"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\" — drawn over the original because {_pendingOverlayReason}");
+            _pendingOverlayReason = null;
             // #168: the in-place editor starts from whatever the PDF already says, so it is the path
             // most likely to carry non-Latin text. Warn on the family the burn will actually use.
             WarnIfGlyphsWillBeLost(ctx.ExistingAnnotation?.FontName ?? ctx.FontName, newText);
+        }
+
+        /// <summary>Why the last edit fell back to the overlay, for the status line.</summary>
+        private string? _pendingOverlayReason;
+
+        /// <summary>
+        /// Replaces the run's text in the document itself, rather than drawing over it.
+        /// </summary>
+        /// <remarks>
+        /// The real thing: the original words stop existing in the file. Everything TDPdf did
+        /// before this — a white rectangle over the old text with the new text on top — left the
+        /// original in place, selectable and extractable, which is fine for a correction and wrong
+        /// if anyone believed the old wording had gone.
+        ///
+        /// It is NOT always possible, and the two reasons are worth keeping straight:
+        ///
+        ///   * <b>The font.</b> Most PDFs embed a subset, so a document that never contained a "Z"
+        ///     has no "Z" to draw with. <see cref="TDPdf.Services.PdfTextEdit"/> checks the finished
+        ///     file and refuses rather than shipping blanks.
+        ///   * <b>A style change.</b> In-place editing keeps the run's own font, size and colour —
+        ///     that is exactly why the result matches the rest of the line — so it cannot honour a
+        ///     different font or colour picked in the style bar. Those keep the overlay, which can.
+        ///
+        /// Either way the caller falls back to the annotation, which is uglier and always works.
+        /// </remarks>
+        private bool TryEditTextInPlace(TextEditContext ctx, string newText, out string? whyNot)
+        {
+            whyNot = null;
+            if (_doc is null || _currentFile is null) return false;
+            if (ctx.PageIndex < 0 || ctx.PageIndex >= _doc.PageCount) return false;
+            if (string.Equals(newText, ctx.OriginalText, StringComparison.Ordinal)) return false;
+            if (string.IsNullOrWhiteSpace(ctx.OriginalText)) return false;
+            if (!TDPdf.Services.PdfiumInterop.CanEditText) { whyNot = "this build cannot edit text in place"; return false; }
+            if (!_renderDims.TryGetValue(ctx.PageIndex, out var dims) || dims.w <= 0 || dims.h <= 0) return false;
+
+            var page = _doc.Pages[ctx.PageIndex];
+            var bounds = TDPdf.Services.PdfPageGeometry.CanvasRectToPdf(
+                page, ctx.CanvasBounds.X, ctx.CanvasBounds.Y,
+                ctx.CanvasBounds.Width, ctx.CanvasBounds.Height, dims.w, dims.h);
+
+            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_edit_src_{Guid.NewGuid():N}.pdf");
+            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_edit_out_{Guid.NewGuid():N}.pdf");
+            try
+            {
+                // Against the CURRENT document, structural edits and all — the file on disk may be
+                // several rotations and page deletions behind what is on screen.
+                NormalizeDocumentForSave(_doc);
+                _doc.Save(source);
+
+                var outcome = TDPdf.Services.PdfTextEdit.Apply(
+                    source, result,
+                    new[] { new TDPdf.Services.PdfiumInterop.TextEditRequest(ctx.PageIndex, bounds, ctx.OriginalText, newText) },
+                    _doc);
+
+                if (!outcome.Ok)
+                {
+                    whyNot = outcome.UnsafePages.Count > 0
+                        ? "editing this page in place would damage other content on it"
+                        : outcome.Error;
+                    return false;
+                }
+
+                PushDocUndo();
+                AdoptEditedFile(result);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                whyNot = ex.Message;
+                return false;
+            }
+            finally
+            {
+                TryDeleteTemp(source);
+                if (System.IO.File.Exists(result)
+                    && !string.Equals(result, _currentFile, StringComparison.OrdinalIgnoreCase))
+                    TryDeleteTemp(result);
+            }
+        }
+
+        /// <summary>
+        /// Makes an edited file the working document, keeping the overlay annotations.
+        /// </summary>
+        /// <remarks>
+        /// Unlike the redaction and structural-edit paths, the annotations SURVIVE. Those clear
+        /// them because the page geometry moved underneath them — a crop, a rotation, a deleted
+        /// page — and a canvas coordinate no longer means what it meant. Replacing the text inside
+        /// a run moves nothing: same pages, same boxes, same size. Throwing away the user's
+        /// unsaved highlights to change one word would be a poor trade for no safety at all.
+        /// </remarks>
+        private void AdoptEditedFile(string editedPath)
+        {
+            int selectedIdx = PageList.SelectedIndex;
+
+            _doc?.Close();
+            _doc = PdfReader.Open(editedPath, PdfDocumentOpenMode.Modify);
+            _currentFile = editedPath;
+
+            InvalidateRenderCache();
+            _contentEditor.ClearCache();
+            InvalidateTextRunCache();
+            ClearSelection();
+            MarkDirty();
+
+            RefreshPageList();
+            if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
+                PageList.SelectedIndex = selectedIdx;
+            else if (PageList.Items.Count > 0)
+                PageList.SelectedIndex = 0;
+
+            if (_viewMode == ViewMode.Continuous)
+            {
+                int contIdx = Math.Max(0, PageList.SelectedIndex);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                    (Action)(() => SetupContinuousView(contIdx)));
+            }
         }
 
         /// <summary>

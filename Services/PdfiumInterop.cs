@@ -471,6 +471,42 @@ namespace TDPdf.Services
         [DllImport("pdfium.dll", EntryPoint = "FPDFFormObj_RemoveObject", CallingConvention = CallingConvention.Cdecl)]
         private static extern bool FPDFFormObj_RemoveObjectRaw(IntPtr formObject, IntPtr pageObject);
 
+        // ---- Content editing: text objects ----------------------------------------------------
+        // FPDFText_SetText replaces the string of an EXISTING text object, which is the whole
+        // reason real text editing is possible at all: the object keeps its font, size, matrix,
+        // fill colour and render mode, so the edited words sit exactly where the old ones did and
+        // look the same. Creating a replacement object from scratch would keep none of that.
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFText_LoadPage", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr FPDFText_LoadPageRaw(IntPtr page);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFText_ClosePage", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void FPDFText_ClosePageRaw(IntPtr textPage);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetText", CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint FPDFTextObj_GetTextRaw(
+            IntPtr textObject, IntPtr textPage, IntPtr buffer, uint length);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFText_SetText", CallingConvention = CallingConvention.Cdecl,
+                   CharSet = CharSet.Unicode)]
+        private static extern bool FPDFText_SetTextRaw(IntPtr textObject, string text);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetFont", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr FPDFTextObj_GetFontRaw(IntPtr textObject);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetFontSize", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDFTextObj_GetFontSizeRaw(IntPtr textObject, out float size);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetIsEmbedded", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFFont_GetIsEmbeddedRaw(IntPtr font);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetFontData", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDFFont_GetFontDataRaw(
+            IntPtr font, byte[]? buffer, UIntPtr buflen, out UIntPtr outBuflen);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetBaseFontName", CallingConvention = CallingConvention.Cdecl)]
+        private static extern UIntPtr FPDFFont_GetBaseFontNameRaw(IntPtr font, byte[]? buffer, UIntPtr length);
+
         /// <summary>A rectangle in PDF page space: points, origin bottom-left.</summary>
         internal readonly record struct PdfRect(double Left, double Bottom, double Right, double Top)
         {
@@ -585,6 +621,308 @@ namespace TDPdf.Services
                     FPDF_CloseDocumentRaw(doc);
                 }
             }
+        }
+
+        /// <summary>What happened to one requested text replacement.</summary>
+        internal enum TextEditOutcome
+        {
+            Replaced,
+            /// <summary>No text object matched the position and original text given.</summary>
+            NotFound,
+            /// <summary>The run's own font has no glyph for something in the replacement.</summary>
+            FontCannotRender,
+            /// <summary>PDFium accepted the string but the finished file does not hold it.</summary>
+            NotApplied,
+        }
+
+        internal readonly record struct TextEditRequest(
+            int PageIndex, PdfRect Bounds, string OriginalText, string NewText);
+
+        internal sealed class TextEditResult
+        {
+            internal bool Ok { get; set; }
+            internal string? Error { get; set; }
+            internal List<(TextEditRequest Request, TextEditOutcome Outcome, string Detail)> Items { get; } = new();
+            internal int Replaced => Items.Count(i => i.Outcome == TextEditOutcome.Replaced);
+        }
+
+        /// <summary>
+        /// Replaces the text of existing text objects, in place, keeping their font and position.
+        /// </summary>
+        /// <remarks>
+        /// This is real editing rather than the overlay TDPdf has always drawn: no white rectangle
+        /// covering the old words, no second copy of the text on top. The object keeps its font,
+        /// size, matrix, fill colour and render mode, so the replacement sits exactly where the
+        /// original sat and looks like the rest of the line.
+        ///
+        /// THE THING THAT MAKES IT HARD is the font. Most PDFs embed a SUBSET — only the glyphs the
+        /// document actually used — so a document that never contained a "Z" has no "Z" to draw
+        /// with, and asking for one produces a blank or a notdef box with no error anywhere. Every
+        /// replacement is therefore checked against the font's own cmap first (see
+        /// <see cref="CmapCoverage"/>), and checked AGAIN afterwards by reading the object's text
+        /// back, because a font that has the glyph can still lack a character code that reaches it.
+        ///
+        /// Callers must run <see cref="PdfContentInspector"/> over the pages first. Regenerating a
+        /// content stream discards non-device colour, shadings, inline images and soft masks, which
+        /// on an invoice or a chart means editing one word silently damages something else.
+        /// </remarks>
+        internal static TextEditResult ReplaceText(
+            string srcPath, string destPath, IReadOnlyList<TextEditRequest> edits)
+        {
+            var result = new TextEditResult();
+            if (!CanEditText)
+            {
+                result.Error = AvailableEditApi.HasFlag(EditApi.SetText)
+                    ? DescribeEditApi()
+                    : "this build's PDF engine cannot replace text in place";
+                return result;
+            }
+            if (edits.Count == 0) { result.Ok = true; return result; }
+
+            try { _ = DocLib.Instance; } catch { /* force PDFium init */ }
+
+            lock (PdfiumLock)
+            {
+                IntPtr doc = FPDF_LoadDocumentRaw(srcPath, null);
+                if (doc == IntPtr.Zero) { result.Error = "the document could not be opened"; return result; }
+                try
+                {
+                    foreach (var group in edits.GroupBy(e => e.PageIndex))
+                    {
+                        IntPtr page = FPDF_LoadPageRaw(doc, group.Key);
+                        if (page == IntPtr.Zero)
+                        {
+                            foreach (var e in group)
+                                result.Items.Add((e, TextEditOutcome.NotFound, "the page could not be opened"));
+                            continue;
+                        }
+                        // The text page is a SNAPSHOT: CPDF_TextPage builds its character list when
+                        // it is loaded, and FPDFTextObj_GetText reads from that list. So every
+                        // lookup has to happen before anything changes, and reading an object back
+                        // through the same text page afterwards returns the text it used to have.
+                        // Whether an edit actually took is a question about the finished file, and
+                        // it is answered there — see PdfTextEdit.
+                        IntPtr textPage = FPDFText_LoadPageRaw(page);
+                        var pending = new List<(TextEditRequest Request, IntPtr Obj)>();
+                        try
+                        {
+                            foreach (var e in group)
+                            {
+                                IntPtr obj = FindTextObject(page, textPage, e);
+                                if (obj == IntPtr.Zero)
+                                {
+                                    result.Items.Add((e, TextEditOutcome.NotFound, "no matching text was found there"));
+                                    continue;
+                                }
+                                string missing = UnrenderableCharacters(obj, e.NewText);
+                                if (missing.Length > 0)
+                                {
+                                    result.Items.Add((e, TextEditOutcome.FontCannotRender, missing));
+                                    continue;
+                                }
+                                pending.Add((e, obj));
+                            }
+                        }
+                        finally
+                        {
+                            if (textPage != IntPtr.Zero) FPDFText_ClosePageRaw(textPage);
+                        }
+
+                        try
+                        {
+                            bool touched = false;
+                            foreach (var (request, obj) in pending)
+                            {
+                                if (!FPDFText_SetTextRaw(obj, request.NewText))
+                                {
+                                    result.Items.Add((request, TextEditOutcome.NotApplied,
+                                                      "the engine refused the replacement"));
+                                    continue;
+                                }
+                                result.Items.Add((request, TextEditOutcome.Replaced, ""));
+                                touched = true;
+                            }
+
+                            if (touched && !FPDFPage_GenerateContentRaw(page))
+                            {
+                                result.Error = $"content could not be regenerated for page {group.Key + 1}";
+                                return result;
+                            }
+                        }
+                        finally { FPDF_ClosePageRaw(page); }
+                    }
+
+                    if (!PdfiumSave(doc, destPath))
+                    {
+                        result.Error = "the edited document could not be written";
+                        return result;
+                    }
+                    result.Ok = true;
+                    return result;
+                }
+                finally { FPDF_CloseDocumentRaw(doc); }
+            }
+        }
+
+        /// <summary>
+        /// The text object at the requested position, preferring one whose text matches.
+        /// </summary>
+        /// <remarks>
+        /// Position alone is not enough on a dense page — two runs can share a bounding box after
+        /// rounding — and text alone is not enough either, since the same word appears many times.
+        /// Requiring both is what keeps an edit from landing on the wrong line.
+        /// </remarks>
+        private static IntPtr FindTextObject(IntPtr page, IntPtr textPage, TextEditRequest edit)
+        {
+            IntPtr best = IntPtr.Zero;
+            double bestScore = double.MaxValue;
+            string want = Squash(edit.OriginalText);
+
+            int count = FPDFPage_CountObjectsRaw(page);
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr obj = FPDFPage_GetObjectRaw(page, i);
+                if (obj == IntPtr.Zero || FPDFPageObj_GetTypeRaw(obj) != PageObjText) continue;
+                if (!FPDFPageObj_GetBoundsRaw(obj, out float l, out float b, out float r, out float t)) continue;
+                if (!edit.Bounds.Intersects(l, b, r, t)) continue;
+
+                string text = Squash(ReadTextObject(obj, textPage));
+                if (want.Length > 0 && text != want && !text.Contains(want, StringComparison.Ordinal)) continue;
+
+                // Closest centre wins among the candidates that survive both filters.
+                double dx = (l + r) / 2 - (edit.Bounds.Left + edit.Bounds.Right) / 2;
+                double dy = (b + t) / 2 - (edit.Bounds.Bottom + edit.Bounds.Top) / 2;
+                double score = dx * dx + dy * dy;
+                if (score < bestScore) { bestScore = score; best = obj; }
+            }
+            return best;
+        }
+
+        private static string ReadTextObject(IntPtr obj, IntPtr textPage)
+        {
+            if (textPage == IntPtr.Zero) return "";
+            uint bytes = FPDFTextObj_GetTextRaw(obj, textPage, IntPtr.Zero, 0);
+            if (bytes < 2) return "";
+            IntPtr buf = Marshal.AllocHGlobal((int)bytes);
+            try
+            {
+                uint written = FPDFTextObj_GetTextRaw(obj, textPage, buf, bytes);
+                if (written < 2) return "";
+                // UTF-16LE including a terminating NUL, which is not part of the string.
+                return Marshal.PtrToStringUni(buf, (int)(written / 2) - 1) ?? "";
+            }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        /// <summary>
+        /// Why <see cref="UnrenderableCharacters"/> answered as it did, for the test harness.
+        /// </summary>
+        /// <remarks>
+        /// Kept because "the coverage check passed, so why did the edit come out full of holes?"
+        /// is a question that will be asked again. It reports the three things that decide the
+        /// answer — whether the font is embedded, whether its file could be read, and whether its
+        /// cmap could be parsed — none of which is visible from the outcome alone.
+        /// </remarks>
+        internal static string DescribeFontCoverage(string srcPath, TextEditRequest edit)
+        {
+            try { _ = DocLib.Instance; } catch { }
+            lock (PdfiumLock)
+            {
+                IntPtr doc = FPDF_LoadDocumentRaw(srcPath, null);
+                if (doc == IntPtr.Zero) return "document would not open";
+                try
+                {
+                    IntPtr page = FPDF_LoadPageRaw(doc, edit.PageIndex);
+                    if (page == IntPtr.Zero) return "page would not open";
+                    IntPtr textPage = FPDFText_LoadPageRaw(page);
+                    try
+                    {
+                        IntPtr obj = FindTextObject(page, textPage, edit);
+                        if (obj == IntPtr.Zero) return "no matching text object";
+                        IntPtr font = FPDFTextObj_GetFontRaw(obj);
+                        if (font == IntPtr.Zero) return "object has no font";
+
+                        int embedded = FPDFFont_GetIsEmbeddedRaw(font);
+                        bool sized = FPDFFont_GetFontDataRaw(font, null, UIntPtr.Zero, out UIntPtr needed);
+                        int size = (int)needed;
+                        string cmap = "not read";
+                        if (sized && size > 0 && size < 32 * 1024 * 1024)
+                        {
+                            var data = new byte[size];
+                            if (FPDFFont_GetFontDataRaw(font, data, (UIntPtr)size, out _))
+                                cmap = CmapCoverage.Parse(data) is { } cov
+                                    ? "parsed, missing \"" + new string(edit.NewText
+                                        .Where(c => !char.IsWhiteSpace(c) && !cov.Covers(c)).Distinct().ToArray()) + "\""
+                                    : "unparseable";
+                        }
+                        return $"embedded={embedded} fontBytes={size} cmap={cmap}";
+                    }
+                    finally
+                    {
+                        if (textPage != IntPtr.Zero) FPDFText_ClosePageRaw(textPage);
+                        FPDF_ClosePageRaw(page);
+                    }
+                }
+                finally { FPDF_CloseDocumentRaw(doc); }
+            }
+        }
+
+        /// <summary>
+        /// Characters in <paramref name="text"/> the object's own font has no glyph for.
+        /// </summary>
+        /// <remarks>
+        /// Only embedded fonts are checked, and only because they are the ones that can fail: a
+        /// subset carries the glyphs the document already used and nothing else. A NON-embedded
+        /// font names a face the viewer substitutes from its own system fonts, so there is no font
+        /// file to interrogate and no useful answer to give — checking it would mean refusing edits
+        /// that work perfectly.
+        /// </remarks>
+        private static string UnrenderableCharacters(IntPtr obj, string text)
+        {
+            try
+            {
+                IntPtr font = FPDFTextObj_GetFontRaw(obj);
+                if (font == IntPtr.Zero) return "";
+                if (FPDFFont_GetIsEmbeddedRaw(font) != 1) return "";
+
+                if (!FPDFFont_GetFontDataRaw(font, null, UIntPtr.Zero, out UIntPtr needed)) return "";
+                int size = (int)needed;
+                if (size <= 0 || size > 32 * 1024 * 1024) return "";
+                var data = new byte[size];
+                if (!FPDFFont_GetFontDataRaw(font, data, (UIntPtr)size, out _)) return "";
+
+                var coverage = CmapCoverage.Parse(data);
+                // No readable cmap is "cannot promise coverage", not "covers nothing" — refusing
+                // every edit on a font we simply could not parse would be worse than letting the
+                // read-back check below have the final word.
+                if (coverage is null) return "";
+
+                var missing = new List<char>();
+                foreach (char c in text)
+                {
+                    if (char.IsControl(c) || c == ' ') continue;
+                    if (!coverage.Covers(c) && !missing.Contains(c)) missing.Add(c);
+                }
+                return new string(missing.ToArray());
+            }
+            catch { return ""; }
+        }
+
+        /// <summary>
+        /// Normalises whitespace for comparison.
+        /// </summary>
+        /// <remarks>
+        /// PDF text is positioned, not spaced: a run may hold no space characters at all and get
+        /// its gaps from the text matrix, so PDFium's extraction can differ from the original
+        /// string by exactly the whitespace. Comparing on the non-space characters is what makes
+        /// "did this actually take" answerable.
+        /// </remarks>
+        private static string Squash(string s)
+        {
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (char c in s)
+                if (!char.IsWhiteSpace(c)) sb.Append(c);
+            return sb.ToString();
         }
 
         /// <summary>One page's worth of removal. Returns true if anything was removed.</summary>
@@ -732,6 +1070,8 @@ namespace TDPdf.Services
             ObjectBounds = 1 << 3,
             /// <summary>Mark an object inactive rather than removing it: no ownership dance.</summary>
             SetIsActive = 1 << 4,
+            /// <summary>Read and replace the string of an existing text object, keeping its font.</summary>
+            SetText = 1 << 5,
         }
 
         /// <summary>
@@ -756,6 +1096,10 @@ namespace TDPdf.Services
         /// </summary>
         internal static bool CanEditFormXObjectContent =>
             CanEditPageContent && AvailableEditApi.HasFlag(EditApi.FormObjects);
+
+        /// <summary>Whether this build can replace the text of an existing text object in place.</summary>
+        internal static bool CanEditText =>
+            CanEditPageContent && AvailableEditApi.HasFlag(EditApi.SetText);
 
         private static EditApi ProbeEditApi()
         {
@@ -788,6 +1132,9 @@ namespace TDPdf.Services
                 if (Has("FPDFFormObj_CountObjects", "FPDFFormObj_GetObject", "FPDFFormObj_RemoveObject"))
                     api |= EditApi.FormObjects;
                 if (Has("FPDFTextObj_GetTextRenderMode")) api |= EditApi.TextRenderMode;
+                if (Has("FPDFText_SetText", "FPDFTextObj_GetText", "FPDFTextObj_GetFont",
+                        "FPDFFont_GetFontData", "FPDFFont_GetIsEmbedded", "FPDFText_LoadPage"))
+                    api |= EditApi.SetText;
                 if (Has("FPDFPageObj_GetBounds")) api |= EditApi.ObjectBounds;
                 if (Has("FPDFPageObj_SetIsActive")) api |= EditApi.SetIsActive;
             }
