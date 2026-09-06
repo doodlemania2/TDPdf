@@ -424,6 +424,270 @@ namespace TDPdf.Services
             return true;
         }
 
+        // ---- Content editing: page objects ----------------------------------------------------
+        // Raw externs only. Every caller goes through RemoveObjectsIntersecting below, which owns
+        // the document/page lifetime and holds PdfiumLock for the whole operation.
+
+        internal const int PageObjText    = 1;   // FPDF_PAGEOBJ_TEXT
+        internal const int PageObjPath    = 2;
+        internal const int PageObjImage   = 3;
+        internal const int PageObjShading = 4;
+        internal const int PageObjForm    = 5;
+
+        /// <summary>Text rendering mode 3: neither fill nor stroke. How an OCR layer is spotted.</summary>
+        internal const int TextRenderInvisible = 3;
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPage_CountObjects", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFPage_CountObjectsRaw(IntPtr page);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPage_GetObject", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr FPDFPage_GetObjectRaw(IntPtr page, int index);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPageObj_GetType", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFPageObj_GetTypeRaw(IntPtr pageObject);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPageObj_GetBounds", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDFPageObj_GetBoundsRaw(
+            IntPtr pageObject, out float left, out float bottom, out float right, out float top);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPage_RemoveObject", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDFPage_RemoveObjectRaw(IntPtr page, IntPtr pageObject);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPageObj_Destroy", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void FPDFPageObj_DestroyRaw(IntPtr pageObject);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFPage_GenerateContent", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDFPage_GenerateContentRaw(IntPtr page);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetTextRenderMode", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFTextObj_GetTextRenderModeRaw(IntPtr textObject);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFFormObj_CountObjects", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int FPDFFormObj_CountObjectsRaw(IntPtr formObject);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFFormObj_GetObject", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr FPDFFormObj_GetObjectRaw(IntPtr formObject, uint index);
+
+        [DllImport("pdfium.dll", EntryPoint = "FPDFFormObj_RemoveObject", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool FPDFFormObj_RemoveObjectRaw(IntPtr formObject, IntPtr pageObject);
+
+        /// <summary>A rectangle in PDF page space: points, origin bottom-left.</summary>
+        internal readonly record struct PdfRect(double Left, double Bottom, double Right, double Top)
+        {
+            internal bool Contains(double l, double b, double r, double t) =>
+                l >= Left && r <= Right && b >= Bottom && t <= Top;
+
+            internal bool Intersects(double l, double b, double r, double t) =>
+                l < Right && r > Left && b < Top && t > Bottom;
+        }
+
+        /// <summary>An object that overlapped a redaction rectangle without being inside it.</summary>
+        /// <remarks>
+        /// Reported rather than silently handled, because both available answers are wrong in
+        /// different directions: removing the whole object deletes content the user meant to keep,
+        /// and leaving it leaves content the user meant to destroy. Only the caller knows which
+        /// failure is tolerable — and for redaction the second one is never tolerable silently.
+        /// </remarks>
+        internal readonly record struct RedactionOverlap(
+            int PageIndex, int ObjectType, bool InvisibleText,
+            double Left, double Bottom, double Right, double Top);
+
+        internal sealed class RedactionOutcome
+        {
+            internal bool Ok { get; set; }
+            internal string? Error { get; set; }
+            internal int ObjectsRemoved { get; set; }
+            internal int InvisibleTextRemoved { get; set; }
+            internal List<RedactionOverlap> Partial { get; } = new();
+        }
+
+        /// <summary>
+        /// Removes every page object falling inside one of <paramref name="rectsByPage"/>,
+        /// regenerates the affected pages' content streams, and writes the result to
+        /// <paramref name="destPath"/>. Objects are REMOVED, not covered.
+        /// </summary>
+        /// <param name="removePartialOverlaps">
+        /// What to do with an object that overlaps a rectangle without being contained by it.
+        /// False leaves it and reports it; true removes the whole object, over-deleting rather
+        /// than under-deleting.
+        /// </param>
+        /// <remarks>
+        /// LIFETIME ORDERING, which PDFium's own embedder tests pin and which is easy to get
+        /// wrong: remove, THEN generate content, THEN save, and only then destroy the removed
+        /// objects. FPDFPage_RemoveObject hands ownership back to the caller and discards its
+        /// return value internally, so skipping the destroy leaks unconditionally — but
+        /// destroying before the save frees objects the generator still refers to.
+        ///
+        /// Objects are walked BACKWARDS so removing one cannot shift the index of another not
+        /// yet visited.
+        ///
+        /// Form XObjects get one level of descent. That is not a nicety: an OCR'd scan keeps its
+        /// invisible text layer inside a Form XObject, and it is the single most common thing
+        /// anyone needs redacted. It is also exactly what the previously bundled PDFium could not
+        /// do, for want of FPDFFormObj_RemoveObject.
+        /// </remarks>
+        internal static RedactionOutcome RemoveObjectsIntersecting(
+            string srcPath, string destPath,
+            IReadOnlyDictionary<int, IReadOnlyList<PdfRect>> rectsByPage,
+            bool removePartialOverlaps)
+        {
+            var outcome = new RedactionOutcome();
+            if (!CanEditPageContent)
+            {
+                outcome.Error = DescribeEditApi();
+                return outcome;
+            }
+
+            try { _ = DocLib.Instance; } catch { /* force PDFium init */ }
+
+            lock (PdfiumLock)
+            {
+                IntPtr doc = FPDF_LoadDocumentRaw(srcPath, null);
+                if (doc == IntPtr.Zero) { outcome.Error = "the document could not be opened"; return outcome; }
+
+                // Ownership passes to us on removal; freed only after the save.
+                var orphaned = new List<IntPtr>();
+                try
+                {
+                    foreach (var (pageIndex, rects) in rectsByPage)
+                    {
+                        if (rects is null || rects.Count == 0) continue;
+
+                        IntPtr page = FPDF_LoadPageRaw(doc, pageIndex);
+                        if (page == IntPtr.Zero) continue;
+                        try
+                        {
+                            bool touched = RedactPageObjects(
+                                page, pageIndex, rects, removePartialOverlaps, outcome, orphaned);
+
+                            if (touched && !FPDFPage_GenerateContentRaw(page))
+                            {
+                                outcome.Error = $"content could not be regenerated for page {pageIndex + 1}";
+                                return outcome;
+                            }
+                        }
+                        finally { FPDF_ClosePageRaw(page); }
+                    }
+
+                    if (!PdfiumSave(doc, destPath))
+                    {
+                        outcome.Error = "the edited document could not be written";
+                        return outcome;
+                    }
+                    outcome.Ok = true;
+                    return outcome;
+                }
+                finally
+                {
+                    // After the save, never before.
+                    foreach (var o in orphaned) { try { FPDFPageObj_DestroyRaw(o); } catch { } }
+                    FPDF_CloseDocumentRaw(doc);
+                }
+            }
+        }
+
+        /// <summary>One page's worth of removal. Returns true if anything was removed.</summary>
+        private static bool RedactPageObjects(
+            IntPtr page, int pageIndex, IReadOnlyList<PdfRect> rects,
+            bool removePartial, RedactionOutcome outcome, List<IntPtr> orphaned)
+        {
+            bool touched = false;
+            int count = FPDFPage_CountObjectsRaw(page);
+
+            for (int i = count - 1; i >= 0; i--)
+            {
+                IntPtr obj = FPDFPage_GetObjectRaw(page, i);
+                if (obj == IntPtr.Zero) continue;
+                if (!FPDFPageObj_GetBoundsRaw(obj, out float l, out float b, out float r, out float t))
+                    continue;
+
+                int type = FPDFPageObj_GetTypeRaw(obj);
+                var hit = Classify(rects, l, b, r, t);
+                if (hit == Hit.None) continue;
+
+                // A form can straddle a rectangle while only some of its children are inside it,
+                // so descend rather than judging the wrapper by its bounding box.
+                if (type == PageObjForm && CanEditFormXObjectContent)
+                {
+                    if (RedactFormObjects(obj, pageIndex, rects, removePartial, outcome, orphaned))
+                        touched = true;
+                    continue;
+                }
+
+                if (hit == Hit.Partial && !removePartial)
+                {
+                    outcome.Partial.Add(new RedactionOverlap(
+                        pageIndex, type, IsInvisibleText(obj, type), l, b, r, t));
+                    continue;
+                }
+
+                if (FPDFPage_RemoveObjectRaw(page, obj))
+                {
+                    if (IsInvisibleText(obj, type)) outcome.InvisibleTextRemoved++;
+                    orphaned.Add(obj);
+                    outcome.ObjectsRemoved++;
+                    touched = true;
+                }
+            }
+            return touched;
+        }
+
+        private static bool RedactFormObjects(
+            IntPtr form, int pageIndex, IReadOnlyList<PdfRect> rects,
+            bool removePartial, RedactionOutcome outcome, List<IntPtr> orphaned)
+        {
+            bool touched = false;
+            int count = FPDFFormObj_CountObjectsRaw(form);
+
+            for (int i = count - 1; i >= 0; i--)
+            {
+                IntPtr child = FPDFFormObj_GetObjectRaw(form, (uint)i);
+                if (child == IntPtr.Zero) continue;
+                if (!FPDFPageObj_GetBoundsRaw(child, out float l, out float b, out float r, out float t))
+                    continue;
+
+                int type = FPDFPageObj_GetTypeRaw(child);
+                var hit = Classify(rects, l, b, r, t);
+                if (hit == Hit.None) continue;
+
+                if (hit == Hit.Partial && !removePartial)
+                {
+                    outcome.Partial.Add(new RedactionOverlap(
+                        pageIndex, type, IsInvisibleText(child, type), l, b, r, t));
+                    continue;
+                }
+
+                if (FPDFFormObj_RemoveObjectRaw(form, child))
+                {
+                    if (IsInvisibleText(child, type)) outcome.InvisibleTextRemoved++;
+                    orphaned.Add(child);
+                    outcome.ObjectsRemoved++;
+                    touched = true;
+                }
+            }
+            return touched;
+        }
+
+        private enum Hit { None, Partial, Inside }
+
+        private static Hit Classify(IReadOnlyList<PdfRect> rects, double l, double b, double r, double t)
+        {
+            var best = Hit.None;
+            for (int i = 0; i < rects.Count; i++)
+            {
+                if (rects[i].Contains(l, b, r, t)) return Hit.Inside;
+                if (rects[i].Intersects(l, b, r, t)) best = Hit.Partial;
+            }
+            return best;
+        }
+
+        private static bool IsInvisibleText(IntPtr obj, int type)
+        {
+            if (type != PageObjText || !AvailableEditApi.HasFlag(EditApi.TextRenderMode)) return false;
+            try { return FPDFTextObj_GetTextRenderModeRaw(obj) == TextRenderInvisible; }
+            catch { return false; }
+        }
+
         // ---- Content editing: runtime capability probe -----------------------------------------
         //
         // Redaction and real text editing both need to REMOVE objects from a page and have PDFium

@@ -31,6 +31,11 @@
        implicit source globs OUT of third_party or every vendored file compiles twice. -->
   <ItemGroup>
     <Compile Remove="third_party\**" />
+    <!-- tests/ is a separate console project (see tests/Redaction) and must not compile
+         into the app; the default globs would otherwise pull it in. -->
+    <Compile Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
+    <None Remove="tests\**" />
     <EmbeddedResource Remove="third_party\**" />
     <None Remove="third_party\**" />
     <Content Remove="third_party\**" />
