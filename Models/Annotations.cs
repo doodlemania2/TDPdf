@@ -7,7 +7,15 @@ namespace TDPdf
     // v1.6.5, #127). Appended rather than inserted so the numeric values of the existing members
     // never shift — the persisted view/tool settings round-trip through them. Redact is appended
     // for that same reason.
-    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact }
+    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact, Form }
+
+    /// <summary>
+    /// Which kind of form field the Form tool places. Not the same enum as
+    /// <c>PdfFormBuilder.FieldKind</c> on purpose: multiline is a FLAG on a text field in the PDF,
+    /// but a separate thing to choose from in a toolbar, and collapsing the two would make the
+    /// toolbar lie about what the file contains.
+    /// </summary>
+    public enum FormFieldMode { Text, Multiline, CheckBox, Radio, Dropdown, Signature }
 
     public enum ShapeKind { Rectangle, Ellipse, Line, Polygon }
 
