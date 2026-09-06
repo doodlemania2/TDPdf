@@ -71,7 +71,7 @@ namespace TDPdf
                 // #193: the only bare letter outside the tool set — B was the one still unclaimed.
                 ["B"] = ("View", "Book layout (Two-Page)"),
                 // Tool keys (1.19). Digits mirror the toolbar left to right across the ten
-                // mark-making tools; Select / Pan / Signature / Crop are letter-only. Every id here
+                // mark-making tools; Select / Pan / Signature / Crop / Redact are letter-only. Every id here
                 // must also exist in KbRows below or the keycap silently never lights.
                 ["V"] = ("Tools", "Select"),            ["P"] = ("Tools", "Pan / hand"),
                 ["D1"] = ("Tools", "Text"),             ["T"] = ("Tools", "Text"),
@@ -85,6 +85,7 @@ namespace TDPdf
                 ["D9"] = ("Tools", "Draw"),             ["D"] = ("Tools", "Draw"),
                 ["D0"] = ("Tools", "Eraser"),           ["E"] = ("Tools", "Eraser"),
                 ["G"] = ("Tools", "Signature"),         ["C"] = ("Tools", "Crop"),
+                ["R"] = ("Tools", "Redact"),
             },
             [KbLayer.Ctrl] = new()
             {

@@ -160,6 +160,8 @@ Check("named the surviving text", res2.Survivors.Count > 0,
       res2.Survivors.Count > 0 ? string.Join(",", res2.Survivors) : "none");
 Check("NO output file was written", !File.Exists(refused));
 
+Geometry.Run(Check, tmp);
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
 return failures == 0 ? 0 : 1;

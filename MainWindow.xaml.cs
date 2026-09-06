@@ -82,6 +82,7 @@ namespace TDPdf
         // Editing
         private EditTool _currentTool = EditTool.Select;
         private Dictionary<int, List<PageAnnotation>> _annotations => _ctx.Annotations;
+        private Dictionary<int, List<Rect>> _redactionMarks => _ctx.RedactionMarks;
         private Dictionary<int, (int w, int h)> _renderDims => _ctx.RenderDims;
         private Dictionary<(int pageIndex, int dpiX), RenderedPage> _renderCache => _ctx.RenderCache;
 
@@ -174,6 +175,21 @@ namespace TDPdf
         private string? _activeCropHandleTag;
         private Point _cropHandleDragStart;
         private Rect _cropRectAtHandleDrag;
+
+        // Redaction tool
+        //
+        // The pending marks are deliberately NOT PageAnnotations. An annotation is something the
+        // save path bakes into the PDF, and a redaction is the opposite of that: nothing is drawn,
+        // content is destroyed, and it happens through PDFium rather than PdfSharpCore. Putting a
+        // mark in _annotations would make every save write a file with the mark silently dropped
+        // and nothing redacted — which the user has every reason to read as "it worked".
+        private readonly Button _toolRedactBtn = null!;
+        private Border? _redactSettingsBar;
+
+        /// <summary>Whether Apply over-deletes objects that only straddle a mark. See
+        /// <see cref="TDPdf.Services.PdfRedaction.Request.RemovePartialOverlaps"/>.</summary>
+        private bool _redactRemovePartial = true;
+        private bool _redactScrubMetadata = true;
 
         // Pan tool / middle-mouse pan
         private bool _isPanning;
@@ -459,6 +475,7 @@ namespace TDPdf
             _toolSignatureBtn = (Button)FindName("ToolSignatureBtn")!;
             _toolImageBtn = (Button)FindName("ToolImageBtn")!;
             _toolCropBtn = (Button)FindName("ToolCropBtn")!;
+            _toolRedactBtn = (Button)FindName("ToolRedactBtn")!;
             _toolPanBtn = (Button)FindName("ToolPanBtn")!;
             _toolEraseBtn = (Button)FindName("ToolEraseBtn")!;
             _toolShapeBtn = (Button)FindName("ToolShapeBtn")!;
@@ -1199,6 +1216,11 @@ namespace TDPdf
             public readonly Dictionary<int, List<PageAnnotation>> Annotations = new();
             public readonly Dictionary<int, (int w, int h)> RenderDims = new();
 
+            // Pending redaction marks, in canvas coordinates, keyed by page. Per-document for the
+            // same reason as the polygon vertices below: these are coordinates on THIS document's
+            // pages, and a mark leaking across a tab switch would redact the wrong file.
+            public readonly Dictionary<int, List<Rect>> RedactionMarks = new();
+
             // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
             // by widget object number, checkboxes by widget object number, radios by field
             // name (shared across the widgets in a group). Persisted into the PDF on save.
@@ -1868,6 +1890,8 @@ namespace TDPdf
             menu.Items.Add(MakeMenuItem("_Highlight Tool", (s, e) => SetTool(EditTool.Highlight), "5", "Switch to the highlight tool", "\uED56"));
             menu.Items.Add(MakeMenuItem("_Draw Tool", (s, e) => SetTool(EditTool.Draw), "9", "Switch to the draw tool", "\uED63"));
             menu.Items.Add(MakeMenuItem("_Crop Tool", (s, e) => SetTool(EditTool.Crop), "C", "Switch to the crop tool", "\uE7A8"));
+            menu.Items.Add(MakeMenuItem("_Redact", (s, e) => SetTool(EditTool.Redact), "R",
+                "Mark areas whose content is permanently removed from the file", "\uE73B"));
             menu.Items.Add(new Separator());
             menu.Items.Add(MakeMenuItem("De_lete Selected", (s, e) => DeleteSelected(), "Delete", "Delete the selected annotation", "\uE74D"));
             menu.Items.Add(MakeMenuItem("_Undo Last", (s, e) => Undo_Click(s!, e), "Ctrl+Z", "Undo the last annotation change", "\uE7A7"));
@@ -6240,6 +6264,7 @@ namespace TDPdf
                 (_toolSignatureBtn, EditTool.Signature),
                 (_toolImageBtn, EditTool.Image),
                 (_toolCropBtn, EditTool.Crop),
+                (_toolRedactBtn, EditTool.Redact),
                 (_toolPanBtn, EditTool.Pan),
                 (_toolEraseBtn, EditTool.Erase),
                 (_toolShapeBtn, EditTool.Shape)
@@ -6266,6 +6291,7 @@ namespace TDPdf
                 EditTool.Signature => Cursors.Hand,
                 EditTool.Image => Cursors.Hand,
                 EditTool.Crop => Cursors.Cross,
+                EditTool.Redact => Cursors.Cross,
                 EditTool.Pan => Cursors.Hand,
                 EditTool.Erase => Cursors.Cross,
                 EditTool.Shape => Cursors.Cross,
@@ -6291,6 +6317,14 @@ namespace TDPdf
                 ShowShapeSettings();
             else
                 HideShapeSettings();
+
+            // The redaction bar is the only place the pending marks can be applied or cleared, so
+            // it stays up for as long as any mark exists — switching tools must not strand marks
+            // on the page with no way to act on them. Leaving the tool is not abandoning the work.
+            if (tool == EditTool.Redact || PendingRedactionCount > 0)
+                ShowRedactSettings();
+            else
+                HideRedactSettings();
 
             // Hide signature popup when switching away
             if (tool != EditTool.Signature)
@@ -6547,6 +6581,7 @@ namespace TDPdf
         private void ToolPan_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Pan);
         private void ToolErase_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Erase);
         private void ToolShape_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Shape);
+        private void ToolRedact_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Redact);
         private void ToolCrop_Click(object sender, RoutedEventArgs e)
         {
             SetTool(EditTool.Crop);
@@ -6845,6 +6880,384 @@ namespace TDPdf
             {
                 SetStatus($"Crop failed: {ex.Message}");
             }
+        }
+
+
+        // ============================================================
+        // Redaction tool
+        // ============================================================
+        //
+        // Two halves, deliberately kept apart. Marking is reversible, costs nothing, and lives
+        // entirely on the canvas. Applying is irreversible, rewrites the file through PDFium, and
+        // happens only when the user says so in as many words. Nothing in the marking half ever
+        // touches the document.
+        //
+        // The pipeline that does the work is Services/PdfRedaction.cs: it removes the objects,
+        // scrubs the metadata, and then proves the result before anything is written. If it cannot
+        // prove it, no file is produced and this method reports exactly what survived. See the file
+        // header there for why that is fail-closed rather than best-effort.
+
+        /// <summary>Redaction marks pending across the whole document.</summary>
+        private int PendingRedactionCount => _redactionMarks.Values.Sum(list => list.Count);
+
+        /// <summary>
+        /// The on-canvas look of a redaction mark: translucent red under a dashed red border.
+        /// </summary>
+        /// <remarks>
+        /// Emphatically NOT a solid black box. A pending mark is a statement of intent, and a mark
+        /// that already looks like a finished redaction invites exactly the mistake this whole
+        /// feature exists to prevent — printing, screenshotting, or sending a document whose
+        /// content is still entirely in the file. It has to read as "marked", not as "gone".
+        /// </remarks>
+        private Rectangle MakeRedactionVisual(double w, double h)
+        {
+            var danger = (SolidColorBrush)FindResource("DangerRed");
+            return new Rectangle
+            {
+                Width = w,
+                Height = h,
+                Fill = new SolidColorBrush(Color.FromArgb(46, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Stroke = danger,
+                StrokeThickness = 2,
+                StrokeDashArray = new DoubleCollection { 4, 3 },
+                // Like every other overlay on this canvas. Clicking a mark to remove it is
+                // resolved against the stored rectangles, not by WPF hit-testing, so a mark must
+                // not swallow the press that the drag-to-mark gesture needs.
+                IsHitTestVisible = false
+            };
+        }
+
+        private void RenderRedactionMarks(int pageIndex)
+        {
+            if (!_redactionMarks.TryGetValue(pageIndex, out var marks)) return;
+            foreach (var m in marks)
+            {
+                if (!IsFinitePositive(m.Width) || !IsFinitePositive(m.Height)) continue;
+                var vis = MakeRedactionVisual(m.Width, m.Height);
+                Canvas.SetLeft(vis, m.X);
+                Canvas.SetTop(vis, m.Y);
+                _annotationCanvas.Children.Add(vis);
+            }
+        }
+
+        private void ClearRedactionMarks()
+        {
+            if (PendingRedactionCount == 0) return;
+            _redactionMarks.Clear();
+            int page = PageList.SelectedIndex;
+            if (page >= 0) RenderAllAnnotations(page);
+            // The bar stays while the tool is still selected — it is the tool's own settings bar,
+            // and clearing the marks is not leaving the tool.
+            if (_currentTool == EditTool.Redact) ShowRedactSettings(); else HideRedactSettings();
+            SetStatus("Redaction marks cleared — the document was not changed");
+        }
+
+        // ── The settings / confirm bar ───────────────────────────────────────────────────
+
+        private void ShowRedactSettings()
+        {
+            HideRedactSettings();
+
+            int marks = PendingRedactionCount;
+            int pages = _redactionMarks.Count(kv => kv.Value.Count > 0);
+            var danger = (SolidColorBrush)FindResource("DangerRed");
+
+            var panel = new StackPanel { Orientation = Orientation.Horizontal };
+            panel.Children.Add(MakeLabel(marks == 0
+                ? "Redact: drag over the content to destroy"
+                : $"{marks} area{(marks == 1 ? "" : "s")} marked on {pages} page{(pages == 1 ? "" : "s")}"));
+
+            var partial = new CheckBox
+            {
+                Content = "Include partly covered objects",
+                IsChecked = _redactRemovePartial,
+                Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(4, 0, 10, 0),
+                ToolTip = "An object that straddles the edge of a mark is removed whole. Off leaves it in place — " +
+                          "which can leave part of what you meant to destroy, so the redaction is then refused rather than written."
+            };
+            partial.Checked += (_, _) => _redactRemovePartial = true;
+            partial.Unchecked += (_, _) => _redactRemovePartial = false;
+            panel.Children.Add(partial);
+
+            var scrub = new CheckBox
+            {
+                Content = "Scrub document metadata",
+                IsChecked = _redactScrubMetadata,
+                Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 10, 0),
+                ToolTip = "Clears the title, author and every other Info entry, and drops the XMP packet. " +
+                          "Redacting a name from the page while leaving it in the document title is the classic miss."
+            };
+            scrub.Checked += (_, _) => _redactScrubMetadata = true;
+            scrub.Unchecked += (_, _) => _redactScrubMetadata = false;
+            panel.Children.Add(scrub);
+
+            var btnStyle = new Style(typeof(Button));
+            btnStyle.Setters.Add(new Setter(Button.BorderThicknessProperty, new Thickness(1)));
+            btnStyle.Setters.Add(new Setter(Button.PaddingProperty, new Thickness(10, 3, 10, 3)));
+            btnStyle.Setters.Add(new Setter(Button.MarginProperty, new Thickness(0, 0, 6, 0)));
+            btnStyle.Setters.Add(new Setter(Button.CursorProperty, Cursors.Hand));
+            btnStyle.Setters.Add(new Setter(Button.FontFamilyProperty, new FontFamily("Segoe UI")));
+            btnStyle.Setters.Add(new Setter(Button.FontSizeProperty, 12.0));
+
+            var applyBtn = new Button
+            {
+                Content = "Redact Permanently",
+                Style = btnStyle,
+                IsEnabled = marks > 0,
+                Background = new SolidColorBrush(Color.FromArgb(40, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Foreground = danger,
+                BorderBrush = danger,
+                ToolTip = "Delete the marked content from the file. This cannot be undone."
+            };
+            applyBtn.Click += (_, _) => _ = ApplyRedactionsAsync();
+            panel.Children.Add(applyBtn);
+
+            var clearBtn = new Button
+            {
+                Content = "Clear Marks",
+                Style = btnStyle,
+                IsEnabled = marks > 0,
+                Background = Brushes.Transparent,
+                Foreground = (SolidColorBrush)FindResource("TextSecondary"),
+                BorderBrush = (SolidColorBrush)FindResource("TextSecondary"),
+                ToolTip = "Discard the marks. The document is not changed."
+            };
+            clearBtn.Click += (_, _) => ClearRedactionMarks();
+            panel.Children.Add(clearBtn);
+
+            _redactSettingsBar = new Border
+            {
+                Background = (SolidColorBrush)FindResource("BgPanel"),
+                BorderBrush = danger,
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                CornerRadius = new CornerRadius(0, 0, 4, 4),
+                Padding = new Thickness(4),
+                Child = panel,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+
+            if (PagePreviewPanel.Parent is Grid previewArea)
+            {
+                Panel.SetZIndex(_redactSettingsBar, 100);
+                previewArea.Children.Add(_redactSettingsBar);
+            }
+        }
+
+        private void HideRedactSettings()
+        {
+            if (_redactSettingsBar is not null)
+            {
+                (PagePreviewPanel.Parent as Grid)?.Children.Remove(_redactSettingsBar);
+                _redactSettingsBar = null;
+            }
+        }
+
+        // ── Apply ────────────────────────────────────────────────────────────────────────
+
+        private async Task ApplyRedactionsAsync()
+        {
+            if (_doc is null || _currentFile is null) { SetStatus("Redact: no document open"); return; }
+            if (PendingRedactionCount == 0) { SetStatus("Redact: nothing marked"); return; }
+            CommitActiveTextBox();
+
+            // Build the PDF-space rectangles first: a page we cannot map (never rendered, so no
+            // render dimensions) must stop the whole operation rather than be quietly skipped —
+            // skipping it would leave content the user marked for destruction in the file.
+            var rects = new Dictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>>();
+            foreach (var (pageIndex, marks) in _redactionMarks)
+            {
+                if (marks.Count == 0) continue;
+                if (pageIndex < 0 || pageIndex >= _doc.PageCount) continue;
+                if (!_renderDims.TryGetValue(pageIndex, out var dims) || dims.w <= 0 || dims.h <= 0)
+                {
+                    TdpDialog.Show(this,
+                        $"Page {pageIndex + 1} has marks but has not been displayed yet, so TDPdf cannot map " +
+                        "them onto the page. Visit that page, then redact.",
+                        "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                var page = _doc.Pages[pageIndex];
+                // The canvas-to-PDF mapping lives in the service beside the pipeline that consumes
+                // it, not here: it is page geometry, it is where a wrong rectangle would silently
+                // redact the wrong thing, and out there it is reachable by the tests.
+                rects[pageIndex] = marks
+                    .Select(m => TDPdf.Services.PdfRedaction.CanvasRectToPdf(
+                        page, m.X, m.Y, m.Width, m.Height, dims.w, dims.h))
+                    .ToList();
+            }
+            if (rects.Count == 0) { SetStatus("Redact: nothing marked"); return; }
+
+            // Pre-flight. PDFium's content generator silently discards non-device colour, shadings,
+            // inline images and soft masks from any stream it rewrites, so a page carrying those
+            // cannot be edited without collateral damage. Refusing is the honest answer until the
+            // rasterise fallback lands; quietly recolouring an invoice is not.
+            var hazardous = new List<string>();
+            foreach (int pageIndex in rects.Keys)
+            {
+                var hazard = TDPdf.Services.PdfContentInspector.Inspect(_doc.Pages[pageIndex]);
+                if (hazard != TDPdf.Services.ContentHazard.None)
+                    hazardous.Add($"Page {pageIndex + 1}: {TDPdf.Services.PdfContentInspector.Describe(hazard)}");
+            }
+            if (hazardous.Count > 0)
+            {
+                TdpDialog.Show(this,
+                    "TDPdf will not redact these pages, because rewriting them would damage content " +
+                    "you did not mark:\n\n" + string.Join("\n", hazardous) +
+                    "\n\nRedacting anyway could recolour or drop unrelated parts of the page. " +
+                    "Save Flattened produces an image-only copy that carries no live text at all.",
+                    "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            int markCount = PendingRedactionCount;
+            var confirm = TdpDialog.ShowYesNo(this,
+                $"Permanently remove the content under {markCount} marked area{(markCount == 1 ? "" : "s")}?\n\n" +
+                "The text and images underneath are deleted from the PDF, not covered over. " +
+                "This cannot be undone, and it clears the undo history.",
+                "Redact Permanently", "Cancel", "Redact", MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            using var op = Telemetry.StartOperation("Redact");
+            SetFileOperationBusy(true, "Redacting...");
+            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_src_{Guid.NewGuid():N}.pdf");
+            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_out_{Guid.NewGuid():N}.pdf");
+            try
+            {
+                // Redact the CURRENT document, structural edits and all — not the file on disk,
+                // which may be several rotations and page deletions behind what is on screen.
+                NormalizeDocumentForSave(_doc);
+                await _pdfDocumentService.SaveAsync(() => _doc!.Save(source), CancellationToken.None);
+
+                var request = new TDPdf.Services.PdfRedaction.Request
+                {
+                    RectsByPage = rects,
+                    RemovePartialOverlaps = _redactRemovePartial,
+                    ScrubMetadata = _redactScrubMetadata,
+                };
+                var outcome = await Task.Run(() => TDPdf.Services.PdfRedaction.Apply(source, result, request));
+
+                if (!outcome.Ok)
+                {
+                    // Nothing was written and the open document is untouched, so the marks stay
+                    // exactly where they were and the user can widen them and try again.
+                    string detail = outcome.Survivors.Count > 0
+                        ? "\n\nStill inside a marked area: " +
+                          string.Join(", ", outcome.Survivors.Take(8)) +
+                          (outcome.Survivors.Count > 8 ? ", …" : "") +
+                          "\n\nWiden the marks, or switch on \"Include partly covered objects\"."
+                        : "";
+                    TdpDialog.Show(this,
+                        $"The redaction was not applied: {outcome.Error}{detail}\n\n" +
+                        "Your document has not been changed.",
+                        "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    SetStatus("Redaction refused — the document was not changed");
+                    return;
+                }
+
+                AdoptRedactedFile(result);
+
+                string summary = $"Redacted {markCount} area{(markCount == 1 ? "" : "s")} — " +
+                                 $"{outcome.ObjectsRemoved} object{(outcome.ObjectsRemoved == 1 ? "" : "s")} removed";
+                if (outcome.InvisibleTextRemoved > 0)
+                    summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
+                SetStatus(summary + ". Save to write it to disk.");
+            }
+            catch (Exception ex)
+            {
+                Telemetry.TrackCrash(ex, "Redact", recoverable: true);
+                TdpDialog.Show(this, $"The redaction was not applied: {ex.Message}\n\nYour document has not been changed.",
+                    "Redact", MessageBoxButton.OK, MessageBoxImage.Error);
+                SetStatus("Redaction failed — the document was not changed");
+            }
+            finally
+            {
+                SetFileOperationBusy(false);
+                TryDeleteTemp(source);
+                if (System.IO.File.Exists(result) && !string.Equals(result, _currentFile, StringComparison.OrdinalIgnoreCase))
+                    TryDeleteTemp(result);
+            }
+        }
+
+        /// <summary>
+        /// Makes the redacted file the working document.
+        /// </summary>
+        /// <remarks>
+        /// Mirrors the tail of <see cref="SaveTempAndReload"/>, with one deliberate difference: the
+        /// undo history is DROPPED rather than extended. A document-level undo entry holds the
+        /// pre-edit bytes, so an undoable redaction would put the removed content straight back —
+        /// and the user, having been told the content was destroyed, would have no reason to look.
+        /// The confirmation says this cannot be undone; this is what makes that true.
+        /// </remarks>
+        private void AdoptRedactedFile(string redactedPath)
+        {
+            int selectedIdx = PageList.SelectedIndex;
+
+            _doc?.Close();
+            _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
+            _currentFile = redactedPath;
+
+            _annotations.Clear();
+            _redactionMarks.Clear();
+            ClearFormState();
+            InvalidateRenderCache();
+            _contentEditor.ClearCache();
+            InvalidateTextRunCache();
+            ClearSelection();
+            _undoStack.Clear();
+            _redoStack.Clear();
+            HideRedactSettings();
+            MarkDirty();
+
+            RefreshPageList();
+            if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
+                PageList.SelectedIndex = selectedIdx;
+            else if (PageList.Items.Count > 0)
+                PageList.SelectedIndex = 0;
+
+            if (_viewMode == ViewMode.Continuous)
+            {
+                int contIdx = Math.Max(0, PageList.SelectedIndex);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                    (Action)(() => SetupContinuousView(contIdx)));
+            }
+        }
+
+        private static void TryDeleteTemp(string path)
+        {
+            try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* temp file; best effort */ }
+        }
+
+        /// <summary>
+        /// Gate every save on unapplied redaction marks.
+        /// </summary>
+        /// <remarks>
+        /// A mark is not an annotation and the save path writes nothing for it, so a save with
+        /// marks pending produces a file that looks redacted on screen and is not redacted at all.
+        /// That is the single worst outcome this feature can produce, so it is the one thing the
+        /// save path is not allowed to do silently. Returns false to abandon the save.
+        /// </remarks>
+        private bool ConfirmSaveWithPendingRedactions()
+        {
+            int marks = PendingRedactionCount;
+            if (marks == 0) return true;
+
+            var answer = TdpDialog.ShowYesNo(this,
+                $"{marks} redaction mark{(marks == 1 ? " has" : "s have")} not been applied.\n\n" +
+                "Saving now writes a file that still contains all of the marked content — the marks " +
+                "themselves are not saved. Use Redact Permanently to remove the content first.",
+                "Save anyway", "Cancel",
+                "Unapplied Redactions", MessageBoxImage.Warning);
+            return answer == MessageBoxResult.Yes;
         }
 
         // ============================================================
@@ -9461,6 +9874,38 @@ namespace TDPdf
                     break;
                 }
 
+                case EditTool.Redact:
+                {
+                    ClearSelection();
+                    // A click on an existing mark takes it back off. Marks have no handles and no
+                    // selection state: they are a list of areas, and the only two things worth
+                    // doing to one are adding it and taking it away.
+                    if (_redactionMarks.TryGetValue(pageIdx, out var existing))
+                    {
+                        int hit = existing.FindLastIndex(r => r.Contains(pos));
+                        if (hit >= 0)
+                        {
+                            existing.RemoveAt(hit);
+                            if (existing.Count == 0) _redactionMarks.Remove(pageIdx);
+                            RenderAllAnnotations(pageIdx);
+                            ShowRedactSettings();
+                            SetStatus($"Redaction mark removed — {PendingRedactionCount} pending");
+                            e.Handled = true;
+                            break;
+                        }
+                    }
+                    _isDrawing = true;
+                    _drawStart = pos;
+                    var redactRect = MakeRedactionVisual(0, 0);
+                    Canvas.SetLeft(redactRect, pos.X);
+                    Canvas.SetTop(redactRect, pos.Y);
+                    _annotationCanvas.Children.Add(redactRect);
+                    _activePreview = redactRect;
+                    _annotationCanvas.CaptureMouse();
+                    e.Handled = true;
+                    break;
+                }
+
                 case EditTool.Crop:
                     ClearSelection();
                     ClearCropSelection();
@@ -10038,6 +10483,7 @@ namespace TDPdf
             switch (_currentTool)
             {
                 case EditTool.Highlight when _activePreview is Rectangle:
+                case EditTool.Redact when _activePreview is Rectangle:
                 case EditTool.Crop when _activePreview is Rectangle:
                     var rect = (Rectangle)_activePreview;
                     Canvas.SetLeft(rect, Math.Min(pos.X, _drawStart.X));
@@ -10315,6 +10761,23 @@ namespace TDPdf
                     else
                     {
                         _annotationCanvas.Children.Remove(rect);
+                    }
+                    break;
+
+                case EditTool.Redact when _activePreview is Rectangle rrect:
+                    // 3px, matching the highlighter: below that it is a stray click, not a mark.
+                    if (rrect.Width > 3 && rrect.Height > 3)
+                    {
+                        if (!_redactionMarks.TryGetValue(pageIdx, out var marks))
+                            _redactionMarks[pageIdx] = marks = new List<Rect>();
+                        marks.Add(new Rect(Canvas.GetLeft(rrect), Canvas.GetTop(rrect), rrect.Width, rrect.Height));
+                        RenderAllAnnotations(pageIdx);
+                        ShowRedactSettings();
+                        SetStatus($"{PendingRedactionCount} area{(PendingRedactionCount == 1 ? "" : "s")} marked — nothing is removed until you press Redact");
+                    }
+                    else
+                    {
+                        _annotationCanvas.Children.Remove(rrect);
                     }
                     break;
 
@@ -13125,6 +13588,7 @@ namespace TDPdf
                 // exactly as clicking the toolbar button does.
                 case Key.G: ToolSignature_Click(this, new RoutedEventArgs()); return true;
                 case Key.C: ToolCrop_Click(this, new RoutedEventArgs()); return true;
+                case Key.R: SetTool(EditTool.Redact); return true;
                 default: return false;
             }
         }
@@ -13422,6 +13886,7 @@ namespace TDPdf
             // survive every annotation re-render (edits, undo, selection, …).
             if (!_annotations.ContainsKey(pageIndex))
             {
+                RenderRedactionMarks(pageIndex);
                 RestoreFormOverlays(pageIndex);
                 RestorePolyPreview(pageIndex);
                 ApplyTextSelectionQuads(pageIndex);
@@ -13637,6 +14102,10 @@ namespace TDPdf
                         break;
                 }
             }
+
+            // Pending redaction marks are not annotations and so are not in the loop above; they
+            // are repainted here for the same reason the overlays below are — the clear wiped them.
+            RenderRedactionMarks(pageIndex);
 
             // The canvas was cleared above, so restore any form-field overlays.
             RestoreFormOverlays(pageIndex);
@@ -14381,6 +14850,7 @@ namespace TDPdf
             try { ctx.Doc?.Close(); } catch { }
             ctx.Doc = null;
             ctx.Annotations.Clear();
+            ctx.RedactionMarks.Clear();
             ctx.RenderCache.Clear();
             ctx.RenderDims.Clear();
             ctx.UndoStack.Clear();
@@ -15427,6 +15897,7 @@ namespace TDPdf
             // (their working file is a temp copy), so an in-place save would silently write to
             // %TEMP%. Route them to Save As. OriginalPath — not _currentFile — is the destination.
             if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
+            if (!ConfirmSaveWithPendingRedactions()) return;
             await SaveInPlaceAsync();
         }
 
@@ -15711,6 +16182,7 @@ namespace TDPdf
         private async void SaveAs_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            if (!ConfirmSaveWithPendingRedactions()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save PDF as" };
             // #112: seed the dialog with the document's display name so Save As pre-fills the real
@@ -15813,6 +16285,11 @@ namespace TDPdf
         private async void SaveFlattened_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            // Flatten is not redaction, and is the easiest of the three saves to mistake for it.
+            // It rasterises the page, so the marked words stop being selectable text — but they are
+            // still there, in full, as pixels. Ask before writing a file the user has every reason
+            // to believe is safe.
+            if (!ConfirmSaveWithPendingRedactions()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
             if (dlg.ShowDialog() != true) return;
@@ -16557,6 +17034,21 @@ namespace TDPdf
             // annotations through the turn beforehand (see RotatePages_Click) and passes
             // keepAnnotations: true so that unsaved work survives the reload.
             if (!keepAnnotations) _annotations.Clear();
+            // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
+            // a page index, and every caller here has just moved, deleted, reordered or resized
+            // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
+            // remaps its annotations through the turn and keeps them; there is no equivalent for a
+            // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
+            // user a re-drag.
+            if (PendingRedactionCount > 0)
+            {
+                _redactionMarks.Clear();
+                HideRedactSettings();
+                // Held: every caller of this sets its own status line immediately afterwards
+                // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
+                // marks silently gone.
+                SetStatusHeld("Redaction marks were cleared — the page layout changed. Mark the areas again.", 4000);
+            }
             ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();
