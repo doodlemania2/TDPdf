@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Proves that redaction REMOVES content rather than covering it.
+    Exercises the PDF core: the parts of TDPdf that manipulate PDF structure rather than WPF.
+    Redaction (does it REMOVE content, or merely cover it?), the canvas-to-PDF geometry every
+    overlay depends on, the rasterise fallback, and AcroForm authoring.
 
     WHY THIS EXISTS
     TDPdf is a Windows WPF app and cannot run on the machines this repo usually lives on, so
@@ -11,11 +13,11 @@
     that native.
 
     It is a plain console exe returning a non-zero exit code on failure, so it needs no test
-        cd tests/Redaction && dotnet run
-    runner is Linux, which this supports.
+    runner, and it runs anywhere the repo is checked out — including Linux, which is what the
+    release runner is.
 
     RUN
-        cd tests/Redaction && dotnet run
+        cd tests/PdfCore && dotnet run
   -->
 
   <PropertyGroup>
@@ -23,7 +25,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>Redaction.Tests</AssemblyName>
+    <AssemblyName>PdfCore.Tests</AssemblyName>
     <!-- The file under test is written for the app's nullable settings, not this project's. -->
     <NoWarn>CS8600;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
   </PropertyGroup>
@@ -41,6 +43,7 @@
     <Compile Include="..\..\Services\PdfPageGeometry.cs" />
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
+    <Compile Include="..\..\Services\PdfFormBuilder.cs" />
   </ItemGroup>
 
 </Project>

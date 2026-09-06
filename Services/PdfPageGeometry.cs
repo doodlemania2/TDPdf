@@ -17,7 +17,7 @@ namespace TDPdf.Services
     /// drifts a quarter turn. They were folded together rather than left to find out.
     ///
     /// It is also the only part of all this that is pure geometry, which makes it the part worth
-    /// testing hardest. See tests/Redaction: each quarter turn is RENDERED through PDFium and the
+    /// testing hardest. See tests/PdfCore: each quarter turn is RENDERED through PDFium and the
     /// ink mapped back, because a mapping checked against a second copy of the same derivation
     /// agrees with itself whichever way round the convention is; and the two directions are checked
     /// to round-trip, because a redaction that blacks out one part of the page and deletes another
@@ -56,7 +56,7 @@ namespace TDPdf.Services
         /// That last failure is caught rather than shipped — <see cref="PdfRedaction.Apply"/> verifies the output
         /// and refuses to write a file when marked text survives — but "safely refuses every time"
         /// is not a working feature, so the geometry is pinned by tests that render each quarter
-        /// turn through PDFium and map the ink back. See tests/Redaction.
+        /// turn through PDFium and map the ink back. See tests/PdfCore.
         ///
         /// The corners are mapped individually and re-normalised, because every quarter turn except
         /// 0 swaps or flips at least one axis.

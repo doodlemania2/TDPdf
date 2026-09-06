@@ -125,8 +125,13 @@ internal static class Geometry
         finally { FPDFBitmap_Destroy(bmp); }
     }
 
+    /// <summary>FPDF_ANNOT: draw annotation and widget appearance streams as well as page content.</summary>
+    public const int WithAnnotations = 0x01;
+
     /// <summary>Page 1 rendered at 1 pixel per point, as BGRA. Shared with the rasterise tests.</summary>
-    public static (byte[] bgra, int w, int h) RenderFirstPage(string path)
+    public static (byte[] bgra, int w, int h) RenderFirstPage(string path) => RenderFirstPage(path, 0);
+
+    public static (byte[] bgra, int w, int h) RenderFirstPage(string path, int flags)
     {
         IntPtr doc = FPDF_LoadDocument(path, null);
         try
@@ -140,7 +145,7 @@ internal static class Geometry
                 try
                 {
                     FPDFBitmap_FillRect(bmp, 0, 0, rw, rh, 0xFFFFFFFF);
-                    FPDF_RenderPageBitmap(bmp, page, 0, 0, rw, rh, 0, 0);
+                    FPDF_RenderPageBitmap(bmp, page, 0, 0, rw, rh, 0, flags);
                     int stride = FPDFBitmap_GetStride(bmp);
                     IntPtr buf = FPDFBitmap_GetBuffer(bmp);
                     var outp = new byte[rw * rh * 4];
