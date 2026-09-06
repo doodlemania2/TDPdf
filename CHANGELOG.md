@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+### Added
+
+- **Redaction that actually removes content.** Marked areas have their content deleted from the page and the content stream rebuilt — not covered with a box. Document metadata is cleared at the same time, since redacting a name from the body while leaving it in the Title is the classic miss. Every redaction is then **verified on the finished file**: if any text still sits inside an area you redacted, the save fails and no file is written, rather than handing back a document that looks safe. Text hidden inside embedded objects — where scanned pages keep their invisible OCR layer — is removed too.
+
 ### Changed
 
 - **Updated the bundled PDF engine to PDFium 154.0.8035** (from a September 2023 build). This is what makes real redaction possible: the old build could find content inside a page's embedded objects but not remove it, and an OCR'd scan keeps its invisible text layer in exactly such an object — which is the document people most want to redact. It also unblocks genuine text editing. Rendering and OCR are unaffected; the engine is a drop-in with a stable published interface.
