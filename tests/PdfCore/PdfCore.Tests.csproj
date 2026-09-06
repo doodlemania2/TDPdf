@@ -40,9 +40,12 @@
     <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
     <Compile Include="..\..\Services\PdfiumInterop.cs" />
+    <Compile Include="..\..\Services\CmapCoverage.cs" />
     <Compile Include="..\..\Services\PdfPageGeometry.cs" />
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
+    <Compile Include="..\..\Services\PdfTextEdit.cs" />
+    <Compile Include="..\..\Services\PdfContentInspector.cs" />
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
   </ItemGroup>
 
