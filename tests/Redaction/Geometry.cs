@@ -205,6 +205,38 @@ internal static class Geometry
                   $"width {wFrac:P0} height {hFrac:P0} of the object box");
         }
 
+        // ── The two directions must be exact inverses ────────────────────────────────────
+        // Redaction removes objects using CanvasRectToPdf and the rasteriser paints over them using
+        // PdfRectToCanvas. If those two disagreed by even a little, a redaction would black out one
+        // part of the page and delete another — and both halves would look plausible on their own.
+        {
+            foreach (int rotate in new[] { 0, 90, 180, 270 })
+            {
+                string path = MakeFixture(tmp, rotate);
+                using var sharp = PdfSharpCore.Pdf.IO.PdfReader.Open(path, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.Import);
+                var page = sharp.Pages[0];
+                var (dw, dh) = PdfPageGeometry.DisplaySize(page);
+                double rw = dw, rh = dh;                    // 1 pixel per point keeps the arithmetic honest
+
+                double worst = 0;
+                foreach (var (x, y, w, h) in new[]
+                         { (10.0, 20.0, 100.0, 40.0), (0.0, 0.0, 50.0, 50.0),
+                           (dw - 60, dh - 30, 55.0, 25.0), (dw / 3, dh / 4, 120.0, 90.0) })
+                {
+                    var pdf = PdfPageGeometry.CanvasRectToPdf(page, x, y, w, h, rw, rh);
+                    var back = PdfPageGeometry.PdfRectToCanvas(page, pdf, rw, rh);
+                    // PdfRectToCanvas rounds outward on purpose, so it can only ever be a whole
+                    // pixel wider — never narrower, and never in the wrong place.
+                    worst = Math.Max(worst, Math.Abs(back.X - x));
+                    worst = Math.Max(worst, Math.Abs(back.Y - y));
+                    worst = Math.Max(worst, Math.Abs(back.W - w));
+                    worst = Math.Max(worst, Math.Abs(back.H - h));
+                }
+                Check($"/Rotate {rotate}: canvas -> PDF -> canvas round-trips", worst <= 1.0,
+                      $"worst drift {worst:F2}px");
+            }
+        }
+
         // ── A CropBox that does not start at the origin ───────────────────────────────────
         // PDFium rasterises the CropBox, so the top-left of the image is the top-left of the CROP,
         // not of the page. Ignoring the offset shifts every redaction by the inset.

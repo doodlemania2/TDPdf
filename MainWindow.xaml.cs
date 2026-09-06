@@ -3195,7 +3195,7 @@ namespace TDPdf
                 double pw = pdfPage.Width.Point, ph = pdfPage.Height.Point;
                 // PdfSharpCore reports the un-rotated box; swap for quarter rotations so the
                 // placeholder aspect matches what Docnet will rasterize.
-                int rot = ((pdfPage.Rotate % 360) + 360) % 360;
+                int rot = PdfPageGeometry.Rotation(pdfPage);
                 if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
                 double ratio = Math.Max(0.1, ph / Math.Max(1, pw));
                 double slotH = _continuousPageW * ratio;
@@ -3981,7 +3981,7 @@ namespace TDPdf
                 // whose box is only inherited, which used to fall back to a hardcoded A4 size and
                 // misplace every link on non-A4 documents.
                 var box = GetVisiblePageBox(pdfPage);
-                int rotation = ((pdfPage.Rotate % 360) + 360) % 360;
+                int rotation = PdfPageGeometry.Rotation(pdfPage);
 
                 for (int i = 0; i < annotsArr.Elements.Count; i++)
                 {
@@ -4680,7 +4680,7 @@ namespace TDPdf
             // space, and PdfRectToCanvas maps them onto the already-rotated bitmap. (That is also why
             // page.Width/Height are unusable — PdfSharpCore swaps them for 90/270 pages.)
             var box = GetVisiblePageBox(page);
-            int rotation = ((page.Rotate % 360) + 360) % 360;
+            int rotation = PdfPageGeometry.Rotation(page);
 
             try
             {
@@ -11060,7 +11060,7 @@ namespace TDPdf
             var (renderW, renderH) = _renderDims[pageIdx];
             var page = _doc!.Pages[pageIdx];
             var box = GetVisiblePageBox(page);
-            int rot = ((page.Rotate % 360) + 360) % 360;
+            int rot = PdfPageGeometry.Rotation(page);
             bool quarterTurn = rot is 90 or 270;
 
             double hs = (quarterTurn ? box.Height : box.Width) / renderW;
@@ -11108,146 +11108,18 @@ namespace TDPdf
         // Page boxes (/MediaBox, /CropBox)
         // ============================================================
 
-        /// <summary>
-        /// A page box in PDF user space: lower-left origin (<see cref="X"/>, <see cref="Y"/>) plus a
-        /// size, always normalized so Width/Height are positive. The origin matters — [0 0 612 792] is
-        /// the common case but [9 9 621 801] is legal, and content/annotation coordinates are absolute
-        /// in user space, so anything mapping into the rendered bitmap must subtract the box origin
-        /// rather than assume (0,0). /Rotate is NOT applied; see Transform.cs VisiblePageSize.
-        /// </summary>
-        private readonly record struct PageBox(double X, double Y, double Width, double Height)
-        {
-            public double Right => X + Width;
-            public double Top   => Y + Height;
-        }
+        // PageBox, ReadInheritedPageBox, GetVisiblePageBox and PdfRectToCanvas now live in
+        // Services/PdfPageGeometry.cs. They moved because redaction needed the same canvas↔PDF
+        // mapping and briefly grew a second copy of it — two implementations of one rotation table
+        // is exactly how a later fix lands in one of them and an overlay quietly drifts a quarter
+        // turn out of place. See the file header there.
+        private static PdfPageGeometry.PageBox GetVisiblePageBox(PdfPage page) =>
+            PdfPageGeometry.VisibleBox(page);
 
-        /// <summary>
-        /// Reads an inheritable page-tree box (/MediaBox or /CropBox) for a page, walking the /Parent
-        /// chain. Both are inheritable page attributes (PDF 32000-1 7.7.3.3): they may live on any
-        /// ancestor /Pages node instead of the page itself, and our vendored PdfSharpCore never resolves
-        /// inheritance (PdfPage.InheritValues / PdfPages.FlattenPageTree have no callers). Returns null
-        /// when no node in the chain carries a usable box.
-        /// </summary>
-        /// <remarks>
-        /// CRITICAL: this reads the RAW dictionary entry and must never be "simplified" to
-        /// page.MediaBox / page.CropBox / page.Width. Those getters route through
-        /// PdfDictionary.GetRectangle(key, create: true), which (a) returns an EMPTY rectangle for a
-        /// box that is only inherited — the caller then falls back to some hardcoded page size and every
-        /// overlay on the page is misplaced — and (b) PLANTS an empty /MediaBox|/CropBox [0 0 0 0] into
-        /// the page dictionary, which saves to disk and makes Adobe reject the page as "dimensions
-        /// out-of-range". That is the same lazy-getter trap as the phantom /Outlines (#103) and the
-        /// degenerate /CropBox fixed in v1.18.0.0; see ScrubDegeneratePageBoxes.
-        ///
-        /// The entry can be a parsed PdfArray (as loaded from disk), a PdfRectangle (GetRectangle stores
-        /// its conversion back into the dictionary — "this[key] = value" — so one earlier property read
-        /// anywhere in the app replaces the array), or an indirect reference to either. Handle all three.
-        /// </remarks>
-        private static PageBox? ReadInheritedPageBox(PdfDictionary? node, string key)
-        {
-            // Depth cap: a malformed file can have a cyclic /Parent chain.
-            for (int depth = 0; node is not null && depth < 32; depth++)
-            {
-                PdfItem? item = node.Elements[key];
-                if (item is not null and not PdfArray and not PdfRectangle)
-                    item = DerefItemStatic(item);
-
-                if (item is PdfRectangle pr)
-                    return Normalize(pr.X1, pr.Y1, pr.X2, pr.Y2);
-                if (item is PdfArray { Elements.Count: 4 } arr)
-                    return Normalize(arr.Elements.GetReal(0), arr.Elements.GetReal(1),
-                                     arr.Elements.GetReal(2), arr.Elements.GetReal(3));
-
-                var parent = node.Elements["/Parent"];
-                node = parent is null ? null
-                     : parent as PdfDictionary ?? DerefItemStatic(parent) as PdfDictionary;
-            }
-            return null;
-
-            static PageBox Normalize(double x1, double y1, double x2, double y2) =>
-                new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
-        }
-
-        /// <summary>
-        /// The page box a renderer actually draws, and therefore the box every overlay and every
-        /// canvas↔PDF mapping must use: the /CropBox when present and usable, otherwise the /MediaBox.
-        /// Inheritance-aware and origin-preserving. Mirrors PDFium's own CPDF_Page rules — clip the crop
-        /// box to the media box, and fall back to US Letter when a page carries no usable box at all —
-        /// because Docnet/PDFium produced the bitmap our overlays sit on, so our geometry must agree
-        /// with it rather than with some other notion of "the page size".
-        /// </summary>
-        private static PageBox GetVisiblePageBox(PdfPage page)
-        {
-            var media = ReadInheritedPageBox(page, "/MediaBox");
-            var crop  = ReadInheritedPageBox(page, "/CropBox");
-
-            // Sub-1pt boxes are degenerate (typically a [0 0 0 0] planted by the lazy getter), never a
-            // real page; treat them as absent.
-            if (crop is { Width: > 1, Height: > 1 } c)
-            {
-                if (media is { Width: > 1, Height: > 1 } m)
-                {
-                    double x1 = Math.Max(c.X, m.X), y1 = Math.Max(c.Y, m.Y);
-                    double x2 = Math.Min(c.Right, m.Right), y2 = Math.Min(c.Top, m.Top);
-                    if (x2 - x1 > 1 && y2 - y1 > 1) return new PageBox(x1, y1, x2 - x1, y2 - y1);
-                    return m;   // crop lies outside the media box: bogus, ignore it
-                }
-                return c;
-            }
-            if (media is { Width: > 1, Height: > 1 } mb) return mb;
-
-            // No usable box anywhere in the page tree — a malformed document. PDFium, which rendered the
-            // bitmap we are aligning to, substitutes US Letter in exactly this case, so match that instead
-            // of inventing a size (in particular A4) that the render never used.
-            return new PageBox(0, 0, 612, 792);
-        }
-
-        /// <summary>
-        /// Maps an annotation /Rect — absolute PDF user-space coordinates, bottom-left origin, always
-        /// UNROTATED — onto the canvas/bitmap PDFium rendered for the page, which has the page /Rotate
-        /// already applied. Shared by the link and form-field overlays so the two can never drift apart.
-        /// </summary>
-        /// <param name="box">The rendered page box from <see cref="GetVisiblePageBox"/> (unrotated).</param>
-        /// <param name="rotation">Page /Rotate, already normalized to 0/90/180/270.</param>
         private static (double cx, double cy, double cw, double ch) PdfRectToCanvas(
-            PageBox box, int rotation, double canvasW, double canvasH,
-            double rx1, double ry1, double rx2, double ry2)
-        {
-            if (rx1 > rx2) (rx1, rx2) = (rx2, rx1);
-            if (ry1 > ry2) (ry1, ry2) = (ry2, ry1);
-
-            // Re-express the rect relative to the rendered box's lower-left corner, so a box with a
-            // non-zero origin (or a CropBox inset from the MediaBox) doesn't shift every overlay off
-            // the drawn page. fx/fy are now in [0, box.Width] x [0, box.Height].
-            double fx1 = rx1 - box.X, fy1 = ry1 - box.Y;
-            double fx2 = rx2 - box.X, fy2 = ry2 - box.Y;
-            double pageW = box.Width, pageH = box.Height;
-
-            // For 90/270 the bitmap's axes are swapped: canvasW spans the box's HEIGHT and canvasH
-            // its WIDTH, so the box dimension each canvas axis is divided by swaps with it.
-            switch (rotation)
-            {
-                case 90:  // 90 CW: PDF (x,y) -> canvas (y, x); canvas is pageH-wide x pageW-tall
-                    return (fy1         / pageH * canvasW,
-                            fx1         / pageW * canvasH,
-                            (fy2 - fy1) / pageH * canvasW,
-                            (fx2 - fx1) / pageW * canvasH);
-                case 180: // both axes flipped; the PDF->canvas y-flip cancels out
-                    return ((pageW - fx2) / pageW * canvasW,
-                            fy1           / pageH * canvasH,
-                            (fx2 - fx1)   / pageW * canvasW,
-                            (fy2 - fy1)   / pageH * canvasH);
-                case 270: // 270 CW: PDF (x,y) -> canvas (pageH - y, pageW - x)
-                    return ((pageH - fy2) / pageH * canvasW,
-                            (pageW - fx2) / pageW * canvasH,
-                            (fy2 - fy1)   / pageH * canvasW,
-                            (fx2 - fx1)   / pageW * canvasH);
-                default:  // 0 — standard bottom-left PDF -> top-left canvas
-                    return (fx1           / pageW * canvasW,
-                            (pageH - fy2) / pageH * canvasH,
-                            (fx2 - fx1)   / pageW * canvasW,
-                            (fy2 - fy1)   / pageH * canvasH);
-            }
-        }
+            PdfPageGeometry.PageBox box, int rotation, double canvasW, double canvasH,
+            double rx1, double ry1, double rx2, double ry2) =>
+            PdfPageGeometry.RectToCanvas(box, rotation, canvasW, canvasH, rx1, ry1, rx2, ry2);
 
         /// <summary>
         /// The exact inverse of <see cref="PdfRectToCanvas"/>, expressed as a matrix to PREPEND to an
@@ -11270,7 +11142,7 @@ namespace TDPdf
         /// value cancels out of the result: a page whose /MediaBox is unreadable — the empty [0 0 0 0]
         /// the lazy getter plants — still burns in the right place.
         /// </param>
-        private static XMatrix? VisualToPageMatrix(int rotation, PageBox box, double pageHeightPt)
+        private static XMatrix? VisualToPageMatrix(int rotation, PdfPageGeometry.PageBox box, double pageHeightPt)
         {
             // Inverting PdfRectToCanvas point-by-point gives visual (vx, vy) -> PDF user space:
             //    0 : (box.X + vx,            box.Y + box.Height - vy)
@@ -16019,7 +15891,7 @@ namespace TDPdf
                         // With the bad entry gone, ask the page tree what this page's box actually is.
                         // Re-planting it explicitly keeps the page valid no matter how the writer treats
                         // the inherited attribute, and is identical in meaning to inheriting it.
-                        if (ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } box)
+                        if (PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } box)
                             elements.SetRectangle("/MediaBox",
                                 new PdfRectangle(new XPoint(box.X, box.Y), new XPoint(box.Right, box.Top)));
                     }
@@ -16034,7 +15906,7 @@ namespace TDPdf
                     // box must never be a reason to delete a good crop box.
                     const double outsideTol = 0.01;
                     if (ReadOwnPageBox(elements["/CropBox"]) is { } crop &&
-                        ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } media &&
+                        PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } media &&
                         (crop.X     < media.X     - outsideTol || crop.Y   < media.Y   - outsideTol ||
                          crop.Right > media.Right + outsideTol || crop.Top > media.Top + outsideTol))
                         elements.Remove("/CropBox");
@@ -16050,7 +15922,7 @@ namespace TDPdf
         // deleted. The box can be a parsed PdfArray (loaded from disk), a PdfRectangle (planted in
         // memory by the lazy getter or by GetRectangle writing its conversion back), or an indirect
         // reference to either.
-        private static PageBox? ReadOwnPageBox(PdfItem? item)
+        private static PdfPageGeometry.PageBox? ReadOwnPageBox(PdfItem? item)
         {
             if (item is null) return null;
             if (item is not PdfArray and not PdfRectangle) item = DerefItemStatic(item);
@@ -16064,7 +15936,7 @@ namespace TDPdf
                                  RectNum(arr.Elements[2]), RectNum(arr.Elements[3]));
             return null;
 
-            static PageBox Normalize(double x1, double y1, double x2, double y2) =>
+            static PdfPageGeometry.PageBox Normalize(double x1, double y1, double x2, double y2) =>
                 new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
         }
 
@@ -16724,7 +16596,7 @@ namespace TDPdf
                 //    were burned a quarter turn out of place and scaled on swapped axes (#169).
                 // TDPdf keeps the angle on the page itself (RotatePages_Click writes /Rotate and
                 // reloads), so the page dictionary is the authority — there is no separate map.
-                int rot = ((page.Rotate % 360) + 360) % 360;
+                int rot = PdfPageGeometry.Rotation(page);
                 var box = GetVisiblePageBox(page);
                 bool quarterTurn = rot is 90 or 270;   // visual extent is the box's dims swapped
                 double sx = (quarterTurn ? box.Height : box.Width) / renderW;
