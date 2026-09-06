@@ -80,10 +80,12 @@ static string MetaOf(string path)
 }
 
 var (beforeText, h) = Read(src);
+int opsBefore = Streams.TextShowingOps(src);
 Console.WriteLine("Fixture");
 Check("all three runs present",
       beforeText.Contains("SECRETPASSWORD12345") && beforeText.Contains("KEEPTHISVISIBLE") && beforeText.Contains("ALSOKEEPTHIS"));
 Check("metadata carries the secret too", MetaOf(src).Contains("SECRETPASSWORD12345"), MetaOf(src));
+Check("three text-drawing operators in the file", opsBefore == 3, $"{opsBefore}");
 
 // Derive the geometry from the actual glyph boxes rather than guessing at font metrics —
 // a hand-picked rectangle silently became the wrong shape once already.
@@ -127,9 +129,14 @@ if (res.Ok && File.Exists(dest))
     Check("untouched run survives (ALSOKEEPTHIS)", after.Contains("ALSOKEEPTHIS"));
     Check("metadata scrubbed", !MetaOf(dest).Contains("SECRETPASSWORD12345"), MetaOf(dest));
 
-    // The check that separates real redaction from theatre.
-    var raw = System.Text.Encoding.ASCII.GetString(File.ReadAllBytes(dest));
-    Check("secret absent from the raw file bytes", !raw.Contains("SECRETPASSWORD12345"));
+    // The check that separates real redaction from theatre. Counting the OPERATOR, not the
+    // string: PdfSharpCore embeds a subset font and writes glyph indices, so "SECRET…" is not in
+    // the content stream even before the redaction — searching for it would pass on a file where
+    // the text is completely intact. Tj/TJ is plain ASCII whatever the font does, and the fixture
+    // draws three runs, so exactly one of them must have disappeared.
+    Check("one text-drawing operator was removed from the file, leaving two",
+          opsBefore == 3 && Streams.TextShowingOps(dest) == 2,
+          $"{opsBefore} before, {Streams.TextShowingOps(dest)} after");
 }
 
 // ── 2. The refusal path ────────────────────────────────────────────────────────────────
@@ -159,6 +166,10 @@ Check("reported not-ok", !res2.Ok, res2.Error ?? "(no error given)");
 Check("named the surviving text", res2.Survivors.Count > 0,
       res2.Survivors.Count > 0 ? string.Join(",", res2.Survivors) : "none");
 Check("NO output file was written", !File.Exists(refused));
+
+Geometry.Run(Check, tmp);
+ImageGuard.Run(Check, tmp);
+Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

@@ -9,16 +9,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 ### Added
 
 - **Redaction that actually removes content.** Marked areas have their content deleted from the page and the content stream rebuilt — not covered with a box. Document metadata is cleared at the same time, since redacting a name from the body while leaving it in the Title is the classic miss. Every redaction is then **verified on the finished file**: if any text still sits inside an area you redacted, the save fails and no file is written, rather than handing back a document that looks safe. Text hidden inside embedded objects — where scanned pages keep their invisible OCR layer — is removed too.
+- **The Redact tool** (`R`, or the red block in the toolbar). Drag over anything to mark it, click a mark to take it back off, then press **Redact Permanently**. Marks are drawn as dashed red outlines rather than solid black boxes on purpose — a pending mark that already looks finished invites printing or sending a document whose content is entirely still there. Nothing is removed until you apply, and applying says plainly that it cannot be undone. Saving with marks still pending asks first, because a mark is not a redaction and the saved file would still contain every marked word.
+- **Scanned pages can be redacted.** A scan is a single page-sized image, so there is no object to delete — marking a name on one and deleting "the object it is in" would delete the entire page. TDPdf now offers to replace such a page with an image of itself with the marked areas painted out, which removes the content completely. The same path handles pages whose content cannot be rewritten safely (spot colour, gradients, inline images, soft masks), which previously had to be refused. It is always offered, never silent, because it costs the page its text: a rasterised page can no longer be searched, selected, copied, or read aloud by a screen reader. Other pages in the same document are redacted normally and keep their text.
+- **`/S`, `/quiet`, `/verysilent` and `--silent` are accepted as synonyms for `/install /silent`**, so the switch most deployment tooling reaches for by habit now works. The unattended install is documented in the README.
 
 ### Changed
 
 - **Updated the bundled PDF engine to PDFium 154.0.8035** (from a September 2023 build). This is what makes real redaction possible: the old build could find content inside a page's embedded objects but not remove it, and an OCR'd scan keeps its invisible text layer in exactly such an object — which is the document people most want to redact. It also unblocks genuine text editing. Rendering and OCR are unaffected; the engine is a drop-in with a stable published interface.
 - **New application icon.** TDPdf's icon was the Doodle Project logo at full bleed, so every window, taskbar button and Alt-Tab entry read as the company rather than the app. It is now a document carrying that same mark — the silhouette says what the app is, the colour says whose it is. Generated from the brand logo at build time so the two cannot drift apart, with separate artwork at small sizes because a thin-stroked mark goes sub-pixel at 16px. The `.pdf` file-association icon is unchanged; PDFs should still look like PDFs.
 - **Add/Remove Programs now reports the installed size, install date, and links to the project and issue tracker.** Previously it carried only the name, version, publisher and uninstall commands.
-
-### Added
-
-- **`/S`, `/quiet`, `/verysilent` and `--silent` are accepted as synonyms for `/install /silent`**, so the switch most deployment tooling reaches for by habit now works. The unattended install is documented in the README.
 
 ### Fixed
 

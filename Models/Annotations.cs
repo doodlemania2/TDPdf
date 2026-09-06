@@ -5,8 +5,9 @@ namespace TDPdf
 {
     // Strikethrough / Underline are the text-markup siblings of Highlight (upstream KillerPDF
     // v1.6.5, #127). Appended rather than inserted so the numeric values of the existing members
-    // never shift — the persisted view/tool settings round-trip through them.
-    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline }
+    // never shift — the persisted view/tool settings round-trip through them. Redact is appended
+    // for that same reason.
+    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact }
 
     public enum ShapeKind { Rectangle, Ellipse, Line, Polygon }
 

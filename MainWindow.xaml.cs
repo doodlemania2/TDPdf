@@ -82,6 +82,7 @@ namespace TDPdf
         // Editing
         private EditTool _currentTool = EditTool.Select;
         private Dictionary<int, List<PageAnnotation>> _annotations => _ctx.Annotations;
+        private Dictionary<int, List<Rect>> _redactionMarks => _ctx.RedactionMarks;
         private Dictionary<int, (int w, int h)> _renderDims => _ctx.RenderDims;
         private Dictionary<(int pageIndex, int dpiX), RenderedPage> _renderCache => _ctx.RenderCache;
 
@@ -174,6 +175,21 @@ namespace TDPdf
         private string? _activeCropHandleTag;
         private Point _cropHandleDragStart;
         private Rect _cropRectAtHandleDrag;
+
+        // Redaction tool
+        //
+        // The pending marks are deliberately NOT PageAnnotations. An annotation is something the
+        // save path bakes into the PDF, and a redaction is the opposite of that: nothing is drawn,
+        // content is destroyed, and it happens through PDFium rather than PdfSharpCore. Putting a
+        // mark in _annotations would make every save write a file with the mark silently dropped
+        // and nothing redacted — which the user has every reason to read as "it worked".
+        private readonly Button _toolRedactBtn = null!;
+        private Border? _redactSettingsBar;
+
+        /// <summary>Whether Apply over-deletes objects that only straddle a mark. See
+        /// <see cref="TDPdf.Services.PdfRedaction.Request.RemovePartialOverlaps"/>.</summary>
+        private bool _redactRemovePartial = true;
+        private bool _redactScrubMetadata = true;
 
         // Pan tool / middle-mouse pan
         private bool _isPanning;
@@ -459,6 +475,7 @@ namespace TDPdf
             _toolSignatureBtn = (Button)FindName("ToolSignatureBtn")!;
             _toolImageBtn = (Button)FindName("ToolImageBtn")!;
             _toolCropBtn = (Button)FindName("ToolCropBtn")!;
+            _toolRedactBtn = (Button)FindName("ToolRedactBtn")!;
             _toolPanBtn = (Button)FindName("ToolPanBtn")!;
             _toolEraseBtn = (Button)FindName("ToolEraseBtn")!;
             _toolShapeBtn = (Button)FindName("ToolShapeBtn")!;
@@ -1199,6 +1216,11 @@ namespace TDPdf
             public readonly Dictionary<int, List<PageAnnotation>> Annotations = new();
             public readonly Dictionary<int, (int w, int h)> RenderDims = new();
 
+            // Pending redaction marks, in canvas coordinates, keyed by page. Per-document for the
+            // same reason as the polygon vertices below: these are coordinates on THIS document's
+            // pages, and a mark leaking across a tab switch would redact the wrong file.
+            public readonly Dictionary<int, List<Rect>> RedactionMarks = new();
+
             // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
             // by widget object number, checkboxes by widget object number, radios by field
             // name (shared across the widgets in a group). Persisted into the PDF on save.
@@ -1868,6 +1890,8 @@ namespace TDPdf
             menu.Items.Add(MakeMenuItem("_Highlight Tool", (s, e) => SetTool(EditTool.Highlight), "5", "Switch to the highlight tool", "\uED56"));
             menu.Items.Add(MakeMenuItem("_Draw Tool", (s, e) => SetTool(EditTool.Draw), "9", "Switch to the draw tool", "\uED63"));
             menu.Items.Add(MakeMenuItem("_Crop Tool", (s, e) => SetTool(EditTool.Crop), "C", "Switch to the crop tool", "\uE7A8"));
+            menu.Items.Add(MakeMenuItem("_Redact", (s, e) => SetTool(EditTool.Redact), "R",
+                "Mark areas whose content is permanently removed from the file", "\uE73B"));
             menu.Items.Add(new Separator());
             menu.Items.Add(MakeMenuItem("De_lete Selected", (s, e) => DeleteSelected(), "Delete", "Delete the selected annotation", "\uE74D"));
             menu.Items.Add(MakeMenuItem("_Undo Last", (s, e) => Undo_Click(s!, e), "Ctrl+Z", "Undo the last annotation change", "\uE7A7"));
@@ -3171,7 +3195,7 @@ namespace TDPdf
                 double pw = pdfPage.Width.Point, ph = pdfPage.Height.Point;
                 // PdfSharpCore reports the un-rotated box; swap for quarter rotations so the
                 // placeholder aspect matches what Docnet will rasterize.
-                int rot = ((pdfPage.Rotate % 360) + 360) % 360;
+                int rot = PdfPageGeometry.Rotation(pdfPage);
                 if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
                 double ratio = Math.Max(0.1, ph / Math.Max(1, pw));
                 double slotH = _continuousPageW * ratio;
@@ -3957,7 +3981,7 @@ namespace TDPdf
                 // whose box is only inherited, which used to fall back to a hardcoded A4 size and
                 // misplace every link on non-A4 documents.
                 var box = GetVisiblePageBox(pdfPage);
-                int rotation = ((pdfPage.Rotate % 360) + 360) % 360;
+                int rotation = PdfPageGeometry.Rotation(pdfPage);
 
                 for (int i = 0; i < annotsArr.Elements.Count; i++)
                 {
@@ -4656,7 +4680,7 @@ namespace TDPdf
             // space, and PdfRectToCanvas maps them onto the already-rotated bitmap. (That is also why
             // page.Width/Height are unusable — PdfSharpCore swaps them for 90/270 pages.)
             var box = GetVisiblePageBox(page);
-            int rotation = ((page.Rotate % 360) + 360) % 360;
+            int rotation = PdfPageGeometry.Rotation(page);
 
             try
             {
@@ -6240,6 +6264,7 @@ namespace TDPdf
                 (_toolSignatureBtn, EditTool.Signature),
                 (_toolImageBtn, EditTool.Image),
                 (_toolCropBtn, EditTool.Crop),
+                (_toolRedactBtn, EditTool.Redact),
                 (_toolPanBtn, EditTool.Pan),
                 (_toolEraseBtn, EditTool.Erase),
                 (_toolShapeBtn, EditTool.Shape)
@@ -6266,6 +6291,7 @@ namespace TDPdf
                 EditTool.Signature => Cursors.Hand,
                 EditTool.Image => Cursors.Hand,
                 EditTool.Crop => Cursors.Cross,
+                EditTool.Redact => Cursors.Cross,
                 EditTool.Pan => Cursors.Hand,
                 EditTool.Erase => Cursors.Cross,
                 EditTool.Shape => Cursors.Cross,
@@ -6291,6 +6317,14 @@ namespace TDPdf
                 ShowShapeSettings();
             else
                 HideShapeSettings();
+
+            // The redaction bar is the only place the pending marks can be applied or cleared, so
+            // it stays up for as long as any mark exists — switching tools must not strand marks
+            // on the page with no way to act on them. Leaving the tool is not abandoning the work.
+            if (tool == EditTool.Redact || PendingRedactionCount > 0)
+                ShowRedactSettings();
+            else
+                HideRedactSettings();
 
             // Hide signature popup when switching away
             if (tool != EditTool.Signature)
@@ -6547,6 +6581,7 @@ namespace TDPdf
         private void ToolPan_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Pan);
         private void ToolErase_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Erase);
         private void ToolShape_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Shape);
+        private void ToolRedact_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Redact);
         private void ToolCrop_Click(object sender, RoutedEventArgs e)
         {
             SetTool(EditTool.Crop);
@@ -6845,6 +6880,438 @@ namespace TDPdf
             {
                 SetStatus($"Crop failed: {ex.Message}");
             }
+        }
+
+
+        // ============================================================
+        // Redaction tool
+        // ============================================================
+        //
+        // Two halves, deliberately kept apart. Marking is reversible, costs nothing, and lives
+        // entirely on the canvas. Applying is irreversible, rewrites the file through PDFium, and
+        // happens only when the user says so in as many words. Nothing in the marking half ever
+        // touches the document.
+        //
+        // The pipeline that does the work is Services/PdfRedaction.cs: it removes the objects,
+        // scrubs the metadata, and then proves the result before anything is written. If it cannot
+        // prove it, no file is produced and this method reports exactly what survived. See the file
+        // header there for why that is fail-closed rather than best-effort.
+
+        /// <summary>Redaction marks pending across the whole document.</summary>
+        private int PendingRedactionCount => _redactionMarks.Values.Sum(list => list.Count);
+
+        /// <summary>
+        /// The on-canvas look of a redaction mark: translucent red under a dashed red border.
+        /// </summary>
+        /// <remarks>
+        /// Emphatically NOT a solid black box. A pending mark is a statement of intent, and a mark
+        /// that already looks like a finished redaction invites exactly the mistake this whole
+        /// feature exists to prevent — printing, screenshotting, or sending a document whose
+        /// content is still entirely in the file. It has to read as "marked", not as "gone".
+        /// </remarks>
+        private Rectangle MakeRedactionVisual(double w, double h)
+        {
+            var danger = (SolidColorBrush)FindResource("DangerRed");
+            return new Rectangle
+            {
+                Width = w,
+                Height = h,
+                Fill = new SolidColorBrush(Color.FromArgb(46, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Stroke = danger,
+                StrokeThickness = 2,
+                StrokeDashArray = new DoubleCollection { 4, 3 },
+                // Like every other overlay on this canvas. Clicking a mark to remove it is
+                // resolved against the stored rectangles, not by WPF hit-testing, so a mark must
+                // not swallow the press that the drag-to-mark gesture needs.
+                IsHitTestVisible = false
+            };
+        }
+
+        private void RenderRedactionMarks(int pageIndex)
+        {
+            if (!_redactionMarks.TryGetValue(pageIndex, out var marks)) return;
+            foreach (var m in marks)
+            {
+                if (!IsFinitePositive(m.Width) || !IsFinitePositive(m.Height)) continue;
+                var vis = MakeRedactionVisual(m.Width, m.Height);
+                Canvas.SetLeft(vis, m.X);
+                Canvas.SetTop(vis, m.Y);
+                _annotationCanvas.Children.Add(vis);
+            }
+        }
+
+        private void ClearRedactionMarks()
+        {
+            if (PendingRedactionCount == 0) return;
+            _redactionMarks.Clear();
+            int page = PageList.SelectedIndex;
+            if (page >= 0) RenderAllAnnotations(page);
+            // The bar stays while the tool is still selected — it is the tool's own settings bar,
+            // and clearing the marks is not leaving the tool.
+            if (_currentTool == EditTool.Redact) ShowRedactSettings(); else HideRedactSettings();
+            SetStatus("Redaction marks cleared — the document was not changed");
+        }
+
+        // ── The settings / confirm bar ───────────────────────────────────────────────────
+
+        private void ShowRedactSettings()
+        {
+            HideRedactSettings();
+
+            int marks = PendingRedactionCount;
+            int pages = _redactionMarks.Count(kv => kv.Value.Count > 0);
+            var danger = (SolidColorBrush)FindResource("DangerRed");
+
+            var panel = new StackPanel { Orientation = Orientation.Horizontal };
+            panel.Children.Add(MakeLabel(marks == 0
+                ? "Redact: drag over the content to destroy"
+                : $"{marks} area{(marks == 1 ? "" : "s")} marked on {pages} page{(pages == 1 ? "" : "s")}"));
+
+            var partial = new CheckBox
+            {
+                Content = "Include partly covered objects",
+                IsChecked = _redactRemovePartial,
+                Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(4, 0, 10, 0),
+                ToolTip = "An object that straddles the edge of a mark is removed whole. Off leaves it in place — " +
+                          "which can leave part of what you meant to destroy, so the redaction is then refused rather than written."
+            };
+            partial.Checked += (_, _) => _redactRemovePartial = true;
+            partial.Unchecked += (_, _) => _redactRemovePartial = false;
+            panel.Children.Add(partial);
+
+            var scrub = new CheckBox
+            {
+                Content = "Scrub document metadata",
+                IsChecked = _redactScrubMetadata,
+                Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 10, 0),
+                ToolTip = "Clears the title, author and every other Info entry, and drops the XMP packet. " +
+                          "Redacting a name from the page while leaving it in the document title is the classic miss."
+            };
+            scrub.Checked += (_, _) => _redactScrubMetadata = true;
+            scrub.Unchecked += (_, _) => _redactScrubMetadata = false;
+            panel.Children.Add(scrub);
+
+            var btnStyle = new Style(typeof(Button));
+            btnStyle.Setters.Add(new Setter(Button.BorderThicknessProperty, new Thickness(1)));
+            btnStyle.Setters.Add(new Setter(Button.PaddingProperty, new Thickness(10, 3, 10, 3)));
+            btnStyle.Setters.Add(new Setter(Button.MarginProperty, new Thickness(0, 0, 6, 0)));
+            btnStyle.Setters.Add(new Setter(Button.CursorProperty, Cursors.Hand));
+            btnStyle.Setters.Add(new Setter(Button.FontFamilyProperty, new FontFamily("Segoe UI")));
+            btnStyle.Setters.Add(new Setter(Button.FontSizeProperty, 12.0));
+
+            var applyBtn = new Button
+            {
+                Content = "Redact Permanently",
+                Style = btnStyle,
+                IsEnabled = marks > 0,
+                Background = new SolidColorBrush(Color.FromArgb(40, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Foreground = danger,
+                BorderBrush = danger,
+                ToolTip = "Delete the marked content from the file. This cannot be undone."
+            };
+            applyBtn.Click += (_, _) => _ = ApplyRedactionsAsync();
+            panel.Children.Add(applyBtn);
+
+            var clearBtn = new Button
+            {
+                Content = "Clear Marks",
+                Style = btnStyle,
+                IsEnabled = marks > 0,
+                Background = Brushes.Transparent,
+                Foreground = (SolidColorBrush)FindResource("TextSecondary"),
+                BorderBrush = (SolidColorBrush)FindResource("TextSecondary"),
+                ToolTip = "Discard the marks. The document is not changed."
+            };
+            clearBtn.Click += (_, _) => ClearRedactionMarks();
+            panel.Children.Add(clearBtn);
+
+            _redactSettingsBar = new Border
+            {
+                Background = (SolidColorBrush)FindResource("BgPanel"),
+                BorderBrush = danger,
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                CornerRadius = new CornerRadius(0, 0, 4, 4),
+                Padding = new Thickness(4),
+                Child = panel,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+
+            if (PagePreviewPanel.Parent is Grid previewArea)
+            {
+                Panel.SetZIndex(_redactSettingsBar, 100);
+                previewArea.Children.Add(_redactSettingsBar);
+            }
+        }
+
+        private void HideRedactSettings()
+        {
+            if (_redactSettingsBar is not null)
+            {
+                (PagePreviewPanel.Parent as Grid)?.Children.Remove(_redactSettingsBar);
+                _redactSettingsBar = null;
+            }
+        }
+
+        // ── Apply ────────────────────────────────────────────────────────────────────────
+
+        private async Task ApplyRedactionsAsync()
+        {
+            if (_doc is null || _currentFile is null) { SetStatus("Redact: no document open"); return; }
+            if (PendingRedactionCount == 0) { SetStatus("Redact: nothing marked"); return; }
+            CommitActiveTextBox();
+
+            // Build the PDF-space rectangles first: a page we cannot map (never rendered, so no
+            // render dimensions) must stop the whole operation rather than be quietly skipped —
+            // skipping it would leave content the user marked for destruction in the file.
+            var rects = new Dictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>>();
+            foreach (var (pageIndex, marks) in _redactionMarks)
+            {
+                if (marks.Count == 0) continue;
+                if (pageIndex < 0 || pageIndex >= _doc.PageCount) continue;
+                if (!_renderDims.TryGetValue(pageIndex, out var dims) || dims.w <= 0 || dims.h <= 0)
+                {
+                    TdpDialog.Show(this,
+                        $"Page {pageIndex + 1} has marks but has not been displayed yet, so TDPdf cannot map " +
+                        "them onto the page. Visit that page, then redact.",
+                        "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                var page = _doc.Pages[pageIndex];
+                // The canvas-to-PDF mapping lives in the service beside the pipeline that consumes
+                // it, not here: it is page geometry, it is where a wrong rectangle would silently
+                // redact the wrong thing, and out there it is reachable by the tests.
+                rects[pageIndex] = marks
+                    .Select(m => TDPdf.Services.PdfPageGeometry.CanvasRectToPdf(
+                        page, m.X, m.Y, m.Width, m.Height, dims.w, dims.h))
+                    .ToList();
+            }
+            if (rects.Count == 0) { SetStatus("Redact: nothing marked"); return; }
+
+            // Pre-flight. PDFium's content generator silently discards non-device colour, shadings,
+            // inline images and soft masks from any stream it rewrites, so removing one object from
+            // a page carrying those can recolour or delete something else on it. Those pages can
+            // only be redacted by rasterising, which the user has to agree to.
+            var raster = new HashSet<int>();
+            var reasons = new List<string>();
+            foreach (int pageIndex in rects.Keys)
+            {
+                var hazard = TDPdf.Services.PdfContentInspector.Inspect(_doc.Pages[pageIndex]);
+                if (hazard == TDPdf.Services.ContentHazard.None) continue;
+                raster.Add(pageIndex);
+                reasons.Add($"Page {pageIndex + 1}: {TDPdf.Services.PdfContentInspector.Describe(hazard)}");
+            }
+            if (raster.Count > 0 && !ConfirmRasterize(raster, reasons)) return;
+
+            int markCount = PendingRedactionCount;
+
+            // Redaction reloads the document from the redacted file, and unsaved annotations are
+            // overlay state tied to the old one — the same reason a crop or a page delete drops
+            // them. Say so first rather than letting the user find out afterwards.
+            int pendingAnnotations = _annotations.Values.Sum(list => list.Count);
+            string annotationNote = pendingAnnotations == 0 ? "" :
+                $"\n\n{pendingAnnotations} unsaved annotation{(pendingAnnotations == 1 ? "" : "s")} " +
+                "will be discarded. Save the document first if you want to keep them.";
+
+            var confirm = TdpDialog.ShowYesNo(this,
+                $"Permanently remove the content under {markCount} marked area{(markCount == 1 ? "" : "s")}?\n\n" +
+                "The text and images underneath are deleted from the PDF, not covered over. " +
+                "This cannot be undone, and it clears the undo history." + annotationNote,
+                "Redact Permanently", "Cancel", "Redact", MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            using var op = Telemetry.StartOperation("Redact");
+            SetFileOperationBusy(true, "Redacting...");
+            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_src_{Guid.NewGuid():N}.pdf");
+            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_out_{Guid.NewGuid():N}.pdf");
+            try
+            {
+                // Redact the CURRENT document, structural edits and all — not the file on disk,
+                // which may be several rotations and page deletions behind what is on screen.
+                NormalizeDocumentForSave(_doc);
+                await _pdfDocumentService.SaveAsync(() => _doc!.Save(source), CancellationToken.None);
+
+                TDPdf.Services.PdfRedaction.Result Run() =>
+                    TDPdf.Services.PdfRedaction.Apply(source, result, new TDPdf.Services.PdfRedaction.Request
+                    {
+                        RectsByPage = rects,
+                        RemovePartialOverlaps = _redactRemovePartial,
+                        ScrubMetadata = _redactScrubMetadata,
+                        RasterizePages = raster.ToList(),
+                    });
+
+                var outcome = await Task.Run(Run);
+
+                // The scanned-page case, which only the engine can see: the marks fall inside an
+                // image, so there is no object to remove. Nothing was written, so asking now and
+                // running again costs one render and loses nothing.
+                if (!outcome.Ok && outcome.PagesNeedingRaster.Count > 0)
+                {
+                    SetFileOperationBusy(false);
+                    var pages = outcome.PagesNeedingRaster;
+                    bool agreed = ConfirmRasterize(pages,
+                        pages.Select(p => $"Page {p + 1}: the marked area is part of an image, so there is " +
+                                          "nothing smaller to delete — this is what a scanned page looks like")
+                             .ToList());
+                    if (!agreed) { SetStatus("Redaction cancelled — the document was not changed"); return; }
+                    foreach (int p in pages) raster.Add(p);
+                    SetFileOperationBusy(true, "Redacting...");
+                    outcome = await Task.Run(Run);
+                }
+
+                if (!outcome.Ok)
+                {
+                    // Nothing was written and the open document is untouched, so the marks stay
+                    // exactly where they were and the user can widen them and try again.
+                    string detail = outcome.Survivors.Count > 0
+                        ? "\n\nStill inside a marked area: " +
+                          string.Join(", ", outcome.Survivors.Take(8)) +
+                          (outcome.Survivors.Count > 8 ? ", …" : "") +
+                          "\n\nWiden the marks, or switch on \"Include partly covered objects\"."
+                        : "";
+                    TdpDialog.Show(this,
+                        $"The redaction was not applied: {outcome.Error}{detail}\n\n" +
+                        "Your document has not been changed.",
+                        "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    SetStatus("Redaction refused — the document was not changed");
+                    return;
+                }
+
+                AdoptRedactedFile(result);
+
+                string summary = $"Redacted {markCount} area{(markCount == 1 ? "" : "s")} — " +
+                                 $"{outcome.ObjectsRemoved} object{(outcome.ObjectsRemoved == 1 ? "" : "s")} removed";
+                if (outcome.InvisibleTextRemoved > 0)
+                    summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
+                if (outcome.Rasterized.Count > 0)
+                    summary += $"; page{(outcome.Rasterized.Count == 1 ? "" : "s")} " +
+                               string.Join(", ", outcome.Rasterized.Select(p => p + 1)) +
+                               $" rasterised and no longer contain{(outcome.Rasterized.Count == 1 ? "s" : "")} text";
+                SetStatus(summary + ". Save to write it to disk.");
+            }
+            catch (Exception ex)
+            {
+                Telemetry.TrackCrash(ex, "Redact", recoverable: true);
+                TdpDialog.Show(this, $"The redaction was not applied: {ex.Message}\n\nYour document has not been changed.",
+                    "Redact", MessageBoxButton.OK, MessageBoxImage.Error);
+                SetStatus("Redaction failed — the document was not changed");
+            }
+            finally
+            {
+                SetFileOperationBusy(false);
+                TryDeleteTemp(source);
+                if (System.IO.File.Exists(result) && !string.Equals(result, _currentFile, StringComparison.OrdinalIgnoreCase))
+                    TryDeleteTemp(result);
+            }
+        }
+
+        /// <summary>
+        /// Asks whether to redact pages by rasterising them, and says what that costs.
+        /// </summary>
+        /// <remarks>
+        /// Rasterising is the only thing that works on a scan or on a page whose content stream
+        /// cannot be safely rewritten, and it does remove the content completely — the output page
+        /// is one picture and nothing else. But it takes the page's text with it: no searching, no
+        /// selecting, no copying, no screen reader. That is a real loss to a real person, so it is
+        /// spelled out and agreed to rather than done quietly because it happened to be the only
+        /// path left.
+        /// </remarks>
+        private bool ConfirmRasterize(IReadOnlyCollection<int> pages, IReadOnlyList<string> reasons)
+        {
+            bool one = pages.Count == 1;
+            var answer = TdpDialog.ShowYesNo(this,
+                $"{pages.Count} page{(one ? "" : "s")} cannot be redacted by removing objects:\n\n" +
+                string.Join("\n", reasons.Take(6)) +
+                (reasons.Count > 6 ? $"\n…and {reasons.Count - 6} more" : "") +
+                $"\n\nTDPdf can redact {(one ? "it" : "them")} by replacing the page with an image of " +
+                "itself, with the marked areas painted out. The marked content is genuinely gone — " +
+                $"but so is the page's text: {(one ? "it" : "they")} will no longer be searchable, " +
+                "selectable, or readable by a screen reader.\n\n" +
+                "Other pages, if any, are redacted normally and keep their text.",
+                "Rasterise and Redact", "Cancel",
+                "Redact", MessageBoxImage.Warning);
+            return answer == MessageBoxResult.Yes;
+        }
+
+        /// <summary>
+        /// Makes the redacted file the working document.
+        /// </summary>
+        /// <remarks>
+        /// Mirrors the tail of <see cref="SaveTempAndReload"/>, with one deliberate difference: the
+        /// undo history is DROPPED rather than extended. A document-level undo entry holds the
+        /// pre-edit bytes, so an undoable redaction would put the removed content straight back —
+        /// and the user, having been told the content was destroyed, would have no reason to look.
+        /// The confirmation says this cannot be undone; this is what makes that true.
+        /// </remarks>
+        private void AdoptRedactedFile(string redactedPath)
+        {
+            int selectedIdx = PageList.SelectedIndex;
+
+            _doc?.Close();
+            _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
+            _currentFile = redactedPath;
+
+            _annotations.Clear();
+            _redactionMarks.Clear();
+            ClearFormState();
+            InvalidateRenderCache();
+            _contentEditor.ClearCache();
+            InvalidateTextRunCache();
+            ClearSelection();
+            _undoStack.Clear();
+            _redoStack.Clear();
+            HideRedactSettings();
+            MarkDirty();
+
+            RefreshPageList();
+            if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
+                PageList.SelectedIndex = selectedIdx;
+            else if (PageList.Items.Count > 0)
+                PageList.SelectedIndex = 0;
+
+            if (_viewMode == ViewMode.Continuous)
+            {
+                int contIdx = Math.Max(0, PageList.SelectedIndex);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                    (Action)(() => SetupContinuousView(contIdx)));
+            }
+        }
+
+        private static void TryDeleteTemp(string path)
+        {
+            try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* temp file; best effort */ }
+        }
+
+        /// <summary>
+        /// Gate every save on unapplied redaction marks.
+        /// </summary>
+        /// <remarks>
+        /// A mark is not an annotation and the save path writes nothing for it, so a save with
+        /// marks pending produces a file that looks redacted on screen and is not redacted at all.
+        /// That is the single worst outcome this feature can produce, so it is the one thing the
+        /// save path is not allowed to do silently. Returns false to abandon the save.
+        /// </remarks>
+        private bool ConfirmSaveWithPendingRedactions()
+        {
+            int marks = PendingRedactionCount;
+            if (marks == 0) return true;
+
+            var answer = TdpDialog.ShowYesNo(this,
+                $"{marks} redaction mark{(marks == 1 ? " has" : "s have")} not been applied.\n\n" +
+                "Saving now writes a file that still contains all of the marked content — the marks " +
+                "themselves are not saved. Use Redact Permanently to remove the content first.",
+                "Save anyway", "Cancel",
+                "Unapplied Redactions", MessageBoxImage.Warning);
+            return answer == MessageBoxResult.Yes;
         }
 
         // ============================================================
@@ -9461,6 +9928,38 @@ namespace TDPdf
                     break;
                 }
 
+                case EditTool.Redact:
+                {
+                    ClearSelection();
+                    // A click on an existing mark takes it back off. Marks have no handles and no
+                    // selection state: they are a list of areas, and the only two things worth
+                    // doing to one are adding it and taking it away.
+                    if (_redactionMarks.TryGetValue(pageIdx, out var existing))
+                    {
+                        int hit = existing.FindLastIndex(r => r.Contains(pos));
+                        if (hit >= 0)
+                        {
+                            existing.RemoveAt(hit);
+                            if (existing.Count == 0) _redactionMarks.Remove(pageIdx);
+                            RenderAllAnnotations(pageIdx);
+                            ShowRedactSettings();
+                            SetStatus($"Redaction mark removed — {PendingRedactionCount} pending");
+                            e.Handled = true;
+                            break;
+                        }
+                    }
+                    _isDrawing = true;
+                    _drawStart = pos;
+                    var redactRect = MakeRedactionVisual(0, 0);
+                    Canvas.SetLeft(redactRect, pos.X);
+                    Canvas.SetTop(redactRect, pos.Y);
+                    _annotationCanvas.Children.Add(redactRect);
+                    _activePreview = redactRect;
+                    _annotationCanvas.CaptureMouse();
+                    e.Handled = true;
+                    break;
+                }
+
                 case EditTool.Crop:
                     ClearSelection();
                     ClearCropSelection();
@@ -10038,6 +10537,7 @@ namespace TDPdf
             switch (_currentTool)
             {
                 case EditTool.Highlight when _activePreview is Rectangle:
+                case EditTool.Redact when _activePreview is Rectangle:
                 case EditTool.Crop when _activePreview is Rectangle:
                     var rect = (Rectangle)_activePreview;
                     Canvas.SetLeft(rect, Math.Min(pos.X, _drawStart.X));
@@ -10318,6 +10818,23 @@ namespace TDPdf
                     }
                     break;
 
+                case EditTool.Redact when _activePreview is Rectangle rrect:
+                    // 3px, matching the highlighter: below that it is a stray click, not a mark.
+                    if (rrect.Width > 3 && rrect.Height > 3)
+                    {
+                        if (!_redactionMarks.TryGetValue(pageIdx, out var marks))
+                            _redactionMarks[pageIdx] = marks = new List<Rect>();
+                        marks.Add(new Rect(Canvas.GetLeft(rrect), Canvas.GetTop(rrect), rrect.Width, rrect.Height));
+                        RenderAllAnnotations(pageIdx);
+                        ShowRedactSettings();
+                        SetStatus($"{PendingRedactionCount} area{(PendingRedactionCount == 1 ? "" : "s")} marked — nothing is removed until you press Redact");
+                    }
+                    else
+                    {
+                        _annotationCanvas.Children.Remove(rrect);
+                    }
+                    break;
+
                 case EditTool.Crop when _activePreview is Rectangle rect:
                     if (rect.Width > 5 && rect.Height > 5)
                     {
@@ -10543,7 +11060,7 @@ namespace TDPdf
             var (renderW, renderH) = _renderDims[pageIdx];
             var page = _doc!.Pages[pageIdx];
             var box = GetVisiblePageBox(page);
-            int rot = ((page.Rotate % 360) + 360) % 360;
+            int rot = PdfPageGeometry.Rotation(page);
             bool quarterTurn = rot is 90 or 270;
 
             double hs = (quarterTurn ? box.Height : box.Width) / renderW;
@@ -10591,146 +11108,18 @@ namespace TDPdf
         // Page boxes (/MediaBox, /CropBox)
         // ============================================================
 
-        /// <summary>
-        /// A page box in PDF user space: lower-left origin (<see cref="X"/>, <see cref="Y"/>) plus a
-        /// size, always normalized so Width/Height are positive. The origin matters — [0 0 612 792] is
-        /// the common case but [9 9 621 801] is legal, and content/annotation coordinates are absolute
-        /// in user space, so anything mapping into the rendered bitmap must subtract the box origin
-        /// rather than assume (0,0). /Rotate is NOT applied; see Transform.cs VisiblePageSize.
-        /// </summary>
-        private readonly record struct PageBox(double X, double Y, double Width, double Height)
-        {
-            public double Right => X + Width;
-            public double Top   => Y + Height;
-        }
+        // PageBox, ReadInheritedPageBox, GetVisiblePageBox and PdfRectToCanvas now live in
+        // Services/PdfPageGeometry.cs. They moved because redaction needed the same canvas↔PDF
+        // mapping and briefly grew a second copy of it — two implementations of one rotation table
+        // is exactly how a later fix lands in one of them and an overlay quietly drifts a quarter
+        // turn out of place. See the file header there.
+        private static PdfPageGeometry.PageBox GetVisiblePageBox(PdfPage page) =>
+            PdfPageGeometry.VisibleBox(page);
 
-        /// <summary>
-        /// Reads an inheritable page-tree box (/MediaBox or /CropBox) for a page, walking the /Parent
-        /// chain. Both are inheritable page attributes (PDF 32000-1 7.7.3.3): they may live on any
-        /// ancestor /Pages node instead of the page itself, and our vendored PdfSharpCore never resolves
-        /// inheritance (PdfPage.InheritValues / PdfPages.FlattenPageTree have no callers). Returns null
-        /// when no node in the chain carries a usable box.
-        /// </summary>
-        /// <remarks>
-        /// CRITICAL: this reads the RAW dictionary entry and must never be "simplified" to
-        /// page.MediaBox / page.CropBox / page.Width. Those getters route through
-        /// PdfDictionary.GetRectangle(key, create: true), which (a) returns an EMPTY rectangle for a
-        /// box that is only inherited — the caller then falls back to some hardcoded page size and every
-        /// overlay on the page is misplaced — and (b) PLANTS an empty /MediaBox|/CropBox [0 0 0 0] into
-        /// the page dictionary, which saves to disk and makes Adobe reject the page as "dimensions
-        /// out-of-range". That is the same lazy-getter trap as the phantom /Outlines (#103) and the
-        /// degenerate /CropBox fixed in v1.18.0.0; see ScrubDegeneratePageBoxes.
-        ///
-        /// The entry can be a parsed PdfArray (as loaded from disk), a PdfRectangle (GetRectangle stores
-        /// its conversion back into the dictionary — "this[key] = value" — so one earlier property read
-        /// anywhere in the app replaces the array), or an indirect reference to either. Handle all three.
-        /// </remarks>
-        private static PageBox? ReadInheritedPageBox(PdfDictionary? node, string key)
-        {
-            // Depth cap: a malformed file can have a cyclic /Parent chain.
-            for (int depth = 0; node is not null && depth < 32; depth++)
-            {
-                PdfItem? item = node.Elements[key];
-                if (item is not null and not PdfArray and not PdfRectangle)
-                    item = DerefItemStatic(item);
-
-                if (item is PdfRectangle pr)
-                    return Normalize(pr.X1, pr.Y1, pr.X2, pr.Y2);
-                if (item is PdfArray { Elements.Count: 4 } arr)
-                    return Normalize(arr.Elements.GetReal(0), arr.Elements.GetReal(1),
-                                     arr.Elements.GetReal(2), arr.Elements.GetReal(3));
-
-                var parent = node.Elements["/Parent"];
-                node = parent is null ? null
-                     : parent as PdfDictionary ?? DerefItemStatic(parent) as PdfDictionary;
-            }
-            return null;
-
-            static PageBox Normalize(double x1, double y1, double x2, double y2) =>
-                new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
-        }
-
-        /// <summary>
-        /// The page box a renderer actually draws, and therefore the box every overlay and every
-        /// canvas↔PDF mapping must use: the /CropBox when present and usable, otherwise the /MediaBox.
-        /// Inheritance-aware and origin-preserving. Mirrors PDFium's own CPDF_Page rules — clip the crop
-        /// box to the media box, and fall back to US Letter when a page carries no usable box at all —
-        /// because Docnet/PDFium produced the bitmap our overlays sit on, so our geometry must agree
-        /// with it rather than with some other notion of "the page size".
-        /// </summary>
-        private static PageBox GetVisiblePageBox(PdfPage page)
-        {
-            var media = ReadInheritedPageBox(page, "/MediaBox");
-            var crop  = ReadInheritedPageBox(page, "/CropBox");
-
-            // Sub-1pt boxes are degenerate (typically a [0 0 0 0] planted by the lazy getter), never a
-            // real page; treat them as absent.
-            if (crop is { Width: > 1, Height: > 1 } c)
-            {
-                if (media is { Width: > 1, Height: > 1 } m)
-                {
-                    double x1 = Math.Max(c.X, m.X), y1 = Math.Max(c.Y, m.Y);
-                    double x2 = Math.Min(c.Right, m.Right), y2 = Math.Min(c.Top, m.Top);
-                    if (x2 - x1 > 1 && y2 - y1 > 1) return new PageBox(x1, y1, x2 - x1, y2 - y1);
-                    return m;   // crop lies outside the media box: bogus, ignore it
-                }
-                return c;
-            }
-            if (media is { Width: > 1, Height: > 1 } mb) return mb;
-
-            // No usable box anywhere in the page tree — a malformed document. PDFium, which rendered the
-            // bitmap we are aligning to, substitutes US Letter in exactly this case, so match that instead
-            // of inventing a size (in particular A4) that the render never used.
-            return new PageBox(0, 0, 612, 792);
-        }
-
-        /// <summary>
-        /// Maps an annotation /Rect — absolute PDF user-space coordinates, bottom-left origin, always
-        /// UNROTATED — onto the canvas/bitmap PDFium rendered for the page, which has the page /Rotate
-        /// already applied. Shared by the link and form-field overlays so the two can never drift apart.
-        /// </summary>
-        /// <param name="box">The rendered page box from <see cref="GetVisiblePageBox"/> (unrotated).</param>
-        /// <param name="rotation">Page /Rotate, already normalized to 0/90/180/270.</param>
         private static (double cx, double cy, double cw, double ch) PdfRectToCanvas(
-            PageBox box, int rotation, double canvasW, double canvasH,
-            double rx1, double ry1, double rx2, double ry2)
-        {
-            if (rx1 > rx2) (rx1, rx2) = (rx2, rx1);
-            if (ry1 > ry2) (ry1, ry2) = (ry2, ry1);
-
-            // Re-express the rect relative to the rendered box's lower-left corner, so a box with a
-            // non-zero origin (or a CropBox inset from the MediaBox) doesn't shift every overlay off
-            // the drawn page. fx/fy are now in [0, box.Width] x [0, box.Height].
-            double fx1 = rx1 - box.X, fy1 = ry1 - box.Y;
-            double fx2 = rx2 - box.X, fy2 = ry2 - box.Y;
-            double pageW = box.Width, pageH = box.Height;
-
-            // For 90/270 the bitmap's axes are swapped: canvasW spans the box's HEIGHT and canvasH
-            // its WIDTH, so the box dimension each canvas axis is divided by swaps with it.
-            switch (rotation)
-            {
-                case 90:  // 90 CW: PDF (x,y) -> canvas (y, x); canvas is pageH-wide x pageW-tall
-                    return (fy1         / pageH * canvasW,
-                            fx1         / pageW * canvasH,
-                            (fy2 - fy1) / pageH * canvasW,
-                            (fx2 - fx1) / pageW * canvasH);
-                case 180: // both axes flipped; the PDF->canvas y-flip cancels out
-                    return ((pageW - fx2) / pageW * canvasW,
-                            fy1           / pageH * canvasH,
-                            (fx2 - fx1)   / pageW * canvasW,
-                            (fy2 - fy1)   / pageH * canvasH);
-                case 270: // 270 CW: PDF (x,y) -> canvas (pageH - y, pageW - x)
-                    return ((pageH - fy2) / pageH * canvasW,
-                            (pageW - fx2) / pageW * canvasH,
-                            (fy2 - fy1)   / pageH * canvasW,
-                            (fx2 - fx1)   / pageW * canvasH);
-                default:  // 0 — standard bottom-left PDF -> top-left canvas
-                    return (fx1           / pageW * canvasW,
-                            (pageH - fy2) / pageH * canvasH,
-                            (fx2 - fx1)   / pageW * canvasW,
-                            (fy2 - fy1)   / pageH * canvasH);
-            }
-        }
+            PdfPageGeometry.PageBox box, int rotation, double canvasW, double canvasH,
+            double rx1, double ry1, double rx2, double ry2) =>
+            PdfPageGeometry.RectToCanvas(box, rotation, canvasW, canvasH, rx1, ry1, rx2, ry2);
 
         /// <summary>
         /// The exact inverse of <see cref="PdfRectToCanvas"/>, expressed as a matrix to PREPEND to an
@@ -10753,7 +11142,7 @@ namespace TDPdf
         /// value cancels out of the result: a page whose /MediaBox is unreadable — the empty [0 0 0 0]
         /// the lazy getter plants — still burns in the right place.
         /// </param>
-        private static XMatrix? VisualToPageMatrix(int rotation, PageBox box, double pageHeightPt)
+        private static XMatrix? VisualToPageMatrix(int rotation, PdfPageGeometry.PageBox box, double pageHeightPt)
         {
             // Inverting PdfRectToCanvas point-by-point gives visual (vx, vy) -> PDF user space:
             //    0 : (box.X + vx,            box.Y + box.Height - vy)
@@ -13125,6 +13514,7 @@ namespace TDPdf
                 // exactly as clicking the toolbar button does.
                 case Key.G: ToolSignature_Click(this, new RoutedEventArgs()); return true;
                 case Key.C: ToolCrop_Click(this, new RoutedEventArgs()); return true;
+                case Key.R: SetTool(EditTool.Redact); return true;
                 default: return false;
             }
         }
@@ -13422,6 +13812,7 @@ namespace TDPdf
             // survive every annotation re-render (edits, undo, selection, …).
             if (!_annotations.ContainsKey(pageIndex))
             {
+                RenderRedactionMarks(pageIndex);
                 RestoreFormOverlays(pageIndex);
                 RestorePolyPreview(pageIndex);
                 ApplyTextSelectionQuads(pageIndex);
@@ -13637,6 +14028,10 @@ namespace TDPdf
                         break;
                 }
             }
+
+            // Pending redaction marks are not annotations and so are not in the loop above; they
+            // are repainted here for the same reason the overlays below are — the clear wiped them.
+            RenderRedactionMarks(pageIndex);
 
             // The canvas was cleared above, so restore any form-field overlays.
             RestoreFormOverlays(pageIndex);
@@ -14381,6 +14776,7 @@ namespace TDPdf
             try { ctx.Doc?.Close(); } catch { }
             ctx.Doc = null;
             ctx.Annotations.Clear();
+            ctx.RedactionMarks.Clear();
             ctx.RenderCache.Clear();
             ctx.RenderDims.Clear();
             ctx.UndoStack.Clear();
@@ -15427,6 +15823,7 @@ namespace TDPdf
             // (their working file is a temp copy), so an in-place save would silently write to
             // %TEMP%. Route them to Save As. OriginalPath — not _currentFile — is the destination.
             if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
+            if (!ConfirmSaveWithPendingRedactions()) return;
             await SaveInPlaceAsync();
         }
 
@@ -15494,7 +15891,7 @@ namespace TDPdf
                         // With the bad entry gone, ask the page tree what this page's box actually is.
                         // Re-planting it explicitly keeps the page valid no matter how the writer treats
                         // the inherited attribute, and is identical in meaning to inheriting it.
-                        if (ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } box)
+                        if (PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } box)
                             elements.SetRectangle("/MediaBox",
                                 new PdfRectangle(new XPoint(box.X, box.Y), new XPoint(box.Right, box.Top)));
                     }
@@ -15509,7 +15906,7 @@ namespace TDPdf
                     // box must never be a reason to delete a good crop box.
                     const double outsideTol = 0.01;
                     if (ReadOwnPageBox(elements["/CropBox"]) is { } crop &&
-                        ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } media &&
+                        PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } media &&
                         (crop.X     < media.X     - outsideTol || crop.Y   < media.Y   - outsideTol ||
                          crop.Right > media.Right + outsideTol || crop.Top > media.Top + outsideTol))
                         elements.Remove("/CropBox");
@@ -15525,7 +15922,7 @@ namespace TDPdf
         // deleted. The box can be a parsed PdfArray (loaded from disk), a PdfRectangle (planted in
         // memory by the lazy getter or by GetRectangle writing its conversion back), or an indirect
         // reference to either.
-        private static PageBox? ReadOwnPageBox(PdfItem? item)
+        private static PdfPageGeometry.PageBox? ReadOwnPageBox(PdfItem? item)
         {
             if (item is null) return null;
             if (item is not PdfArray and not PdfRectangle) item = DerefItemStatic(item);
@@ -15539,7 +15936,7 @@ namespace TDPdf
                                  RectNum(arr.Elements[2]), RectNum(arr.Elements[3]));
             return null;
 
-            static PageBox Normalize(double x1, double y1, double x2, double y2) =>
+            static PdfPageGeometry.PageBox Normalize(double x1, double y1, double x2, double y2) =>
                 new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
         }
 
@@ -15711,6 +16108,7 @@ namespace TDPdf
         private async void SaveAs_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            if (!ConfirmSaveWithPendingRedactions()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save PDF as" };
             // #112: seed the dialog with the document's display name so Save As pre-fills the real
@@ -15813,6 +16211,11 @@ namespace TDPdf
         private async void SaveFlattened_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            // Flatten is not redaction, and is the easiest of the three saves to mistake for it.
+            // It rasterises the page, so the marked words stop being selectable text — but they are
+            // still there, in full, as pixels. Ask before writing a file the user has every reason
+            // to believe is safe.
+            if (!ConfirmSaveWithPendingRedactions()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
             if (dlg.ShowDialog() != true) return;
@@ -16193,7 +16596,7 @@ namespace TDPdf
                 //    were burned a quarter turn out of place and scaled on swapped axes (#169).
                 // TDPdf keeps the angle on the page itself (RotatePages_Click writes /Rotate and
                 // reloads), so the page dictionary is the authority — there is no separate map.
-                int rot = ((page.Rotate % 360) + 360) % 360;
+                int rot = PdfPageGeometry.Rotation(page);
                 var box = GetVisiblePageBox(page);
                 bool quarterTurn = rot is 90 or 270;   // visual extent is the box's dims swapped
                 double sx = (quarterTurn ? box.Height : box.Width) / renderW;
@@ -16557,6 +16960,21 @@ namespace TDPdf
             // annotations through the turn beforehand (see RotatePages_Click) and passes
             // keepAnnotations: true so that unsaved work survives the reload.
             if (!keepAnnotations) _annotations.Clear();
+            // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
+            // a page index, and every caller here has just moved, deleted, reordered or resized
+            // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
+            // remaps its annotations through the turn and keeps them; there is no equivalent for a
+            // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
+            // user a re-drag.
+            if (PendingRedactionCount > 0)
+            {
+                _redactionMarks.Clear();
+                HideRedactSettings();
+                // Held: every caller of this sets its own status line immediately afterwards
+                // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
+                // marks silently gone.
+                SetStatusHeld("Redaction marks were cleared — the page layout changed. Mark the areas again.", 4000);
+            }
             ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();
