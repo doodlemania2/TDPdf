@@ -125,6 +125,40 @@ internal static class Geometry
         finally { FPDFBitmap_Destroy(bmp); }
     }
 
+    /// <summary>Page 1 rendered at 1 pixel per point, as BGRA. Shared with the rasterise tests.</summary>
+    public static (byte[] bgra, int w, int h) RenderFirstPage(string path)
+    {
+        IntPtr doc = FPDF_LoadDocument(path, null);
+        try
+        {
+            IntPtr page = FPDF_LoadPage(doc, 0);
+            try
+            {
+                int rw = (int)Math.Round(FPDF_GetPageWidthF(page));
+                int rh = (int)Math.Round(FPDF_GetPageHeightF(page));
+                IntPtr bmp = FPDFBitmap_Create(rw, rh, BgrxAlpha);
+                try
+                {
+                    FPDFBitmap_FillRect(bmp, 0, 0, rw, rh, 0xFFFFFFFF);
+                    FPDF_RenderPageBitmap(bmp, page, 0, 0, rw, rh, 0, 0);
+                    int stride = FPDFBitmap_GetStride(bmp);
+                    IntPtr buf = FPDFBitmap_GetBuffer(bmp);
+                    var outp = new byte[rw * rh * 4];
+                    var row = new byte[stride];
+                    for (int y = 0; y < rh; y++)
+                    {
+                        Marshal.Copy(buf + y * stride, row, 0, stride);
+                        Array.Copy(row, 0, outp, y * rw * 4, rw * 4);
+                    }
+                    return (outp, rw, rh);
+                }
+                finally { FPDFBitmap_Destroy(bmp); }
+            }
+            finally { FPDF_ClosePage(page); }
+        }
+        finally { FPDF_CloseDocument(doc); }
+    }
+
     public static void Run(Action<string, bool, string> Check, string tmp)
     {
         Console.WriteLine("\nCanvas rect -> PDF rect, checked against PDFium's own rendering");
@@ -145,7 +179,7 @@ internal static class Geometry
             finally { FPDF_CloseDocument(doc); }
 
             using var sharp = PdfSharpCore.Pdf.IO.PdfReader.Open(path, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.Import);
-            var mapped = PdfRedaction.CanvasRectToPdf(
+            var mapped = PdfPageGeometry.CanvasRectToPdf(
                 sharp.Pages[0], ink.X, ink.Y, ink.W, ink.H, ink.RW, ink.RH);
 
             // The ink sits INSIDE the object's bounds — glyph bounds carry the font's ascender and
@@ -198,7 +232,7 @@ internal static class Geometry
             finally { FPDF_CloseDocument(doc); }
 
             using var sharp = PdfSharpCore.Pdf.IO.PdfReader.Open(path, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.Import);
-            var mapped = PdfRedaction.CanvasRectToPdf(
+            var mapped = PdfPageGeometry.CanvasRectToPdf(
                 sharp.Pages[0], ink.X, ink.Y, ink.W, ink.H, ink.RW, ink.RH);
 
             const double slack = 3;

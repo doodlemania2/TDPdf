@@ -509,7 +509,8 @@ namespace TDPdf.Services
         /// <param name="removePartialOverlaps">
         /// What to do with an object that overlaps a rectangle without being contained by it.
         /// False leaves it and reports it; true removes the whole object, over-deleting rather
-        /// than under-deleting.
+        /// than under-deleting. IMAGES are exempt and are always reported rather than removed —
+        /// see the note in RedactPageObjects.
         /// </param>
         /// <remarks>
         /// LIFETIME ORDERING, which PDFium's own embedder tests pin and which is easy to get
@@ -614,7 +615,13 @@ namespace TDPdf.Services
                     continue;
                 }
 
-                if (hit == Hit.Partial && !removePartial)
+                // An IMAGE is never removed on a partial overlap, whatever the caller asked for.
+                // Over-deleting a text object costs a line, which is visible and can be re-marked.
+                // Over-deleting an image costs whatever the image was — and on a scanned page that
+                // is the ENTIRE PAGE, since the scan is one page-sized image that any mark merely
+                // straddles. Blanking the page and reporting success is the exact failure this
+                // feature exists to prevent, so the overlap is reported and the caller decides.
+                if (hit == Hit.Partial && (type == PageObjImage || !removePartial))
                 {
                     outcome.Partial.Add(new RedactionOverlap(
                         pageIndex, type, IsInvisibleText(obj, type), l, b, r, t));
@@ -650,7 +657,9 @@ namespace TDPdf.Services
                 var hit = Classify(rects, l, b, r, t);
                 if (hit == Hit.None) continue;
 
-                if (hit == Hit.Partial && !removePartial)
+                // Same rule as on the page itself: an image straddling a mark is reported, never
+                // removed. See RedactPageObjects.
+                if (hit == Hit.Partial && (type == PageObjImage || !removePartial))
                 {
                     outcome.Partial.Add(new RedactionOverlap(
                         pageIndex, type, IsInvisibleText(child, type), l, b, r, t));

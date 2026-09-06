@@ -7091,39 +7091,41 @@ namespace TDPdf
                 // it, not here: it is page geometry, it is where a wrong rectangle would silently
                 // redact the wrong thing, and out there it is reachable by the tests.
                 rects[pageIndex] = marks
-                    .Select(m => TDPdf.Services.PdfRedaction.CanvasRectToPdf(
+                    .Select(m => TDPdf.Services.PdfPageGeometry.CanvasRectToPdf(
                         page, m.X, m.Y, m.Width, m.Height, dims.w, dims.h))
                     .ToList();
             }
             if (rects.Count == 0) { SetStatus("Redact: nothing marked"); return; }
 
             // Pre-flight. PDFium's content generator silently discards non-device colour, shadings,
-            // inline images and soft masks from any stream it rewrites, so a page carrying those
-            // cannot be edited without collateral damage. Refusing is the honest answer until the
-            // rasterise fallback lands; quietly recolouring an invoice is not.
-            var hazardous = new List<string>();
+            // inline images and soft masks from any stream it rewrites, so removing one object from
+            // a page carrying those can recolour or delete something else on it. Those pages can
+            // only be redacted by rasterising, which the user has to agree to.
+            var raster = new HashSet<int>();
+            var reasons = new List<string>();
             foreach (int pageIndex in rects.Keys)
             {
                 var hazard = TDPdf.Services.PdfContentInspector.Inspect(_doc.Pages[pageIndex]);
-                if (hazard != TDPdf.Services.ContentHazard.None)
-                    hazardous.Add($"Page {pageIndex + 1}: {TDPdf.Services.PdfContentInspector.Describe(hazard)}");
+                if (hazard == TDPdf.Services.ContentHazard.None) continue;
+                raster.Add(pageIndex);
+                reasons.Add($"Page {pageIndex + 1}: {TDPdf.Services.PdfContentInspector.Describe(hazard)}");
             }
-            if (hazardous.Count > 0)
-            {
-                TdpDialog.Show(this,
-                    "TDPdf will not redact these pages, because rewriting them would damage content " +
-                    "you did not mark:\n\n" + string.Join("\n", hazardous) +
-                    "\n\nRedacting anyway could recolour or drop unrelated parts of the page. " +
-                    "Save Flattened produces an image-only copy that carries no live text at all.",
-                    "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
+            if (raster.Count > 0 && !ConfirmRasterize(raster, reasons)) return;
 
             int markCount = PendingRedactionCount;
+
+            // Redaction reloads the document from the redacted file, and unsaved annotations are
+            // overlay state tied to the old one — the same reason a crop or a page delete drops
+            // them. Say so first rather than letting the user find out afterwards.
+            int pendingAnnotations = _annotations.Values.Sum(list => list.Count);
+            string annotationNote = pendingAnnotations == 0 ? "" :
+                $"\n\n{pendingAnnotations} unsaved annotation{(pendingAnnotations == 1 ? "" : "s")} " +
+                "will be discarded. Save the document first if you want to keep them.";
+
             var confirm = TdpDialog.ShowYesNo(this,
                 $"Permanently remove the content under {markCount} marked area{(markCount == 1 ? "" : "s")}?\n\n" +
                 "The text and images underneath are deleted from the PDF, not covered over. " +
-                "This cannot be undone, and it clears the undo history.",
+                "This cannot be undone, and it clears the undo history." + annotationNote,
                 "Redact Permanently", "Cancel", "Redact", MessageBoxImage.Warning);
             if (confirm != MessageBoxResult.Yes) return;
 
@@ -7138,13 +7140,33 @@ namespace TDPdf
                 NormalizeDocumentForSave(_doc);
                 await _pdfDocumentService.SaveAsync(() => _doc!.Save(source), CancellationToken.None);
 
-                var request = new TDPdf.Services.PdfRedaction.Request
+                TDPdf.Services.PdfRedaction.Result Run() =>
+                    TDPdf.Services.PdfRedaction.Apply(source, result, new TDPdf.Services.PdfRedaction.Request
+                    {
+                        RectsByPage = rects,
+                        RemovePartialOverlaps = _redactRemovePartial,
+                        ScrubMetadata = _redactScrubMetadata,
+                        RasterizePages = raster.ToList(),
+                    });
+
+                var outcome = await Task.Run(Run);
+
+                // The scanned-page case, which only the engine can see: the marks fall inside an
+                // image, so there is no object to remove. Nothing was written, so asking now and
+                // running again costs one render and loses nothing.
+                if (!outcome.Ok && outcome.PagesNeedingRaster.Count > 0)
                 {
-                    RectsByPage = rects,
-                    RemovePartialOverlaps = _redactRemovePartial,
-                    ScrubMetadata = _redactScrubMetadata,
-                };
-                var outcome = await Task.Run(() => TDPdf.Services.PdfRedaction.Apply(source, result, request));
+                    SetFileOperationBusy(false);
+                    var pages = outcome.PagesNeedingRaster;
+                    bool agreed = ConfirmRasterize(pages,
+                        pages.Select(p => $"Page {p + 1}: the marked area is part of an image, so there is " +
+                                          "nothing smaller to delete — this is what a scanned page looks like")
+                             .ToList());
+                    if (!agreed) { SetStatus("Redaction cancelled — the document was not changed"); return; }
+                    foreach (int p in pages) raster.Add(p);
+                    SetFileOperationBusy(true, "Redacting...");
+                    outcome = await Task.Run(Run);
+                }
 
                 if (!outcome.Ok)
                 {
@@ -7170,6 +7192,10 @@ namespace TDPdf
                                  $"{outcome.ObjectsRemoved} object{(outcome.ObjectsRemoved == 1 ? "" : "s")} removed";
                 if (outcome.InvisibleTextRemoved > 0)
                     summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
+                if (outcome.Rasterized.Count > 0)
+                    summary += $"; page{(outcome.Rasterized.Count == 1 ? "" : "s")} " +
+                               string.Join(", ", outcome.Rasterized.Select(p => p + 1)) +
+                               $" rasterised and no longer contain{(outcome.Rasterized.Count == 1 ? "s" : "")} text";
                 SetStatus(summary + ". Save to write it to disk.");
             }
             catch (Exception ex)
@@ -7186,6 +7212,34 @@ namespace TDPdf
                 if (System.IO.File.Exists(result) && !string.Equals(result, _currentFile, StringComparison.OrdinalIgnoreCase))
                     TryDeleteTemp(result);
             }
+        }
+
+        /// <summary>
+        /// Asks whether to redact pages by rasterising them, and says what that costs.
+        /// </summary>
+        /// <remarks>
+        /// Rasterising is the only thing that works on a scan or on a page whose content stream
+        /// cannot be safely rewritten, and it does remove the content completely — the output page
+        /// is one picture and nothing else. But it takes the page's text with it: no searching, no
+        /// selecting, no copying, no screen reader. That is a real loss to a real person, so it is
+        /// spelled out and agreed to rather than done quietly because it happened to be the only
+        /// path left.
+        /// </remarks>
+        private bool ConfirmRasterize(IReadOnlyCollection<int> pages, IReadOnlyList<string> reasons)
+        {
+            bool one = pages.Count == 1;
+            var answer = TdpDialog.ShowYesNo(this,
+                $"{pages.Count} page{(one ? "" : "s")} cannot be redacted by removing objects:\n\n" +
+                string.Join("\n", reasons.Take(6)) +
+                (reasons.Count > 6 ? $"\n…and {reasons.Count - 6} more" : "") +
+                $"\n\nTDPdf can redact {(one ? "it" : "them")} by replacing the page with an image of " +
+                "itself, with the marked areas painted out. The marked content is genuinely gone — " +
+                $"but so is the page's text: {(one ? "it" : "they")} will no longer be searchable, " +
+                "selectable, or readable by a screen reader.\n\n" +
+                "Other pages, if any, are redacted normally and keep their text.",
+                "Rasterise and Redact", "Cancel",
+                "Redact", MessageBoxImage.Warning);
+            return answer == MessageBoxResult.Yes;
         }
 
         /// <summary>

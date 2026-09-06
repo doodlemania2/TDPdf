@@ -36,6 +36,20 @@ namespace TDPdf.Services
 
             /// <summary>Clear the Info dictionary and drop the XMP packet.</summary>
             internal bool ScrubMetadata { get; init; } = true;
+
+            /// <summary>
+            /// Pages to redact by rasterising rather than by removing objects.
+            /// </summary>
+            /// <remarks>
+            /// Never chosen here. Rasterising costs the page its text — no search, no selection, no
+            /// screen reader — and that is the user's call to make, not the pipeline's. The two
+            /// situations that need it (a mark inside a scan, a page the content inspector flags)
+            /// are both reported to the caller so it can ask. See <see cref="PdfPageRasterizer"/>.
+            /// </remarks>
+            internal IReadOnlyCollection<int> RasterizePages { get; init; } = Array.Empty<int>();
+
+            /// <summary>Resolution for <see cref="RasterizePages"/>.</summary>
+            internal int RasterDpi { get; init; } = PdfPageRasterizer.DefaultDpi;
         }
 
         internal sealed class Result
@@ -50,6 +64,21 @@ namespace TDPdf.Services
             /// <summary>Text still sitting inside a redaction rectangle after the fact.</summary>
             /// <remarks>Non-empty means the output was NOT written.</remarks>
             internal IReadOnlyList<string> Survivors { get; set; } = Array.Empty<string>();
+
+            /// <summary>
+            /// Pages where a mark falls inside an image, so removing objects cannot clear it.
+            /// </summary>
+            /// <remarks>
+            /// The signature of a scanned document: the page is one big image and every mark
+            /// merely straddles it. Deleting that image would blank the page, so the engine
+            /// reports it instead — and this is the list the caller needs in order to offer the
+            /// only thing that does work, which is rasterising the page. Non-empty means the
+            /// output was NOT written.
+            /// </remarks>
+            internal IReadOnlyList<int> PagesNeedingRaster { get; set; } = Array.Empty<int>();
+
+            /// <summary>Pages that were rasterised, and so no longer carry text.</summary>
+            internal IReadOnlyList<int> Rasterized { get; set; } = Array.Empty<int>();
         }
 
         internal static Result Apply(string srcPath, string destPath, Request request)
@@ -59,11 +88,22 @@ namespace TDPdf.Services
             string stripped = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
             string scrubbed = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
 
+            string rasterized = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
+
             try
             {
+                // A page is redacted one way or the other, never both: rasterising it replaces
+                // everything on it anyway, so removing objects there first would be work thrown
+                // away — and it would trip the image refusal below on the very pages the caller has
+                // already agreed to rasterise.
+                var raster = new HashSet<int>(request.RasterizePages);
+                var objectRects = request.RectsByPage
+                    .Where(kv => !raster.Contains(kv.Key))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value);
+
                 // 1. Remove the content.
                 var removal = PdfiumInterop.RemoveObjectsIntersecting(
-                    srcPath, stripped, request.RectsByPage, request.RemovePartialOverlaps);
+                    srcPath, stripped, objectRects, request.RemovePartialOverlaps);
 
                 result.ObjectsRemoved = removal.ObjectsRemoved;
                 result.InvisibleTextRemoved = removal.InvisibleTextRemoved;
@@ -74,12 +114,49 @@ namespace TDPdf.Services
                     return result;
                 }
 
-                // 2. Scrub what lives outside the page content. Redacting a name from the body
+                // 2. An image the marks only straddle is still showing whatever was marked, and
+                //    the engine deliberately refused to delete it (deleting a page-sized scan to
+                //    redact a name in it is not a trade anyone would accept). There is nothing
+                //    useful to write here, so stop and hand the caller the pages involved.
+                var rasterPages = removal.Partial
+                    .Where(p => p.ObjectType == PdfiumInterop.PageObjImage)
+                    .Select(p => p.PageIndex)
+                    .Distinct()
+                    .OrderBy(i => i)
+                    .ToList();
+                if (rasterPages.Count > 0)
+                {
+                    result.PagesNeedingRaster = rasterPages;
+                    result.Error =
+                        $"the marked content is part of an image on page{(rasterPages.Count == 1 ? "" : "s")} " +
+                        string.Join(", ", rasterPages.Select(i => i + 1)) +
+                        ", which cannot be edited object by object";
+                    return result;
+                }
+
+                // 3. Rasterise the pages the caller opted in for. Everything on those pages is
+                //    replaced by one picture with the marked areas painted out, which is the only
+                //    thing that works when the marked content IS the picture.
+                string afterRaster = stripped;
+                if (raster.Count > 0)
+                {
+                    if (!PdfPageRasterizer.TryReplacePages(
+                            stripped, rasterized, request.RectsByPage, raster,
+                            request.RasterDpi, out string? rasterError))
+                    {
+                        result.Error = rasterError ?? "the affected pages could not be rasterised";
+                        return result;
+                    }
+                    afterRaster = rasterized;
+                    result.Rasterized = raster.OrderBy(i => i).ToList();
+                }
+
+                // 4. Scrub what lives outside the page content. Redacting a name from the body
                 //    while leaving it in the Title is a common and embarrassing miss.
-                string verifyPath = stripped;
+                string verifyPath = afterRaster;
                 if (request.ScrubMetadata)
                 {
-                    if (TryScrubMetadata(stripped, scrubbed, out string? scrubError))
+                    if (TryScrubMetadata(afterRaster, scrubbed, out string? scrubError))
                         verifyPath = scrubbed;
                     else
                     {
@@ -88,7 +165,7 @@ namespace TDPdf.Services
                     }
                 }
 
-                // 3. Prove it, on the OUTPUT rather than on intent.
+                // 5. Prove it, on the OUTPUT rather than on intent.
                 result.Survivors = FindSurvivingText(verifyPath, request.RectsByPage);
                 if (result.Survivors.Count > 0)
                 {
@@ -110,6 +187,7 @@ namespace TDPdf.Services
             finally
             {
                 TryDelete(stripped);
+                TryDelete(rasterized);
                 TryDelete(scrubbed);
             }
         }
@@ -201,123 +279,6 @@ namespace TDPdf.Services
                 }
             }
             return survivors;
-        }
-
-        /// <summary>
-        /// Converts a rectangle drawn on the on-screen page image into the PDF user-space rectangle
-        /// PDFium reports object bounds in.
-        /// </summary>
-        /// <param name="page">The page the rectangle was drawn on.</param>
-        /// <param name="x">Rectangle left, in rendered-image pixels, measured from the LEFT.</param>
-        /// <param name="y">Rectangle top, in rendered-image pixels, measured DOWN from the top.</param>
-        /// <param name="w">Rectangle width, in rendered-image pixels.</param>
-        /// <param name="h">Rectangle height, in rendered-image pixels.</param>
-        /// <param name="renderW">Width of the rendered page image.</param>
-        /// <param name="renderH">Height of the rendered page image.</param>
-        /// <remarks>
-        /// Three things make this more than a scale, and getting any of them wrong points the
-        /// redaction at the wrong part of the page:
-        ///
-        ///   * <b>Origin.</b> The image measures down from the top-left; PDF user space measures up
-        ///     from the bottom-left.
-        ///   * <b>The visible box.</b> PDFium rasterises the CropBox when a page has one (ours do,
-        ///     after the crop tool), not the MediaBox, and neither is obliged to start at 0,0.
-        ///   * <b>/Rotate.</b> The image is rotated; object coordinates are not. On a 90-degree page
-        ///     the image's x axis runs along the PDF y axis, so a naive mapping lands the rectangle
-        ///     in empty space.
-        ///
-        /// That last failure is caught rather than shipped — <see cref="Apply"/> verifies the output
-        /// and refuses to write a file when marked text survives — but "safely refuses every time"
-        /// is not a working feature, so the geometry is pinned by tests that render each quarter
-        /// turn through PDFium and map the ink back. See tests/Redaction.
-        ///
-        /// The corners are mapped individually and re-normalised, because every quarter turn except
-        /// 0 swaps or flips at least one axis.
-        ///
-        /// Both /Rotate and the page boxes are INHERITABLE attributes: a document is entitled to
-        /// set them once on the page tree and never on a page. PdfSharpCore's own accessors read
-        /// the page dictionary alone, so they are resolved here by walking /Parent.
-        /// </remarks>
-        internal static PdfiumInterop.PdfRect CanvasRectToPdf(
-            PdfPage page, double x, double y, double w, double h, double renderW, double renderH)
-        {
-            var box = VisibleBox(page);
-            double bx = box.X1, by = box.Y1;
-            double bw = box.X2 - box.X1, bh = box.Y2 - box.Y1;
-            int rotate = ((InheritedInt(page, "/Rotate") % 360) + 360) % 360;
-
-            (double X, double Y) Map(double u, double v) => rotate switch
-            {
-                90  => (bx + v * bw,       by + u * bh),
-                180 => (bx + (1 - u) * bw, by + v * bh),
-                270 => (bx + (1 - v) * bw, by + (1 - u) * bh),
-                _   => (bx + u * bw,       by + (1 - v) * bh),
-            };
-
-            var a = Map(x / renderW, y / renderH);
-            var b = Map((x + w) / renderW, (y + h) / renderH);
-
-            return new PdfiumInterop.PdfRect(
-                Left: Math.Min(a.X, b.X), Bottom: Math.Min(a.Y, b.Y),
-                Right: Math.Max(a.X, b.X), Top: Math.Max(a.Y, b.Y));
-        }
-
-        /// <summary>The box PDFium rasterises: the CropBox when there is a usable one, else the MediaBox.</summary>
-        /// <remarks>
-        /// Falls back to US Letter only when a document declares neither, which is malformed. A
-        /// guess is still better than a divide-by-zero here: the verification pass will refuse the
-        /// redaction if the guess was wrong, whereas a crash loses the user's work.
-        /// </remarks>
-        private static (double X1, double Y1, double X2, double Y2) VisibleBox(PdfPage page)
-        {
-            var crop = InheritedRect(page, "/CropBox");
-            if (crop is { } c && c.X2 - c.X1 > 0 && c.Y2 - c.Y1 > 0) return c;
-            var media = InheritedRect(page, "/MediaBox");
-            if (media is { } m && m.X2 - m.X1 > 0 && m.Y2 - m.Y1 > 0) return m;
-            return (0, 0, 612, 792);
-        }
-
-        /// <summary>Reads an inheritable rectangle, normalised so X1&lt;X2 and Y1&lt;Y2.</summary>
-        private static (double X1, double Y1, double X2, double Y2)? InheritedRect(PdfPage page, string key)
-        {
-            if (InheritedItem(page, key) is not PdfArray arr || arr.Elements.Count < 4) return null;
-            double[] v = new double[4];
-            for (int i = 0; i < 4; i++)
-            {
-                var item = arr.Elements[i];
-                if (item is PdfReference r) item = r.Value;
-                v[i] = item switch
-                {
-                    PdfReal real => real.Value,
-                    PdfInteger n => n.Value,
-                    _ => double.NaN,
-                };
-                if (double.IsNaN(v[i])) return null;
-            }
-            return (Math.Min(v[0], v[2]), Math.Min(v[1], v[3]), Math.Max(v[0], v[2]), Math.Max(v[1], v[3]));
-        }
-
-        private static int InheritedInt(PdfPage page, string key)
-        {
-            var item = InheritedItem(page, key);
-            if (item is PdfReference r) item = r.Value;
-            return item switch { PdfInteger n => n.Value, PdfReal d => (int)d.Value, _ => 0 };
-        }
-
-        /// <summary>Walks the page and then its /Parent chain for an inheritable attribute.</summary>
-        private static PdfItem? InheritedItem(PdfPage page, string key)
-        {
-            PdfDictionary? node = page;
-            // Depth-capped: a malformed file can point /Parent back at a descendant, and a
-            // redaction is not the place to hang on someone else's cycle.
-            for (int depth = 0; node is not null && depth < 64; depth++)
-            {
-                if (node.Elements.ContainsKey(key)) return node.Elements[key];
-                var parent = node.Elements["/Parent"];
-                if (parent is PdfReference pr) parent = pr.Value;
-                node = parent as PdfDictionary;
-            }
-            return null;
         }
 
         private static void TryDelete(string path)
