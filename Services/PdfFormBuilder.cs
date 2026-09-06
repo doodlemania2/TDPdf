@@ -117,6 +117,128 @@ namespace TDPdf.Services
             return field;
         }
 
+        // ── Editing what is already there ────────────────────────────────────────────────
+
+        /// <summary>
+        /// The field a widget belongs to: itself when the two are merged, else its /Parent.
+        /// </summary>
+        internal static PdfDictionary FieldOf(PdfDictionary widget)
+        {
+            var node = widget;
+            // Climb to the topmost ancestor that still looks like a field. A radio button's parent
+            // holds the name, the type and the value; the button itself holds none of them.
+            for (int depth = 0; depth < 32; depth++)
+            {
+                var parentItem = node.Elements["/Parent"];
+                if (parentItem is PdfReference pr) parentItem = pr.Value;
+                if (parentItem is not PdfDictionary parent) break;
+                // A widget's /Parent can also be the PAGE, which is not a field and must not be
+                // mistaken for one.
+                if (parent.Elements.GetName("/Type") == "/Pages" || parent.Elements.ContainsKey("/Kids")
+                    && parent.Elements.ContainsKey("/Count")) break;
+                node = parent;
+            }
+            return node;
+        }
+
+        /// <summary>
+        /// Deletes a field and every widget belonging to it.
+        /// </summary>
+        /// <remarks>
+        /// Both halves are required. A widget left in a page's /Annots after its field is gone is
+        /// an orphan that viewers draw but cannot fill; a field left in /AcroForm /Fields with no
+        /// widget is invisible but still turns up in exported form data and in validation. Removing
+        /// only one of the two is the usual way a "deleted" field comes back.
+        /// </remarks>
+        internal static bool RemoveField(PdfDocument doc, PdfDictionary widget)
+        {
+            if (doc is null || widget is null) return false;
+            var field = FieldOf(widget);
+
+            var widgets = new List<PdfDictionary> { field };
+            if (field.Elements.GetArray("/Kids") is { } kids)
+                for (int i = 0; i < kids.Elements.Count; i++)
+                    if (Deref(kids.Elements[i]) is { } kid) widgets.Add(kid);
+
+            bool removed = false;
+            for (int p = 0; p < doc.PageCount; p++)
+            {
+                var annots = doc.Pages[p].Elements.GetArray("/Annots");
+                if (annots is null) continue;
+                for (int i = annots.Elements.Count - 1; i >= 0; i--)
+                    if (widgets.Any(w => ReferenceEquals(Deref(annots.Elements[i]), w)))
+                    {
+                        annots.Elements.RemoveAt(i);
+                        removed = true;
+                    }
+            }
+
+            var fields = doc.Internals.Catalog.Elements.GetDictionary("/AcroForm")?.Elements.GetArray("/Fields");
+            if (fields is not null)
+                for (int i = fields.Elements.Count - 1; i >= 0; i--)
+                    if (ReferenceEquals(Deref(fields.Elements[i]), field))
+                    {
+                        fields.Elements.RemoveAt(i);
+                        removed = true;
+                    }
+
+            // The dictionaries themselves are now unreachable from the trailer, which is all that
+            // is needed: PdfSharpCore's save-time compaction drops them.
+            return removed;
+        }
+
+        /// <summary>The field's name, or "" when it has none.</summary>
+        internal static string NameOf(PdfDictionary widget) =>
+            (FieldOf(widget).Elements["/T"] as PdfString)?.Value ?? "";
+
+        /// <summary>Renames a field, refusing a name already in use.</summary>
+        /// <remarks>
+        /// Duplicate names are legal and mean "these widgets share one value", so allowing one
+        /// through here would silently tie two unrelated fields together — the rename would look
+        /// like it worked and the form would then fill both boxes at once.
+        /// </remarks>
+        internal static bool TryRename(PdfDocument doc, PdfDictionary widget, string newName, out string? error)
+        {
+            error = null;
+            newName = (newName ?? "").Trim();
+            if (newName.Length == 0) { error = "a field needs a name"; return false; }
+            // A period separates the parts of a hierarchical field name, so one inside a name would
+            // reparent the field rather than rename it.
+            if (newName.Contains('.')) { error = "a field name cannot contain a full stop"; return false; }
+
+            var field = FieldOf(widget);
+            if (string.Equals(NameOf(widget), newName, StringComparison.Ordinal)) return true;
+
+            foreach (var obj in doc.Internals.GetAllObjects())
+                if (obj is PdfDictionary d && !ReferenceEquals(d, field)
+                    && d.Elements["/T"] is PdfString t && t.Value == newName)
+                {
+                    error = $"\"{newName}\" is already used by another field";
+                    return false;
+                }
+
+            field.Elements["/T"] = new PdfString(newName);
+            return true;
+        }
+
+        /// <summary>Reads one of the /Ff bits this tool exposes.</summary>
+        internal static bool GetFlag(PdfDictionary widget, bool required) =>
+            (FieldOf(widget).Elements.GetInteger("/Ff") & (required ? FfRequired : FfReadOnly)) != 0;
+
+        /// <summary>Sets or clears one of the /Ff bits this tool exposes.</summary>
+        internal static void SetFlag(PdfDictionary widget, bool required, bool on)
+        {
+            var field = FieldOf(widget);
+            int bit = required ? FfRequired : FfReadOnly;
+            int flags = field.Elements.GetInteger("/Ff");
+            flags = on ? (flags | bit) : (flags & ~bit);
+            if (flags == 0) field.Elements.Remove("/Ff");
+            else field.Elements["/Ff"] = new PdfInteger(flags);
+        }
+
+        private static PdfDictionary? Deref(PdfItem? item) =>
+            item as PdfDictionary ?? (item as PdfReference)?.Value as PdfDictionary;
+
         // ── The field kinds ──────────────────────────────────────────────────────────────
 
         private static PdfDictionary BuildSingleWidgetField(

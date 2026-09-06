@@ -181,6 +181,14 @@ namespace TDPdf
         private Border? _formSettingsBar;
         private FormFieldMode _formMode = FormFieldMode.Text;
 
+        /// <summary>The field the Form tool is acting on, or null.</summary>
+        /// <remarks>
+        /// A live reference into _doc, so it is dropped whenever the tool changes (which is also
+        /// what a tab switch does, via ActivateContext) and whenever the document is reopened. A
+        /// stale one would point at a dictionary belonging to a document that is no longer open.
+        /// </remarks>
+        private PdfDictionary? _selectedFormWidget;
+
         // Redaction tool
         //
         // The pending marks are deliberately NOT PageAnnotations. An annotation is something the
@@ -4683,9 +4691,12 @@ namespace TDPdf
             var green = (SolidColorBrush)FindResource("AccentGreen");
             var wash = new SolidColorBrush(Color.FromArgb(28, green.Color.R, green.Color.G, green.Color.B));
 
+            int selectedObj = _selectedFormWidget is null ? int.MinValue : GetObjectNumber(_selectedFormWidget);
+
             foreach (var f in fields)
             {
                 if (!IsFinitePositive(f.Cw) || !IsFinitePositive(f.Ch)) continue;
+                bool selected = f.ObjNum == selectedObj;
 
                 var box = new Rectangle
                 {
@@ -4693,8 +4704,8 @@ namespace TDPdf
                     Height = f.Ch,
                     Fill = wash,
                     Stroke = green,
-                    StrokeThickness = 1,
-                    StrokeDashArray = new DoubleCollection { 3, 2 },
+                    StrokeThickness = selected ? 2.5 : 1,
+                    StrokeDashArray = selected ? null : new DoubleCollection { 3, 2 },
                     IsHitTestVisible = false,
                     Tag = FormOverlayTag,
                 };
@@ -6396,6 +6407,10 @@ namespace TDPdf
             else
                 HideRedactSettings();
 
+            // Dropped before the bar is built, so leaving and returning to the tool starts clean
+            // and a reference into a document that may since have been reopened cannot survive.
+            if (tool != EditTool.Form) _selectedFormWidget = null;
+
             if (tool == EditTool.Form)
                 ShowFormSettings();
             else
@@ -6994,6 +7009,16 @@ namespace TDPdf
             HideFormSettings();
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal };
+
+            // Two faces, like the shape and text bars: place new fields, or act on the one that is
+            // selected. Which one is showing is the answer to "what will the next click do".
+            if (_selectedFormWidget is not null)
+            {
+                BuildSelectedFieldBar(panel);
+                MountFormBar(panel);
+                return;
+            }
+
             panel.Children.Add(MakeLabel("Field:"));
 
             foreach (var (mode, label, tip) in FormModes)
@@ -7031,8 +7056,12 @@ namespace TDPdf
                 Fill = (SolidColorBrush)FindResource("BorderDim"),
                 Margin = new Thickness(6, 4, 8, 4),
             });
-            panel.Children.Add(MakeLabel("Drag on the page to place it"));
+            panel.Children.Add(MakeLabel("Drag to place \u2014 click a field to edit it"));
+            MountFormBar(panel);
+        }
 
+        private void MountFormBar(StackPanel panel)
+        {
             _formSettingsBar = new Border
             {
                 Background = (SolidColorBrush)FindResource("BgPanel"),
@@ -7051,6 +7080,162 @@ namespace TDPdf
                 Panel.SetZIndex(_formSettingsBar, 100);
                 previewArea.Children.Add(_formSettingsBar);
             }
+        }
+
+        private void BuildSelectedFieldBar(StackPanel panel)
+        {
+            var widget = _selectedFormWidget!;
+            string name = TDPdf.Services.PdfFormBuilder.NameOf(widget);
+
+            panel.Children.Add(MakeLabel("Field:"));
+            panel.Children.Add(new TextBlock
+            {
+                Text = string.IsNullOrEmpty(name) ? "(unnamed)" : name,
+                Foreground = (SolidColorBrush)FindResource("AccentGreen"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 10, 0),
+            });
+
+            Button Chip(string label, string tip, bool danger = false)
+            {
+                var fg = danger ? (SolidColorBrush)FindResource("DangerRed")
+                                : (SolidColorBrush)FindResource("TextPrimary");
+                var btn = new Button
+                {
+                    Style = (Style)FindResource("ToolbarButton"),
+                    Content = label,
+                    Padding = new Thickness(8, 3, 8, 3),
+                    Margin = new Thickness(0, 0, 3, 0),
+                    Height = 24,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    FontSize = 11,
+                    Cursor = Cursors.Hand,
+                    ToolTip = tip,
+                    Background = (SolidColorBrush)FindResource("BgHover"),
+                    Foreground = fg,
+                    BorderBrush = danger ? fg : (SolidColorBrush)FindResource("BorderDim"),
+                    BorderThickness = new Thickness(1),
+                };
+                AutomationProperties.SetName(btn, label);
+                panel.Children.Add(btn);
+                return btn;
+            }
+
+            Chip("Rename", "Change the field's name — this is what appears in exported form data")
+                .Click += (_, _) => RenameSelectedFormField();
+
+            void Toggle(string label, bool required, string tip)
+            {
+                bool on = TDPdf.Services.PdfFormBuilder.GetFlag(widget, required);
+                var btn = Chip((on ? "\u2713 " : "") + label, tip);
+                if (on)
+                {
+                    btn.Background = (SolidColorBrush)FindResource("AccentGreenDim");
+                    btn.Foreground = (SolidColorBrush)FindResource("AccentGreen");
+                }
+                btn.Click += (_, _) =>
+                {
+                    PushDocUndo();
+                    TDPdf.Services.PdfFormBuilder.SetFlag(widget, required, !on);
+                    MarkDirty();
+                    ShowFormSettings();
+                };
+            }
+            Toggle("Required", true, "The form cannot be submitted until this field is filled in");
+            Toggle("Read-only", false, "Shown but not editable");
+
+            Chip("Delete", "Remove this field from the document", danger: true)
+                .Click += (_, _) => DeleteSelectedFormField();
+
+            var done = Chip("Done", "Stop editing this field and go back to placing new ones");
+            done.Click += (_, _) => SelectFormWidget(null);
+        }
+
+        /// <summary>Selects a field (or clears the selection) and rebuilds everything that shows it.</summary>
+        private void SelectFormWidget(PdfDictionary? widget)
+        {
+            _selectedFormWidget = widget;
+            ShowFormSettings();
+            if (PageList.SelectedIndex >= 0) RenderAllAnnotations(PageList.SelectedIndex);
+        }
+
+        /// <summary>The widget annotation under a canvas point, or null.</summary>
+        /// <remarks>
+        /// Hit-tested against the same rectangles the outlines are drawn from rather than through
+        /// WPF, because those outlines are deliberately not hit-testable — they must not swallow
+        /// the press that places a new field. Last match wins, so the topmost of two overlapping
+        /// fields is the one selected, which is the one drawn last and therefore the one the user
+        /// can see.
+        /// </remarks>
+        private PdfDictionary? FormWidgetAt(int pageIndex, Point pos)
+        {
+            if (_doc is null || pageIndex < 0 || pageIndex >= _doc.PageCount) return null;
+            if (!_renderDims.TryGetValue(pageIndex, out var dims)) return null;
+
+            List<FormFieldInfo> fields;
+            try { fields = GetPageFormFields(pageIndex, dims.w, dims.h); }
+            catch { return null; }
+
+            int hitObj = -1;
+            foreach (var f in fields)
+                if (pos.X >= f.Cx && pos.X <= f.Cx + f.Cw && pos.Y >= f.Cy && pos.Y <= f.Cy + f.Ch)
+                    hitObj = f.ObjNum;
+            if (hitObj < 0) return null;
+
+            var annots = _doc.Pages[pageIndex].Elements.GetArray("/Annots");
+            if (annots is null) return null;
+            for (int i = 0; i < annots.Elements.Count; i++)
+            {
+                var ann = annots.Elements[i] as PdfDictionary ?? DerefItem(annots.Elements[i]) as PdfDictionary;
+                if (ann is not null && GetObjectNumber(annots.Elements[i]) == hitObj) return ann;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Delete / Backspace while the Form tool has a field selected. True when it was handled.
+        /// </summary>
+        private bool TryDeleteSelectedFormField()
+        {
+            if (_currentTool != EditTool.Form || _selectedFormWidget is null) return false;
+            DeleteSelectedFormField();
+            return true;
+        }
+
+        private void RenameSelectedFormField()
+        {
+            if (_doc is null || _selectedFormWidget is null) return;
+            string current = TDPdf.Services.PdfFormBuilder.NameOf(_selectedFormWidget);
+            string? entered = TdpDialog.PromptText(this, "Rename Field", "Field name:", current);
+            if (entered is null) return;
+
+            PushDocUndo();
+            if (!TDPdf.Services.PdfFormBuilder.TryRename(_doc, _selectedFormWidget, entered, out string? error))
+            {
+                TdpDialog.Show(this, $"The field was not renamed: {error}.", "Rename Field",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            MarkDirty();
+            SelectFormWidget(_selectedFormWidget);
+            SetStatus($"Renamed to \"{entered.Trim()}\"");
+        }
+
+        private void DeleteSelectedFormField()
+        {
+            if (_doc is null || _selectedFormWidget is null) return;
+            string name = TDPdf.Services.PdfFormBuilder.NameOf(_selectedFormWidget);
+
+            PushDocUndo();
+            bool removed = TDPdf.Services.PdfFormBuilder.RemoveField(_doc, _selectedFormWidget);
+            if (!removed) { SetStatus("Form: that field could not be removed"); return; }
+
+            MarkDirty();
+            SelectFormWidget(null);
+            SetStatus(string.IsNullOrEmpty(name) ? "Field deleted" : $"Deleted \"{name}\"");
         }
 
         private void HideFormSettings()
@@ -10242,7 +10427,19 @@ namespace TDPdf
                 }
 
                 case EditTool.Form:
+                {
                     ClearSelection();
+                    // Clicking a field edits it; clicking empty page places a new one. Dragging
+                    // FROM inside an existing field would otherwise create a second field on top
+                    // of it, which is almost never what the gesture meant.
+                    var hitWidget = FormWidgetAt(pageIdx, pos);
+                    if (hitWidget is not null)
+                    {
+                        SelectFormWidget(hitWidget);
+                        e.Handled = true;
+                        break;
+                    }
+                    if (_selectedFormWidget is not null) SelectFormWidget(null);
                     _isDrawing = true;
                     _drawStart = pos;
                     var formRect = new Rectangle
@@ -10261,6 +10458,7 @@ namespace TDPdf
                     _annotationCanvas.CaptureMouse();
                     e.Handled = true;
                     break;
+                }
 
                 case EditTool.Redact:
                 {
@@ -13701,6 +13899,12 @@ namespace TDPdf
                 ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                     ? Visibility.Collapsed : Visibility.Visible;
                 if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
+                e.Handled = true;
+            }
+            // Ahead of the annotation case: with the Form tool out there is no selected annotation
+            // to compete with, and Delete has to mean "remove the field I just clicked".
+            else if (e.Key == Key.Delete && TryDeleteSelectedFormField())
+            {
                 e.Handled = true;
             }
             else if (e.Key == Key.Delete && _selectedAnnotation is not null)
@@ -19037,6 +19241,13 @@ namespace TDPdf
         /// IsDefault here — Ctrl+Enter accepts instead, and Esc still cancels.
         /// </remarks>
         public static string? PromptMultiline(Window? owner, string title, string prompt, string initial = "")
+            => PromptCore(owner, title, prompt, initial, multiline: true);
+
+        /// <summary>Asks for a single line of text. Null means cancelled.</summary>
+        public static string? PromptText(Window? owner, string title, string prompt, string initial = "")
+            => PromptCore(owner, title, prompt, initial, multiline: false);
+
+        private static string? PromptCore(Window? owner, string title, string prompt, string initial, bool multiline)
         {
             string? result = null;
             var text  = Brush("TextPrimary");
@@ -19059,9 +19270,9 @@ namespace TDPdf
             var box = new TextBox
             {
                 Text            = initial,
-                AcceptsReturn   = true,
-                MinLines        = 4,
-                MaxLines        = 12,
+                AcceptsReturn   = multiline,
+                MinLines        = multiline ? 4 : 1,
+                MaxLines        = multiline ? 12 : 1,
                 FontSize        = 12,
                 Background      = Brush("BgPanel"),
                 Foreground      = text,
@@ -19074,16 +19285,19 @@ namespace TDPdf
             AutomationProperties.SetName(box, prompt);
             root.Children.Add(new Border { Padding = new Thickness(20, 0, 20, 4), Child = box });
 
-            root.Children.Add(new Border
-            {
-                Padding = new Thickness(20, 0, 20, 0),
-                Child = new TextBlock
+            if (multiline)
+                root.Children.Add(new Border
                 {
-                    Text = "Ctrl+Enter to accept",
-                    Foreground = Brush("TextSecondary"),
-                    FontSize = 11,
-                },
-            });
+                    Padding = new Thickness(20, 0, 20, 0),
+                    Child = new TextBlock
+                    {
+                        // Enter has to insert a newline in a multi-line box, so it cannot also be
+                        // the accept key — say which one is.
+                        Text = "Ctrl+Enter to accept",
+                        Foreground = Brush("TextSecondary"),
+                        FontSize = 11,
+                    },
+                });
 
             var btnPanel = new StackPanel
             {
@@ -19114,6 +19328,7 @@ namespace TDPdf
             }
 
             var okBtn = MakeBtn("OK", accent: true);
+            okBtn.IsDefault = !multiline;
             okBtn.Click += (_, _2) => { result = box.Text; win.Close(); };
             var cancelBtn = MakeBtn("Cancel", accent: false);
             cancelBtn.IsCancel = true;
@@ -19124,11 +19339,10 @@ namespace TDPdf
 
             box.KeyDown += (_, e) =>
             {
-                if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
-                {
-                    result = box.Text;
-                    win.Close();
-                }
+                if (e.Key != Key.Enter) return;
+                if (multiline && Keyboard.Modifiers != ModifierKeys.Control) return;
+                result = box.Text;
+                win.Close();
             };
 
             win.Loaded += (_, _2) => { box.Focus(); box.SelectAll(); };

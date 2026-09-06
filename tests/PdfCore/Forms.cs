@@ -198,5 +198,98 @@ internal static class Forms
 
         double blank = InkIn(bgra, rw, rh, pageH, R(300, 200, 200, 100));
         Check("the rest of the page is still blank", blank < 0.001, $"{blank:P2}");
+
+        Edits(Check, tmp);
+    }
+
+    /// <summary>
+    /// Renaming, flag toggles, and deletion — checked on the SAVED file, not on the objects.
+    /// </summary>
+    /// <remarks>
+    /// Deletion is the one that repays the extra step. Unlinking a field from /AcroForm /Fields and
+    /// leaving its widget in the page's /Annots produces an orphan a viewer still draws; unlinking
+    /// the widget and leaving the field produces something invisible that still turns up in
+    /// exported form data. Either way the field looks deleted in the app and comes back in the
+    /// file, so the test reopens what was written and counts what is actually there.
+    /// </remarks>
+    private static void Edits(Action<string, bool, string> Check, string tmp)
+    {
+        Console.WriteLine("\nEditing fields that already exist");
+
+        string path = Path.Combine(tmp, "form-edit.pdf");
+        {
+            var doc = new PdfDocument();
+            var page = doc.AddPage();
+            PdfFormBuilder.Add(doc, page, new[] { R(60, 700, 200, 22) },
+                new PdfFormBuilder.FieldSpec { Name = "Keeper" });
+            PdfFormBuilder.Add(doc, page, new[] { R(60, 650, 200, 22) },
+                new PdfFormBuilder.FieldSpec { Name = "Doomed" });
+            PdfFormBuilder.Add(doc, page,
+                new[] { R(60, 600, 14, 14), R(100, 600, 14, 14), R(140, 600, 14, 14) },
+                new PdfFormBuilder.FieldSpec { Kind = PdfFormBuilder.FieldKind.RadioGroup, Name = "Size", Options = new[] { "S", "M", "L" } });
+            doc.Save(path);
+        }
+
+        PdfDictionary? WidgetNamed(PdfDocument d, string name)
+        {
+            var annots = d.Pages[0].Elements.GetArray("/Annots");
+            for (int i = 0; i < (annots?.Elements.Count ?? 0); i++)
+            {
+                var a = annots!.Elements[i] as PdfDictionary ?? (annots.Elements[i] as PdfReference)?.Value as PdfDictionary;
+                if (a is not null && PdfFormBuilder.NameOf(a) == name) return a;
+            }
+            return null;
+        }
+
+        string outPath = Path.Combine(tmp, "form-edited.pdf");
+        {
+            using var doc = PdfSharpCore.Pdf.IO.PdfReader.Open(path, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.Modify);
+
+            var keeper = WidgetNamed(doc, "Keeper")!;
+            Check("a merged field finds itself", ReferenceEquals(PdfFormBuilder.FieldOf(keeper), keeper), "");
+
+            // A radio button has to climb to the group that owns the name and the value.
+            var radioKid = doc.Pages[0].Elements.GetArray("/Annots")!.Elements
+                .Select(i => i as PdfDictionary ?? (i as PdfReference)?.Value as PdfDictionary)
+                .First(a => a is not null && a.Elements.ContainsKey("/Parent") && !a.Elements.ContainsKey("/T"))!;
+            Check("a radio button finds its group", PdfFormBuilder.NameOf(radioKid) == "Size",
+                  PdfFormBuilder.NameOf(radioKid));
+
+            Check("a duplicate name is refused",
+                  !PdfFormBuilder.TryRename(doc, keeper, "Doomed", out string? dupErr), dupErr ?? "");
+            Check("a name with a full stop is refused",
+                  !PdfFormBuilder.TryRename(doc, keeper, "Person.Name", out _), "");
+            Check("a free name is accepted",
+                  PdfFormBuilder.TryRename(doc, keeper, "PrimaryName", out _), "");
+
+            PdfFormBuilder.SetFlag(keeper, required: true, on: true);
+            Check("the required flag goes on", PdfFormBuilder.GetFlag(keeper, required: true), "");
+            PdfFormBuilder.SetFlag(keeper, required: true, on: false);
+            Check("and comes off again, taking an empty /Ff with it",
+                  !PdfFormBuilder.GetFlag(keeper, required: true) && !keeper.Elements.ContainsKey("/Ff"), "");
+
+            Check("deleting a plain field reports success",
+                  PdfFormBuilder.RemoveField(doc, WidgetNamed(doc, "Doomed")!), "");
+            Check("deleting a radio group reports success",
+                  PdfFormBuilder.RemoveField(doc, radioKid), "");
+
+            doc.Save(outPath);
+        }
+
+        using (var re = PdfSharpCore.Pdf.IO.PdfReader.Open(outPath, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.Modify))
+        {
+            var fields = re.Internals.Catalog.Elements.GetDictionary("/AcroForm")?.Elements.GetArray("/Fields");
+            var annots = re.Pages[0].Elements.GetArray("/Annots");
+            Console.WriteLine($"        after: {fields?.Elements.Count ?? 0} field(s), {annots?.Elements.Count ?? 0} widget(s)");
+
+            Check("only the surviving field is left in /AcroForm /Fields", fields?.Elements.Count == 1,
+                  $"{fields?.Elements.Count ?? 0}");
+            // One field, one widget: the deleted radio group took all three of its buttons.
+            Check("no orphaned widget is left on the page", annots?.Elements.Count == 1,
+                  $"{annots?.Elements.Count ?? 0}");
+            Check("the rename survived the save", WidgetNamed(re, "PrimaryName") is not null, "");
+            Check("the deleted field is gone from the file",
+                  WidgetNamed(re, "Doomed") is null && WidgetNamed(re, "Size") is null, "");
+        }
     }
 }
