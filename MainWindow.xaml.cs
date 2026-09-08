@@ -312,6 +312,7 @@ namespace TDPdf
         private Border? _searchBar;
         private TextBox? _searchBox;
         private TextBlock? _searchStatus;
+        private Button? _searchRedactBtn;
         private readonly List<Rect> _searchHighlights = [];
 
         // Signatures
@@ -7677,6 +7678,132 @@ namespace TDPdf
             SetStatus("Redaction marks cleared — the document was not changed");
         }
 
+        // ── Bulk marking from a search ───────────────────────────────────────────────────
+
+        /// <summary>
+        /// The canvas size a page will be drawn at, computed for a page that has not been drawn.
+        /// </summary>
+        /// <remarks>
+        /// The renderer fits a page's longest side into a <see cref="Services.PdfDocumentService.RenderBoxDip"/>
+        /// box and records the result in DIPs, which is what makes overlay coordinates survive a
+        /// zoom. That part is pure geometry, so it can be known for a page nobody has looked at —
+        /// and it has to be, because the marks a document-wide search produces are mostly on pages
+        /// nobody has looked at. Rasterising three hundred pages to learn how big they are would be
+        /// an absurd price for a number the page box already contains.
+        ///
+        /// The value is stored, so the mark that is about to be expressed in it and the apply pass
+        /// that reads it back are working in the same space even if a later real render rounds a
+        /// DIP differently.
+        /// </remarks>
+        private (int w, int h) EnsureRenderDims(int pageIndex)
+        {
+            if (_renderDims.TryGetValue(pageIndex, out var known) && known.w > 0 && known.h > 0)
+                return known;
+            if (_doc is null || pageIndex < 0 || pageIndex >= _doc.PageCount) return (0, 0);
+
+            var (wPt, hPt) = TDPdf.Services.PdfPageGeometry.DisplaySize(_doc.Pages[pageIndex]);
+            double longest = Math.Max(wPt, hPt);
+            if (!IsFinitePositive(longest) || !IsFinitePositive(wPt) || !IsFinitePositive(hPt)) return (0, 0);
+
+            double scale = TDPdf.Services.PdfDocumentService.RenderBoxDip / longest;
+            var dims = ((int)Math.Round(wPt * scale), (int)Math.Round(hPt * scale));
+            if (dims.Item1 <= 0 || dims.Item2 <= 0) return (0, 0);
+
+            _renderDims[pageIndex] = dims;
+            return dims;
+        }
+
+        /// <summary>Two marks that land on the same words, allowing for a rounded DIP.</summary>
+        private static bool SameMark(Rect a, Rect b) =>
+            Math.Abs(a.X - b.X) < 1 && Math.Abs(a.Y - b.Y) < 1 &&
+            Math.Abs(a.Width - b.Width) < 1 && Math.Abs(a.Height - b.Height) < 1;
+
+        /// <summary>
+        /// Turns every hit from the current search into a redaction mark, across the whole document.
+        /// </summary>
+        /// <remarks>
+        /// It stops at marking, deliberately. A search match is not a decision: "Smith" finds the
+        /// name being removed and the Smith who signed the letter, and the half of this feature
+        /// that cannot tell them apart must not be the half that destroys them. The hits become
+        /// ordinary marks, the user reviews them and can click any one of them off, and Redact
+        /// Permanently is still a separate, deliberate press.
+        ///
+        /// Two things make it more than a loop over the hits:
+        ///
+        ///   * The hits are PdfPig word boxes in PDF user space and a mark is a canvas rectangle,
+        ///     so each one goes through <see cref="Services.PdfPageGeometry"/> — the same table the
+        ///     dragged marks are converted back through on apply, and the one that knows about
+        ///     /Rotate and a CropBox that does not start at the origin. The flat scale the search
+        ///     HIGHLIGHTS paint with is fine for a translucent box a quarter turn out of place. It
+        ///     is not fine for deciding what gets deleted.
+        ///   * Most hits are on pages that have never been displayed, so they have no render
+        ///     dimensions and no canvas space to be a rectangle in. Those are computed here rather
+        ///     than left for <see cref="ApplyRedactionsAsync"/> to refuse the whole operation over.
+        /// </remarks>
+        private void RedactAllSearchMatches()
+        {
+            if (_doc is null || _currentFile is null) { SetStatus("Redact: no document open"); return; }
+            if (_allSearchRects.Count == 0) { SetStatus("Redact: search for something first"); return; }
+
+            int added = 0, unplaceable = 0;
+            var touched = new HashSet<int>();
+
+            foreach (var (pageIndex, hits) in _allSearchRects)
+            {
+                if (pageIndex < 0 || pageIndex >= _doc.PageCount) continue;
+                var (rw, rh) = EnsureRenderDims(pageIndex);
+                if (rw <= 0 || rh <= 0) { unplaceable += hits.Count; continue; }
+
+                var page = _doc.Pages[pageIndex];
+                if (!_redactionMarks.TryGetValue(pageIndex, out var marks))
+                    _redactionMarks[pageIndex] = marks = new List<Rect>();
+
+                foreach (var (left, bottom, right, top) in hits)
+                {
+                    var (x, y, w, h) = TDPdf.Services.PdfPageGeometry.PdfRectToCanvas(
+                        page,
+                        new TDPdf.Services.PdfiumInterop.PdfRect(Left: left, Bottom: bottom, Right: right, Top: top),
+                        rw, rh);
+                    if (w <= 0 || h <= 0) { unplaceable++; continue; }
+
+                    var rect = new Rect(x, y, w, h);
+                    // Pressing the button twice is a plausible thing to do, and the second mark
+                    // would sit invisibly on top of the first while doubling every count the
+                    // confirm dialog quotes.
+                    if (marks.Any(m => SameMark(m, rect))) continue;
+
+                    marks.Add(rect);
+                    touched.Add(pageIndex);
+                    added++;
+                }
+
+                if (marks.Count == 0) _redactionMarks.Remove(pageIndex);
+            }
+
+            if (added == 0)
+            {
+                SetStatus(unplaceable > 0
+                    ? "Redact: those matches could not be placed on their pages — nothing was marked"
+                    : "Redact: every match is already marked");
+                return;
+            }
+
+            // The orange search highlights and the red marks cover the same words, and two colours
+            // of box on one page is a poor thing to review a destructive edit through. The marks
+            // are the point from here on.
+            CloseSearchBar();
+
+            SetTool(EditTool.Redact);
+            int current = PageList.SelectedIndex;
+            if (current >= 0) RenderAllAnnotations(current);
+
+            string tail = unplaceable > 0
+                ? $"; {unplaceable} could not be placed"
+                : "";
+            SetStatus($"{added} match{(added == 1 ? "" : "es")} marked on {touched.Count} " +
+                      $"page{(touched.Count == 1 ? "" : "s")} — review them, then press Redact Permanently{tail}");
+        }
+
         // ── The settings / confirm bar ───────────────────────────────────────────────────
 
         private void ShowRedactSettings()
@@ -12559,6 +12686,31 @@ namespace TDPdf
                     IsHitTestVisible = false
                 };
 
+                // Marking every hit at once. Styled like the Redact bar's own destructive
+                // action rather than like the rest of the search bar, because that is what it is
+                // the front door to — even though this press itself destroys nothing.
+                var danger = (SolidColorBrush)FindResource("DangerRed");
+                _searchRedactBtn = new Button
+                {
+                    Content = "Redact matches",
+                    Margin = new Thickness(8, 0, 0, 0),
+                    Padding = new Thickness(8, 2, 8, 2),
+                    Cursor = Cursors.Hand,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    FontSize = 11,
+                    IsEnabled = false,
+                    Background = new SolidColorBrush(Color.FromArgb(40, danger.Color.R, danger.Color.G, danger.Color.B)),
+                    Foreground = danger,
+                    BorderBrush = danger,
+                    BorderThickness = new Thickness(1),
+                    ToolTip = "Mark every match for redaction. Nothing is removed until you review the marks " +
+                              "and press Redact Permanently."
+                };
+                AutomationProperties.SetName(_searchRedactBtn, "Redact matches");
+                AutomationProperties.SetHelpText(_searchRedactBtn,
+                    "Marks every search match for redaction so they can be reviewed. Nothing is removed until Redact Permanently is pressed.");
+                _searchRedactBtn.Click += (_, _) => RedactAllSearchMatches();
+
                 var panel = new StackPanel
                 {
                     Orientation = Orientation.Horizontal,
@@ -12567,6 +12719,7 @@ namespace TDPdf
                 panel.Children.Add(searchIcon);
                 panel.Children.Add(_searchBox);
                 panel.Children.Add(_searchStatus);
+                panel.Children.Add(_searchRedactBtn);
                 panel.Children.Add(closeBtn);
 
                 _searchBar = new Border
@@ -12633,7 +12786,15 @@ namespace TDPdf
                 _allSearchRects.Clear();
                 _searchResultPages.Clear();
                 _searchPageCursor = -1;
+                UpdateSearchRedactState();
             }
+        }
+
+        /// <summary>The bulk-redact button only means anything while there are hits to act on.</summary>
+        private void UpdateSearchRedactState()
+        {
+            if (_searchRedactBtn is not null)
+                _searchRedactBtn.IsEnabled = _allSearchRects.Count > 0;
         }
 
         private void RunSearch(string query)
@@ -12646,6 +12807,7 @@ namespace TDPdf
             if (string.IsNullOrWhiteSpace(query) || _currentFile is null)
             {
                 if (_searchStatus != null) _searchStatus.Text = "";
+                UpdateSearchRedactState();
                 return;
             }
 
@@ -12666,6 +12828,8 @@ namespace TDPdf
                         totalHits += hits.Count;
                     }
                 }
+
+                UpdateSearchRedactState();
 
                 if (_searchResultPages.Count == 0)
                 {
@@ -12692,6 +12856,7 @@ namespace TDPdf
             catch
             {
                 if (_searchStatus != null) _searchStatus.Text = "Search error";
+                UpdateSearchRedactState();
             }
         }
 
