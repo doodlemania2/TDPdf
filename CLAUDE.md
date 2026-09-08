@@ -35,13 +35,14 @@ Then, to actually cut a release:
 
 #### Automated release pipeline
 
-The `tdpdf` runner is **Linux** (self-hosted ARC on the K3s cluster). That single fact explains the design: `signtool.exe` and `IntuneWinAppUtil.exe` are Windows-only, so the workflow signs with **`osslsigncode`** and talks to **Microsoft Graph directly**. A `.intunewin` is only a transport container for the portal UI — Graph accepts the encrypted payload plus a `fileEncryptionInfo` block, which `build/intune/Deploy-IntuneUpdate.ps1` produces itself.
+The `tdpdf` runner is **Linux** (self-hosted ARC on the K3s cluster). That single fact explains the design: `signtool.exe` and `IntuneWinAppUtil.exe` are Windows-only, so the workflow signs with **Jsign** (against Azure Artifact Signing, whose own tooling is a Windows-only signtool dlib) and talks to **Microsoft Graph directly**. A `.intunewin` is only a transport container for the portal UI — Graph accepts the encrypted payload plus a `fileEncryptionInfo` block, which `build/intune/Deploy-IntuneUpdate.ps1` produces itself.
 
 Each stage is gated on its secret being present, so a missing or rotated secret degrades the run to build-and-release rather than failing it:
 
 | Secret | Enables | If absent |
 |---|---|---|
-| `CODESIGN_PFX_BASE64`, `CODESIGN_PFX_PASSWORD` | Authenticode signing | **unsigned exe**, with a warning |
+| `SIGN_TENANT_ID`, `SIGN_CLIENT_ID`, `SIGN_CLIENT_SECRET` | Azure Artifact Signing — the publicly-trusted signature the Store requires | falls back to the PFX below |
+| `CODESIGN_PFX_BASE64`, `CODESIGN_PFX_PASSWORD` | Fallback private-PFX signing, fleet-only and **not** Store-eligible | **unsigned exe**, with a warning |
 | `INTUNE_APP_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Intune app updated | Intune step skipped |
 
 - **The Intune step updates an app that already exists and is already targeted.** It adds a `mobileAppContentVersion` and repoints `committedContentVersion`. Assignments hang off the *app*, not the content version, so **targeting is never touched** — the script also refuses to run against anything that is not a `win32LobApp`.
@@ -50,6 +51,7 @@ Each stage is gated on its secret being present, so a missing or rotated secret 
 - Run `Deploy-IntuneUpdate.ps1 -DryRun` to zip, encrypt and digest locally with no Graph writes. Do that first when changing anything in that script.
 - `workflow_dispatch` accepts `skip_intune: true` to cut a GitHub Release without touching the fleet.
 - The signing and Intune steps only work off Windows — do not "fix" them back to `signtool`/`IntuneWinAppUtil` unless the runner becomes Windows.
+- Signing is **Azure Artifact Signing** (account `tdp`, profile `TDPCertProfile`, endpoint `https://eus.codesigning.azure.net`), reached with Jsign 7.5 pinned by SHA-256. The private key lives in Microsoft's HSMs and never touches the runner. Its certificates last **three days**, so the service timestamps every signature itself — do not add a `--tsaurl`. The private-PFX step remains only as a one-release fallback; retire it, and both `CODESIGN_PFX_*` secrets, once a release has shipped through Artifact Signing.
 - `pdf-landing/` is not part of this ritual — it has been stale for many versions and no workflow deploys it. Leave it alone unless asked.
 
 ## Architecture
