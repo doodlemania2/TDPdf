@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Printing;
+using System.Printing.Interop;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -55,7 +56,11 @@ namespace TDPdf.Services
 
         // Layout options shared by the preview and the print path (what you see is what prints).
         private bool _grayscale;             // send the job as grayscale/B&W rather than color
-        private bool _duplex;                // two-sided printing (when the printer supports it)
+        // Held as the full Duplexing value rather than a bool so a short-edge flip chosen in the
+        // driver's own dialog survives into the job. The combo still offers the two entries it always
+        // did; short edge simply shows there as "two-sided".
+        private Duplexing _duplexMode = Duplexing.OneSided;
+        private bool _syncingFromDriver;      // suppresses control handlers while AdoptDriverTicket writes
         private int _scaleMode;              // 0 = fit to page, 1 = custom percentage
         private double _customPct = 100;     // custom scale % (clamped 25-400)
         private int _alignH = 1;             // horizontal page position: 0 = left, 1 = center, 2 = right
@@ -72,6 +77,10 @@ namespace TDPdf.Services
         private readonly TextBlock _pageLabel = new();
         private ComboBox _printerCombo = null!;
         private ComboBox _duplexCombo  = null!;
+        private ComboBox _colorCombo   = null!;
+        private ComboBox _nUpCombo     = null!;
+        private ComboBox _orientCombo  = null!;
+        private Action<int>? _copiesSet;   // writes the copies stepper
 
         // Manual paper pick (upstream KillerPDF #186). Index 0 is "Match document" — the automatic
         // behavior we've always had, where the driver's own default media decides the sheet and the
@@ -374,6 +383,10 @@ namespace TDPdf.Services
                 if (i >= 0 && i < _queues.Count)
                 {
                     _queue = _queues[i];
+                    // A DEVMODE belongs to the driver that produced it — carrying one across to another
+                    // printer is at best meaningless and at worst a ticket the new driver misreads. The
+                    // Properties dialog has to be reopened for the new device.
+                    _driverTicket = null;
                     // A different driver reports a different paper list and different input bins, so
                     // both combos are rebuilt (and reset to their automatic entry) before the preview
                     // recomputes. Both fields are assigned a few lines below, and the first selection
@@ -448,10 +461,12 @@ namespace TDPdf.Services
             orient.SelectedIndex = _landscape ? 1 : 0;
             orient.SelectionChanged += (s, _) =>
             {
+                if (_syncingFromDriver) return;
                 _landscape = ((ComboBox)s).SelectedIndex == 1;
                 RefreshArea();
                 UpdatePreview();
             };
+            _orientCombo = orient;
             panel.Children.Add(orient);
 
             panel.Children.Add(Label("Scale"));
@@ -554,10 +569,12 @@ namespace TDPdf.Services
             nup.SelectedIndex = 0;
             nup.SelectionChanged += (s, _) =>
             {
+                if (_syncingFromDriver) return;
                 _nUp = int.TryParse((string)((ComboBox)s).SelectedItem, out int n) && n > 0 ? n : 1;
                 _previewIndex = 0;
                 UpdatePreview();
             };
+            _nUpCombo = nup;
             panel.Children.Add(nup);
 
             WrapSection(panel, secLayout, "LAYOUT", expanded: false);
@@ -574,7 +591,12 @@ namespace TDPdf.Services
             colorMode.Items.Add("Black and white");
             _grayscale = TDPdf.Properties.Settings.Default.PrintColor == "Grayscale";
             colorMode.SelectedIndex = _grayscale ? 1 : 0;
-            colorMode.SelectionChanged += (s, _) => _grayscale = ((ComboBox)s).SelectedIndex == 1;
+            colorMode.SelectionChanged += (s, _) =>
+            {
+                if (_syncingFromDriver) return;
+                _grayscale = ((ComboBox)s).SelectedIndex == 1;
+            };
+            _colorCombo = colorMode;
             panel.Children.Add(colorMode);
 
             // Two-sided: the printer does the flipping; we just set the ticket when it's supported.
@@ -583,11 +605,32 @@ namespace TDPdf.Services
             ApplyComboStyle(duplex);
             duplex.Items.Add("One-sided");
             duplex.Items.Add("Two-sided (long edge)");
-            _duplex = TDPdf.Properties.Settings.Default.PrintDuplex;
-            duplex.SelectedIndex = _duplex ? 1 : 0;
-            duplex.SelectionChanged += (s, _) => _duplex = ((ComboBox)s).SelectedIndex == 1;
+            _duplexMode = TDPdf.Properties.Settings.Default.PrintDuplex
+                ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
+            duplex.SelectedIndex = _duplexMode == Duplexing.OneSided ? 0 : 1;
+            duplex.SelectionChanged += (s, _) =>
+            {
+                if (_syncingFromDriver) return;
+                _duplexMode = ((ComboBox)s).SelectedIndex == 1
+                    ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
+            };
             _duplexCombo = duplex;
             panel.Children.Add(duplex);
+
+            // Folding, hole punch, output bin, secure print, toner save: real finishing features that the
+            // Windows print schema has no portable name for, so they exist only in each driver's own
+            // dialog. TDPdf cannot offer them as controls without guessing per-driver keywords, but it
+            // now carries whatever that dialog sets straight through to the job — so point at it rather
+            // than leaving people to assume the feature is missing.
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Folding, hole punch and output bin live in Properties… above, and now carry through to the job.",
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 12),
+                Foreground = R("TextSecondary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 11
+            });
 
             panel.Children.Add(Label("Copies"));
             _copiesBox = MakeTextBox("1");
@@ -595,6 +638,7 @@ namespace TDPdf.Services
             _copiesBox.VerticalContentAlignment = VerticalAlignment.Center;
             var (getCopies, setCopies) = NumericField(_copiesBox, 1, 9999);
             _copiesGet = getCopies;
+            _copiesSet = setCopies;
             var copiesSpin = BuildStepper(getCopies, setCopies);
             var copiesRow  = new DockPanel { Margin = new Thickness(0, 4, 0, 12), LastChildFill = true };
             DockPanel.SetDock(copiesSpin, Dock.Right);
@@ -827,22 +871,32 @@ namespace TDPdf.Services
             }
         }
 
-        // Enables the two-sided dropdown only when the selected printer reports duplex support.
+        private static int NUpIndex(int n) => n switch { 2 => 1, 4 => 2, 6 => 3, 9 => 4, _ => 0 };
+
+        /// <summary>Sets the orientation, keeping the combo, the printable area and the preview in step.</summary>
+        private void SetLandscape(bool landscape)
+        {
+            if (_landscape == landscape) return;
+            _landscape = landscape;
+            if (_orientCombo != null) _orientCombo.SelectedIndex = landscape ? 1 : 0;
+        }
+
+        // Enables the two-sided dropdown only when the selected printer reports duplex support, and
+        // fills the staple dropdown from what the printer says it can actually do.
         private void UpdateDuplexAvailability()
         {
             if (_duplexCombo is null) return;
-            bool ok = false;
-            try
-            {
-                var caps = _queue?.GetPrintCapabilities();
-                ok = caps?.DuplexingCapability?.Contains(Duplexing.TwoSidedLongEdge) == true;
-            }
-            catch { /* capability query not supported: leave disabled */ }
+            PrintCapabilities? caps = null;
+            try { caps = _queue?.GetPrintCapabilities(); }
+            catch { /* capability query not supported: everything below falls back to disabled */ }
+
+            bool ok = caps?.DuplexingCapability?.Contains(Duplexing.TwoSidedLongEdge) == true
+                   || caps?.DuplexingCapability?.Contains(Duplexing.TwoSidedShortEdge) == true;
 
             _duplexCombo.IsEnabled = ok;
             _duplexCombo.Opacity   = ok ? 1.0 : 0.5;
             _duplexCombo.ToolTip   = ok ? null : "The selected printer doesn't report two-sided support.";
-            if (!ok) { _duplexCombo.SelectedIndex = 0; _duplex = false; }
+            if (!ok) { _duplexCombo.SelectedIndex = 0; _duplexMode = Duplexing.OneSided; }
         }
 
         // ---- Printer driver "Properties" dialog -------------------------------
@@ -863,8 +917,33 @@ namespace TDPdf.Services
             IntPtr hwnd, IntPtr hPrinter, string pDeviceName,
             IntPtr pDevModeOutput, IntPtr pDevModeInput, int fMode);
 
+        private const int DM_IN_BUFFER  = 8;
         private const int DM_IN_PROMPT  = 4;
         private const int DM_OUT_BUFFER = 2;
+        private const int IDOK          = 1;
+
+        /// <summary>
+        /// The ticket the driver's own Properties dialog last returned, or null if it has not been
+        /// opened for the current printer.
+        /// </summary>
+        /// <remarks>
+        /// This is the whole point of the Properties button and it used to be thrown away. The dialog
+        /// writes the user's choices into a DEVMODE, and everything the driver can do that the Print
+        /// Schema does not name — folding, booklet finishing on a driver that owns it, punch, output
+        /// bin, secure-print PINs, the vendor's own quality panels — lives ONLY in that structure.
+        /// Freeing it meant every one of those settings was collected and discarded, which is why the
+        /// dialog appeared to work and nothing it changed ever printed.
+        /// </remarks>
+        private PrintTicket? _driverTicket;
+
+        /// <summary>
+        /// The ticket a job starts from: the driver's, when the user has been into Properties, and
+        /// otherwise the queue's own default. TDPdf's explicit UI choices are layered on top of
+        /// whichever it is, so a control the user can see always wins over the same setting made in
+        /// the driver dialog earlier.
+        /// </summary>
+        private PrintTicket BaseTicket(PrintDialog pd)
+            => _driverTicket is { } t ? t.Clone() : pd.PrintTicket;
 
         private void ShowPrinterProperties()
         {
@@ -881,11 +960,134 @@ namespace TDPdf.Services
                 IntPtr devMode = Marshal.AllocHGlobal(size);
                 try
                 {
-                    DocumentProperties(owner, hPrinter, printerName, devMode, devMode, DM_IN_PROMPT | DM_OUT_BUFFER);
+                    // Zero first: the seed below may be shorter than the driver's full DEVMODE (the
+                    // dmDriverExtra tail varies), and leaving the remainder as whatever was on the heap
+                    // is undefined input to a driver dialog.
+                    for (int i = 0; i < size; i++) Marshal.WriteByte(devMode, i, 0);
+
+                    // Seed the dialog with what TDPdf is currently set to, so it opens showing this
+                    // job's paper, orientation and two-sided choice rather than the printer's stored
+                    // defaults. Without this the buffer handed to DM_IN_PROMPT is uninitialised heap,
+                    // which is undefined input the driver is entitled to render as anything at all.
+                    int mode = DM_IN_PROMPT | DM_OUT_BUFFER;
+                    if (SeedDevMode(printerName, devMode, size)) mode |= DM_IN_BUFFER;
+                    else DocumentProperties(owner, hPrinter, printerName, devMode, IntPtr.Zero, DM_OUT_BUFFER);
+
+                    if (DocumentProperties(owner, hPrinter, printerName, devMode, devMode, mode) != IDOK)
+                        return;   // Cancel: leave the previous ticket, and the UI, untouched.
+
+                    // Back out of DEVMODE and into the ticket the spooler actually reads.
+                    var bytes = new byte[size];
+                    Marshal.Copy(devMode, bytes, 0, size);
+                    using var conv = new PrintTicketConverter(printerName, PrintTicketConverter.MaxPrintSchemaVersion);
+                    _driverTicket = conv.ConvertDevModeToPrintTicket(bytes, PrintTicketScope.JobScope);
+
+                    AdoptDriverTicket(_driverTicket);
+                }
+                catch (Exception ex)
+                {
+                    // A driver that cannot round-trip its own DEVMODE is not a reason to lose the job:
+                    // drop back to the plain ticket rather than leaving a half-applied one in place.
+                    _driverTicket = null;
+                    TDPdf.Diagnostics.Telemetry.TrackCrash(ex, "PrintProperties", recoverable: true);
                 }
                 finally { Marshal.FreeHGlobal(devMode); }
             }
             finally { ClosePrinter(hPrinter); }
+        }
+
+        /// <summary>Writes the current effective ticket into <paramref name="devMode"/>.</summary>
+        /// <returns>false when the conversion is unavailable, so the caller falls back to driver defaults.</returns>
+        private bool SeedDevMode(string printerName, IntPtr devMode, int size)
+        {
+            try
+            {
+                var pd = new PrintDialog { PrintQueue = _queue };
+                var seed = BaseTicket(pd);
+                seed.PageOrientation = _landscape ? PageOrientation.Landscape : PageOrientation.Portrait;
+                seed.OutputColor     = _grayscale ? OutputColor.Grayscale : OutputColor.Color;
+                seed.Duplexing       = _duplexMode;
+                if (_paperOverride != null) seed.PageMediaSize = _paperOverride;
+
+                using var conv = new PrintTicketConverter(printerName, PrintTicketConverter.MaxPrintSchemaVersion);
+                byte[] dm = conv.ConvertPrintTicketToDevMode(seed, BaseDevModeType.UserDefault, PrintTicketScope.JobScope);
+                if (dm.Length == 0 || dm.Length > size) return false;
+                Marshal.Copy(dm, 0, devMode, dm.Length);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Pulls the settings the driver dialog changed back into TDPdf's own controls.
+        /// </summary>
+        /// <remarks>
+        /// Without this the two disagree silently: the driver is set to landscape, the sidebar still
+        /// says portrait, and the preview draws a sheet the job will not print on. Anything the ticket
+        /// leaves unset is left alone rather than being reset to a default the user never chose.
+        /// </remarks>
+        private void AdoptDriverTicket(PrintTicket t)
+        {
+            _syncingFromDriver = true;
+            try
+            {
+                if (t.PageOrientation is { } o)
+                    SetLandscape(o == PageOrientation.Landscape || o == PageOrientation.ReverseLandscape);
+
+                if (t.OutputColor is { } c)
+                {
+                    _grayscale = c is OutputColor.Grayscale or OutputColor.Monochrome;
+                    if (_colorCombo != null) _colorCombo.SelectedIndex = _grayscale ? 1 : 0;
+                }
+
+                if (t.Duplexing is { } d)
+                {
+                    // Short edge is kept on the field even though the combo has no entry for it: the
+                    // driver asked for it, so the job gets it. The combo reads "two-sided" either way.
+                    _duplexMode = d;
+                    if (_duplexCombo != null)
+                        _duplexCombo.SelectedIndex = d == Duplexing.OneSided ? 0 : 1;
+                }
+
+                if (t.CopyCount is { } cc && cc >= 1) _copiesSet?.Invoke(cc);
+
+                if (t.PageMediaSize is { } ms && ms.PageMediaSizeName != null)
+                {
+                    int pi = _paperSizes.FindIndex(p => p.PageMediaSizeName == ms.PageMediaSizeName);
+                    if (pi >= 0)
+                    {
+                        _paperOverride = _paperSizes[pi];
+                        if (_paperCombo != null) _paperCombo.SelectedIndex = pi + 1;   // 0 = "Match document"
+                    }
+                }
+
+                if (t.InputBin is { } bin)
+                {
+                    int bi = _sourceBins.IndexOf(bin);
+                    if (bi >= 0)
+                    {
+                        _sourceOverride = bin;
+                        if (_sourceCombo != null) _sourceCombo.SelectedIndex = bi + 1;   // 0 = "Printer default"
+                    }
+                }
+
+                // Pages per sheet is the one setting that must move OUT of the ticket rather than just
+                // into the UI. TDPdf composes the tiled sheet itself, so a ticket that also says "2 up"
+                // would tile the already-tiled sheet and print four. Adopting it into our own N-up combo
+                // honours what the user asked for, shows it in the preview — which a driver-side N-up
+                // never can — and the ticket is then pinned to 1 at print time so it happens once.
+                if (t.PagesPerSheet is { } pps && pps >= 1)
+                {
+                    int idx = NUpIndex((int)pps);
+                    _nUp = (int)pps switch { 2 => 2, 4 => 4, 6 => 6, 9 => 9, _ => 1 };
+                    if (_nUpCombo != null) _nUpCombo.SelectedIndex = idx;
+                    _previewIndex = 0;
+                }
+            }
+            finally { _syncingFromDriver = false; }
+
+            RefreshArea();
+            UpdatePreview();
         }
 
         // Fills the paper combo from the current queue's capabilities. Index 0 is always the
@@ -972,15 +1174,13 @@ namespace TDPdf.Services
                     var pd = new PrintDialog { PrintQueue = _queue };
                     // A manual paper pick has to reach the preview too, not just the spooled job:
                     // pushing it onto the ticket makes PrintableAreaWidth/Height report that stock's
-                    // imageable area, which is what the preview sheet is sized from below. With no
-                    // pick the ticket is left alone and the driver's default media decides, exactly
-                    // as it did before the paper combo existed.
-                    if (_paperOverride != null)
-                    {
-                        var t = pd.PrintTicket;
-                        t.PageMediaSize = _paperOverride;
-                        pd.PrintTicket  = t;
-                    }
+                    // imageable area, which is what the preview sheet is sized from below. The base is
+                    // the driver's ticket when Properties has been used, so a paper size chosen in that
+                    // dialog sizes the preview as well — previously the preview kept showing the old
+                    // stock while the job printed on the new one.
+                    var t = BaseTicket(pd);
+                    if (_paperOverride != null) t.PageMediaSize = _paperOverride;
+                    pd.PrintTicket = t;
                     if (pd.PrintableAreaWidth > 0 && pd.PrintableAreaHeight > 0)
                     {
                         w = pd.PrintableAreaWidth;
@@ -1217,7 +1417,7 @@ namespace TDPdf.Services
                 if (_queue != null) s.PrintPrinter = _queue.FullName;
                 s.PrintOrientation = _landscape ? "Landscape" : "Portrait";
                 s.PrintColor       = _grayscale ? "Grayscale" : "Color";
-                s.PrintDuplex      = _duplex;
+                s.PrintDuplex      = _duplexMode != Duplexing.OneSided;
                 s.Save();
             }
             catch { /* settings are best-effort */ }
@@ -1266,13 +1466,22 @@ namespace TDPdf.Services
                 await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
 
                 var pd = new PrintDialog { PrintQueue = selectedQueue };
-                var ticket = pd.PrintTicket;
+                // Start from whatever the driver's own Properties dialog last returned, so everything it
+                // can do that the Print Schema cannot name — folding, punch, output bin, the vendor's own
+                // finishing panels — survives into the job. TDPdf's visible controls are then layered on
+                // top, because a setting the user can see must beat the same one made in a dialog they
+                // opened earlier.
+                var ticket = BaseTicket(pd);
                 // Copies are handled at the driver level via the single ticket count (no manual copy
                 // loop, which double-printed on some drivers); color and duplex ride the ticket too.
                 ticket.CopyCount       = copies;
                 ticket.PageOrientation = _landscape ? PageOrientation.Landscape : PageOrientation.Portrait;
                 ticket.OutputColor     = _grayscale ? OutputColor.Grayscale : OutputColor.Color;
-                ticket.Duplexing       = _duplex ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
+                ticket.Duplexing       = _duplexMode;
+                // We hand the spooler finished sheets, so the driver must not tile them again. The
+                // user's N-up choice — whether made in our combo or read back out of the driver dialog
+                // by AdoptDriverTicket — is already baked into the FixedDocument by ComposeSheet.
+                ticket.PagesPerSheet = 1;
                 // Paper size and input tray, when the user picked something other than the automatic
                 // entry. Both are left off the ticket otherwise so the driver's own defaults stand.
                 // The paper size must go on before PrintableArea* is read below, so the sheet we

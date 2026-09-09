@@ -25,6 +25,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 - **Running `TDPdf.exe /silent` tried to open a file literally named `/silent`** instead of installing. A bare silent switch now installs, which is what anyone passing it meant.
 
+## [1.30.1.0] - 2026-09-09
+
+A printer-driver fix: the settings chosen in the printer's own Properties dialog are applied to the job instead of being discarded.
+
+### Fixed
+
+- **Everything chosen in the printer's own Properties dialog was being thrown away.** The dialog opened, the driver collected the settings, and TDPdf freed the result without reading it — then built the job from a fresh ticket that knew only about the handful of options in TDPdf's own sidebar. Anything set in that dialog — folding, hole punch, output bin, secure print, quality panels, the vendor's own tabs — was collected and discarded every time. The dialog's result is now converted into the print ticket the job is built from, and what it changed is read back into the sidebar so the two can never disagree in silence. The dialog also opens showing the current job's settings rather than the printer's stored defaults, and Cancel now leaves everything as it was.
+- **The preview ignored a paper size chosen in the driver dialog**, so the sheet on screen could be a different stock from the one the job printed on.
+- **A "pages per sheet" set in the driver dialog printed four pages to a side instead of two.** TDPdf composes the tiled sheet itself, so a driver also asked to tile was tiling the already-tiled sheet. That choice is now taken up by TDPdf's own Pages-per-sheet control — where the preview can show it — and applied once.
+
 ## [1.30.0.0] - 2026-09-04
 
 Groundwork for redaction and real text editing, plus three defects reported from the field.
@@ -1119,7 +1129,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.30.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.30.1.0...HEAD
+[1.30.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.0.0...v1.30.1.0
 [1.30.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.7.0...v1.30.0.0
 [1.29.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.6.0...v1.29.7.0
 [1.29.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.5.0...v1.29.6.0
