@@ -173,6 +173,34 @@ namespace TDPdf.Properties
             set => this[nameof(PrintDuplex)] = value;
         }
 
+        // Last two-sided choice as a Duplexing name — OneSided, TwoSidedLongEdge or TwoSidedShortEdge.
+        // Supersedes the older boolean PrintDuplex, which is kept so an existing profile still reads.
+        [UserScopedSetting]
+        [DefaultSettingValue("OneSided")]
+        public string PrintDuplexMode
+        {
+            get => (string)this[nameof(PrintDuplexMode)];
+            set => this[nameof(PrintDuplexMode)] = value;
+        }
+
+        // Last finishing staple as a Stapling name; only offered when the printer reports one.
+        [UserScopedSetting]
+        [DefaultSettingValue("None")]
+        public string PrintStapling
+        {
+            get => (string)this[nameof(PrintStapling)];
+            set => this[nameof(PrintStapling)] = value;
+        }
+
+        // Whether multi-copy jobs print collated (1,2,3 / 1,2,3) rather than grouped by page.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool PrintCollate
+        {
+            get => (bool)this[nameof(PrintCollate)];
+            set => this[nameof(PrintCollate)] = value;
+        }
+
         // Recently picked custom annotation colors (most-recent first, capped in code).
         // Comma-separated #RRGGBB hex values; surfaced as the "Recent" row in the color picker.
         [UserScopedSetting]

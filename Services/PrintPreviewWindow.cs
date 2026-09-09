@@ -56,10 +56,10 @@ namespace TDPdf.Services
 
         // Layout options shared by the preview and the print path (what you see is what prints).
         private bool _grayscale;             // send the job as grayscale/B&W rather than color
-        // Held as the full Duplexing value rather than a bool so a short-edge flip chosen in the
-        // driver's own dialog survives into the job. The combo still offers the two entries it always
-        // did; short edge simply shows there as "two-sided".
-        private Duplexing _duplexMode = Duplexing.OneSided;
+        private Duplexing _duplexMode = Duplexing.OneSided;   // one-sided / flip long edge / flip short edge
+        private Stapling _stapling = Stapling.None;           // finishing staple, when the printer has one
+        private bool _collate = true;         // multi-copy ordering: 1,2,3 / 1,2,3 rather than 1,1 / 2,2
+        private bool _booklet;                // impose two pages per side in saddle-stitch reading order
         private bool _syncingFromDriver;      // suppresses control handlers while AdoptDriverTicket writes
         private int _scaleMode;              // 0 = fit to page, 1 = custom percentage
         private double _customPct = 100;     // custom scale % (clamped 25-400)
@@ -79,8 +79,12 @@ namespace TDPdf.Services
         private ComboBox _duplexCombo  = null!;
         private ComboBox _colorCombo   = null!;
         private ComboBox _nUpCombo     = null!;
+        private ComboBox _stapleCombo  = null!;
+        private CheckBox _bookletCheck = null!;
+        private CheckBox _collateCheck = null!;
         private ComboBox _orientCombo  = null!;
-        private Action<int>? _copiesSet;   // writes the copies stepper
+        private readonly List<Stapling> _stapleOptions = [];   // parallel to _stapleCombo items
+        private Action<int>? _copiesSet;                       // writes the copies stepper
 
         // Manual paper pick (upstream KillerPDF #186). Index 0 is "Match document" — the automatic
         // behavior we've always had, where the driver's own default media decides the sheet and the
@@ -600,22 +604,91 @@ namespace TDPdf.Services
             panel.Children.Add(colorMode);
 
             // Two-sided: the printer does the flipping; we just set the ticket when it's supported.
+            // Long edge flips like a book, short edge like a legal pad — the distinction matters for
+            // anything bound at the top, and for the back sides of a booklet.
             panel.Children.Add(Label("Two-sided"));
             var duplex = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
             ApplyComboStyle(duplex);
             duplex.Items.Add("One-sided");
-            duplex.Items.Add("Two-sided (long edge)");
-            _duplexMode = TDPdf.Properties.Settings.Default.PrintDuplex
-                ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
-            duplex.SelectedIndex = _duplexMode == Duplexing.OneSided ? 0 : 1;
+            duplex.Items.Add("Two-sided, flip on long edge");
+            duplex.Items.Add("Two-sided, flip on short edge");
+            _duplexMode = TDPdf.Properties.Settings.Default.PrintDuplexMode switch
+            {
+                "TwoSidedLongEdge"  => Duplexing.TwoSidedLongEdge,
+                "TwoSidedShortEdge" => Duplexing.TwoSidedShortEdge,
+                _                   => Duplexing.OneSided
+            };
+            duplex.SelectedIndex = _duplexMode switch
+            {
+                Duplexing.TwoSidedLongEdge  => 1,
+                Duplexing.TwoSidedShortEdge => 2,
+                _                           => 0
+            };
             duplex.SelectionChanged += (s, _) =>
             {
                 if (_syncingFromDriver) return;
-                _duplexMode = ((ComboBox)s).SelectedIndex == 1
-                    ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
+                _duplexMode = ((ComboBox)s).SelectedIndex switch
+                {
+                    1 => Duplexing.TwoSidedLongEdge,
+                    2 => Duplexing.TwoSidedShortEdge,
+                    _ => Duplexing.OneSided
+                };
             };
             _duplexCombo = duplex;
             panel.Children.Add(duplex);
+
+            // Finishing staple. The options come from the printer's own capability list rather than a
+            // fixed menu, because "staple" means different corners and edges on different machines and
+            // offering one the driver does not have produces a job that silently prints unstapled.
+            panel.Children.Add(Label("Staple"));
+            _stapling = Enum.TryParse(TDPdf.Properties.Settings.Default.PrintStapling, out Stapling savedStaple)
+                ? savedStaple : Stapling.None;
+            var staple = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(staple);
+            staple.SelectionChanged += (s, _) =>
+            {
+                if (_syncingFromDriver) return;
+                int i = ((ComboBox)s).SelectedIndex;
+                _stapling = i >= 0 && i < _stapleOptions.Count ? _stapleOptions[i] : Stapling.None;
+            };
+            _stapleCombo = staple;
+            panel.Children.Add(staple);
+
+            // Booklet imposition. TDPdf reorders and pairs the pages itself rather than asking the
+            // driver to, so it works the same on every printer instead of only the ones that happen to
+            // own the feature — and the preview can show the real sheet, which a driver-side booklet
+            // never can.
+            var booklet = new CheckBox
+            {
+                Content = "Booklet (fold in the middle)",
+                Margin = new Thickness(0, 0, 0, 6),
+                Foreground = R("TextPrimary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 12,
+                ToolTip = "Prints two pages per side in folding order, so the stack folds into a booklet. " +
+                          "Set two-sided flip on SHORT edge for the back sides to line up."
+            };
+            booklet.Checked   += (_, _) => SetBooklet(true);
+            booklet.Unchecked += (_, _) => SetBooklet(false);
+            _bookletCheck = booklet;
+            panel.Children.Add(booklet);
+
+            // Collation only means anything above one copy, and drivers differ on their default.
+            _collate = TDPdf.Properties.Settings.Default.PrintCollate;
+            var collate = new CheckBox
+            {
+                Content = "Collate copies",
+                Margin = new Thickness(0, 0, 0, 12),
+                IsChecked = _collate,
+                Foreground = R("TextPrimary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 12,
+                ToolTip = "On: each copy prints in page order. Off: all copies of page 1, then all of page 2."
+            };
+            collate.Checked   += (_, _) => _collate = true;
+            collate.Unchecked += (_, _) => _collate = false;
+            _collateCheck = collate;
+            panel.Children.Add(collate);
 
             // Folding, hole punch, output bin, secure print, toner save: real finishing features that the
             // Windows print schema has no portable name for, so they exist only in each driver's own
@@ -881,6 +954,44 @@ namespace TDPdf.Services
             if (_orientCombo != null) _orientCombo.SelectedIndex = landscape ? 1 : 0;
         }
 
+        /// <summary>
+        /// Turns booklet imposition on or off, and forces the layout it requires.
+        /// </summary>
+        /// <remarks>
+        /// A booklet is two source pages side by side on a landscape sheet, so it is 2-up landscape by
+        /// definition. Rather than let the user set something that cannot be honoured, the N-up and
+        /// orientation controls are driven from here and disabled while booklet is on — the alternative
+        /// is a preview that quietly disagrees with the paper coming out of the machine.
+        /// </remarks>
+        private void SetBooklet(bool on)
+        {
+            if (_syncingFromDriver) return;
+            _booklet = on;
+
+            if (on)
+            {
+                _nUp = 2;
+                SetLandscape(true);
+            }
+            if (_nUpCombo != null)
+            {
+                _nUpCombo.IsEnabled = !on;
+                _nUpCombo.Opacity   = on ? 0.5 : 1.0;
+                _nUpCombo.ToolTip   = on ? "A booklet is always two pages per side." : null;
+                if (on) _nUpCombo.SelectedIndex = NUpIndex(2);
+            }
+            if (_orientCombo != null)
+            {
+                _orientCombo.IsEnabled = !on;
+                _orientCombo.Opacity   = on ? 0.5 : 1.0;
+                _orientCombo.ToolTip   = on ? "A booklet is always printed landscape." : null;
+            }
+
+            _previewIndex = 0;
+            RefreshArea();
+            UpdatePreview();
+        }
+
         // Enables the two-sided dropdown only when the selected printer reports duplex support, and
         // fills the staple dropdown from what the printer says it can actually do.
         private void UpdateDuplexAvailability()
@@ -897,7 +1008,71 @@ namespace TDPdf.Services
             _duplexCombo.Opacity   = ok ? 1.0 : 0.5;
             _duplexCombo.ToolTip   = ok ? null : "The selected printer doesn't report two-sided support.";
             if (!ok) { _duplexCombo.SelectedIndex = 0; _duplexMode = Duplexing.OneSided; }
+
+            UpdateStaplingOptions(caps);
+
+            // Booklet stays available on a one-sided printer — it just prints the fronts and backs as
+            // separate sheets, which is still the right imposition for anyone feeding paper twice.
+            if (_bookletCheck != null)
+                _bookletCheck.ToolTip = ok
+                    ? "Prints two pages per side in folding order, so the stack folds into a booklet. " +
+                      "Set two-sided flip on SHORT edge for the back sides to line up."
+                    : "Prints two pages per side in folding order. This printer reports no duplexer, " +
+                      "so print the odd sheets, flip the stack, then print the even ones.";
         }
+
+        /// <summary>Fills the staple dropdown from the printer's reported finishing options.</summary>
+        /// <remarks>
+        /// Deliberately built from <see cref="PrintCapabilities.StaplingCapability"/> rather than a fixed
+        /// menu. Offering a staple position a driver does not have is worse than offering none: the job
+        /// spools clean, prints, and comes out unstapled with nothing to say why.
+        /// </remarks>
+        private void UpdateStaplingOptions(PrintCapabilities? caps)
+        {
+            if (_stapleCombo is null) return;
+
+            bool wasSyncing = _syncingFromDriver;
+            _syncingFromDriver = true;
+            try
+            {
+                _stapleOptions.Clear();
+                _stapleCombo.Items.Clear();
+
+                _stapleOptions.Add(Stapling.None);
+                _stapleCombo.Items.Add("None");
+
+                foreach (var st in caps?.StaplingCapability ?? [])
+                {
+                    if (st == Stapling.None) continue;
+                    _stapleOptions.Add(st);
+                    _stapleCombo.Items.Add(StapleDisplayName(st));
+                }
+
+                bool any = _stapleOptions.Count > 1;
+                _stapleCombo.IsEnabled = any;
+                _stapleCombo.Opacity   = any ? 1.0 : 0.5;
+                _stapleCombo.ToolTip   = any ? null : "The selected printer doesn't report a stapler.";
+
+                int keep = _stapleOptions.IndexOf(_stapling);
+                _stapleCombo.SelectedIndex = keep >= 0 ? keep : 0;
+                if (keep < 0) _stapling = Stapling.None;
+            }
+            finally { _syncingFromDriver = wasSyncing; }
+        }
+
+        private static string StapleDisplayName(Stapling s) => s switch
+        {
+            Stapling.StapleTopLeft     => "Top left",
+            Stapling.StapleTopRight    => "Top right",
+            Stapling.StapleBottomLeft  => "Bottom left",
+            Stapling.StapleBottomRight => "Bottom right",
+            Stapling.StapleDualLeft    => "Two, left edge",
+            Stapling.StapleDualRight   => "Two, right edge",
+            Stapling.StapleDualTop     => "Two, top edge",
+            Stapling.StapleDualBottom  => "Two, bottom edge",
+            Stapling.SaddleStitch      => "Saddle stitch (booklet fold)",
+            _                          => s.ToString()
+        };
 
         // ---- Printer driver "Properties" dialog -------------------------------
         // The driver-specific preferences dialog (paper/quality/color/tray, an "Advanced..."
@@ -1042,14 +1217,30 @@ namespace TDPdf.Services
 
                 if (t.Duplexing is { } d)
                 {
-                    // Short edge is kept on the field even though the combo has no entry for it: the
-                    // driver asked for it, so the job gets it. The combo reads "two-sided" either way.
                     _duplexMode = d;
                     if (_duplexCombo != null)
-                        _duplexCombo.SelectedIndex = d == Duplexing.OneSided ? 0 : 1;
+                        _duplexCombo.SelectedIndex = d switch
+                        {
+                            Duplexing.TwoSidedLongEdge  => 1,
+                            Duplexing.TwoSidedShortEdge => 2,
+                            _                           => 0
+                        };
+                }
+
+                if (t.Stapling is { } st)
+                {
+                    _stapling = st;
+                    int si = _stapleOptions.IndexOf(st);
+                    if (_stapleCombo != null && si >= 0) _stapleCombo.SelectedIndex = si;
                 }
 
                 if (t.CopyCount is { } cc && cc >= 1) _copiesSet?.Invoke(cc);
+
+                if (t.Collation is { } col)
+                {
+                    _collate = col == Collation.Collated;
+                    if (_collateCheck != null) _collateCheck.IsChecked = _collate;
+                }
 
                 if (t.PageMediaSize is { } ms && ms.PageMediaSizeName != null)
                 {
@@ -1076,7 +1267,7 @@ namespace TDPdf.Services
                 // would tile the already-tiled sheet and print four. Adopting it into our own N-up combo
                 // honours what the user asked for, shows it in the preview — which a driver-side N-up
                 // never can — and the ticket is then pinned to 1 at print time so it happens once.
-                if (t.PagesPerSheet is { } pps && pps >= 1)
+                if (!_booklet && t.PagesPerSheet is { } pps && pps >= 1)
                 {
                     int idx = NUpIndex((int)pps);
                     _nUp = (int)pps switch { 2 => 2, 4 => 4, 6 => 6, 9 => 9, _ => 1 };
@@ -1201,6 +1392,7 @@ namespace TDPdf.Services
         // Rasterizes (and caches) a single page at preview resolution via PDFium.
         private BitmapSource? GetPageBitmap(int idx)
         {
+            if (idx < 0 || idx >= _pageCount) return null;   // booklet padding
             if (idx < 0 || idx >= _pageCount) return null;
             if (_cache[idx] is BitmapSource cached) return cached;
 
@@ -1238,10 +1430,14 @@ namespace TDPdf.Services
             int ScaleMode,
             double CustomPercent,
             int AlignH,
-            int AlignV);
+            int AlignV,
+            IReadOnlyList<List<int>> Sheets);
 
+        // The sheet plan is frozen into the layout alongside everything else, so a control nudged while
+        // the 300 DPI rasterization is running cannot change what the spooler is midway through sending.
         private PrintLayout CapturePrintLayout() =>
-            new(_nUp, _landscape, _marginPx, _scaleMode, _customPct, _alignH, _alignV);
+            new(_nUp, _landscape, _marginPx, _scaleMode, _customPct, _alignH, _alignV,
+                BuildSheets(SelectedIndices()));
 
         // The page indices the preview walks AND the Print button sends — whatever range is typed in the
         // Pages box (blank = every page; a range that matches no page = empty, which the preview and the
@@ -1264,10 +1460,47 @@ namespace TDPdf.Services
             return filtered;
         }
 
-        private int SheetCount()
+        private int SheetCount() => BuildSheets(SelectedIndices()).Count;
+
+        /// <summary>
+        /// Groups the selected pages into the sheets that will actually be printed — the single source
+        /// of truth for the preview, the sheet counter and the spooler, so none of the three can drift.
+        /// An entry of -1 is a deliberate blank (booklet padding); <c>ComposeSheet</c> leaves that cell
+        /// empty and keeps the others in place.
+        /// </summary>
+        /// <remarks>
+        /// Plain N-up is a straight chunk. A booklet is not: the sheets come off the press in folding
+        /// order, so that when the finished stack is folded down the middle the pages read 1, 2, 3…
+        /// For a run padded to a multiple of four, sheet k carries pages (N-1-2k, 2k) on its front and
+        /// (2k+1, N-2-2k) on its back — the outermost pair first, working inwards. Getting this wrong
+        /// produces a booklet that collates into nonsense, which is why it lives in one function with
+        /// the arithmetic written out rather than being open-coded at each call site.
+        /// </remarks>
+        private List<List<int>> BuildSheets(List<int> selected)
         {
-            int sel = SelectedIndices().Count;
-            return sel == 0 ? 0 : (sel + _nUp - 1) / _nUp;
+            var sheets = new List<List<int>>();
+            if (selected.Count == 0) return sheets;
+
+            if (!_booklet)
+            {
+                int per = Math.Max(1, _nUp);
+                for (int start = 0; start < selected.Count; start += per)
+                    sheets.Add(selected.Skip(start).Take(per).ToList());
+                return sheets;
+            }
+
+            // Pad to a multiple of 4: a folded sheet always carries four pages, and the blanks belong
+            // at the END of the booklet rather than wherever the arithmetic would otherwise put them.
+            var pages = new List<int>(selected);
+            while (pages.Count % 4 != 0) pages.Add(-1);
+
+            int n = pages.Count;
+            for (int k = 0; k < n / 4; k++)
+            {
+                sheets.Add([pages[n - 1 - 2 * k], pages[2 * k]]);       // front of sheet k
+                sheets.Add([pages[2 * k + 1], pages[n - 2 - 2 * k]]);   // back of sheet k
+            }
+            return sheets;
         }
 
         // Builds one sheet (aw x ah DIPs, white) holding the given source pages. 1-up honours the
@@ -1294,7 +1527,7 @@ namespace TDPdf.Services
 
             if (layout.NUp <= 1)
             {
-                if (idxs.Count > 0 && fetch(idxs[0]) is BitmapSource bmp)
+                if (idxs.Count > 0 && idxs[0] >= 0 && fetch(idxs[0]) is BitmapSource bmp)
                 {
                     int idx = idxs[0];
                     double availW = aw - 2 * m, availH = ah - 2 * m;
@@ -1335,7 +1568,10 @@ namespace TDPdf.Services
                 for (int i = 0; i < idxs.Count && i < cols * rows; i++)
                 {
                     int idx = idxs[i];
-                    if (fetch(idx) is not BitmapSource bmp) continue;
+                    // A booklet's padding pages are -1: the cell is left blank and the ones beside it
+                    // stay where they belong, because the position comes from i and not from a counter
+                    // that skipped.
+                    if (idx < 0 || fetch(idx) is not BitmapSource bmp) continue;
                     int row = i / cols, col = i % cols;
                     double availW = Math.Max(1, cellW - gap), availH = Math.Max(1, cellH - gap);
                     double s  = Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
@@ -1372,14 +1608,13 @@ namespace TDPdf.Services
             }
             UpdatePrintEnabled(true);
 
-            int sheets = Math.Max(1, (selected.Count + _nUp - 1) / _nUp);
+            var plan   = BuildSheets(selected);
+            int sheets = Math.Max(1, plan.Count);
             int sheet  = Math.Max(0, Math.Min(_previewIndex, sheets - 1));
             _previewIndex = sheet;
 
-            // Source pages on this sheet, taken from the SELECTED set (one for 1-up, up to _nUp for N-up).
-            var idxs = new List<int>();
-            for (int i = sheet * _nUp; i < Math.Min(selected.Count, sheet * _nUp + _nUp); i++)
-                idxs.Add(selected[i]);
+            // Source pages on this sheet, straight from the plan the spooler will walk.
+            var idxs = sheet < plan.Count ? plan[sheet] : [];
 
             var paper = ComposeSheet(idxs, _areaW, _areaH, GetPageBitmap);
             if (paper != null)
@@ -1390,9 +1625,11 @@ namespace TDPdf.Services
 
             // 1-up shows the real page number (so a filtered preview reads "Page 6 of 108"); N-up shows the
             // sheet position within the selected set.
-            _pageLabel.Text = _nUp > 1
-                ? $"Sheet {sheet + 1} of {sheets}"
-                : $"Page {(idxs.Count > 0 ? idxs[0] + 1 : 1)} of {_pageCount}";
+            _pageLabel.Text = _booklet
+                ? $"Booklet side {sheet + 1} of {sheets}"
+                : _nUp > 1
+                    ? $"Sheet {sheet + 1} of {sheets}"
+                    : $"Page {(idxs.Count > 0 && idxs[0] >= 0 ? idxs[0] + 1 : 1)} of {_pageCount}";
         }
 
         // Greys out Print when the page range + odd/even selector leave nothing to send, and holds it
@@ -1418,6 +1655,9 @@ namespace TDPdf.Services
                 s.PrintOrientation = _landscape ? "Landscape" : "Portrait";
                 s.PrintColor       = _grayscale ? "Grayscale" : "Color";
                 s.PrintDuplex      = _duplexMode != Duplexing.OneSided;
+                s.PrintDuplexMode  = _duplexMode.ToString();
+                s.PrintStapling    = _stapling.ToString();
+                s.PrintCollate     = _collate;
                 s.Save();
             }
             catch { /* settings are best-effort */ }
@@ -1475,9 +1715,15 @@ namespace TDPdf.Services
                 // Copies are handled at the driver level via the single ticket count (no manual copy
                 // loop, which double-printed on some drivers); color and duplex ride the ticket too.
                 ticket.CopyCount       = copies;
+                ticket.Collation       = _collate ? Collation.Collated : Collation.Uncollated;
                 ticket.PageOrientation = _landscape ? PageOrientation.Landscape : PageOrientation.Portrait;
                 ticket.OutputColor     = _grayscale ? OutputColor.Grayscale : OutputColor.Color;
                 ticket.Duplexing       = _duplexMode;
+                // Safe to write unconditionally, including None: a staple chosen in the driver dialog was
+                // read back into this combo by AdoptDriverTicket, so the value here already agrees with
+                // the driver unless the user changed it afterwards — in which case they meant to. Without
+                // that sync this line would silently undo the dialog, which is the bug being fixed.
+                if (_stapleCombo?.IsEnabled == true) ticket.Stapling = _stapling;
                 // We hand the spooler finished sheets, so the driver must not tile them again. The
                 // user's N-up choice — whether made in our combo or read back out of the driver dialog
                 // by AdoptDriverTicket — is already baked into the FixedDocument by ComposeSheet.
@@ -1622,14 +1868,13 @@ namespace TDPdf.Services
             BitmapSource?[] hi, PrintTicket ticket, string queueName, PrintLayout layout)
         {
             var fixedDoc = new FixedDocument();
-            // Group the selected pages into sheets of the frozen N-up setting and compose each from
-            // the pre-rendered bitmaps
+            // Walk the sheet plan frozen when Print was pressed — plain N-up chunks, or booklet folding
+            // order — and compose each from the pre-rendered bitmaps
             // (margins + position + scale + tiling all handled inside ComposeSheet, shared with the
             // preview). Copies/color/duplex ride the single ticket, so there is no manual copy loop here —
             // the driver applies ticket.CopyCount, matching the previous UI-thread path.
-            for (int start = 0; start < indices.Count; start += layout.NUp)
+            foreach (var chunk in layout.Sheets)
             {
-                var chunk = indices.Skip(start).Take(layout.NUp).ToList();
                 var sheet = ComposeSheet(
                     chunk,
                     aw,
