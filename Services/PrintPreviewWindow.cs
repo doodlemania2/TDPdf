@@ -912,6 +912,12 @@ namespace TDPdf.Services
         [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern bool ClosePrinter(IntPtr hPrinter);
 
+        [DllImport("user32.dll")]
+        private static extern bool EnableWindow(IntPtr hWnd, bool bEnable);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
         [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern int DocumentProperties(
             IntPtr hwnd, IntPtr hPrinter, string pDeviceName,
@@ -945,15 +951,95 @@ namespace TDPdf.Services
         private PrintTicket BaseTicket(PrintDialog pd)
             => _driverTicket is { } t ? t.Clone() : pd.PrintTicket;
 
+        private const int WS_POPUP          = unchecked((int)0x80000000);
+        private const int WS_VISIBLE        = 0x10000000;
+        private const int WS_EX_TOOLWINDOW  = 0x00000080;
+
+        /// <summary>
+        /// A plain, non-layered, zero-size window used as the owner for the driver's Properties dialog.
+        /// </summary>
+        /// <remarks>
+        /// This window exists for one reason: <b>TDPdf's own windows are layered</b>. Custom chrome means
+        /// <c>AllowsTransparency = true</c>, which is WS_EX_LAYERED, and the print window needs it for its
+        /// rounded corners and drop shadow.
+        ///
+        /// The driver's top-level property sheet copes with a layered owner. The <i>secondary</i> dialogs
+        /// it opens from its own buttons — Toshiba's Dual Print panel, and the equivalent on most vendor
+        /// drivers — do not: they are created but never become visible, so pressing the button looks like
+        /// nothing happened. It is the same family as WPF's airspace limitation, and it is why the dialog
+        /// works in every other application and not in this one.
+        ///
+        /// So the driver is handed an owner that is an ordinary window. It is owned by the print window in
+        /// turn, which keeps the z-order right — an owned window always sits above its owner, so the chain
+        /// is dialog above helper above print window. It is zero-sized and a tool window, so it paints
+        /// nothing and never appears in the taskbar or Alt-Tab, and it is positioned at the centre of the
+        /// print window so drivers that centre on their owner still land in the right place.
+        ///
+        /// Modality is restored by hand: the driver disables the window it was given, which is now the
+        /// helper rather than ours, so the print window is disabled here for the duration and re-enabled
+        /// and re-focused afterwards.
+        /// </remarks>
+        private sealed class DialogOwner : IDisposable
+        {
+            private readonly HwndSource _source;
+            private readonly IntPtr _disabled;
+
+            public IntPtr Handle => _source.Handle;
+
+            public DialogOwner(Window window, IntPtr windowHandle)
+            {
+                // Centre of the print window in DEVICE pixels — PointToScreen already accounts for the
+                // display's scaling, which a Left/Top read would not.
+                var centre = window.PointToScreen(
+                    new Point(window.ActualWidth / 2, window.ActualHeight / 2));
+
+                _source = new HwndSource(new HwndSourceParameters("TDPdf printer properties")
+                {
+                    ParentWindow        = windowHandle,   // owner, not parent: WS_POPUP makes it ownership
+                    WindowStyle         = WS_POPUP | WS_VISIBLE,
+                    // Tool window only. WS_EX_NOACTIVATE would stop the helper stealing focus, but
+                    // foreground activation can travel the owner chain and a driver that relies on that
+                    // would end up with an invisible dialog — the exact bug being fixed. A momentary
+                    // activation of a zero-size window costs nothing; the risk is not worth taking.
+                    ExtendedWindowStyle = WS_EX_TOOLWINDOW,
+                    PositionX           = (int)centre.X,
+                    PositionY           = (int)centre.Y,
+                    Width               = 0,
+                    Height              = 0,
+                    UsesPerPixelOpacity = false           // the whole point: NOT layered
+                });
+
+                _disabled = windowHandle;
+                EnableWindow(_disabled, false);
+            }
+
+            public void Dispose()
+            {
+                // Re-enable before the helper dies, or the activation lands on another application.
+                EnableWindow(_disabled, true);
+                SetForegroundWindow(_disabled);
+                _source.Dispose();
+            }
+        }
+
         private void ShowPrinterProperties()
         {
             if (_queue == null) return;
             string printerName = _queue.FullName;
 
             if (!OpenPrinter(printerName, out IntPtr hPrinter, IntPtr.Zero)) return;
+            DialogOwner? ownerWindow = null;
             try
             {
-                IntPtr owner = new WindowInteropHelper(this).Handle;
+                IntPtr windowHandle = new WindowInteropHelper(this).Handle;
+                // Fall back to owning the dialog directly off the print window if the helper cannot be
+                // created: a property sheet whose sub-dialogs misbehave still beats no property sheet.
+                try { ownerWindow = new DialogOwner(this, windowHandle); }
+                catch (Exception ex)
+                {
+                    TDPdf.Diagnostics.Telemetry.TrackCrash(ex, "PrintPropertiesOwner", recoverable: true);
+                }
+                IntPtr owner = ownerWindow?.Handle ?? windowHandle;
                 int size = DocumentProperties(owner, hPrinter, printerName, IntPtr.Zero, IntPtr.Zero, 0);
                 if (size <= 0) return;
 
@@ -993,7 +1079,11 @@ namespace TDPdf.Services
                 }
                 finally { Marshal.FreeHGlobal(devMode); }
             }
-            finally { ClosePrinter(hPrinter); }
+            finally
+            {
+                ownerWindow?.Dispose();
+                ClosePrinter(hPrinter);
+            }
         }
 
         /// <summary>Writes the current effective ticket into <paramref name="devMode"/>.</summary>
