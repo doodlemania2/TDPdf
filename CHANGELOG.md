@@ -25,6 +25,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 - **Running `TDPdf.exe /silent` tried to open a file literally named `/silent`** instead of installing. A bare silent switch now installs, which is what anyone passing it meant.
 
+## [1.30.2.0] - 2026-09-09
+
+### Fixed
+
+- **Buttons inside the printer's Properties dialog that open a further dialog did nothing.** On the Toshiba drivers that means Dual Print; most vendor drivers have an equivalent panel. The sub-dialog was being created and never shown, so the button looked dead — in TDPdf only, and in every other application it worked. The cause is that TDPdf's own windows are layered, which is what custom chrome with rounded corners and a drop shadow requires, and a layered owner is something driver sub-dialogs do not survive. The driver is now handed an ordinary window to own its dialog, so those panels open normally. The property sheet still sits above the print window and still blocks it while it is up.
+
 ## [1.30.1.0] - 2026-09-09
 
 A printer-driver fix: the settings chosen in the printer's own Properties dialog are applied to the job instead of being discarded.
@@ -1129,7 +1135,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.30.1.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.30.2.0...HEAD
+[1.30.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.1.0...v1.30.2.0
 [1.30.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.0.0...v1.30.1.0
 [1.30.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.7.0...v1.30.0.0
 [1.29.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.6.0...v1.29.7.0
