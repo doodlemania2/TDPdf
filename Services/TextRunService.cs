@@ -92,8 +92,37 @@ namespace TDPdf.Services
         // be re-parsed on every click.
         private readonly Dictionary<(string Path, long Ticks, int Page), PageTextRuns?> _cache = new();
 
+        // Last-write ticks as of the most recent successful GetPage for each working path. Exists
+        // only so TryGetCached can rebuild a cache key without a file stat — see that method.
+        private readonly Dictionary<string, long> _ticksByPath = new();
+
         /// <summary>Drops everything. Called from the same places that clear the render cache.</summary>
-        public void Clear() => _cache.Clear();
+        public void Clear()
+        {
+            _cache.Clear();
+            _ticksByPath.Clear();
+        }
+
+        /// <summary>
+        /// Cache-only peek: true when this page's geometry is already built, false when it is not.
+        /// NEVER parses, opens the file, or even stats it, so it is safe to call from a mouse-move
+        /// handler — which is exactly why it exists (the Select tool's hover cursor, #135 item 5).
+        ///
+        /// The stat is skipped by keying off the last-write time <see cref="GetPage"/> already
+        /// resolved for this path. That value can in principle go stale between an in-place save and
+        /// the next GetPage, in which case this answers from the pre-save geometry. That is a
+        /// deliberate trade: the only consumer is a cursor shape, so the worst case is an I-beam a
+        /// few pixels off for a moment, and every path that rewrites the working file calls
+        /// <see cref="Clear"/> anyway — after which this simply reports "not cached" until the
+        /// geometry is rebuilt.
+        /// </summary>
+        public bool TryGetCached(string? path, int pageIdx, out PageTextRuns? runs)
+        {
+            runs = null;
+            if (string.IsNullOrEmpty(path) || pageIdx < 0) return false;
+            if (!_ticksByPath.TryGetValue(path, out long ticks)) return false;
+            return _cache.TryGetValue((path, ticks, pageIdx), out runs);
+        }
 
         public PageTextRuns? GetPage(string? path, int pageIdx)
         {
@@ -101,12 +130,13 @@ namespace TDPdf.Services
             long ticks;
             try { ticks = File.GetLastWriteTimeUtc(path).Ticks; }
             catch { return null; }
+            _ticksByPath[path] = ticks;
 
             var key = (path, ticks, pageIdx);
             if (_cache.TryGetValue(key, out var hit)) return hit;
             // Entries are small (a few hundred chars per page) but unbounded is unbounded: on a
             // 5,000-page document a full scroll-through would otherwise hold every page's geometry.
-            if (_cache.Count > 512) _cache.Clear();
+            if (_cache.Count > 512) { _cache.Clear(); _ticksByPath.Clear(); _ticksByPath[path] = ticks; }
 
             PageTextRuns? runs = null;
             try

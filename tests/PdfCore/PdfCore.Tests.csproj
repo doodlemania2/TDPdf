@@ -52,6 +52,7 @@
     <Compile Include="..\..\Services\PageBlockMove.cs" />
     <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
+    <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
   </ItemGroup>
 
 </Project>

@@ -177,6 +177,7 @@ Measure.Run(Check, tmp);
 PageMove.Run(Check);
 Duplicate.Run(Check, tmp);
 LetterSpacing.Run(Check);
+SelectCursor.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

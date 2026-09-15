@@ -9691,7 +9691,7 @@ namespace TDPdf
                     {
                         _pendingSignature = sigCopy;
                         HideSignaturePopup();
-                        _annotationCanvas.Cursor = Cursors.Cross;
+                        _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
                         SetStatus("Click on the page to place your signature");
                     };
                     item.MouseEnter += (s, e) =>
@@ -10108,7 +10108,7 @@ namespace TDPdf
 
                 // Auto-select the new signature for placement
                 _pendingSignature = saved;
-                _annotationCanvas.Cursor = Cursors.Cross;
+                _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
                 SetStatus("Signature saved - click on the page to place it");
 
                 win.Close();
@@ -10428,7 +10428,7 @@ namespace TDPdf
                 PersistSignatures();
 
                 _pendingSignature = saved;
-                _annotationCanvas.Cursor = Cursors.Cross;
+                _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
                 SetStatus("Signature saved - click on the page to place it");
                 win.Close();
             }
@@ -10526,7 +10526,7 @@ namespace TDPdf
                 PersistSignatures();
 
                 _pendingSignature = saved;
-                _annotationCanvas.Cursor = Cursors.Cross;
+                _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
                 SetStatus("Image loaded - click on the page to place it");
                 ShowSignaturePopup(); // refresh to show the new entry
             }
@@ -10660,6 +10660,20 @@ namespace TDPdf
             // and the corresponding MouseUp handlers reset their own state.
         }
 
+        /// <summary>
+        /// The "closed hand" half of the grab affordance (#135 item 5): what the pointer shows while
+        /// a surface is actually being carried, as against <see cref="Cursors.Hand"/> — the open
+        /// hand — while merely hovering one.
+        ///
+        /// WPF ships no closed-hand cursor, and the only way to get a true one is a <c>.cur</c>
+        /// binary. TDPdf deliberately does not ship one: it would be an unverifiable binary asset on
+        /// a repo that builds and reviews on macOS (the same reasoning that made the measurement
+        /// tool's icon a vector Path rather than a font glyph). <see cref="Cursors.ScrollAll"/> is
+        /// the closest built-in — "this is being moved" — and is already what the pan drag has used
+        /// since panning shipped, so this names an existing convention rather than inventing one.
+        /// </summary>
+        private static Cursor GrabbingCursor => Cursors.ScrollAll;
+
         private void StartPan(MouseButtonEventArgs e, MouseButton button)
         {
             _isPanning = true;
@@ -10669,7 +10683,7 @@ namespace TDPdf
             _panStartHOffset = PagePreviewPanel.HorizontalOffset;
             _panStartVOffset = PagePreviewPanel.VerticalOffset;
             _cursorBeforePan ??= _annotationCanvas.Cursor;
-            _annotationCanvas.Cursor = Cursors.ScrollAll;
+            _annotationCanvas.Cursor = GrabbingCursor;
             _annotationCanvas.CaptureMouse();
         }
 
@@ -11487,6 +11501,7 @@ namespace TDPdf
             // Link hover: surface the hovered link's target in the status bar. Only on button-up moves so it
             // never fights an in-progress drag (move/resize/pan all hold the left button). Bounds-tested like
             // the click path because transparent overlay canvases aren't reliable WPF hit-test targets.
+            bool overLink = false;
             if (_linkOverlays.Count > 0 && e.LeftButton == MouseButtonState.Released)
             {
                 var hp = e.GetPosition(_annotationCanvas);
@@ -11498,6 +11513,7 @@ namespace TDPdf
                     {
                         object? t = lo.Tag is LinkAnnotInfo lai ? lai.Target : lo.Tag;
                         hoverTarget = t is int gp ? $"Go to page {gp + 1}" : t as string;
+                        overLink = true;
                         break;
                     }
                 }
@@ -11518,6 +11534,16 @@ namespace TDPdf
             var pos = e.GetPosition(_annotationCanvas);
             pos.X = Math.Clamp(pos.X, 0, _annotationCanvas.ActualWidth);
             pos.Y = Math.Clamp(pos.Y, 0, _annotationCanvas.ActualHeight);
+
+            // Select tool hover affordance (#135 item 5): hand over a link, I-beam over selectable
+            // text, arrow over empty page — because the Select tool genuinely behaves differently in
+            // each case and the cursor is the only warning before the drag starts. Gated on no
+            // pointer operation being live so it can never fight a drag that owns the cursor (a
+            // marquee, a pan, an annotation move); those paths all return above or below anyway,
+            // but the guard keeps that from being an accident of ordering.
+            if (_currentTool == EditTool.Select && e.LeftButton == MouseButtonState.Released &&
+                !IsPointerOperationActive)
+                UpdateSelectHoverCursor(pos, overLink);
 
             // Shapes tool, freeform polygon: track the rubber band from the last placed vertex and
             // light the first-vertex snap ring. No button is held during placement, so this runs
@@ -14191,7 +14217,10 @@ namespace TDPdf
                 Height = 16,
                 Background = (SolidColorBrush)FindResource("AccentGreen"),
                 CornerRadius = new CornerRadius(8),
-                Cursor = Cursors.SizeAll,
+                // Grab affordance (#135 item 5): the open hand says "pick this up", and the drag
+                // below swaps in GrabbingCursor for as long as it is held. SizeAll — which reads as
+                // "stretch this" — is kept for the resize handles, which is what it means there.
+                Cursor = Cursors.Hand,
                 ToolTip = "Drag to move this box"
             };
             void PositionGrip(double left, double top)
@@ -14203,12 +14232,22 @@ namespace TDPdf
             bool draggingBox = false;
             Point dragAnchorScreen = default;
             double dragStartLeft = 0, dragStartTop = 0;
+            // The closed hand is set on the GRIP rather than globally: the drag runs under a mouse
+            // capture, so the grip owns the cursor for the whole gesture even once the pointer has
+            // been carried off it. EndGripDrag is wired to LostMouseCapture as well as to button-up
+            // so a capture WPF drops for its own reasons cannot strand the closed hand on screen.
+            void EndGripDrag()
+            {
+                draggingBox = false;
+                grip.Cursor = Cursors.Hand;
+            }
             grip.PreviewMouseLeftButtonDown += (_, ev) =>
             {
                 draggingBox = true;
                 dragAnchorScreen = ev.GetPosition(_textEditorCanvas);
                 dragStartLeft = Canvas.GetLeft(tb);
                 dragStartTop = Canvas.GetTop(tb);
+                grip.Cursor = GrabbingCursor;
                 grip.CaptureMouse();
                 ev.Handled = true;
             };
@@ -14226,10 +14265,10 @@ namespace TDPdf
             };
             grip.PreviewMouseLeftButtonUp += (_, _) =>
             {
-                draggingBox = false;
+                EndGripDrag();
                 grip.ReleaseMouseCapture();
             };
-            grip.LostMouseCapture += (_, _) => draggingBox = false;
+            grip.LostMouseCapture += (_, _) => EndGripDrag();
             _activeTextBoxGrip = grip;
             _textEditorCanvas.Children.Add(grip);
         }
