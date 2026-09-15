@@ -56,7 +56,23 @@ Each stage is gated on its secret being present, so a missing or rotated secret 
 
 ## Architecture
 
-Single-window WPF app with MVVM foundations but no DI. Almost all UI behavior lives in `MainWindow.xaml.cs` (~8,000 lines): tools, rendering, search, signatures, save/flatten, install/uninstall, print, crop, zoom, dialogs, themes. New UI features usually go there unless there's a strong reason to split.
+Single-window WPF app with MVVM foundations but no DI. Most UI behavior lives on the `MainWindow` class, which is **split across one `partial class` per feature area** — `MainWindow.xaml.cs` (~11,400 lines) plus the files below. `MainWindow.xaml.cs` is still the largest by far and still holds everything that has not been extracted: window chrome, menus, settings, view modes, link overlays, tools (crop, redaction, shapes, form-field authoring), settings bars, selection, search, keyboard shortcuts, annotation management and rendering, measure, dirty tracking, cross-window tab drag, save-to-PDF, zoom, drag/drop, MRU, print, themes, install/uninstall. New UI features go in the partial that owns the area, or in `MainWindow.xaml.cs` when no partial fits.
+
+| File | Holds |
+|---|---|
+| `MainWindow.Files.cs` | File operations (open/save/save-as/flatten/merge/split) + the file toolbar handlers |
+| `MainWindow.Canvas.cs` | Canvas interaction — pointer/mouse handling, panning, tool gestures, annotation hit-testing, drag/resize |
+| `MainWindow.TextEditing.cs` | Inline text editing (double-click) + text box handling |
+| `MainWindow.Forms.cs` | Interactive AcroForm field overlays (form filling) |
+| `MainWindow.Signatures.cs` | Signatures: draw/import/place, `signatures.json` store |
+| `MainWindow.ContinuousView.cs` | Continuous (vertical-strip) view |
+| `MainWindow.Sidebar.cs` | The page sidebar (PageList) / page viewer and multi-document tab switching |
+| `MainWindow.Bookmarks.cs` | Bookmark editing (#133): add / rename / child / reorder / retarget / delete |
+| `MainWindow.Undo.cs` | Snapshot-based undo helpers |
+
+`TdpDialog.cs` is **not** a `MainWindow` partial — it is the standalone themed `MessageBox` replacement, which used to sit at the bottom of `MainWindow.xaml.cs`.
+
+These files were produced by a pure move-only split; the banner comments (`// ====`) inside them are the original region markers, so a region's members are still in their original order. Private nested types (`DocumentContext`, `UndoEntry`, `RenderedPage`, `LinkInfo`, `FormFieldInfo`, …) may be declared in any partial — most remain in `MainWindow.xaml.cs`.
 
 - `ViewModels/MainWindowViewModel.cs` is a foundation-only stub — per its header comment, do NOT wire it into MainWindow yet; migration happens in separate PRs (issue #18). `Services/` is likewise a placeholder for future extractions (only `ZoomViewModel` and the few existing services are live).
 - `Models/Annotations.cs` holds the entire annotation data model: `PageAnnotation` subclasses (`TextAnnotation`, `InkAnnotation`, `HighlightAnnotation`, `TextEditAnnotation`, `ImageEditAnnotation`, `CropAnnotation`, `SignatureAnnotation`) plus `SavedSignature` for JSON persistence.
