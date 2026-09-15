@@ -10,7 +10,6 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Docnet.Core;
 using Docnet.Core.Models;
-using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
 using TDPdf.Diagnostics;
@@ -126,11 +125,20 @@ namespace TDPdf.Services
                 cancellationToken.ThrowIfCancellationRequested();
                 int pageCount = pageSizes.Count;
 
+                // #366: which pages were ALREADY a JPEG scan, and so lose nothing by going back out
+                // as one. Read once, here, before any of the parallel work starts: PdfPig opens the
+                // whole document and the answer must not change under the loop, so the array is
+                // written on this thread and only READ inside it. A file PdfPig cannot open comes
+                // back all-false, which is the old, lossless behaviour.
+                bool[] jpegHints = PdfPageImageEncoder.ReadJpegPageHints(sourcePath, pageCount);
+
                 // Rasterize pages across CPU cores. Docnet/PDFium (pdfium.dll) is NOT
                 // thread-safe, so the page render is serialized behind a lock; the
-                // CPU-bound PNG encode (GDI+) runs in parallel. Each page's encoded
-                // bytes are stored by index so the PDF can be assembled in order.
-                var pngPages = new byte[pageCount][];
+                // CPU-bound encode runs in parallel. Each page's encoded bytes are
+                // stored by index so the PDF can be assembled in order. Nothing in the
+                // loop touches PdfSharpCore — that all happens on the single-threaded
+                // assembly pass below.
+                var encodedPages = new EncodedPageImage?[pageCount];
                 var docGate = new object();
                 var po = new ParallelOptions
                 {
@@ -167,8 +175,28 @@ namespace TDPdf.Services
 
                     if (bgra == null || bgra.Length == 0 || rw <= 0 || rh <= 0) return;
 
-                    // Encode BGRA to PNG (GDI+) outside the lock so it parallelizes.
-                    pngPages[i] = EncodeBgraToPng(bgra, rw, rh);
+                    // Encoding happens outside the lock so it parallelizes. Three routes, in
+                    // descending order of how much they save:
+                    //
+                    //   #323 — a page whose every pixel is pure black or pure white packs to 1 bit
+                    //   with NO loss at all, typically 20x smaller than the 24-bit RGB below. It is
+                    //   checked first because it beats JPEG on size and fidelity at once, and it
+                    //   needs no source hint: the rendered pixels themselves are the proof.
+                    //
+                    //   #366 — a page that was already a JPEG scan goes back out as a JPEG. Gated
+                    //   on the source hint, because JPEG-ing a page of text or line art puts
+                    //   permanent ringing around every glyph to save space on the one kind of page
+                    //   that was not large to begin with.
+                    //
+                    //   Otherwise the original lossless path: PNG in, 24-bit RGB FlateDecode out.
+                    var bitonal = PdfPageImageEncoder.TryEncodeBitonal(bgra, rw, rh);
+                    if (bitonal != null)
+                        encodedPages[i] = bitonal;
+                    else if (jpegHints[i])
+                        encodedPages[i] = PdfPageImageEncoder.EncodeJpeg(bgra, rw, rh);
+                    else
+                        encodedPages[i] = new EncodedPageImage(
+                            EncodeBgraToPng(bgra, rw, rh), PageImageEncoding.Png, rw, rh);
                 });
 
                 cancellationToken.ThrowIfCancellationRequested();
@@ -179,17 +207,14 @@ namespace TDPdf.Services
                     for (int i = 0; i < pageCount; i++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        var pngBytes = pngPages[i];
-                        if (pngBytes == null) continue;
+                        var encoded = encodedPages[i];
+                        if (encoded == null) continue;
 
                         var newPage = outDoc.AddPage();
                         newPage.Width = pageSizes[i].WidthPoint;
                         newPage.Height = pageSizes[i].HeightPoint;
-                        using (var xi = XImage.FromStream(() => new MemoryStream(pngBytes)))
-                        using (var gfx = XGraphics.FromPdfPage(newPage))
-                        {
-                            gfx.DrawImage(xi, 0, 0, newPage.Width.Point, newPage.Height.Point);
-                        }
+                        PdfPageImageEncoder.PaintFullPage(
+                            outDoc, newPage, encoded, newPage.Width.Point, newPage.Height.Point);
                     }
 
                     // Same reason as SaveAtomicAsync: Save As Flattened can be pointed at a file that
@@ -488,6 +513,12 @@ namespace TDPdf.Services
                     if (pageCount <= 0)
                         return null;
 
+                    // #366: same source-hint gate as Save Flattened. Very often all-false here —
+                    // PdfSharpCore already refused this file, so PdfPig frequently will too — and
+                    // all-false is exactly the old behaviour, so the recovery is never made worse
+                    // by asking.
+                    bool[] jpegHints = PdfPageImageEncoder.ReadJpegPageHints(path, pageCount);
+
                     for (int i = 0; i < pageCount; i++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -502,15 +533,16 @@ namespace TDPdf.Services
                             if (bgra == null || bgra.Length == 0 || pw <= 0 || ph <= 0)
                                 continue;
 
-                            var pngBytes = EncodeBgraToPng(bgra, pw, ph);
+                            var encoded = jpegHints[i]
+                                ? PdfPageImageEncoder.EncodeJpeg(bgra, pw, ph)
+                                : new EncodedPageImage(EncodeBgraToPng(bgra, pw, ph),
+                                                       PageImageEncoding.Png, pw, ph);
+
                             var newPage = outDoc.AddPage();
                             newPage.Width = pw / scale;   // px -> points
                             newPage.Height = ph / scale;
-                            using (var xi = XImage.FromStream(() => new MemoryStream(pngBytes)))
-                            using (var gfx = XGraphics.FromPdfPage(newPage))
-                            {
-                                gfx.DrawImage(xi, 0, 0, newPage.Width.Point, newPage.Height.Point);
-                            }
+                            PdfPageImageEncoder.PaintFullPage(
+                                outDoc, newPage, encoded, newPage.Width.Point, newPage.Height.Point);
                         }
                     }
 

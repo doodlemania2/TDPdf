@@ -2,13 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.Advanced;
 using PdfSharpCore.Pdf.IO;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.PixelFormats;
 
 namespace TDPdf.Services
 {
@@ -35,19 +30,21 @@ namespace TDPdf.Services
     /// object left holding the redacted content, whatever the original page was made of.
     ///
     /// TWO DELIBERATE DEPARTURES FROM Save Flattened, which also rasterises pages:
-    ///   * <b>ImageSharp, not System.Drawing.</b> The flatten path encodes through GDI+, which is
-    ///     Windows-only, so it cannot be exercised on the machines this repository lives on.
-    ///     Redaction is the one feature where an untested encode is unacceptable, and ImageSharp is
-    ///     already in the tree (PdfSharpCore depends on it) and runs anywhere.
-    ///   * <b>JPEG, not PNG.</b> Flatten converts a whole document at 150 dpi; this converts the
-    ///     one or two affected pages at 200, where PNG on a colour scan runs to several megabytes a
-    ///     page. Lossy is also not a drawback here: the point is that the original pixels are gone.
+    ///   * <b>Always JPEG, whatever the source was.</b> Flatten only reaches for JPEG on a page
+    ///     whose content was already JPEG, because re-encoding text and line art damages them
+    ///     permanently. Here that gate does not apply: the whole point is that the original pixels
+    ///     are gone, so a lossy round trip costs nothing that has not already been given up — and
+    ///     this converts one or two pages at 200 dpi, where PNG on a colour scan runs to several
+    ///     megabytes a page.
+    ///   * <b>ImageSharp end to end.</b> Flatten's lossless path still encodes PNG through GDI+,
+    ///     which is Windows-only and so cannot be exercised on the machines this repository lives
+    ///     on. Redaction is the one feature where an untested encode is unacceptable, so every byte
+    ///     it writes goes through <see cref="PdfPageImageEncoder"/>, which runs anywhere.
     /// </remarks>
     internal static class PdfPageRasterizer
     {
         /// <summary>Enough to keep 8pt text legible without turning a page into megabytes.</summary>
         internal const int DefaultDpi = 200;
-        private const int JpegQuality = 90;
 
         /// <summary>
         /// Copies <paramref name="srcPath"/> to <paramref name="destPath"/>, replacing each page in
@@ -104,8 +101,7 @@ namespace TDPdf.Services
                             PaintBlack(bgra, pxW, pxH, x, y, w, h);
                         }
 
-                    byte[] jpeg = EncodeJpeg(bgra, pxW, pxH);
-                    ReplacePageContent(doc, page, jpeg, pxW, pxH, wPt, hPt);
+                    ReplacePageContent(doc, page, PdfPageImageEncoder.EncodeJpeg(bgra, pxW, pxH), wPt, hPt);
                 }
 
                 doc.Save(destPath);
@@ -136,34 +132,13 @@ namespace TDPdf.Services
             }
         }
 
-        private static byte[] EncodeJpeg(byte[] bgra, int width, int height)
-        {
-            // PDFium leaves unpainted background at alpha 0; JPEG has no alpha, so anything not
-            // composited first encodes as black. The render above fills opaque white before
-            // drawing, so the buffer is already composited — but a page can still carry
-            // transparent regions of its own, and a redaction is not the place to discover that.
-            for (int i = 3; i < bgra.Length; i += 4)
-            {
-                if (bgra[i] == 255) continue;
-                double a = bgra[i] / 255.0;
-                bgra[i - 3] = (byte)(bgra[i - 3] * a + 255 * (1 - a));
-                bgra[i - 2] = (byte)(bgra[i - 2] * a + 255 * (1 - a));
-                bgra[i - 1] = (byte)(bgra[i - 1] * a + 255 * (1 - a));
-                bgra[i] = 255;
-            }
-
-            using var image = Image.LoadPixelData<Bgra32>(bgra, width, height);
-            using var ms = new MemoryStream();
-            image.SaveAsJpeg(ms, new JpegEncoder { Quality = JpegQuality });
-            return ms.ToArray();
-        }
-
         /// <summary>
         /// Throws away everything the page was made of and gives it a single full-bleed image.
         /// </summary>
         /// <remarks>
-        /// The content stream is written by hand — four operators — rather than through XGraphics,
-        /// for two reasons that both matter here.
+        /// The image and its content stream are written by hand — see
+        /// <see cref="PdfPageImageEncoder.PaintFullPage"/>, which every full-page-image site in the
+        /// app shares — rather than through XGraphics, for two reasons that both matter here.
         ///
         /// First, PdfSharpCore's <c>XGraphicsPdfPageOptions.Replace</c> does not replace: the value
         /// is stored on the renderer and never acted on, so it APPENDS. On this page that would
@@ -182,7 +157,7 @@ namespace TDPdf.Services
         /// has the rotation baked in, so leaving /Rotate would turn the page a second time.
         /// </remarks>
         private static void ReplacePageContent(
-            PdfDocument doc, PdfPage page, byte[] jpeg, int pxW, int pxH, double wPt, double hPt)
+            PdfDocument doc, PdfPage page, EncodedPageImage jpeg, double wPt, double hPt)
         {
             foreach (string key in new[]
                      { "/Contents", "/Resources", "/Annots", "/Group", "/Rotate",
@@ -191,30 +166,7 @@ namespace TDPdf.Services
 
             page.Elements["/MediaBox"] = Box(0, 0, wPt, hPt);
 
-            var image = new PdfDictionary(doc);
-            image.Elements["/Type"] = new PdfName("/XObject");
-            image.Elements["/Subtype"] = new PdfName("/Image");
-            image.Elements["/Width"] = new PdfInteger(pxW);
-            image.Elements["/Height"] = new PdfInteger(pxH);
-            image.Elements["/ColorSpace"] = new PdfName("/DeviceRGB");
-            image.Elements["/BitsPerComponent"] = new PdfInteger(8);
-            image.Elements["/Filter"] = new PdfName("/DCTDecode");
-            image.CreateStream(jpeg);
-            doc.Internals.AddObject(image);
-
-            var xobjects = new PdfDictionary(doc);
-            xobjects.Elements["/Im0"] = image.Reference;
-            var resources = new PdfDictionary(doc);
-            resources.Elements["/XObject"] = xobjects;
-            page.Elements["/Resources"] = resources;
-
-            // The unit square maps to the whole page, so the image fills it exactly.
-            string ops = string.Create(System.Globalization.CultureInfo.InvariantCulture,
-                $"q\n{wPt:0.####} 0 0 {hPt:0.####} 0 0 cm\n/Im0 Do\nQ\n");
-            var content = new PdfDictionary(doc);
-            content.CreateStream(Encoding.ASCII.GetBytes(ops));
-            doc.Internals.AddObject(content);
-            page.Elements["/Contents"] = content.Reference;
+            PdfPageImageEncoder.PaintFullPage(doc, page, jpeg, wPt, hPt);
         }
 
         private static PdfArray Box(double x1, double y1, double x2, double y2)

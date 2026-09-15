@@ -19044,6 +19044,32 @@ namespace TDPdf
             var dim = new System.Drawing.Imaging.FrameDimension(img.FrameDimensionsList[0]);
             int frameCount = Math.Max(1, img.GetFrameCount(dim));
 
+            // #366: a source that is ALREADY a JPEG goes into the PDF byte for byte. The loop below
+            // redraws every frame into a 32bpp bitmap and re-encodes it as PNG, which PdfSharpCore
+            // then stores as 24-bit RGB FlateDecode — so importing a 400 KB phone photo produced a
+            // 12 MB page, and the picture in the file was no longer the picture the user chose.
+            //
+            // Note that handing the JPEG bytes to XImage would NOT have fixed it: PdfSharpCore's
+            // image source decodes the stream and saves it again at quality 75. Only writing the
+            // XObject directly (PdfPageImageEncoder) leaves the original bytes alone.
+            //
+            // Single-frame only — a multi-frame TIFF/GIF is one page per frame and cannot be one
+            // pass-through image — and only for the JPEG variants /DCTDecode actually covers; the
+            // sniff refuses anything else, which falls through to the lossless path unchanged.
+            if (frameCount == 1
+                && PdfPageImageEncoder.TryReadPassThroughJpeg(path) is { } jpeg
+                && jpeg.PixelWidth == img.Width && jpeg.PixelHeight == img.Height)
+            {
+                double jpegDpiX = img.HorizontalResolution > 0 ? img.HorizontalResolution : 96.0;
+                double jpegDpiY = img.VerticalResolution   > 0 ? img.VerticalResolution   : 96.0;
+                var jpegPage = pdf.AddPage();
+                jpegPage.Width  = img.Width  * 72.0 / jpegDpiX;
+                jpegPage.Height = img.Height * 72.0 / jpegDpiY;
+                PdfPageImageEncoder.PaintFullPage(
+                    pdf, jpegPage, jpeg, jpegPage.Width.Point, jpegPage.Height.Point);
+                return;
+            }
+
             for (int f = 0; f < frameCount; f++)
             {
                 img.SelectActiveFrame(dim, f);

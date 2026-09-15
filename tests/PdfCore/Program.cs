@@ -170,6 +170,7 @@ Check("NO output file was written", !File.Exists(refused));
 Geometry.Run(Check, tmp);
 ImageGuard.Run(Check, tmp);
 Raster.Run(Check, tmp, Geometry.RenderFirstPage);
+Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 Forms.Run(Check, tmp);
 TextEdit.Run(Check, tmp);
 
