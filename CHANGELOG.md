@@ -6,8 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.0.0.0] - 2026-09-15
+
+**Three things TDPdf could only pretend to do, it now actually does: redaction that removes the content, text editing that replaces the words, and forms it can create rather than only fill in.** A major version because the last of those changes what an existing operation *means* — "edit text" used to leave the original wording in the file, and no longer does.
+
+> Those three capabilities were physically present in the 1.30.2.0 build, which shipped them without describing them. 2.0.0.0 is where they are announced, documented and supported. If you are on 1.30.2.0 you already have the code; what you did not have was any way to know.
+
+
 ### Added
 
+- **A measurement tool** (`M`, or the ruler in the toolbar). Drag across anything and read the distance in inches, millimetres and PDF points at once. All three rather than a unit switch on purpose: a ruler exists for the few seconds a drag is being read, and a unit mode is something to discover, get wrong, and re-drag. It measures the page as the page really is — a quarter turn inherited from a parent page node, or a crop box tighter than the sheet, both read correctly — and the same drag reports the same number at any zoom, on any monitor. It changes nothing in the document; it is a readout, not an edit.
+- **Letter spacing for text boxes**, negative included, for lining typing up with the boxes on a preprinted form. The spacing you set is the spacing that wraps, that sizes the box, and that lands in the saved PDF — screen and file agree by construction rather than by coincidence. One honest limit: while you are actually typing, the text shows at its natural spacing, because the editor WPF gives us cannot render spacing without putting the caret and the selection highlight in the wrong place. Spacing applies the moment the box commits, and committing is the only moment text can move — saving never is.
+- **Duplicate Page(s)** in the Pages panel. Copies the whole selection and lands the copies together after the last selected page, each keeping its own rotation, with the new copies selected and shown. The copy is a genuinely independent page, proven by test across a save and reopen: change one and the other does not move.
 - **Redaction that actually removes content.** Marked areas have their content deleted from the page and the content stream rebuilt — not covered with a box. Document metadata is cleared at the same time, since redacting a name from the body while leaving it in the Title is the classic miss. Every redaction is then **verified on the finished file**: if any text still sits inside an area you redacted, the save fails and no file is written, rather than handing back a document that looks safe. Text hidden inside embedded objects — where scanned pages keep their invisible OCR layer — is removed too.
 - **The Redact tool** (`R`, or the red block in the toolbar). Drag over anything to mark it, click a mark to take it back off, then press **Redact Permanently**. Marks are drawn as dashed red outlines rather than solid black boxes on purpose — a pending mark that already looks finished invites printing or sending a document whose content is entirely still there. Nothing is removed until you apply, and applying says plainly that it cannot be undone. Saving with marks still pending asks first, because a mark is not a redaction and the saved file would still contain every marked word.
 - **Redact every match of a search.** Find a name, press **Redact matches**, and every occurrence in the document is marked — including on pages you have never scrolled to. It stops at marking, on purpose: a search match is not a decision, and the half of this that cannot tell the name being removed from the person who signed the letter must not be the half that destroys them. The marks are ordinary marks, so you can click any one of them off before pressing **Redact Permanently**. The status line says how many were marked and on how many pages.
@@ -18,12 +28,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ### Changed
 
+- **The Select tool shows an I-beam only where there is text to select**, the hand over a link, and the ordinary arrow on empty page — so the pointer stops promising a selection the page cannot give. Links win where they overlap text, because clicking one navigates. And things you can pick up now show an open hand, closing while you carry them: placing a signature or a stamp, and dragging a text box by its grip.
+- **Releases are signed through Azure Artifact Signing** rather than a private certificate, so the signature chains to a publicly trusted root instead of one only managed machines recognise. This takes effect once the signing credentials are in place; until then the build falls back to the previous certificate and says so in its own job summary rather than quietly producing an unsigned or differently-signed file.
 - **Updated the bundled PDF engine to PDFium 154.0.8035** (from a September 2023 build). This is what makes real redaction possible: the old build could find content inside a page's embedded objects but not remove it, and an OCR'd scan keeps its invisible text layer in exactly such an object — which is the document people most want to redact. It also unblocks genuine text editing. Rendering and OCR are unaffected; the engine is a drop-in with a stable published interface.
 - **New application icon.** TDPdf's icon was the Doodle Project logo at full bleed, so every window, taskbar button and Alt-Tab entry read as the company rather than the app. It is now a document carrying that same mark — the silhouette says what the app is, the colour says whose it is. Generated from the brand logo at build time so the two cannot drift apart, with separate artwork at small sizes because a thin-stroked mark goes sub-pixel at 16px. The `.pdf` file-association icon is unchanged; PDFs should still look like PDFs.
 - **Add/Remove Programs now reports the installed size, install date, and links to the project and issue tracker.** Previously it carried only the name, version, publisher and uninstall commands.
 
 ### Fixed
 
+- **Dragging a selection of pages could not start unless you happened to be holding Ctrl.** A multi-select list in Windows collapses the selection to the row you pressed on, on the press itself — one gesture before a drag begins — so by the time the pointer had moved far enough, the block was gone and exactly one page travelled. Which is the bug that dragging-as-a-block existed to fix. The selection now survives the press, exactly as it does in File Explorer.
+- **A dragged block of pages lost its selection when it landed**, so a second drag had to start by selecting it all over again.
+- **Dragging pages to where they already were rewrote the document anyway.** Select every page, drag anywhere, and the file was rebuilt to produce the identical page order — costing every unsaved annotation in exchange for nothing. A move that changes no page order is now recognised as such whatever shape the selection is.
 - **Running `TDPdf.exe /silent` tried to open a file literally named `/silent`** instead of installing. A bare silent switch now installs, which is what anyone passing it meant.
 
 ## [1.31.0.0] - 2026-09-15
@@ -1179,7 +1194,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.31.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.0.0.0...HEAD
+[2.0.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.31.0.0...v2.0.0.0
 [1.31.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.2.0...v1.31.0.0
 [1.30.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.1.0...v1.30.2.0
 [1.30.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.0.0...v1.30.1.0
