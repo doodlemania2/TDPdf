@@ -248,6 +248,22 @@ namespace TDPdf
         // rather than coming back as a CS0414.
         private bool _fitResizePending;
 
+        // ── Per-tab view resume (#399) ─────────────────────────────────────────────────────────
+        // True only while a tab switch is putting a tab's own zoom back. A restored zoom is a
+        // RESUME, not a preference: the user already made that decision on that tab, and it was
+        // already persisted at the moment they made it. SaveZoomSetting consults this so
+        // re-entering a tab can never rewrite Settings.LastManualZoom / Settings.DefaultFitMode —
+        // otherwise merely clicking back to an older tab that happens to hold a manual zoom would
+        // silently retire a Fit Page the user had just chosen on the tab they came from.
+        private bool _restoringTabZoom;
+        // Work owed to a tab that is being re-activated, held until the thing it depends on
+        // exists. A FIT has to be measured against THIS tab's page, and a scroll offset is
+        // silently clamped to zero unless the new content is already laid out, so both wait for
+        // the render rather than being applied against the outgoing tab's geometry. See
+        // ApplyPendingViewResume.
+        private DocumentContext? _resumeZoomFor;
+        private (DocumentContext Ctx, double H, double V)? _resumeScroll;
+
         // Selection move/resize for non-placed annotations
         private bool _isMovingAnnot;
         private PageAnnotation? _movingAnnot;
@@ -1258,6 +1274,32 @@ namespace TDPdf
             // View state restored when this tab is re-activated.
             public IReadOnlyList<BitmapSource?>? Thumbnails;
             public int SelectedPageIndex = -1;
+
+            // ── Per-tab scroll + zoom (#399, adapted from upstream KillerPDF) ──────────────────
+            // Scroll and zoom used to be purely app-global, so switching tabs dragged one
+            // document's zoom onto the next and dropped you wherever the re-render happened to
+            // land. These fields make an ALREADY-OPEN tab resume where it was left.
+            //
+            // They are deliberately NOT a second standing preference. The app-global preference
+            // (Settings.DefaultFitMode / Settings.LastManualZoom, read by ApplyViewModeOnOpen)
+            // still decides where a NEWLY OPENED document starts — see the long #201 comment
+            // there — and nothing on this block is ever written back to it. ViewCaptured=false
+            // means "this tab has never been switched away from", which is exactly what makes a
+            // brand-new tab fall through to ApplyViewModeOnOpen unchanged; it is cleared again
+            // whenever the page geometry moves under the offsets (a reload, or a
+            // rotate/crop/transform via SaveTempAndReload), because an offset measured against
+            // page heights that no longer exist points at nothing in particular.
+            public bool ViewCaptured;
+            public double ViewScrollH;
+            public double ViewScrollV;
+            public double ViewZoomLevel = 1.0;
+            public ZoomFitMode ViewFitMode = ZoomFitMode.None;
+            public bool ViewManualZoomIntent;   // mirrors MainWindow._manualZoomIntent (#201)
+            // The view mode the offsets were captured in. View mode is app-wide, so it can change
+            // while a tab sits in the background, and an offset into the continuous strip means
+            // nothing in Grid — a mismatch drops the resume instead of scrolling somewhere
+            // arbitrary.
+            public ViewMode ViewModeAtCapture = ViewMode.Single;
 
             // The clickable tab-header chip (built lazily by RebuildTabStrip).
             public Border? Chip;
@@ -2275,6 +2317,10 @@ namespace TDPdf
                 RefreshPageList(thumbnails);
                 LoadOutlines();
                 _ctx.Thumbnails = thumbnails;
+                // #399: a different document in this tab — or the same one reloaded at a new
+                // geometry, as the crop path does — has no resume point. ApplyViewModeOnOpen
+                // below places it from the app-global standing preference, exactly as always.
+                _ctx.ViewCaptured = false;
                 DropZone.Visibility = Visibility.Collapsed;
                 PagePreviewPanel.Visibility = Visibility.Visible;
                 if (_closeFileBtnRef != null) _closeFileBtnRef.IsEnabled = true;
@@ -2603,6 +2649,10 @@ namespace TDPdf
                     RenderAdditionalPages(pageIndex);
                     RenderPageLinks(pageIndex, linkBitmapW, linkBitmapH);
                     RenderFormFields(pageIndex, linkBitmapW, linkBitmapH);
+                    // #399: the page bitmap is on screen and the panel is sized, which is the
+                    // earliest moment the ScrollViewer's extent is real — so this is where a
+                    // re-activated tab's own zoom and scroll offsets are put back.
+                    ApplyPendingViewResume();
                 });
             }
             catch (OperationCanceledException)
@@ -3145,6 +3195,13 @@ namespace TDPdf
             // invisible while still being the active one.
             CommitActiveTextBox();
             _viewMode = mode;
+            // #399: an offset still owed to a tab switch was measured in the mode we are leaving
+            // — Continuous's strip and Grid's wrap panel are different scroll surfaces entirely —
+            // so it is dropped here rather than being applied against the new one. The tab's
+            // stored ViewModeAtCapture makes the same call for its captured state on the next
+            // activation.
+            _resumeZoomFor = null;
+            _resumeScroll = null;
             // The scroll surface underneath the wheel just changed, so a half-accumulated
             // page-flip gesture from the previous mode must not complete against the new one.
             _wheelFlipGate.Reset();
@@ -3532,7 +3589,16 @@ namespace TDPdf
                                 int tgt = _continuousScrollTarget;
                                 _continuousScrollTarget = -1;
                                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                                    (Action)(() => ScrollContinuousToPageSuppressed(tgt)));
+                                    (Action)(() =>
+                                    {
+                                        // #399: a re-activated tab's own offset is finer than the
+                                        // page top and was captured against these very slot tops
+                                        // at this very zoom, so it wins here — and this is the
+                                        // first moment those tops are final, which is exactly why
+                                        // the offset could not simply be applied on activation.
+                                        if (!TryApplyContinuousResumeScroll())
+                                            ScrollContinuousToPageSuppressed(tgt);
+                                    }));
                             }
                         });
                     }
@@ -15290,8 +15356,116 @@ namespace TDPdf
         /// <summary>Captures the live view state of the active tab before switching away.</summary>
         private void CaptureViewState()
         {
-            if (_ctx.Doc is not null)
-                _ctx.SelectedPageIndex = PageList.SelectedIndex;
+            if (_ctx.Doc is null) return;
+            _ctx.SelectedPageIndex = PageList.SelectedIndex;
+
+            // #399: the rest of "where this tab was". The zoom is read off the app-global view
+            // model because that IS this tab's zoom for as long as the tab is active; it stops
+            // being shared the moment the tab goes into the background and its value is parked
+            // here. Nothing recorded here is a preference — see the DocumentContext block.
+            _ctx.ViewScrollH = PagePreviewPanel.HorizontalOffset;
+            _ctx.ViewScrollV = PagePreviewPanel.VerticalOffset;
+            _ctx.ViewZoomLevel = Zoom.ZoomLevel;
+            _ctx.ViewFitMode = _zoomFitMode;
+            _ctx.ViewManualZoomIntent = _manualZoomIntent;
+            _ctx.ViewModeAtCapture = _viewMode;
+            _ctx.ViewCaptured = true;
+        }
+
+        /// <summary>
+        /// Re-applies the zoom a tab was left at (#399). A FIT is replayed as a fit and never as
+        /// the number it once produced: the window may well have been resized — or dragged to
+        /// another monitor — while this tab sat in the background, and replaying a raw number
+        /// against different geometry is exactly the "opens enormous or microscopic" failure the
+        /// #201 comment block in <see cref="ApplyViewModeOnOpen"/> exists to prevent. A deliberate
+        /// manual zoom is window-independent by definition, so that one is replayed as a number.
+        ///
+        /// Grid is excluded for the same reason ApplyViewModeOnOpen excludes it: Grid's zoom is
+        /// not a free number but a column count that RefreshPageView immediately snaps back, so
+        /// replaying one only starts a fight it always loses.
+        /// </summary>
+        private void RestoreTabZoom(DocumentContext ctx)
+        {
+            if (_viewMode == ViewMode.Grid) return;
+            _restoringTabZoom = true;
+            try
+            {
+                if (ctx.ViewFitMode == ZoomFitMode.Width) FitToWidth();
+                else if (ctx.ViewFitMode == ZoomFitMode.Page) FitToPage();
+                else
+                {
+                    // The same three writes as ApplyRestoredManualZoom, except that the tab's own
+                    // intent flag is carried back rather than forced true: resuming a tab must
+                    // leave the zoom subsystem exactly as the user left it there, not stronger.
+                    _zoomFitMode = ZoomFitMode.None;
+                    _manualZoomIntent = ctx.ViewManualZoomIntent;
+                    Zoom.SetZoomLevel(ctx.ViewZoomLevel);
+                }
+            }
+            finally { _restoringTabZoom = false; }
+        }
+
+        /// <summary>
+        /// Settles whatever a re-activated tab is still owed (#399). Called from the tail of the
+        /// render that put that tab's page on screen.
+        /// </summary>
+        /// <remarks>
+        /// The timing is the whole point of this method existing. A scroll offset handed to a
+        /// ScrollViewer is clamped to the extent it knows about at that instant, and the extent of
+        /// a page that has not been measured and arranged yet is zero — so an offset applied from
+        /// ActivateContext, where the incoming page is still an un-rendered placeholder, does not
+        /// fail loudly, it just silently becomes 0. It is applied here instead: after the bitmap,
+        /// the canvases and the wrap panel have been sized, with an explicit UpdateLayout to force
+        /// the pass rather than hope one has already run.
+        ///
+        /// Restoring a FIT re-renders, so the zoom is settled first and the scroll deliberately
+        /// stays owed whenever the zoom actually moved — the next render's tail then applies it
+        /// against the extent that zoom produced, instead of this one scrolling to an offset that
+        /// is about to be wrong.
+        /// </remarks>
+        private void ApplyPendingViewResume()
+        {
+            // Continuous has its own anchor point — RenderContinuousPages re-scrolls once the slot
+            // heights above the target page are final — so its offsets must not be applied here.
+            if (_viewMode == ViewMode.Continuous) return;
+
+            if (_resumeZoomFor is { } zoomCtx)
+            {
+                if (!ReferenceEquals(_ctx, zoomCtx)) { _resumeZoomFor = null; _resumeScroll = null; return; }
+                _resumeZoomFor = null;
+                double before = Zoom.ZoomLevel;
+                RestoreTabZoom(zoomCtx);
+                // A changed zoom means ApplyZoom has already queued a fresh render pass; leave the
+                // scroll owed so it lands after that one rather than against this stale extent.
+                if (Zoom.ZoomLevel != before) return;
+            }
+
+            if (_resumeScroll is not { } scroll) return;
+            if (!ReferenceEquals(_ctx, scroll.Ctx)) { _resumeScroll = null; return; }
+            _resumeScroll = null;
+            PagePreviewPanel.UpdateLayout();
+            PagePreviewPanel.ScrollToHorizontalOffset(scroll.H);
+            PagePreviewPanel.ScrollToVerticalOffset(scroll.V);
+        }
+
+        /// <summary>
+        /// Continuous-view half of <see cref="ApplyPendingViewResume"/>: puts a re-activated tab's
+        /// own offset back in place of the "scroll to the top of the target page" anchor,
+        /// suppressing the scroll→selection feedback loop exactly as ScrollContinuousToPageSuppressed
+        /// does. Returns false when nothing is owed, so the caller falls back to the page anchor.
+        /// </summary>
+        private bool TryApplyContinuousResumeScroll()
+        {
+            if (_resumeScroll is not { } scroll) return false;
+            if (!ReferenceEquals(_ctx, scroll.Ctx)) { _resumeScroll = null; return false; }
+            _resumeScroll = null;
+            _suppressContinuousScrollSync = true;
+            PagePreviewPanel.UpdateLayout();
+            PagePreviewPanel.ScrollToHorizontalOffset(scroll.H);
+            PagePreviewPanel.ScrollToVerticalOffset(scroll.V);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                (Action)(() => _suppressContinuousScrollSync = false));
+            return true;
         }
 
         /// <summary>Makes <paramref name="ctx"/> the active tab and rebuilds the shared UI from it.</summary>
@@ -15303,6 +15477,11 @@ namespace TDPdf
             CaptureViewState();
             CancelDocumentWork(cancelWindowOperation: false);
             ClearContinuousRenderState();
+
+            // #399: anything the previous activation was still owed dies with it — the render it
+            // was waiting on has just been cancelled.
+            _resumeZoomFor = null;
+            _resumeScroll = null;
 
             _ctx = ctx;
 
@@ -15367,6 +15546,32 @@ namespace TDPdf
                 int idx = _ctx.SelectedPageIndex;
                 if (idx < 0 || idx >= PageList.Items.Count)
                     idx = PageList.Items.Count > 0 ? 0 : -1;
+
+                // #399: a tab that has been looked at before resumes where it was left — its own
+                // scroll offsets and its own zoom — rather than inheriting whatever the tab being
+                // left behind happened to be showing. A tab with nothing captured (never switched
+                // away from, or invalidated by a reload / a geometry-changing edit) falls through
+                // to precisely the behaviour it had before: the render lands where it lands, at
+                // the app-global zoom ApplyViewModeOnOpen set from the standing preference. This
+                // is a RESUME only; nothing below ever writes that preference back.
+                var resumeCtx = _ctx;
+                bool resume = _ctx.ViewCaptured && _ctx.ViewModeAtCapture == _viewMode && idx >= 0;
+                if (resume)
+                {
+                    _resumeScroll = (resumeCtx, _ctx.ViewScrollH, _ctx.ViewScrollV);
+                    // Grid restores no zoom at all (RestoreTabZoom says why), and Continuous does
+                    // its own below because it has to land after SetupContinuousView's FitToWidth.
+                    // Everywhere else: a manual zoom is a bare number that needs no page under it,
+                    // so it goes on NOW and the incoming page renders at the right size first
+                    // time; a FIT measures whatever page is on screen — which at this instant is
+                    // still the OUTGOING tab's — so it has to wait for this tab's render.
+                    if (_viewMode != ViewMode.Grid && _viewMode != ViewMode.Continuous)
+                    {
+                        if (_ctx.ViewFitMode == ZoomFitMode.None) RestoreTabZoom(_ctx);
+                        else _resumeZoomFor = resumeCtx;
+                    }
+                }
+
                 if (idx >= 0)
                 {
                     if (_viewMode == ViewMode.Continuous)
@@ -15378,12 +15583,28 @@ namespace TDPdf
                         PageList.SelectedIndex = idx;
                         _suppressContinuousScrollSync = false;
                         Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                            (Action)(() => SetupContinuousView(idx)));
+                            (Action)(() =>
+                            {
+                                if (!ReferenceEquals(_ctx, resumeCtx)) return;
+                                SetupContinuousView(idx);
+                                // #399: SetupContinuousView ends in FitToWidth (Continuous's own
+                                // default) and only THEN defers its scroll, so this tab's zoom has
+                                // to go back immediately after it returns — late enough that a fit
+                                // measures this document's strip width, early enough that the
+                                // deferred scroll and the slot heights are computed at the zoom we
+                                // are resuming at rather than at fit-width.
+                                if (resume) RestoreTabZoom(resumeCtx);
+                            }));
                     }
                     // Setting SelectedIndex fires PageList_SelectionChanged (→ render).
                     // If the index is unchanged, render explicitly.
                     else if (PageList.SelectedIndex == idx) RerenderCurrentPage();
                     else PageList.SelectedIndex = idx;
+                }
+                else
+                {
+                    _resumeZoomFor = null;   // #399: no page, so no render will ever settle these
+                    _resumeScroll = null;
                 }
             }
 
@@ -15683,6 +15904,7 @@ namespace TDPdf
             ctx.AllSearchRects.Clear();
             ctx.SearchResultPages.Clear();
             ctx.Thumbnails = null;
+            ctx.ViewCaptured = false;   // #399: nothing left to resume into
             _tabs.Remove(ctx);
 
             QueueReleasedDocumentCollection();
@@ -18070,6 +18292,11 @@ namespace TDPdf
             // cache key already changes — the working path is repointed at a fresh temp file just
             // below — but this keeps the invalidation explicit rather than incidental.)
             InvalidateTextRunCache();
+            // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
+            // this tab's captured scroll offset now measures against a layout that no longer
+            // exists. Drop the resume point and let the next activation place the view the way it
+            // did before the feature, rather than restoring a number that means nothing.
+            _ctx.ViewCaptured = false;
             ClearSelection();
             MarkDirty();
             var doc = _doc;
@@ -18559,7 +18786,14 @@ namespace TDPdf
                 // Recording it also retires any remembered fit: the last explicit zoom decision
                 // wins, whichever kind it was, which is the same single-preference model the fit
                 // side already uses (SaveDefaultFitMode clears this in return).
-                if (_manualZoomIntent)
+                //
+                // #399: _restoringTabZoom excludes the one kind of zoom change that is not a
+                // decision at all — a tab switch putting back the zoom that tab was already on.
+                // That zoom was recorded here when the user chose it; letting it write again
+                // would mean clicking back to an older tab could retire the preference set on the
+                // tab just left, so a per-tab RESUME deliberately writes nothing but LastZoomLevel
+                // (which only tracks what is on screen).
+                if (_manualZoomIntent && !_restoringTabZoom)
                 {
                     TDPdf.Properties.Settings.Default.LastManualZoom = Zoom.ZoomLevel;
                     TDPdf.Properties.Settings.Default.DefaultFitMode = ZoomFitMode.None.ToString();
