@@ -150,6 +150,11 @@ namespace TDPdf
         private bool _textBold;
         private bool _textItalic;
         private bool _textUnderline;
+        // #135 item 2: letter spacing, in canvas px, inherited by the next text box placed. Unlike
+        // bold/italic/underline this is NOT read back off the editor on commit, because a WPF
+        // TextBox cannot render letter spacing and therefore never carries it — the tool state IS
+        // the value while a box is open. See PlaceTextBox and CommitActiveTextBox.
+        private double _textLetterSpacing;
         private Color _textFillColor = Colors.White;
         private Border? _textSettingsBar;
 
@@ -708,12 +713,85 @@ namespace TDPdf
         /// change glyph advances, so if the on-screen TextBlock, <see cref="MeasureTextAnnotation"/>,
         /// <see cref="WrapTextToWidth"/> and the PDF burn-in do not all ask the same question, a
         /// styled box wraps in one place and not the other and the text moves when you save.
+        ///
+        /// #135 item 2 extends that same chain to letter spacing rather than adding spacing to the
+        /// burn-in alone — see <see cref="TextLayoutTypeface"/> and
+        /// <see cref="TDPdf.Services.TextLetterSpacing"/>, and note that the on-screen half becomes
+        /// <c>SpacedTextVisual</c> rather than a TextBlock once spacing is non-zero, because WPF
+        /// has no letter-spacing primitive for a TextBlock to use.
         /// </summary>
         private static Typeface TextTypeface(bool bold, bool italic) =>
-            new(new FontFamily(PdfFontStyle.DefaultFamily),
+            TextTypeface(PdfFontStyle.DefaultFamily, bold, italic);
+
+        /// <summary>
+        /// The same typeface, but in a named family rather than the pinned default.
+        /// </summary>
+        /// <remarks>
+        /// Only <see cref="TextLayoutTypeface"/> reaches for this, and only for a letter-spaced
+        /// annotation. Everything else keeps going through the two-argument overload above, which
+        /// pins <see cref="PdfFontStyle.DefaultFamily"/> exactly as it always has — changing the
+        /// family a measurement is taken in changes every wrap point, so an existing annotation in
+        /// Arial or Courier must not start being measured differently because this overload now
+        /// exists.
+        /// </remarks>
+        private static Typeface TextTypeface(string family, bool bold, bool italic) =>
+            new(new FontFamily(string.IsNullOrWhiteSpace(family) ? PdfFontStyle.DefaultFamily : family),
                 italic ? FontStyles.Italic : FontStyles.Normal,
                 bold ? FontWeights.Bold : FontWeights.Normal,
                 FontStretches.Normal);
+
+        /// <summary>
+        /// The typeface a text annotation's LAYOUT — its wrap points, its measured box and, when
+        /// spaced, its on-screen glyphs — is computed in. #135 item 2.
+        /// </summary>
+        /// <remarks>
+        /// Two models, and which one an annotation is in is decided solely by its
+        /// <see cref="TextAnnotation.LetterSpacing"/>:
+        ///
+        ///   * <b>Unspaced</b> keeps pinning <see cref="PdfFontStyle.DefaultFamily"/>. That has
+        ///     always been a slight fiction — the on-screen TextBlock renders in the annotation's
+        ///     OWN family (see <c>TextEditHitBounds</c>, which says so) — but it is the fiction
+        ///     every annotation in every saved document was wrapped and measured under, so
+        ///     correcting it here would silently reflow them all. It stays.
+        ///   * <b>Spaced</b> uses the annotation's own family, because in this model the same
+        ///     advances that size the box also position each glyph on screen. Measuring in one
+        ///     family and drawing in another would put visible ink where the box says there is
+        ///     none. It is also what the burn-in already does (<c>FontCoverage.PickFamily</c>
+        ///     starts from <c>ta.FontName</c>), so the spaced path is the more honest of the two.
+        ///
+        /// One residual gap, inherited rather than introduced: for text <c>ta.FontName</c> cannot
+        /// cover — CJK, Arabic — <c>PickFamily</c> silently upgrades the burn to a family that can,
+        /// while this measures in the chosen one. The advances then differ, so a spaced CJK
+        /// annotation can burn a little wider or narrower than it previews. That is exactly as true
+        /// of the unspaced path's wrapping today, it needs PickFamily to be reachable from a
+        /// measurement rather than only from the burn, and it is not this change's to close.
+        /// </remarks>
+        private static Typeface TextLayoutTypeface(TextAnnotation ta) =>
+            TextLetterSpacing.IsNone(ta.LetterSpacing)
+                ? TextTypeface(ta.Bold, ta.Italic)
+                : TextTypeface(ta.FontName, ta.Bold, ta.Italic);
+
+        /// <summary>
+        /// The two measuring functions <see cref="TextLetterSpacing.Width"/> needs, bound to one
+        /// WPF typeface and size.
+        /// </summary>
+        /// <remarks>
+        /// They differ, and the difference is the whole reason there are two. A whole string is
+        /// measured with <c>FormattedText.Width</c>, which is what every pre-spacing measurement in
+        /// this file has always used — keeping it is what makes spacing == 0 byte-identical. A
+        /// single character is measured with <c>WidthIncludingTrailingWhitespace</c>, because
+        /// <c>Width</c> drops trailing whitespace: a lone space would measure ZERO, and every space
+        /// in a spaced line would collapse to nothing but the spacing gap itself.
+        /// </remarks>
+        private static (Func<string, double> Whole, Func<string, double> Cluster) TextMeasurers(
+            Typeface typeface, double fontSize, double dpi)
+        {
+            FormattedText Ft(string s) => new(
+                string.IsNullOrEmpty(s) ? " " : s,
+                System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                typeface, fontSize, Brushes.Black, dpi);
+            return (s => Ft(s).Width, s => Ft(s).WidthIncludingTrailingWhitespace);
+        }
 
         private static SolidColorBrush FrozenSolidColorBrush(Color color)
         {
@@ -8629,6 +8707,10 @@ namespace TDPdf
             bool curBold = target?.Bold ?? editTarget?.Bold ?? _textBold;
             bool curItalic = target?.Italic ?? editTarget?.Italic ?? _textItalic;
             bool curFill = target?.HasFill ?? _textWhiteout;
+            // #135 item 2. No editTarget fallback: letter spacing is a TextAnnotation property.
+            // A TextEditAnnotation replaces existing PDF text in place, inside a whiteout sized to
+            // the run it covers, so respacing it would push characters straight out of that box.
+            double curSpacing = target?.LetterSpacing ?? _textLetterSpacing;
             Color curFillColor = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
 
             // None of target/editTarget selected means there's either nothing placed yet (tool
@@ -8670,6 +8752,21 @@ namespace TDPdf
                 if (target is not null) { target.Italic = on; RestyleReselect(target); }
                 else if (editTarget is not null) { editTarget.Italic = on; RestyleReselect(editTarget); }
                 else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
+            }
+            // #135 item 2. Live preview on the COMMITTED annotation (RestyleLive re-renders the page
+            // and refreshes the selection box without rebuilding this bar, so the slider keeps its
+            // mouse capture through a drag — the same treatment the shape tool's stroke-width
+            // slider gets).
+            //
+            // There is deliberately no UpdateActiveTextBoxStyle() branch. A WPF TextBox has no
+            // letter-spacing property and no way to fake one — it owns its own text layout — so
+            // while a box is open for typing there is nothing to push the value onto and nothing
+            // honest to show. The value is held in tool state and applied the moment the box
+            // commits. See the matching comment in PlaceTextBox for what the user sees.
+            void ApplySpacing(double v)
+            {
+                _textLetterSpacing = v;
+                if (target is not null) { target.LetterSpacing = v; RestyleLive(target); }
             }
             void ApplyFill(bool on)
             {
@@ -8810,6 +8907,51 @@ namespace TDPdf
             // Bold / Italic
             AddStyleToggle("B", curBold, ApplyBold, "Bold", FontWeights.Bold, FontStyles.Normal);
             AddStyleToggle("I", curItalic, ApplyItalic, "Italic", FontWeights.Normal, FontStyles.Italic);
+
+            if (editTarget is null)
+            {
+                // Separator
+                panel.Children.Add(new Rectangle
+                {
+                    Width = 1, Fill = (SolidColorBrush)FindResource("BorderDim"),
+                    Margin = new Thickness(8, 2, 8, 2)
+                });
+
+                // #135 item 2: letter spacing. Built as the shape bar's stroke-width slider is —
+                // same MakeLabel, same Slider sizing, same trailing read-out — because it is the
+                // same kind of control: a continuous value you drag and watch.
+                //
+                // The range runs NEGATIVE on purpose. The reason this feature exists is lining
+                // characters up with the printed boxes on a preprinted form, and a form whose boxes
+                // are tighter than the font's natural pitch needs tightening, not just loosening.
+                panel.Children.Add(MakeLabel("Spacing:"));
+                var spacingSlider = new Slider
+                {
+                    Minimum = TextLetterSpacing.SliderMin,
+                    Maximum = TextLetterSpacing.SliderMax,
+                    Value = Math.Clamp(curSpacing, TextLetterSpacing.SliderMin, TextLetterSpacing.SliderMax),
+                    Width = 90, VerticalAlignment = VerticalAlignment.Center,
+                    TickFrequency = TextLetterSpacing.SliderStep, IsSnapToTickEnabled = true,
+                    ToolTip = "Space between characters, in pixels — negative tightens. "
+                            + "Applies to the placed text box; it cannot be shown while you are typing."
+                };
+                AutomationProperties.SetName(spacingSlider, "Letter spacing");
+                var spacingLabel = new TextBlock
+                {
+                    Text = $"{spacingSlider.Value:0.#}px",
+                    Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                    FontFamily = new FontFamily("Segoe UI"), FontSize = 11,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(6, 0, 0, 0), MinWidth = 40
+                };
+                spacingSlider.ValueChanged += (_, _) =>
+                {
+                    spacingLabel.Text = $"{spacingSlider.Value:0.#}px";
+                    ApplySpacing(spacingSlider.Value);
+                };
+                panel.Children.Add(spacingSlider);
+                panel.Children.Add(spacingLabel);
+            }
 
             // Separator
             panel.Children.Add(new Rectangle
@@ -13926,6 +14068,9 @@ namespace TDPdf
                 _textBold = existing.Bold;              // #135
                 _textItalic = existing.Italic;
                 _textUnderline = existing.Underline;
+                // #135 item 2: carried through tool state, not through the editor, for the reason
+                // spelled out on the TextBox below — so a re-edit cannot silently reset it to 0.
+                _textLetterSpacing = existing.LetterSpacing;
                 if (existing.HasFill) _textFillColor = existing.GetFillColor();
                 if (existing.Width > 0) width = existing.Width;
 
@@ -13946,6 +14091,18 @@ namespace TDPdf
                 FontSize = _textFontSize,
                 // #135: a WPF TextBox carries all three natively, so the editor shows the real thing
                 // rather than a preview of it.
+                //
+                // #135 item 2 — LETTER SPACING IS THE EXCEPTION, AND IT IS NOT FIXABLE HERE.
+                // An editable TextBox owns its own text layout, caret hit-testing and selection
+                // geometry; WPF exposes no letter-spacing property on it, and there is no honest
+                // way to fake one (drawing spaced glyphs over the top would put the caret and the
+                // selection highlight in the wrong places, which is worse than not showing it).
+                // So while you are TYPING, the text is shown at its natural spacing. The spacing
+                // you set is live in the style bar, is applied the instant the box commits, and
+                // from then on the committed annotation and the saved PDF agree exactly — the
+                // commit is the ONE moment the text can visibly reflow, and saving is never
+                // another one. That is the deliberate trade: reflow once, where the user is
+                // looking and has just pressed a key, rather than silently at save time.
                 FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal,
                 FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal,
                 TextDecorations = _textUnderline ? TextDecorations.Underline : null,
@@ -14259,6 +14416,10 @@ namespace TDPdf
                     Bold = tb.FontWeight == FontWeights.Bold,
                     Italic = tb.FontStyle == FontStyles.Italic,
                     Underline = tb.TextDecorations is { Count: > 0 },
+                    // #135 item 2: off the tool state, NOT off the editor — a TextBox has no
+                    // letter spacing to read back (see the comment where it is built). This is the
+                    // value the style bar has been showing all along, so it is what the user set.
+                    LetterSpacing = _textLetterSpacing,
                     Width = double.IsNaN(width) || width <= 0 ? 0 : width,
                     HasFill = _textWhiteout
                 };
@@ -14834,6 +14995,21 @@ namespace TDPdf
             // is the legacy auto-size mode and stays legal, so only NON-FINITE values bail out.
             if (!IsFinite(ta.Width) || !IsFinite(ta.Height)) return;
 
+            // #135 item 2: WPF has no letter-spacing primitive — not a TextBlock property, not a
+            // TextDecoration, not a Typography flag — so a spaced annotation cannot be previewed by
+            // a TextBlock at all. It is drawn character by character instead, from the SAME
+            // per-character advances MeasureTextAnnotation, WrapTextToWidth and the PDF burn-in
+            // use, which is the only reason the preview and the saved file can be trusted to agree.
+            // Spacing of exactly zero never reaches this branch and stays on the TextBlock below,
+            // byte-identically. See TDPdf.Services.TextLetterSpacing.
+            if (!TextLetterSpacing.IsNone(ta.LetterSpacing) && BuildSpacedTextVisual(ta) is { } spaced)
+            {
+                Canvas.SetLeft(spaced, ta.Position.X);
+                Canvas.SetTop(spaced, ta.Position.Y);
+                _annotationCanvas.Children.Add(spaced);
+                return;
+            }
+
             var tb = new TextBlock
             {
                 Text = ta.Content,
@@ -14862,6 +15038,120 @@ namespace TDPdf
             Canvas.SetLeft(tb, ta.Position.X);
             Canvas.SetTop(tb, ta.Position.Y);
             _annotationCanvas.Children.Add(tb);
+        }
+
+        /// <summary>
+        /// The on-screen preview of a letter-spaced text annotation: one <c>DrawText</c> per
+        /// character, at offsets handed in already computed. #135 item 2.
+        /// </summary>
+        /// <remarks>
+        /// It measures nothing itself. Every offset and every line width arrives from
+        /// <see cref="BuildSpacedTextVisual"/>, which got them from <see cref="LayOutSpacedText"/>,
+        /// which is the same code path <see cref="MeasureTextAnnotation"/> uses for the selection
+        /// box and <see cref="WrapTextToWidth"/> uses for the burn-in's line breaks. A private
+        /// measurement in here would be a fourth opinion, and a fourth opinion is exactly how the
+        /// text ends up moving when you save.
+        ///
+        /// It deliberately does NOT clip to its own bounds, even when the annotation has a fixed
+        /// Height. The burn-in draws every wrapped line regardless of Height, so clipping here
+        /// would hide on screen what the saved PDF contains — the wrong direction for a preview
+        /// whose entire job is to be honest about the file.
+        /// </remarks>
+        private sealed class SpacedTextVisual : FrameworkElement
+        {
+            private readonly IReadOnlyList<(IReadOnlyList<(string Cluster, double X)> Placed, double Width)> _lines;
+            private readonly Typeface _face;
+            private readonly Brush _ink;
+            private readonly Brush? _fill;
+            private readonly double _emSize, _pad, _lineHeight, _baseline, _dpi;
+            private readonly bool _underline;
+
+            internal SpacedTextVisual(
+                IReadOnlyList<(IReadOnlyList<(string Cluster, double X)> Placed, double Width)> lines,
+                Typeface face, double emSize, Brush ink, Brush? fill,
+                double pad, double lineHeight, double baseline, double dpi, bool underline)
+            {
+                _lines = lines;
+                _face = face;
+                _emSize = emSize;
+                _ink = ink;
+                _fill = fill;
+                _pad = pad;
+                _lineHeight = lineHeight;
+                _baseline = baseline;
+                _dpi = dpi;
+                _underline = underline;
+                // Same rule as the TextBlock this replaces (#156): annotation visuals never
+                // intercept the mouse — selection hit-tests the _annotations data, not the visuals.
+                IsHitTestVisible = false;
+            }
+
+            protected override void OnRender(DrawingContext dc)
+            {
+                if (_fill is not null)
+                    dc.DrawRectangle(_fill, null, new Rect(0, 0, ActualWidth, ActualHeight));
+
+                double y = _pad;
+                foreach (var (placed, lineWidth) in _lines)
+                {
+                    foreach (var (cluster, x) in placed)
+                    {
+                        dc.DrawText(
+                            new FormattedText(cluster,
+                                System.Globalization.CultureInfo.CurrentCulture,
+                                FlowDirection.LeftToRight, _face, _emSize, _ink, _dpi),
+                            new Point(_pad + x, y));
+                    }
+
+                    // The underline is drawn, not decorated. TextDecorations.Underline applies per
+                    // FormattedText, and each of these is ONE character, so it would come out as a
+                    // dashed rule with a gap at every spacing unit. One rectangle spanning the
+                    // line's spaced width instead — deliberately the same geometry
+                    // DrawTextUnderline burns into the PDF, so the two match.
+                    if (_underline && lineWidth > 0)
+                        dc.DrawRectangle(_ink, null, new Rect(
+                            _pad, y + _baseline + _emSize * 0.12,
+                            lineWidth, Math.Max(0.5, _emSize * 0.06)));
+
+                    y += _lineHeight;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Builds the per-character preview for a letter-spaced text annotation, or null when the
+        /// annotation measures to something WPF will not accept on a Width/Height.
+        /// </summary>
+        private SpacedTextVisual? BuildSpacedTextVisual(TextAnnotation ta)
+        {
+            double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
+            var layout = LayOutSpacedText(ta, dpi);
+            // #181's guard, applied to the computed box rather than the persisted one: a
+            // non-finite Width or Height on a FrameworkElement takes the whole viewer down on the
+            // next repaint. Returning null drops this ONE annotation back onto the plain TextBlock.
+            if (!IsFinite(layout.Size.Width) || !IsFinite(layout.Size.Height)) return null;
+
+            var typeface = TextLayoutTypeface(ta);
+            var (whole, cluster) = TextMeasurers(typeface, ta.FontSize, dpi);
+
+            var lines = new List<(IReadOnlyList<(string Cluster, double X)> Placed, double Width)>(layout.Lines.Count);
+            foreach (var line in layout.Lines)
+            {
+                lines.Add((
+                    TextLetterSpacing.Layout(line, ta.LetterSpacing, cluster),
+                    TextLetterSpacing.Width(line, ta.LetterSpacing, whole, cluster)));
+            }
+
+            const double pad = 2;   // the TextBlock path's Padding, and the burn-in's own pad
+            return new SpacedTextVisual(
+                lines, typeface, ta.FontSize,
+                FrozenSolidColorBrush(ta.GetColor()),
+                ta.HasFill ? FrozenSolidColorBrush(ta.GetFillColor()) : null,
+                pad, layout.LineHeight, layout.Baseline, dpi, ta.Underline)
+            {
+                Width = layout.Size.Width,
+                Height = layout.Size.Height,
+            };
         }
 
         /// <summary>
@@ -14930,6 +15220,15 @@ namespace TDPdf
         private Size MeasureTextAnnotation(TextAnnotation ta)
         {
             double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
+
+            // #135 item 2: a spaced annotation is measured from per-character advances, because
+            // that is how it is drawn — on screen and in the PDF alike. A whole-string
+            // FormattedText would report the KERNED width, which is a different (usually smaller)
+            // number than the ink actually occupies once the characters are pushed apart one at a
+            // time, and this Size is also the selection/hit box.
+            if (!TextLetterSpacing.IsNone(ta.LetterSpacing))
+                return LayOutSpacedText(ta, dpi).Size;
+
             var ft = new FormattedText(
                 string.IsNullOrEmpty(ta.Content) ? " " : ta.Content,
                 System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
@@ -14941,62 +15240,80 @@ namespace TDPdf
         }
 
         /// <summary>
+        /// Everything a letter-spaced text annotation needs laid out once: the lines it breaks
+        /// into, the metrics to stack them by, and the box they occupy.
+        /// </summary>
+        /// <remarks>
+        /// Computed in ONE place so <see cref="MeasureTextAnnotation"/> (the selection box) and
+        /// <see cref="BuildSpacedTextVisual"/> (the pixels) cannot answer differently — the same
+        /// single-source-of-truth rule <see cref="TextTypeface"/> exists to enforce, extended to
+        /// spacing.
+        /// </remarks>
+        private readonly record struct SpacedTextLayout(
+            List<string> Lines, double LineHeight, double Baseline, Size Size);
+
+        private SpacedTextLayout LayOutSpacedText(TextAnnotation ta, double dpi)
+        {
+            var typeface = TextLayoutTypeface(ta);
+            var (whole, cluster) = TextMeasurers(typeface, ta.FontSize, dpi);
+            double Spaced(string s) => TextLetterSpacing.Width(s, ta.LetterSpacing, whole, cluster);
+
+            // Vertical metrics come off a single-line probe: spacing only ever moves the pen
+            // sideways, so line height and baseline are whatever this typeface and size give for
+            // any one line.
+            //
+            // This is WPF's line height, NOT the burn-in's FontSize * 1.2. The two have always
+            // disagreed slightly — a TextBlock stacks lines by the font's own line spacing and
+            // DrawAnnotationsOnDocument stacks them by 1.2 em — and that divergence is older than
+            // letter spacing, applies to every unspaced multi-line annotation already in the
+            // fleet, and is not this change's to fix: switching the spaced path to 1.2 em would
+            // make the lines visibly jump closer together the moment you moved the spacing slider
+            // off zero, for a reason that has nothing to do with spacing. Horizontal placement —
+            // the part spacing actually governs — does agree, exactly.
+            var probe = new FormattedText(
+                " ", System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                typeface, ta.FontSize, Brushes.Black, dpi);
+
+            // ta.Width - 4 is the burn-in's own wrap width (Width minus its 2px pad on each side).
+            // Using the identical expression here, rather than MeasureTextAnnotation's historical
+            // Math.Max(1, ...), is what makes the on-screen line breaks the SAME breaks the saved
+            // PDF gets. Wrap() already treats a non-positive width as "do not wrap".
+            var lines = ta.Width > 0
+                ? WrapTextToWidth(ta.Content, ta.FontSize, ta.Width - 4, typeface, ta.LetterSpacing)
+                : new List<string>((string.IsNullOrEmpty(ta.Content) ? " " : ta.Content).Split('\n'));
+
+            double widest = 0;
+            foreach (var line in lines) widest = Math.Max(widest, Spaced(line));
+
+            double w = ta.Width > 0 ? ta.Width : widest + 8;
+            double h = ta.Height > 0 ? ta.Height : lines.Count * probe.Height + 8;
+            return new SpacedTextLayout(lines, probe.Height, probe.Baseline, new Size(w, h));
+        }
+
+        /// <summary>
         /// Greedy word-wrap of <paramref name="text"/> to <paramref name="maxWidth"/> canvas px at the
-        /// given font size, using the same WPF font metrics as the on-screen TextBlock so the baked PDF
+        /// given font size, using the same WPF font metrics as the on-screen annotation so the baked PDF
         /// breaks at the same points. Over-long single words are hard-broken by character.
         /// </summary>
+        /// <remarks>
+        /// #135 item 2: <paramref name="letterSpacing"/> is what makes the wrapping spacing-aware.
+        /// Pushing characters apart makes a line wider, so a break that fell after the eighth word
+        /// has to fall after the sixth — and it has to fall there on screen and in the PDF alike,
+        /// or the text reflows at the moment you save. At spacing 0 the width function below is the
+        /// same whole-string <c>FormattedText.Width</c> call this method has always made, so
+        /// existing annotations break exactly where they always have; see
+        /// <see cref="TextMeasurers"/> and <see cref="TextLetterSpacing"/>.
+        ///
+        /// The loop itself now lives in <see cref="TextLetterSpacing.Wrap"/>, unchanged, where
+        /// tests/PdfCore can reach it.
+        /// </remarks>
         private List<string> WrapTextToWidth(string text, double fontSize, double maxWidth,
-                                             bool bold = false, bool italic = false)
+                                             Typeface typeface, double letterSpacing)
         {
-            var lines = new List<string>();
-            if (maxWidth <= 0) { lines.Add(text); return lines; }
             double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
-            var typeface = TextTypeface(bold, italic);   // #135: bold/italic change the advances
-            double W(string s) => new FormattedText(
-                string.IsNullOrEmpty(s) ? " " : s,
-                System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-                typeface, fontSize, Brushes.Black, dpi).Width;
-
-            // Appends a word to the current line, hard-breaking it across lines if it alone overflows.
-            string HardBreakAppend(string cur, string word)
-            {
-                if (W(word) <= maxWidth || word.Length <= 1) return word;
-                string chunk = "";
-                foreach (char ch in word)
-                {
-                    string next = chunk + ch;
-                    if (chunk.Length > 0 && W(next) > maxWidth)
-                    {
-                        lines.Add(chunk);
-                        chunk = ch.ToString();
-                    }
-                    else chunk = next;
-                }
-                return chunk;
-            }
-
-            foreach (var para in text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n'))
-            {
-                string cur = "";
-                foreach (var word in para.Split(' '))
-                {
-                    if (cur.Length == 0)
-                    {
-                        cur = HardBreakAppend("", word);
-                    }
-                    else if (W(cur + " " + word) <= maxWidth)
-                    {
-                        cur += " " + word;
-                    }
-                    else
-                    {
-                        lines.Add(cur);
-                        cur = HardBreakAppend("", word);
-                    }
-                }
-                lines.Add(cur);
-            }
-            return lines;
+            var (whole, cluster) = TextMeasurers(typeface, fontSize, dpi);
+            return TextLetterSpacing.Wrap(text, maxWidth,
+                s => TextLetterSpacing.Width(s, letterSpacing, whole, cluster));
         }
 
         // ------------------------------------------------------------------
@@ -18337,13 +18654,66 @@ namespace TDPdf
         /// </remarks>
         private static void DrawTextUnderline(XGraphics gfx, TextAnnotation ta, string line,
                                               XFont font, XBrush brush, double x, double baselineY,
-                                              double sy)
+                                              double sx, double sy)
         {
             if (!ta.Underline || string.IsNullOrEmpty(line)) return;
-            double width = gfx.MeasureString(line, font).Width;
+            // #135 item 2: a spaced line is wider than its kerned whole-string measurement, so the
+            // rule has to span the SPACED width or it stops short of the last character or two.
+            // At spacing 0 this is the same gfx.MeasureString call it has always been.
+            double width = SpacedStringWidth(gfx, font, line, ta.LetterSpacing * sx);
             if (width <= 0) return;
             double em = ta.FontSize * sy;
             gfx.DrawRectangle(brush, x, baselineY + em * 0.12, width, Math.Max(0.5, em * 0.06));
+        }
+
+        /// <summary>
+        /// How wide <paramref name="line"/> is once burned at <paramref name="spacing"/>, in the
+        /// PDF-space units <paramref name="gfx"/> is drawing in. #135 item 2.
+        /// </summary>
+        /// <remarks>
+        /// PdfSharpCore's MeasureString is a plain sum of per-glyph advances (see
+        /// <c>FontHelper.MeasureString</c>) — it neither kerns nor trims whitespace — so the whole
+        /// string and the sum of its characters agree on this side of the fence, and both
+        /// delegates below can be the same call. That is NOT true of WPF's FormattedText, which is
+        /// why <see cref="TextMeasurers"/> has to hand <see cref="TextLetterSpacing.Width"/> two
+        /// different functions.
+        /// </remarks>
+        private static double SpacedStringWidth(XGraphics gfx, XFont font, string line, double spacing)
+        {
+            double W(string s) => gfx.MeasureString(s, font).Width;
+            return TextLetterSpacing.Width(line, spacing, W, W);
+        }
+
+        /// <summary>
+        /// Burns one line of a text annotation at <paramref name="x"/>, honouring letter spacing.
+        /// </summary>
+        /// <remarks>
+        /// At spacing 0 this is the single <c>DrawString</c> the burn-in has always emitted, glyph
+        /// for glyph and kern for kern — the one thing that must not change for the documents
+        /// already in the fleet. Otherwise the line is drawn one character at a time at the offsets
+        /// <see cref="TextLetterSpacing.Layout"/> computes, which is exactly what
+        /// <c>SpacedTextVisual</c> draws on screen from the same arithmetic.
+        ///
+        /// Spacing scales by <paramref name="sx"/>: it is a horizontal offset in canvas px, and x
+        /// here is canvas px times sx. (The glyph advances it accumulates alongside come from a
+        /// font sized by sy; the two scales are equal for any page rendered at its own aspect
+        /// ratio, which is every page PDFium rasterises, so this is a distinction without a
+        /// difference in practice — but sx is the right one to name for a horizontal quantity.)
+        /// </remarks>
+        private static void DrawTextLine(XGraphics gfx, TextAnnotation ta, string line,
+                                         XFont font, XBrush brush, double x, double baselineY, double sx)
+        {
+            double spacing = ta.LetterSpacing * sx;
+            if (TextLetterSpacing.IsNone(spacing))
+            {
+                gfx.DrawString(line, font, brush, x, baselineY);
+                return;
+            }
+            foreach (var (cluster, dx) in
+                     TextLetterSpacing.Layout(line, spacing, s => gfx.MeasureString(s, font).Width))
+            {
+                gfx.DrawString(cluster, font, brush, x + dx, baselineY);
+            }
         }
 
         /// <summary>Bold/italic flags as the PdfSharpCore font style flags used when burning text (#182).</summary>
@@ -18421,8 +18791,11 @@ namespace TDPdf
                             {
                                 // Fixed-width wrapping box: mirror the on-screen wrap (same font metrics)
                                 // and the whiteout fill so the saved PDF matches the screen.
+                                // #135: the wrap is spacing-aware, and TextLayoutTypeface is the
+                                // same typeface the on-screen preview laid this annotation out in,
+                                // so the breaks cannot come out anywhere else here.
                                 var wrapped = WrapTextToWidth(ta.Content, ta.FontSize, ta.Width - pad * 2,
-                                                              ta.Bold, ta.Italic);
+                                                              TextLayoutTypeface(ta), ta.LetterSpacing);
                                 double boxH = ta.Height > 0 ? ta.Height : wrapped.Count * (ta.FontSize * 1.2) + pad * 2;
                                 if (ta.HasFill)
                                 {
@@ -18437,9 +18810,10 @@ namespace TDPdf
                                 {
                                     if (!string.IsNullOrEmpty(line))
                                     {
-                                        gfx.DrawString(line, font, taBrush, (ta.Position.X + pad) * sx, ty);
+                                        DrawTextLine(gfx, ta, line, font, taBrush,
+                                                     (ta.Position.X + pad) * sx, ty, sx);
                                         DrawTextUnderline(gfx, ta, line, font, taBrush,
-                                                          (ta.Position.X + pad) * sx, ty, sy);
+                                                          (ta.Position.X + pad) * sx, ty, sx, sy);
                                     }
                                     ty += lineH;
                                 }
@@ -18462,9 +18836,10 @@ namespace TDPdf
                                 {
                                     if (!string.IsNullOrEmpty(line))
                                     {
-                                        gfx.DrawString(line, font, taBrush, ta.Position.X * sx, ty);
+                                        DrawTextLine(gfx, ta, line, font, taBrush,
+                                                     ta.Position.X * sx, ty, sx);
                                         DrawTextUnderline(gfx, ta, line, font, taBrush,
-                                                          ta.Position.X * sx, ty, sy);
+                                                          ta.Position.X * sx, ty, sx, sy);
                                     }
                                     ty += lineH;
                                 }

@@ -76,6 +76,30 @@ namespace TDPdf
         public bool Italic { get; set; }
         public bool Underline { get; set; }
 
+        /// <summary>
+        /// Extra space inserted BETWEEN characters (never after the last one), in canvas pixels at
+        /// the annotation's own scale — the same units <see cref="FontSize"/>, <see cref="Width"/>
+        /// and <see cref="Height"/> are already expressed in, so the whole box scales as one when
+        /// it is burned into the page. Negative tightens. #135 item 2.
+        /// </summary>
+        /// <remarks>
+        /// Canvas px rather than ems or thousandths-of-an-em (the PDF Tc convention) because the
+        /// use case this exists for is aligning characters with the printed boxes on a form: the
+        /// person adjusting it is matching a physical pitch on the page, not a proportion of the
+        /// font, and every other number in this class that they can see in the style bar is already
+        /// canvas px. Tying spacing to the font size instead would have moved the alignment they
+        /// just set every time they nudged the size.
+        ///
+        /// Defaults to 0, and 0 means "no spacing applied at all" — not "apply a zero-width gap".
+        /// The distinction is real and load-bearing: at 0 every measuring, wrapping and drawing
+        /// path stays on its original whole-string code, which kerns; anything else switches all of
+        /// them to per-character advances, which cannot. So an annotation written by any earlier
+        /// build deserializes to exactly the appearance it has always had — the same forward
+        /// compatibility rule <see cref="SavedSignature"/> relies on. See
+        /// <see cref="TDPdf.Services.TextLetterSpacing"/>.
+        /// </remarks>
+        public double LetterSpacing { get; set; }
+
         public byte ColorR { get; set; } = 0;
         public byte ColorG { get; set; } = 0;
         public byte ColorB { get; set; } = 0;
@@ -109,6 +133,7 @@ namespace TDPdf
         {
             PageIndex = PageIndex, Position = Position, Content = Content, FontSize = FontSize,
             FontName = FontName, Bold = Bold, Italic = Italic, Underline = Underline,
+            LetterSpacing = LetterSpacing,
             ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA,
             Width = Width, Height = Height,
             HasFill = HasFill, FillR = FillR, FillG = FillG, FillB = FillB, FillA = FillA
