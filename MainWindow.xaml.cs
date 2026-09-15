@@ -78,6 +78,10 @@ namespace TDPdf
         private PdfDocument? _doc { get => _ctx.Doc; set => _ctx.Doc = value; }
         private string? _currentFile { get => _ctx.CurrentFile; set => _ctx.CurrentFile = value; }
         private Point _dragStartPoint;
+        // #135: the page whose selection collapse was deferred from mouse-down to mouse-up so a
+        // multi-page drag can start. -1 when nothing is deferred. See
+        // PageList_PreviewMouseLeftButtonDown.
+        private int _pageClickCollapseIndex = -1;
 
         // Editing
         private EditTool _currentTool = EditTool.Select;
@@ -2009,8 +2013,15 @@ namespace TDPdf
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
                 "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", "\uE90F"));
             menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("Move Page Up",   (s, ev) => MoveUp_Click(s!, ev), null, null, "\uE74A"));
-            menu.Items.Add(MakeMenuItem("Move Page Down", (s, ev) => MoveDown_Click(s!, ev), null, null, "\uE74B"));
+            // #135: a contiguous multi-page selection now moves as a block, so say so \u2014 the rows
+            // used to move exactly one page whatever was selected.
+            int[] selectedPages = SelectedPageIndices();
+            bool movesBlock = selectedPages.Length > 1
+                              && selectedPages[^1] - selectedPages[0] == selectedPages.Length - 1;
+            menu.Items.Add(MakeMenuItem(movesBlock ? "Move Pages Up" : "Move Page Up",
+                (s, ev) => MoveUp_Click(s!, ev), null, null, "\uE74A"));
+            menu.Items.Add(MakeMenuItem(movesBlock ? "Move Pages Down" : "Move Page Down",
+                (s, ev) => MoveDown_Click(s!, ev), null, null, "\uE74B"));
             menu.Items.Add(new Separator());
             menu.Items.Add(MakeMenuItem("Extract Page(s)", (s, ev) => Split_Click(s!, ev), null, null, "\uE8B1"));
             menu.Items.Add(MakeMenuItem("Delete Page(s)", (s, ev) => Delete_Click(s!, ev), null, null, "\uE8C6"));
@@ -17538,28 +17549,41 @@ namespace TDPdf
             return string.Join("\n", parts);
         }
 
-        private void MoveUp_Click(object sender, RoutedEventArgs e)
-        {
-            if (_doc is null || PageList.SelectedIndex <= 0) return;
-            var doc = _doc;
-            int idx = PageList.SelectedIndex;
-            var page = doc.Pages[idx];
-            doc.Pages.RemoveAt(idx);
-            doc.Pages.Insert(idx - 1, page);
-            SaveTempAndReload();
-            PageList.SelectedIndex = idx - 1;
-        }
+        private void MoveUp_Click(object sender, RoutedEventArgs e) => MoveSelectedPages(-1);
 
-        private void MoveDown_Click(object sender, RoutedEventArgs e)
+        private void MoveDown_Click(object sender, RoutedEventArgs e) => MoveSelectedPages(+1);
+
+        /// <summary>
+        /// Moves the selected pages one place up (<paramref name="direction"/> -1) or down (+1),
+        /// through the same block-move path the thumbnail drag uses.
+        /// </summary>
+        /// <remarks>
+        /// #135: a contiguous run travels as a block, so the menu rows agree with the drag rather
+        /// than being a second, one-page-only way to reorder. A NON-contiguous selection keeps the
+        /// old single-page behaviour on purpose: gathering pages 2, 5 and 9 into a run is a real
+        /// reorder and a reasonable thing to ask for by dragging to a visible insertion line, but it
+        /// is not what a menu row reading "Move Page Up" promises, and it would be unrecoverable in
+        /// one step.
+        /// </remarks>
+        private void MoveSelectedPages(int direction)
         {
-            if (_doc is null || PageList.SelectedIndex < 0 || PageList.SelectedIndex >= _doc.PageCount - 1) return;
-            var doc = _doc;
-            int idx = PageList.SelectedIndex;
-            var page = doc.Pages[idx];
-            doc.Pages.RemoveAt(idx);
-            doc.Pages.Insert(idx + 1, page);
-            SaveTempAndReload();
-            PageList.SelectedIndex = idx + 1;
+            if (_doc is null) return;
+            int[] from = SelectedPageIndices();
+            if (from.Length == 0) return;
+            if (from[^1] - from[0] != from.Length - 1)
+            {
+                if (PageList.SelectedIndex < 0) return;
+                from = new[] { PageList.SelectedIndex };
+            }
+
+            // The drop gap is counted in the list as it stands, block included — so moving up one
+            // place is the gap ABOVE the page before the block (from[0] - 1), and moving down one is
+            // the gap BELOW the page after it (from[^1] + 2), which is one further than it looks.
+            // PageBlockMove.Compute then subtracts the block itself back out. Out-of-range gaps are
+            // exactly the cases with nowhere left to go, and Compute reports them as no-ops.
+            int gap = direction < 0 ? from[0] - 1 : from[^1] + 2;
+            if (gap < 0 || gap > _doc.PageCount) return;
+            MovePageBlock(TDPdf.Services.PageBlockMove.Compute(_doc.PageCount, from, gap));
         }
 
         private async void SaveInPlace_Click(object sender, RoutedEventArgs e)
@@ -19993,8 +20017,51 @@ namespace TDPdf
         // Drag/drop: page reorder
         // ============================================================
 
-        private void PageList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) =>
+        private void PageList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
             _dragStartPoint = e.GetPosition(null);
+            _pageClickCollapseIndex = -1;
+
+            // #135: WPF's Extended-mode ListBox collapses a multi-page selection to the one clicked
+            // page on mouse DOWN (ListBox.NotifyListItemClicked -> MakeSingleSelection), which is
+            // one gesture too early for dragging: by the time the pointer has moved far enough to
+            // start a drag, the block the user selected is already gone and only one page travels.
+            // So when the press lands on a page that is already part of a multi-page selection with
+            // no modifier held, swallow the event to keep the selection intact, and defer the
+            // collapse to mouse-up — where it only happens if no drag followed, which is exactly
+            // how Explorer and every other multi-select list behave.
+            if (e.ClickCount != 1
+                || (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != 0
+                || PageList.SelectedItems.Count <= 1)
+                return;
+
+            if (ContainerUnderMouse(e.OriginalSource as DependencyObject) is not ListBoxItem row) return;
+            int idx = PageList.ItemContainerGenerator.IndexFromContainer(row);
+            if (idx < 0 || !row.IsSelected) return;
+
+            _pageClickCollapseIndex = idx;
+            // The ListBox's own handler would also have focused the row; do it here since it will
+            // never run, or the sidebar silently stops answering the keyboard after this click.
+            row.Focus();
+            e.Handled = true;
+        }
+
+        /// <summary>The <see cref="ListBoxItem"/> a hit-tested element sits inside, if any.</summary>
+        private static ListBoxItem? ContainerUnderMouse(DependencyObject? hit)
+        {
+            while (hit is not null and not ListBoxItem)
+                hit = VisualTreeHelper.GetParent(hit);
+            return hit as ListBoxItem;
+        }
+
+        private void PageList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            // The press was on an already-selected page and no drag followed it, so it was a plain
+            // click after all: apply the selection collapse that mouse-down deferred.
+            if (_pageClickCollapseIndex >= 0 && _pageClickCollapseIndex < PageList.Items.Count)
+                PageList.SelectedIndex = _pageClickCollapseIndex;
+            _pageClickCollapseIndex = -1;
+        }
 
         private void PageList_PreviewMouseMove(object sender, MouseEventArgs e)
         {
@@ -20007,20 +20074,31 @@ namespace TDPdf
                 // not just the one under the cursor. The list has been SelectionMode="Extended"
                 // all along, so people could already select a run of pages and then discovered
                 // that dragging moved exactly one of them.
-                int[] block = PageList.SelectedItems.Count > 0
-                    ? PageList.SelectedItems.Cast<object>()
-                        .Select(o => PageList.Items.IndexOf(o))
-                        .Where(i => i >= 0)
-                        .OrderBy(i => i)
-                        .ToArray()
-                    : Array.Empty<int>();
+                int[] block = SelectedPageIndices();
                 if (block.Length > 0)
                 {
+                    // A drag is starting, so the press was not a plain click: nothing to collapse.
+                    _pageClickCollapseIndex = -1;
+                    // DoDragDrop blocks until the drag ends ANY way it can — dropped, Escape,
+                    // capture lost to Alt-Tab or a dialog — so this finally is the single teardown
+                    // point, the same role LostMouseCapture plays for the tab-strip drag.
                     try { DragDrop.DoDragDrop(PageList, block, DragDropEffects.Move); }
                     finally { HidePageDropLine(); }   // the drag can end anywhere, including nowhere
                 }
             }
         }
+
+        /// <summary>The selected pages' indices, ascending and distinct; empty when nothing is
+        /// selected. Unlike <see cref="SelectedPageIndicesForOcr"/> this does NOT fall back to the
+        /// current page — the callers here mutate the document, so "nothing selected" must mean
+        /// nothing happens rather than an unasked-for edit to page one.</summary>
+        private int[] SelectedPageIndices()
+            => PageList.SelectedItems.Cast<object>()
+                .Select(o => PageList.Items.IndexOf(o))
+                .Where(i => i >= 0)
+                .Distinct()
+                .OrderBy(i => i)
+                .ToArray();
 
         private void PageList_DragOver(object sender, DragEventArgs e)
         {
@@ -20218,37 +20296,53 @@ namespace TDPdf
             if (_doc is null || e.Data.GetData(typeof(int[])) is not int[] block || block.Length == 0)
                 return;
 
+            // The insertion line the user was just looking at and the move performed here read the
+            // same DropTargetIndex, and the same PageBlockMove arithmetic converts that gap into an
+            // insert position — so the line can never promise a place the pages do not go.
+            MovePageBlock(TDPdf.Services.PageBlockMove.Compute(
+                _doc.PageCount, block, DropTargetIndex(e.GetPosition(PageList))));
+        }
+
+        /// <summary>
+        /// Carries out a page-reorder <see cref="TDPdf.Services.PageBlockMove.Plan"/> against the
+        /// open document. The one page-reorder mutation in the app: the thumbnail drag and the
+        /// Move Page Up / Down rows both come here, so the two cannot drift apart.
+        /// </summary>
+        private void MovePageBlock(TDPdf.Services.PageBlockMove.Plan plan)
+        {
+            // IsNoOp covers a block dropped back onto itself, or into a gap inside itself. It has to
+            // be honoured rather than performed harmlessly: a reorder rewrites and reloads the
+            // document, which costs the user every unsaved annotation (SaveTempAndReload clears them
+            // for any structural edit) in exchange for nothing at all.
+            if (_doc is null || plan.IsNoOp || plan.From.Length == 0) return;
             var doc = _doc;
-            int[] from = block.Where(i => i >= 0 && i < doc.PageCount).Distinct().OrderBy(i => i).ToArray();
-            if (from.Length == 0) return;
-
-            int target = DropTargetIndex(e.GetPosition(PageList));
-
-            // #135: dropping a block back onto itself is not a move. Without this a drag that ends
-            // where it began still rewrites and reloads the document, which costs the user their
-            // unsaved annotations (SaveTempAndReload clears them for every structural edit) in
-            // exchange for nothing at all.
-            int insertAt = target - from.Count(i => i < target);
-            bool contiguous = from[^1] - from[0] == from.Length - 1;
-            if (contiguous && insertAt == from[0]) return;
+            CommitActiveTextBox();   // a half-typed box belongs to the layout about to be rewritten
 
             // Lift the pages in document order, then remove from the end so the earlier indices
             // stay valid while we do it. Each PdfPage carries its own /Rotate, so a page's rotation
-            // travels with it and needs no separate bookkeeping.
-            var moving = from.Select(i => doc.Pages[i]).ToList();
-            foreach (int i in from.OrderByDescending(i => i)) doc.Pages.RemoveAt(i);
+            // travels with the page object itself and needs no separate bookkeeping.
+            var moving = plan.From.Select(i => doc.Pages[i]).ToList();
+            for (int k = plan.From.Length - 1; k >= 0; k--) doc.Pages.RemoveAt(plan.From[k]);
 
-            insertAt = Math.Clamp(insertAt, 0, doc.PageCount);
+            int insertAt = Math.Clamp(plan.InsertAt, 0, doc.PageCount);
             for (int k = 0; k < moving.Count; k++) doc.Pages.Insert(insertAt + k, moving[k]);
 
+            // Persists, reloads, repaints and marks the document dirty — and deliberately clears the
+            // overlay annotations, whose canvas coordinates were tied to the old page numbering.
             SaveTempAndReload();
 
-            // Leave the block selected where it landed, so a second drag continues from where the
-            // eye already is rather than from wherever the list decided to put the selection.
+            // Leave the block selected where it landed, so a second drag (or a second Move Down)
+            // continues from where the eye already is rather than from wherever the rebuilt list
+            // decided to put the selection.
             PageList.SelectedItems.Clear();
-            for (int k = 0; k < moving.Count && insertAt + k < PageList.Items.Count; k++)
+            if (insertAt >= PageList.Items.Count) return;
+            // SelectedIndex FIRST, then the rest of the block: on a multi-select ListBox the
+            // SelectedIndex setter means "select just this one", so assigning it afterwards would
+            // quietly throw away every page but the first. It is also what drives
+            // PageList_SelectionChanged, and therefore what puts the page in the viewer.
+            PageList.SelectedIndex = insertAt;
+            for (int k = 1; k < moving.Count && insertAt + k < PageList.Items.Count; k++)
                 PageList.SelectedItems.Add(PageList.Items[insertAt + k]);
-            if (PageList.SelectedItems.Count > 0) PageList.SelectedIndex = insertAt;
         }
 
         // ============================================================

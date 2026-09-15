@@ -174,6 +174,7 @@ Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 Forms.Run(Check, tmp);
 TextEdit.Run(Check, tmp);
 Measure.Run(Check, tmp);
+PageMove.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

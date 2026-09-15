@@ -49,6 +49,7 @@
     <Compile Include="..\..\Services\PdfTextEdit.cs" />
     <Compile Include="..\..\Services\PdfContentInspector.cs" />
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
+    <Compile Include="..\..\Services\PageBlockMove.cs" />
   </ItemGroup>
 
 </Project>

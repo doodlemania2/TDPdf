@@ -1453,6 +1453,7 @@
                                          AllowDrop="True" Drop="PageList_Drop" DragOver="PageList_DragOver"
                                          DragLeave="PageList_DragLeave"
                                          PreviewMouseLeftButtonDown="PageList_PreviewMouseLeftButtonDown"
+                                         PreviewMouseLeftButtonUp="PageList_PreviewMouseLeftButtonUp"
                                          PreviewMouseMove="PageList_PreviewMouseMove"
                                          MouseRightButtonUp="PageList_MouseRightButtonUp"/>
                             </ScrollViewer>
