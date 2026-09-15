@@ -236,6 +236,11 @@ namespace TDPdf
             var dpiHint = Hint($"DPI, {PageImageExporter.MinDpi:0}-{PageImageExporter.MaxDpi:0}. " +
                                $"{PageImageExporter.DefaultDpi:0} is screen quality, 300 is print quality.");
             root.Children.Add(dpiHint);
+            // A DPI on its own tells nobody how big the files will be; this is the same number the
+            // export is about to hand PDFium. Filled in by UpdatePixelHint once the range box below
+            // exists, since the pages the user picked are what decides it.
+            var pixelHint = Hint(string.Empty);
+            root.Children.Add(pixelHint);
 
             root.Children.Add(SectionLabel("Pages", 14));
             var rangeBox = Field(string.Empty);
@@ -249,8 +254,47 @@ namespace TDPdf
                 int selected = Services.PrintPreviewWindow.ParseRange(rangeBox.Text, pageCount).Count;
                 countHint.Text = $"{selected} of {pageCount} page(s) will be exported, one file per page.";
             }
-            rangeBox.TextChanged += (_, _) => UpdateCount();
-            UpdateCount();
+
+            // Live output size for the chosen DPI. PageImageExporter renders through
+            // PageDimensions(dpi / 72), so a page's pixels are simply its VISIBLE size in points
+            // (CropBox- and /Rotate-aware, exactly what PDFium lays out) times dpi/72 — the same
+            // arithmetic, kept here rather than guessed at.
+            //
+            // A range can span pages of different sizes, and one number for all of them would be a
+            // lie for most: the first selected page is reported and the readout says outright that
+            // the others differ, rather than silently showing page 1's size for a mixed document.
+            void UpdatePixelHint()
+            {
+                var pages = Services.PrintPreviewWindow.ParseRange(rangeBox.Text, pageCount);
+                if (_doc is null || pages.Count == 0 || !PageImageExporter.TryParseDpi(dpiBox.Text, out double previewDpi))
+                {
+                    pixelHint.Text = string.Empty;
+                    return;
+                }
+
+                var first = pages[0];
+                if (first < 0 || first >= _doc.PageCount) { pixelHint.Text = string.Empty; return; }
+                var (wPt, hPt) = VisiblePageSize(_doc.Pages[first]);
+                double scale = previewDpi / 72.0;
+                int px = Math.Max(1, (int)Math.Round(wPt * scale));
+                int py = Math.Max(1, (int)Math.Round(hPt * scale));
+
+                bool mixed = pages.Any(i =>
+                {
+                    if (i < 0 || i >= _doc.PageCount) return false;
+                    var (w, h) = VisiblePageSize(_doc.Pages[i]);
+                    return Math.Abs(w - wPt) > 0.5 || Math.Abs(h - hPt) > 0.5;
+                });
+
+                pixelHint.Text = mixed
+                    ? $"Output: {px} × {py} px for page {first + 1}; the selected pages are not all the same size."
+                    : $"Output: {px} × {py} px per image.";
+            }
+
+            void UpdateRangeReadouts() { UpdateCount(); UpdatePixelHint(); }
+            rangeBox.TextChanged += (_, _) => UpdateRangeReadouts();
+            dpiBox.TextChanged += (_, _) => UpdatePixelHint();
+            UpdateRangeReadouts();
 
             var buttons = new StackPanel
             {

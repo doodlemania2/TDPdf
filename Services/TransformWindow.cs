@@ -58,6 +58,8 @@ namespace TDPdf.Services
         private readonly double _pageWpt;
         private readonly double _pageHpt;
         private readonly bool _allowPerspective;
+        private readonly double _applyPixelRatio;      // full-resolution render px per preview px
+        private readonly bool _mixedSelectionSizes;    // the selection spans differently-sized pages
 
         private readonly Image _preview = new()
         {
@@ -119,8 +121,18 @@ namespace TDPdf.Services
         /// photo, so re-using the same quadrilateral on the other selected pages would warp them by an
         /// outline that was never theirs; the section is shown but disabled, with the reason spelled out.
         /// </param>
+        /// <param name="applyPixelRatio">
+        /// Full-resolution render pixels per preview pixel (MainWindow's TransformApplyPx /
+        /// TransformPreviewPx). The preview is deliberately rasterized small, so the output readout
+        /// scales its pixel count by this to report what Apply actually writes.
+        /// </param>
+        /// <param name="mixedSelectionSizes">
+        /// True when the selected pages are not all the same size. The readout describes the
+        /// previewed page, so it says as much rather than quoting one page's pixels for all of them.
+        /// </param>
         public TransformWindow(Window? owner, BitmapSource src, double pageWpt, double pageHpt,
-                               bool allowPerspective = true)
+                               bool allowPerspective = true, double applyPixelRatio = 1.0,
+                               bool mixedSelectionSizes = false)
         {
             _src     = src;
             _srcW    = src.PixelWidth;
@@ -128,6 +140,8 @@ namespace TDPdf.Services
             _pageWpt = pageWpt > 0 ? pageWpt : src.PixelWidth;
             _pageHpt = pageHpt > 0 ? pageHpt : src.PixelHeight;
             _allowPerspective = allowPerspective;
+            _applyPixelRatio  = applyPixelRatio > 0 ? applyPixelRatio : 1.0;
+            _mixedSelectionSizes = mixedSelectionSizes;
 
             Title  = "TDPdf - Transform";
             Width  = 980;
@@ -879,7 +893,21 @@ namespace TDPdf.Services
             {
                 double outWin = b.PixelWidth  * (_pageWpt / _srcW) / 72.0;
                 double outHin = b.PixelHeight * (_pageHpt / _srcH) / 72.0;
-                _sizeReadout.Text = $"Output  {outWin:0.0} × {outHin:0.0} in";
+                // Pixels, not just inches: a transformed page becomes an IMAGE, so its resolution
+                // is the thing that decides whether the result still reads. The preview bitmap is
+                // rasterized at a fraction of Apply's resolution, so its own pixel count would
+                // understate the result — scale it by the ratio between the two renders. The
+                // implied DPI is spelled out because that, not the pixel count, is what tells
+                // someone whether the page will survive being printed.
+                double outPxW = Math.Round(b.PixelWidth  * _applyPixelRatio);
+                double outPxH = Math.Round(b.PixelHeight * _applyPixelRatio);
+                double outDpi = outWin > 0.01 ? outPxW / outWin : 0;
+                _sizeReadout.Text =
+                    $"Output  {outWin:0.0} × {outHin:0.0} in\n" +
+                    $"        {outPxW:0} × {outPxH:0} px ({outDpi:0} dpi)" +
+                    (_mixedSelectionSizes
+                        ? "\nOther selected pages are a different size\nand keep their own dimensions."
+                        : string.Empty);
             }
             SizePreviewImage();
         }

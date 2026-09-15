@@ -31,6 +31,13 @@ namespace TDPdf
     {
         private bool _transformWarnShown;   // session-once rasterization warning
 
+        // The two resolutions the page is rasterized at: once cheaply for the live preview, once at
+        // full size when Apply runs. They are named rather than inline because the dialog's output
+        // readout needs the RATIO between them to report the pixel dimensions Apply will really
+        // produce — a preview pixel count would be half the truth, literally.
+        private const int TransformPreviewPx = 1100;
+        private const int TransformApplyPx   = 2200;
+
         private void ToolTransform_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null) { SetStatus("Open a PDF first."); return; }
@@ -66,7 +73,7 @@ namespace TDPdf
             // resolution — the preview only shows at a few hundred px — so the live compose stays fast; Apply
             // re-renders at full resolution independently.
             string? burned = BurnAllAnnotationsToTemp();
-            var src = RenderPageBitmap(pageIdx, 1100, burned);
+            var src = RenderPageBitmap(pageIdx, TransformPreviewPx, burned);
             if (src is null) { SetStatus("Transform: could not render the page."); return; }
 
             // The transform applies to every selected page (defaults to the previewed page). Resolve the
@@ -83,11 +90,22 @@ namespace TDPdf
 
             var page = _doc.Pages[pageIdx];
             var (visW, visH) = VisiblePageSize(page);   // CropBox- and /Rotate-aware, so the readout matches
+            // The dialog's output readout describes the PREVIEWED page. Rotate / scale / flip apply to
+            // every selected page, and each is rasterized against its own dimensions, so when the
+            // selection is not uniform the readout says so rather than quoting this page's inches and
+            // pixels for pages that will not get them.
+            bool mixedSizes = indices.Any(i =>
+            {
+                var (w, h) = VisiblePageSize(_doc.Pages[i]);
+                return Math.Abs(w - visW) > 0.5 || Math.Abs(h - visH) > 0.5;
+            });
+
             // Perspective correction is single-page only. Rotate / scale / flip are page-independent, but
             // the four corners are traced against THIS page's photographed outline; every other selected
             // page was shot at its own angle, so re-using one quad would warp them by an outline that was
             // never theirs. The dialog disables the section and says why rather than silently no-op'ing.
-            var win = new TransformWindow(this, src, visW, visH, allowPerspective: indices.Count == 1);
+            var win = new TransformWindow(this, src, visW, visH, allowPerspective: indices.Count == 1,
+                applyPixelRatio: (double)TransformApplyPx / TransformPreviewPx, mixedSelectionSizes: mixedSizes);
             win.ShowDialog();
             if (!win.Applied) return;
             if (Math.Abs(win.Angle) < 0.01 && Math.Abs(win.Scale - 1.0) < 0.001 && !win.FlipH && !win.FlipV
@@ -152,7 +170,7 @@ namespace TDPdf
                     await Dispatcher.Yield(DispatcherPriority.Background);
 
                     if (pageIdx < 0 || pageIdx >= _doc.PageCount) continue;
-                    var src = RenderPageBitmap(pageIdx, 2200, renderSrc);
+                    var src = RenderPageBitmap(pageIdx, TransformApplyPx, renderSrc);
                     if (src is null) continue;
 
                     // Perspective first: the traced quad is in the ORIGINAL page raster's coordinates,

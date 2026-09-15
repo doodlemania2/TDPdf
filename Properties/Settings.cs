@@ -279,6 +279,19 @@ namespace TDPdf.Properties
             set => this[nameof(AppScale)] = value;
         }
 
+        // Units for the footer's page-size readout (upstream v1.8.5). One of the
+        // MainWindow.PageSizeUnit enum names: "Pixels" (default), "Inches", "Millimetres",
+        // "Points". App-wide like the other view preferences — the unit someone reads paper in
+        // does not change per document. An unrecognised value falls back to Pixels, so a reset or
+        // hand-edited user.config simply comes back at the default.
+        [UserScopedSetting]
+        [DefaultSettingValue("Pixels")]
+        public string PageSizeUnit
+        {
+            get => (string)this[nameof(PageSizeUnit)];
+            set => this[nameof(PageSizeUnit)] = value;
+        }
+
         // --- OCR (Tesseract) ---
 
         // Chosen OCR languages as a '+'-joined list of Tesseract codes (e.g. "eng" or "eng+spa").

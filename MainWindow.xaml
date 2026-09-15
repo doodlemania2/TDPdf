@@ -1636,6 +1636,18 @@
                     </Button>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <!-- Current page's dimensions, cycling pixels → inches → millimetres →
+                         points on each click (PageSizeReadout_Click). Collapsed while no document
+                         is open, since there is no page to have a size. It sits in the footer,
+                         which AppScale.cs deliberately never scales, so it holds still under the
+                         cursor while it is being clicked through the units. -->
+                    <Button x:Name="PageSizeButton" Content=""
+                             Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
+                             FontFamily="Consolas" FontSize="10" Visibility="Collapsed"
+                             Click="PageSizeReadout_Click"
+                             ToolTip="Page size — click to cycle pixels, inches, millimetres and points"
+                             AutomationProperties.Name="Current page size"
+                             AutomationProperties.HelpText="The current page's dimensions. Click to cycle the units between pixels, inches, millimetres and points."/>
                     <!-- App-wide UI scale (AppScale.cs), deliberately sat next to the page-zoom
                          chip so the two sizes read as the pair they are: this one scales the
                          chrome, that one the page. Scroll to step, click to reset — the same
@@ -1799,6 +1811,7 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Z"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Undo"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Delete"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Delete selected annotation"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Enter / Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Confirm / cancel text or crop"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+R / Ctrl+Shift+R"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Rotate selected pages CW / CCW"/></Grid>
 
                             <TextBlock Text="SEARCH &amp; SELECT" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>
@@ -1826,6 +1839,8 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="0 / E"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Eraser"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="G"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Signature"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Crop"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="R"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Redact"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="F"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Form fields"/></Grid>
                             <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Step back to the Select tool"/></Grid>
 
                             <TextBlock Text="HELP" Foreground="{DynamicResource AccentGreen}"

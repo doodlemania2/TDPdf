@@ -442,6 +442,7 @@ namespace TDPdf
         // Footer chip that shows and drives the app scale (never itself scaled — the footer is
         // fixed so the chip holds still under the cursor while the wheel steps the size).
         private Button _appScaleButton = null!;
+        private Button _pageSizeButton = null!;   // footer page-size chip (see UpdatePageSizeReadout)
 
         // Outline / bookmarks sidebar tab (manual refs — XAML codegen doesn't resolve these)
         private TreeView _outlineTree = null!;
@@ -546,6 +547,7 @@ namespace TDPdf
             _statusBarBorder = (Border)FindName("StatusBarBorder")!;
             _sidebarOuterGrid = (Grid)FindName("SidebarOuterGrid")!;
             _appScaleButton = (Button)FindName("AppScaleButton")!;
+            _pageSizeButton = (Button)FindName("PageSizeButton")!;
             RebuildTabStrip();
             ApplyCustomChromeVisibility();
             ThemeManager.ThemeChanged += ThemeManager_ThemeChanged;
@@ -564,6 +566,7 @@ namespace TDPdf
             CommandBindings.Add(new CommandBinding(CloseOtherTabsCommand, (_, _) => CloseOtherTabs(_ctx)));
             InitDocInvert();   // #135: restore the persisted display-only dark mode + light the rail moon
             InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
+            InitPageSizeReadout();   // upstream v1.8.5: restore the footer page-size chip's unit
             ApplyLayoutShortcutLabels();   // #153: spell the zoom chords for THIS keyboard layout
             LoadSignatures();
             BuildContextMenu();
@@ -2926,6 +2929,101 @@ namespace TDPdf
              : bytes >= 1L << 10 ? $"{bytes / (double)(1 << 10):N0} KB"
              : $"{bytes} bytes";
 
+        // ---- Footer page-size chip (upstream v1.8.5) ----------------------------------------
+        // The current page's dimensions, parked next to the zoom and app-size chips and cycling
+        // units on each click. Deliberately its own control rather than more work for the status
+        // line: the file-size flash above answers a question you ask once and then want gone, this
+        // is a number you want sitting in the corner of your eye while you lay a page out. The
+        // click gesture on StatusText is untouched.
+        //
+        // Like everything else down there it lives in the UNSCALED footer — AppScale.cs leaves the
+        // title bar and status bar alone on purpose, so the chip holds still under the cursor while
+        // it is being clicked through the units — and it never touches the document, so no dirty
+        // flag is involved.
+        private enum PageSizeUnit { Pixels, Inches, Millimetres, Points }
+
+        private PageSizeUnit _pageSizeUnit;
+
+        /// <summary>Restores the persisted unit. Called from the constructor, beside InitAppScale.</summary>
+        private void InitPageSizeReadout()
+        {
+            try
+            {
+                // An unrecognised or missing value simply leaves the field at its default (Pixels).
+                if (Enum.TryParse(TDPdf.Properties.Settings.Default.PageSizeUnit, out PageSizeUnit saved))
+                    _pageSizeUnit = saved;
+            }
+            catch { /* non-critical user preference */ }
+            UpdatePageSizeReadout();
+        }
+
+        private void PageSizeReadout_Click(object sender, RoutedEventArgs e)
+        {
+            _pageSizeUnit = _pageSizeUnit switch
+            {
+                PageSizeUnit.Pixels      => PageSizeUnit.Inches,
+                PageSizeUnit.Inches      => PageSizeUnit.Millimetres,
+                PageSizeUnit.Millimetres => PageSizeUnit.Points,
+                _                        => PageSizeUnit.Pixels
+            };
+            try
+            {
+                TDPdf.Properties.Settings.Default.PageSizeUnit = _pageSizeUnit.ToString();
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            catch { /* persistence is best-effort */ }
+            UpdatePageSizeReadout();
+        }
+
+        /// <summary>
+        /// Repaints the chip from whatever page is current, and hides it outright when no document
+        /// is open — an empty workspace has no page to have a size, and a stale "8.5 × 11 in" left
+        /// over the start screen would be worse than nothing. Cheap and idempotent, so every
+        /// page-change path can simply call it.
+        /// </summary>
+        private void UpdatePageSizeReadout()
+        {
+            if (_pageSizeButton is null) return;   // a page change before the constructor's FindName pass
+            int idx = CurrentReadoutPage();
+            if (_doc is null || idx < 0 || idx >= _doc.PageCount)
+            {
+                _pageSizeButton.Content = string.Empty;
+                _pageSizeButton.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            // VisiblePageSize, never PdfPage.Width/Height: it resolves CropBox over MediaBox, walks
+            // the page tree for an inherited box, and applies /Rotate exactly once. A cropped or a
+            // rotated page therefore reports what the viewer is actually showing.
+            var (wPt, hPt) = VisiblePageSize(_doc.Pages[idx]);
+            _pageSizeButton.Content = FormatPageSize(wPt, hPt, _pageSizeUnit);
+            _pageSizeButton.Visibility = Visibility.Visible;
+        }
+
+        // The page the footer is talking about. The page-jump box is the one number every view mode
+        // keeps current — Grid tracks the nearest tile into it and deliberately does NOT move
+        // PageList.SelectedIndex (a selection change there scroll-jumps and re-renders) — so it is
+        // read first, with the sidebar selection as the fallback before it has been filled in.
+        private int CurrentReadoutPage()
+            => int.TryParse(_pageJumpBox.Text, out int oneBased) ? oneBased - 1 : PageList.SelectedIndex;
+
+        /// <summary>The page's size in the chosen unit, as it reads on the footer chip.</summary>
+        /// <remarks>
+        /// "Pixels" needs a resolution before it means anything, and the honest one here is 96 DPI:
+        /// the page at TRUE 100% zoom (1 pt = 1/72 in, 1 px = 1/96 in), which is exactly what the
+        /// zoom chip sitting beside it means by 100%. Deliberately NOT the size of the bitmap
+        /// currently on screen — that moves with the zoom, the monitor's DPI scaling and
+        /// PdfDocumentService.RenderBoxDip, so one unchanged page would flicker between three
+        /// numbers and every one of them would describe this machine rather than the document.
+        /// </remarks>
+        private static string FormatPageSize(double wPt, double hPt, PageSizeUnit unit) => unit switch
+        {
+            PageSizeUnit.Pixels      => $"{wPt * 96.0 / 72.0:0} × {hPt * 96.0 / 72.0:0} px",
+            PageSizeUnit.Inches      => $"{wPt / 72.0:0.##} × {hPt / 72.0:0.##} in",
+            PageSizeUnit.Millimetres => $"{wPt / 72.0 * 25.4:0} × {hPt / 72.0 * 25.4:0} mm",
+            _                        => $"{wPt:0} × {hPt:0} pt"
+        };
+
         private void SetBusy(bool isBusy, string? status = null)
         {
             _busyDepth = isBusy ? _busyDepth + 1 : Math.Max(0, _busyDepth - 1);
@@ -3904,6 +4002,7 @@ namespace TDPdf
             if (nearestPage >= 0)
             {
                 _pageJumpBox.Text = (nearestPage + 1).ToString();
+                UpdatePageSizeReadout();   // Grid leaves the selection alone, so this is its only hook
                 if (showBadge) ShowPageBadge(nearestPage);   // #197
             }
         }
@@ -6722,6 +6821,9 @@ namespace TDPdf
             // The status line only does something (flash the file size) with a document open, so it only
             // looks clickable then — an empty workspace keeps the plain arrow.
             StatusText.Cursor = hasDoc ? Cursors.Hand : null;
+            // The footer page-size chip follows the same rule, and this is the one place both the
+            // open and the close paths — and every tab switch — pass through.
+            UpdatePageSizeReadout();
         }
 
         private void ToolSelect_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Select);
@@ -14145,6 +14247,17 @@ namespace TDPdf
                 FitToPage();
                 e.Handled = true;
             }
+            // Ctrl+R / Ctrl+Shift+R rotate the selected pages clockwise / counter-clockwise
+            // (upstream v1.8.5). Rotation was reachable from the toolbar and the Pages panel but had
+            // no key of its own; bare R is the Redact tool, so the modified pair is free.
+            // RotatePages_Click already works off PageList.SelectedItems and handles its own errors.
+            else if (e.Key == Key.R && _doc is not null
+                     && (Keyboard.Modifiers == ModifierKeys.Control
+                         || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
+            {
+                RotatePages_Click(Keyboard.Modifiers == ModifierKeys.Control ? 90 : -90);
+                e.Handled = true;
+            }
             // Jump history: Alt+Left / Alt+Right retrace bookmark / link / jump-box / Home-End hops,
             // browser-style. Alt makes the key arrive as Key.System with the real key in SystemKey.
             else if (e.Key == Key.System && e.SystemKey == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
@@ -15430,8 +15543,46 @@ namespace TDPdf
             chipMenu.Items.Add(closeOthers);
             chipMenu.Items.Add(MakeMenuItem("Move to New Window", (_, _) => _ = TearOffTabToNewWindowAsync(ctx), null,
                 "Open this document alone in a new TDPdf window", "\uE78B"));
+            // OriginalPath, not the working path: after a decrypt-on-open or a structural edit the
+            // working file is a temp copy, and revealing %TEMP% is not what "containing folder"
+            // means. A document with no home on disk (a merge result, say) has nothing to show.
+            var openFolder = MakeMenuItem("Open Containing Folder", (_, _) => RevealInExplorer(ctx.OriginalPath), null,
+                "Show this document in File Explorer", "\uE8DA");
+            openFolder.IsEnabled = ctx.OriginalPath is not null;
+            chipMenu.Items.Add(openFolder);
             chip.ContextMenu = chipMenu;
             return chip;
+        }
+
+        /// <summary>
+        /// Selects a file in File Explorer, opening its folder if it is not already showing.
+        /// </summary>
+        /// <remarks>
+        /// The path is quoted but /select, is deliberately outside the quotes — that is the shape
+        /// explorer.exe expects, and it is the reason this is a helper rather than an inline call
+        /// waiting to be got wrong a second time. A file that has been deleted or moved since it
+        /// was opened just falls back to its folder.
+        /// </remarks>
+        private void RevealInExplorer(string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            try
+            {
+                if (System.IO.File.Exists(path))
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                    return;
+                }
+                string? folder = System.IO.Path.GetDirectoryName(path);
+                if (System.IO.Directory.Exists(folder))
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+                else
+                    SetStatus("That folder is no longer available");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Could not open the folder — {ex.Message}");
+            }
         }
 
         /// <summary>Updates each chip's label (name + dirty marker) and active styling.</summary>
@@ -16279,6 +16430,7 @@ namespace TDPdf
             var textPrimary = (SolidColorBrush)FindResource("TextPrimary");
             var textSecondary = (SolidColorBrush)FindResource("TextSecondary");
             var accent = (SolidColorBrush)FindResource("AccentGreen");
+            var danger = (SolidColorBrush)FindResource("DangerRed");
 
             var win = new Window
             {
@@ -16310,8 +16462,83 @@ namespace TDPdf
                 Height = 28
             };
             foreach (var s in sizes) sizeBox.Items.Add(s.Name);
+            // "Custom…" sits one past the end of the presets, so its combo index IS sizes.Length —
+            // every custom-only branch below tests that rather than a magic number.
+            int customIndex = sizes.Length;
+            sizeBox.Items.Add("Custom…");
             sizeBox.SelectedIndex = 0;
             root.Children.Add(sizeBox);
+
+            // ---- Custom size (revealed only while "Custom…" is the selection) ----
+            // Points are the PDF's own unit, but nobody buys paper in points, so the entry is a
+            // width/height pair plus a unit picker and the conversion to points happens on the way
+            // out. The floor and ceiling are the format's, not ours: PDF 32000-1 puts a hard 14400
+            // pt (200 in) limit on a page side, and a page thinner than a few points is a file no
+            // viewer will draw anything on.
+            const double MinSidePt = 3.0;
+            const double MaxSidePt = 14400.0;
+
+            // (display name, points per unit, format for the seeded value)
+            var units = new (string Name, double PtPer, string Fmt)[]
+            {
+                ("inches",      72.0,        "0.##"),
+                ("millimetres", 72.0 / 25.4, "0.#"),
+                ("points",      1.0,         "0.#")
+            };
+
+            TextBox NumBox() => new()
+            {
+                Width = 74,
+                Height = 28,
+                Foreground = textPrimary,
+                Background = bgPanel,
+                BorderBrush = borderDim,
+                BorderThickness = new Thickness(1),
+                CaretBrush = accent,
+                Padding = new Thickness(6, 4, 6, 4),
+                VerticalContentAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Right
+            };
+
+            var customPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+            var customRow = new StackPanel { Orientation = Orientation.Horizontal };
+            var widthBox = NumBox();
+            var heightBox = NumBox();
+            var unitBox = new ComboBox
+            {
+                Style = (Style)FindResource("DarkComboBox"),
+                Height = 28,
+                Width = 120,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            foreach (var u in units) unitBox.Items.Add(u.Name);
+            unitBox.SelectedIndex = 0;
+
+            customRow.Children.Add(widthBox);
+            customRow.Children.Add(new TextBlock
+            {
+                Text = "×",
+                Foreground = textSecondary,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 6, 0)
+            });
+            customRow.Children.Add(heightBox);
+            customRow.Children.Add(unitBox);
+            customPanel.Children.Add(customRow);
+
+            // Doubles as the inline validation message (DangerRed) and, once the numbers are good,
+            // the point equivalent — so the user can see what the PDF is actually going to get.
+            // Deliberately not a second dialog: a modal on top of a modal to say "that is not a
+            // number" is the kind of thing this app's dialogs exist to avoid.
+            var customNote = new TextBlock
+            {
+                Foreground = textSecondary,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 0)
+            };
+            customPanel.Children.Add(customNote);
+            root.Children.Add(customPanel);
 
             root.Children.Add(new TextBlock
             {
@@ -16378,6 +16605,88 @@ namespace TDPdf
                 Child = root
             };
 
+            // ---- Custom-size validation and state ----
+            // Reads both boxes in the selected unit. Rejects anything that is not a number, plus
+            // zero / negative / absurd sizes, and names the first problem it finds.
+            bool TryReadCustom(out double wPt, out double hPt, out string problem)
+            {
+                double ptPer = units[Math.Max(0, unitBox.SelectedIndex)].PtPer;
+                wPt = hPt = 0;
+                if (!double.TryParse(widthBox.Text.Trim(), out double w) ||
+                    !double.TryParse(heightBox.Text.Trim(), out double h))
+                {
+                    problem = "Enter a number for both the width and the height.";
+                    return false;
+                }
+                wPt = w * ptPer;
+                hPt = h * ptPer;
+                if (double.IsNaN(wPt) || double.IsNaN(hPt) || double.IsInfinity(wPt) || double.IsInfinity(hPt))
+                {
+                    problem = "Those dimensions are not a usable page size.";
+                    return false;
+                }
+                if (wPt < MinSidePt || hPt < MinSidePt)
+                {
+                    problem = $"Too small — each side must be at least {MinSidePt / ptPer:0.###} {units[Math.Max(0, unitBox.SelectedIndex)].Name}.";
+                    return false;
+                }
+                if (wPt > MaxSidePt || hPt > MaxSidePt)
+                {
+                    problem = $"Too large — a PDF page cannot exceed {MaxSidePt / ptPer:0.##} {units[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
+                    return false;
+                }
+                problem = string.Empty;
+                return true;
+            }
+
+            void ValidateCustom()
+            {
+                if (sizeBox.SelectedIndex != customIndex) return;
+                bool valid = TryReadCustom(out double wPt, out double hPt, out string problem);
+                customNote.Text = valid ? $"= {wPt:0.#} × {hPt:0.#} pt" : problem;
+                customNote.Foreground = valid ? textSecondary : danger;
+                okBtn.IsEnabled = valid;
+            }
+
+            void SyncCustomState()
+            {
+                bool custom = sizeBox.SelectedIndex == customIndex;
+                customPanel.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
+                // Portrait/Landscape is disabled for a custom size, deliberately. The two boxes
+                // already say which way round the page is; swapping the numbers someone just typed
+                // in — and having the dialog decide 5 × 7 really meant 7 × 5 — reads as the entry
+                // being ignored. The radios come back the moment a preset is selected again.
+                rbPortrait.IsEnabled = !custom;
+                rbLandscape.IsEnabled = !custom;
+                if (custom) ValidateCustom(); else okBtn.IsEnabled = true;
+            }
+
+            // Re-expresses whatever is in the boxes when the unit changes, so picking "millimetres"
+            // after typing 8.5 x 11 inches gives 215.9 x 279.4 rather than a 8.5 mm page. Unparsable
+            // text is left exactly as typed for the user to fix.
+            int lastUnit = unitBox.SelectedIndex;
+            unitBox.SelectionChanged += (_, _) =>
+            {
+                int now = Math.Max(0, unitBox.SelectedIndex);
+                double from = units[Math.Max(0, lastUnit)].PtPer;
+                double to = units[now].PtPer;
+                if (double.TryParse(widthBox.Text.Trim(), out double w))
+                    widthBox.Text = (w * from / to).ToString(units[now].Fmt);
+                if (double.TryParse(heightBox.Text.Trim(), out double h))
+                    heightBox.Text = (h * from / to).ToString(units[now].Fmt);
+                lastUnit = now;
+                ValidateCustom();
+            };
+
+            // Seed the boxes from the page being inserted after, in the starting unit, so Custom
+            // opens on something real to edit rather than two empty boxes.
+            widthBox.Text = (currentWPt / units[0].PtPer).ToString(units[0].Fmt);
+            heightBox.Text = (currentHPt / units[0].PtPer).ToString(units[0].Fmt);
+            widthBox.TextChanged += (_, _) => ValidateCustom();
+            heightBox.TextChanged += (_, _) => ValidateCustom();
+            sizeBox.SelectionChanged += (_, _) => SyncCustomState();
+            SyncCustomState();
+
             bool ok = false;
             okBtn.Click += (_, _) => { ok = true; win.DialogResult = true; };
             cancelBtn.Click += (_, _) => { ok = false; win.DialogResult = false; };
@@ -16385,12 +16694,22 @@ namespace TDPdf
             win.ShowDialog();
             if (!ok) return null;
 
+            if (sizeBox.SelectedIndex == customIndex)
+            {
+                // Insert is disabled while the boxes are invalid, so this cannot fail from the UI;
+                // the guard stays so a later change to the enable rule fails closed rather than
+                // inserting a zero-size page. The orientation radios are disabled here (see
+                // SyncCustomState), so the typed numbers are used exactly as entered.
+                if (!TryReadCustom(out double customW, out double customH, out _)) return null;
+                return (customW, customH);
+            }
+
             var selected = sizes[sizeBox.SelectedIndex];
-            double w = selected.W;
-            double h = selected.H;
-            if (rbLandscape.IsChecked == true && h > w) (w, h) = (h, w);
-            if (rbPortrait.IsChecked == true && w > h) (w, h) = (h, w);
-            return (w, h);
+            double presetW = selected.W;
+            double presetH = selected.H;
+            if (rbLandscape.IsChecked == true && presetH > presetW) (presetW, presetH) = (presetH, presetW);
+            if (rbPortrait.IsChecked == true && presetW > presetH) (presetW, presetH) = (presetH, presetW);
+            return (presetW, presetH);
         }
 
         private void DocumentInfo_Click(object sender, RoutedEventArgs e) => ShowDocumentInfoDialog();
@@ -17793,6 +18112,11 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
+
+            // Rotate / crop / transform change the current page's geometry without necessarily
+            // changing WHICH page it is, so the chip is refreshed here rather than left to a
+            // selection change that may well restore the very same index.
+            UpdatePageSizeReadout();
         }
 
         // ============================================================
@@ -19234,6 +19558,7 @@ namespace TDPdf
                 ClearTextSelection();
                 ClearCropSelection();
                 _pageJumpBox.Text = (PageList.SelectedIndex + 1).ToString();
+                UpdatePageSizeReadout();   // pages can differ in size, so the chip follows the page
 
                 // Continuous view: the whole document is one scroll, so a sidebar selection
                 // scrolls the strip rather than re-rendering a single page. The scroll-sync
