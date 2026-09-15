@@ -204,6 +204,38 @@ namespace TDPdf
         private bool _redactRemovePartial = true;
         private bool _redactScrubMetadata = true;
 
+        // ── Measure tool ───────────────────────────────────────────────────────────────────────
+        //
+        // A ruler, and nothing else. It is the only tool in this file that mutates NOTHING: no
+        // PageAnnotation subclass, nothing in _annotations, no MarkDirty(), no _isDirty. Measuring
+        // a margin is a question about the document, not an edit to it, and a tool that quietly
+        // armed the "unsaved changes" prompt for asking would be a bug in its own right.
+        //
+        // That is also why the state lives here as plain window fields rather than in
+        // DocumentContext: there is nothing to preserve across a tab switch. ActivateContext calls
+        // SetTool(Select), which clears the measurement, and a ruler the user has to re-drag after
+        // switching documents is exactly what a ruler should do.
+        private readonly Button _toolMeasureBtn = null!;
+
+        /// <summary>True only between mouse-down and mouse-up on the Measure tool.</summary>
+        private bool _isMeasuring;
+
+        /// <summary>True once a measurement exists on screen, drag finished or not.</summary>
+        private bool _hasMeasurement;
+
+        /// <summary>The page the measurement was drawn on; it is never shown on any other.</summary>
+        private int _measurePage = -1;
+
+        // Both ends in ANNOTATION-CANVAS coordinates — the same space every annotation and every
+        // redaction mark is stored in. Zoom is an ancestor LayoutTransform on PageContentGrid, so
+        // these are already zoom-independent; they are converted to PDF points only at the moment
+        // the caption is built. See MeasureGeometry.
+        private Point _measureA;
+        private Point _measureB;
+
+        /// <summary>The ruler's visuals, so a re-render can put back exactly what it wiped.</summary>
+        private readonly List<UIElement> _measureVisuals = new();
+
         // Pan tool / middle-mouse pan
         private bool _isPanning;
         private MouseButton? _panButton;
@@ -508,6 +540,7 @@ namespace TDPdf
             _toolCropBtn = (Button)FindName("ToolCropBtn")!;
             _toolRedactBtn = (Button)FindName("ToolRedactBtn")!;
             _toolFormBtn = (Button)FindName("ToolFormBtn")!;
+            _toolMeasureBtn = (Button)FindName("ToolMeasureBtn")!;
             _toolPanBtn = (Button)FindName("ToolPanBtn")!;
             _toolEraseBtn = (Button)FindName("ToolEraseBtn")!;
             _toolShapeBtn = (Button)FindName("ToolShapeBtn")!;
@@ -2305,6 +2338,7 @@ namespace TDPdf
                 if (!internalReload) { _ctx.OutlineExpanded.Clear(); _ctx.OutlineExpandSeen = false; }
                 _annotations.Clear();
                 ClearFormState();
+                ClearMeasurement();   // a reading about the document that just went away
                 _undoStack.Clear();
                 _redoStack.Clear();
                 _renderDims.Clear();
@@ -6570,6 +6604,7 @@ namespace TDPdf
                 (_toolCropBtn, EditTool.Crop),
                 (_toolRedactBtn, EditTool.Redact),
                 (_toolFormBtn, EditTool.Form),
+                (_toolMeasureBtn, EditTool.Measure),
                 (_toolPanBtn, EditTool.Pan),
                 (_toolEraseBtn, EditTool.Erase),
                 (_toolShapeBtn, EditTool.Shape)
@@ -6598,6 +6633,7 @@ namespace TDPdf
                 EditTool.Crop => Cursors.Cross,
                 EditTool.Redact => Cursors.Cross,
                 EditTool.Form => Cursors.Cross,
+                EditTool.Measure => Cursors.Cross,
                 EditTool.Pan => Cursors.Hand,
                 EditTool.Erase => Cursors.Cross,
                 EditTool.Shape => Cursors.Cross,
@@ -6661,6 +6697,13 @@ namespace TDPdf
                 // Dismiss crop confirm bar when switching away from Crop
                 HideCropConfirmBar();
             }
+
+            // The ruler is transient by definition, so leaving the tool takes it with it — that is
+            // also what makes Esc (which steps down to Select) the way to dismiss one. Re-selecting
+            // Measure while already on it deliberately does NOT clear: SetTool runs on every
+            // toolbar click and on the M key, and having the reading vanish because the user
+            // pressed the tool's own shortcut again would read as a glitch.
+            if (tool != EditTool.Measure) ClearMeasurement();
         }
 
         /// <summary>
@@ -6682,6 +6725,10 @@ namespace TDPdf
             _isMovingAnnot = false;
             _isResizingAnnot = false;
             _isPanning = false;
+            // Only the DRAG is cancelled here; a finished measurement is left on screen. SetTool
+            // calls this before it decides whether the ruler survives, and tearing the visuals
+            // down here would make re-selecting the Measure tool wipe its own reading.
+            _isMeasuring = false;
             _panButton = null;
 
             _activeInk = null;
@@ -6713,7 +6760,7 @@ namespace TDPdf
         private bool IsPointerOperationActive =>
             _isDrawing || _isSelecting || _isDraggingAnnot || _isResizingSig ||
             _isResizingImage || _isMovingAnnot || _isResizingAnnot || _isPanning ||
-            _txtSelActive;
+            _txtSelActive || _isMeasuring;
 
         // Sidebar toggle strip button and the View menu's "Toggle Sidebar" both land here.
         private void SidebarToggle_Click(object sender, RoutedEventArgs e) =>
@@ -6907,6 +6954,7 @@ namespace TDPdf
         private void ToolShape_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Shape);
         private void ToolRedact_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Redact);
         private void ToolForm_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Form);
+        private void ToolMeasure_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Measure);
         private void ToolCrop_Click(object sender, RoutedEventArgs e)
         {
             SetTool(EditTool.Crop);
@@ -8114,6 +8162,7 @@ namespace TDPdf
 
             _annotations.Clear();
             _redactionMarks.Clear();
+            ClearMeasurement();
             ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();
@@ -10846,6 +10895,24 @@ namespace TDPdf
                     break;
                 }
 
+                case EditTool.Measure:
+                {
+                    // A new drag replaces whatever was being read before. Deliberately not a
+                    // second ruler: two measurements on one page with no way to tell which
+                    // caption belongs to which line is worse than one you can re-take instantly.
+                    ClearSelection();
+                    ClearMeasurement();
+                    _isMeasuring = true;
+                    _hasMeasurement = true;
+                    _measurePage = pageIdx;
+                    _measureA = pos;
+                    _measureB = pos;
+                    RenderMeasurement();
+                    _annotationCanvas.CaptureMouse();
+                    e.Handled = true;
+                    break;
+                }
+
                 case EditTool.Crop:
                     ClearSelection();
                     ClearCropSelection();
@@ -11418,6 +11485,17 @@ namespace TDPdf
                 return;
             }
 
+            // Measure drag. Ahead of the _isDrawing switch below and on its own flag, because the
+            // ruler is several visuals rather than the one _activePreview that path assumes — and
+            // because CancelActivePointerOperation(removePreview: true) removes _activePreview from
+            // the canvas, which would strip the line and orphan the caps and the caption.
+            if (_isMeasuring)
+            {
+                _measureB = pos;
+                RenderMeasurement();
+                return;
+            }
+
             if (!_isDrawing || _activePreview is null) return;
 
             switch (_currentTool)
@@ -11679,6 +11757,40 @@ namespace TDPdf
                 SelectAnnotation(resizing, resizing.TargetBounds);
                 SetStatus("Image resize committed - save to apply white-out + overdraw");
                 _resizingImageEdit = null;
+                return;
+            }
+
+            // Finish a measurement. The ruler stays on the page after the button comes up — the
+            // whole point is to be able to read it — and is replaced by the next drag, cleared by
+            // a page change, and taken away with the tool (Esc included).
+            if (_isMeasuring)
+            {
+                _isMeasuring = false;
+                if (_annotationCanvas.IsMouseCaptured) _annotationCanvas.ReleaseMouseCapture();
+                // Clamped the same way Canvas_MouseMove clamps, so releasing past the edge of the
+                // page settles on the number that was on screen rather than silently adding the
+                // overshoot — the mapping would happily extrapolate off the page box.
+                var endPos = e.GetPosition(_annotationCanvas);
+                _measureB = new Point(
+                    Math.Clamp(endPos.X, 0, _annotationCanvas.ActualWidth),
+                    Math.Clamp(endPos.Y, 0, _annotationCanvas.ActualHeight));
+
+                // A click that never moved is not a measurement; leaving a zero-length ruler and a
+                // "0 in · 0 mm · 0 pt" caption behind on a stray click would just be litter. 3px
+                // matches the highlighter's and redaction's stray-click threshold.
+                double mdx = _measureB.X - _measureA.X, mdy = _measureB.Y - _measureA.Y;
+                if (Math.Sqrt(mdx * mdx + mdy * mdy) < 3)
+                {
+                    ClearMeasurement();
+                    SetStatus("Measure: drag from one point to another to measure the distance");
+                }
+                else
+                {
+                    RenderMeasurement();
+                    string? caption = MeasurementCaption();
+                    if (caption is not null) SetStatus($"Measured {caption}");
+                }
+                e.Handled = true;
                 return;
             }
 
@@ -14606,6 +14718,13 @@ namespace TDPdf
                 case Key.C: ToolCrop_Click(this, new RoutedEventArgs()); return true;
                 case Key.R: SetTool(EditTool.Redact); return true;
                 case Key.F: SetTool(EditTool.Form); return true;
+                // M for Measure. Verified free before taking it: no other `case Key.M` exists in
+                // the app, and the only M binding anywhere is the Merge button's Alt+M ACCESS key,
+                // which cannot collide because this method is only ever reached with
+                // ModifierKeys.None. Mirrored in KeyboardMapOverlay's KbMap and in the LIST view's
+                // TOOLS section in MainWindow.xaml — those two drifted apart once and it was
+                // reported as a bug, so a new key goes into all three or none.
+                case Key.M: SetTool(EditTool.Measure); return true;
                 default: return false;
             }
         }
@@ -14906,6 +15025,7 @@ namespace TDPdf
                 RenderRedactionMarks(pageIndex);
                 RestoreFormOverlays(pageIndex);
                 RestorePolyPreview(pageIndex);
+                RestoreMeasurement(pageIndex);
                 ApplyTextSelectionQuads(pageIndex);
                 return;
             }
@@ -15127,6 +15247,7 @@ namespace TDPdf
             // The canvas was cleared above, so restore any form-field overlays.
             RestoreFormOverlays(pageIndex);
             RestorePolyPreview(pageIndex);
+            RestoreMeasurement(pageIndex);
             // Flowing text-selection quads live on this canvas too and were wiped by the clear;
             // repaint them last so they sit on top and survive every re-render.
             ApplyTextSelectionQuads(pageIndex);
@@ -15147,6 +15268,171 @@ namespace TDPdf
                 _annotationCanvas.Children.Add(_polyRubber);
             if (_polySnapDot is not null && !_annotationCanvas.Children.Contains(_polySnapDot))
                 _annotationCanvas.Children.Add(_polySnapDot);
+        }
+
+        // ============================================================
+        // Measure tool — a transient ruler. Nothing here writes to the document.
+        // ============================================================
+
+        /// <summary>
+        /// The caption for the current measurement, or null when there is nothing to say yet.
+        /// </summary>
+        /// <remarks>
+        /// <b>This is where the accuracy lives.</b> The two ends are canvas coordinates; they reach
+        /// PDF points through <see cref="TDPdf.Services.MeasureGeometry"/>, which routes every step
+        /// through <see cref="TDPdf.Services.PdfPageGeometry"/> — the single home for the
+        /// canvas↔PDF mapping that the link overlays, the form-field overlays, redaction and the
+        /// rasteriser all share. Going through it, rather than dividing by a page width here, is
+        /// what makes the reading survive all four of the things that would otherwise break it:
+        ///
+        ///   * <b>Zoom.</b> Zoom is an ancestor LayoutTransform on PageContentGrid, so a point
+        ///     taken with GetPosition(_annotationCanvas) is already in the unscaled canvas frame.
+        ///   * <b>Render resolution / HiDPI.</b> The canvas frame is derived from page geometry
+        ///     (RenderBoxDip over the longest side), not from a bitmap's pixel count, so the
+        ///     denominator below is DPI-normalised DIPs on every monitor.
+        ///   * <b>/Rotate, inherited or not.</b> PdfPageGeometry resolves the angle by walking
+        ///     /Parent and applies the matching quarter-turn table, so a 90° page's swapped axes
+        ///     are handled rather than silently scaling the distance by the aspect ratio.
+        ///   * <b>A CropBox that differs from the MediaBox.</b> VisibleBox picks the box PDFium
+        ///     actually rasterised and keeps its origin, so an inset or offset crop does not
+        ///     stretch the ruler.
+        ///
+        /// EnsureRenderDims rather than a raw _renderDims lookup for the same reason redaction uses
+        /// it: the frame is pure geometry and is knowable even if this page's bitmap has not landed.
+        /// </remarks>
+        private string? MeasurementCaption()
+        {
+            if (!_hasMeasurement || _doc is null) return null;
+            if (_measurePage < 0 || _measurePage >= _doc.PageCount) return null;
+
+            var dims = EnsureRenderDims(_measurePage);
+            if (dims.w <= 0 || dims.h <= 0) return null;
+
+            double points = TDPdf.Services.MeasureGeometry.DistancePoints(
+                _doc.Pages[_measurePage],
+                _measureA.X, _measureA.Y, _measureB.X, _measureB.Y,
+                dims.w, dims.h);
+            return TDPdf.Services.MeasureGeometry.Format(points);
+        }
+
+        /// <summary>
+        /// Draws (or redraws) the ruler: the line, a tick at each end, and the reading.
+        /// </summary>
+        /// <remarks>
+        /// Rebuilt from scratch on every mouse-move rather than mutated in place. It is four small
+        /// visuals on a canvas that already re-renders every annotation on far less provocation,
+        /// and "rebuild from the two endpoints" is the only version of this that cannot leave a
+        /// stale cap or a caption from a previous drag behind.
+        ///
+        /// Everything goes on _annotationCanvas, so the ruler scales with the page exactly as the
+        /// annotations do — a line drawn between two points on the page has to stay between those
+        /// two points when the page is zoomed. The caption rides along with it; the same reading is
+        /// also pushed to the status bar on release, which is the copy that stays legible at 25%.
+        /// </remarks>
+        private void RenderMeasurement()
+        {
+            ClearMeasurementVisuals();
+            if (!_hasMeasurement || _measurePage != PageList.SelectedIndex) return;
+            if (!IsFinite(_measureA.X) || !IsFinite(_measureA.Y)) return;
+            if (!IsFinite(_measureB.X) || !IsFinite(_measureB.Y)) return;
+
+            var accent = (SolidColorBrush)FindResource("AccentGreen");
+
+            AddMeasureVisual(new Line
+            {
+                X1 = _measureA.X, Y1 = _measureA.Y,
+                X2 = _measureB.X, Y2 = _measureB.Y,
+                Stroke = accent,
+                StrokeThickness = 1.5,
+                // Like every other overlay on this canvas: the ruler must never swallow the press
+                // that starts the next measurement.
+                IsHitTestVisible = false
+            });
+
+            // End caps, drawn as a short tick perpendicular to the ruler at each end — the way a
+            // dimension line is drawn on a drawing, and the thing that makes it unambiguous which
+            // two points the number refers to when the line runs over dense content.
+            double dx = _measureB.X - _measureA.X, dy = _measureB.Y - _measureA.Y;
+            double len = Math.Sqrt(dx * dx + dy * dy);
+            if (len > 0.5)
+            {
+                const double capHalfLength = 5;
+                double nx = -dy / len * capHalfLength, ny = dx / len * capHalfLength;
+                foreach (var end in new[] { _measureA, _measureB })
+                    AddMeasureVisual(new Line
+                    {
+                        X1 = end.X - nx, Y1 = end.Y - ny,
+                        X2 = end.X + nx, Y2 = end.Y + ny,
+                        Stroke = accent,
+                        StrokeThickness = 1.5,
+                        IsHitTestVisible = false
+                    });
+            }
+
+            string? caption = MeasurementCaption();
+            if (caption is null) return;
+
+            var readout = new Border
+            {
+                Background = (SolidColorBrush)FindResource("BgPanel"),
+                BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(6, 2, 6, 2),
+                IsHitTestVisible = false,
+                Child = new TextBlock
+                {
+                    Text = caption,
+                    Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                    FontFamily = new FontFamily("Consolas"),
+                    FontSize = 11
+                }
+            };
+            // Offset from the midpoint rather than centred on it, so the reading never sits on top
+            // of the line it is reporting. Clamped at the canvas origin only — a ruler dragged to
+            // the very edge would otherwise put its own caption off the left/top of the page.
+            Canvas.SetLeft(readout, Math.Max(0, (_measureA.X + _measureB.X) / 2 + 10));
+            Canvas.SetTop(readout, Math.Max(0, (_measureA.Y + _measureB.Y) / 2 - 26));
+            AddMeasureVisual(readout);
+        }
+
+        private void AddMeasureVisual(UIElement visual)
+        {
+            _annotationCanvas.Children.Add(visual);
+            _measureVisuals.Add(visual);
+        }
+
+        /// <summary>Takes the ruler's visuals off the canvas but keeps the measurement itself.</summary>
+        private void ClearMeasurementVisuals()
+        {
+            foreach (var v in _measureVisuals)
+                if (_annotationCanvas.Children.Contains(v)) _annotationCanvas.Children.Remove(v);
+            _measureVisuals.Clear();
+        }
+
+        /// <summary>
+        /// Forgets the measurement entirely. Cheap and idempotent, so every path that should not
+        /// leave a ruler behind can simply call it.
+        /// </summary>
+        private void ClearMeasurement()
+        {
+            ClearMeasurementVisuals();
+            _isMeasuring = false;
+            _hasMeasurement = false;
+            _measurePage = -1;
+        }
+
+        /// <summary>
+        /// Puts the ruler back after <see cref="RenderAllAnnotations"/> cleared the canvas — the
+        /// same contract as <see cref="RestorePolyPreview"/>. Without it, anything that re-renders
+        /// the page mid-measurement (an undo, a restyle, a redaction mark going down on a page the
+        /// ruler is sitting on) would wipe the line while the drag is still live, and the next
+        /// mouse-move would be drawing into a detached visual.
+        /// </summary>
+        private void RestoreMeasurement(int pageIndex)
+        {
+            if (!_hasMeasurement || _measurePage != pageIndex) return;
+            RenderMeasurement();
         }
 
         /// <summary>
@@ -15368,6 +15654,7 @@ namespace TDPdf
                 ClearPageSnapshotsExceptLast(target);
                 _annotations.Clear();
                 ClearFormState();
+                ClearMeasurement();
                 _renderDims.Clear();
                 ClearSelection();
                 MarkDirty();
@@ -18434,6 +18721,10 @@ namespace TDPdf
             // annotations through the turn beforehand (see RotatePages_Click) and passes
             // keepAnnotations: true so that unsaved work survives the reload.
             if (!keepAnnotations) _annotations.Clear();
+            // Unconditional, for the same reason the redaction marks below are: every caller has
+            // just changed page geometry or page numbering, so a surviving ruler would be two
+            // canvas points measured against a page that is no longer the page they were taken on.
+            ClearMeasurement();
             // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
             // a page index, and every caller here has just moved, deleted, reordered or resized
             // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
@@ -19982,6 +20273,9 @@ namespace TDPdf
                 ClearSelection();
                 ClearTextSelection();
                 ClearCropSelection();
+                // A measurement belongs to the page it was taken on — pages can differ in size, so
+                // carrying one across would be a number about a page nobody is looking at.
+                ClearMeasurement();
                 _pageJumpBox.Text = (PageList.SelectedIndex + 1).ToString();
                 UpdatePageSizeReadout();   // pages can differ in size, so the chip follows the page
 

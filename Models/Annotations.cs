@@ -7,7 +7,11 @@ namespace TDPdf
     // v1.6.5, #127). Appended rather than inserted so the numeric values of the existing members
     // never shift — the persisted view/tool settings round-trip through them. Redact is appended
     // for that same reason.
-    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact, Form }
+    //
+    // Measure is the odd one out and appended like the rest: it is the only member that never
+    // produces a PageAnnotation and never touches the document at all. It is a ruler — it draws a
+    // transient overlay, reports a distance, and leaves when the tool does.
+    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact, Form, Measure }
 
     /// <summary>
     /// Which kind of form field the Form tool places. Not the same enum as

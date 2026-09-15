@@ -378,6 +378,23 @@
             <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
         </Style>
 
+        <!-- The Measure tool's icon, as real vector geometry rather than a Segoe MDL2 glyph.
+             This repo is developed on macOS and the app only runs on Windows, so a glyph's
+             appearance cannot be checked before it ships — and the Shape bar has already been
+             burned by exactly that: the Line tool went out wearing "", which renders as an
+             empty square, and was reported as a missing feature two buttons from the Rectangle
+             tool (#155, 1.30.0.0). The four shape toggles were redrawn as their own shapes then;
+             this follows that precedent. A ruler drawn here is verifiable by reading it, themes
+             correctly (the stroke follows whatever Foreground the host sets, which is how the
+             active-tool highlight in SetTool reaches it), and cannot silently become the wrong
+             picture on a machine with a different font version.
+
+             Authored in a 16x16 box, on half-pixel coordinates so a 1.2px stroke lands crisply at
+             the toolbar's icon size: a 14x5 body with three graduation ticks hanging off its top
+             edge, the middle one longer, which is what makes it read as a ruler rather than as
+             another rectangle at 16px. -->
+        <Geometry x:Key="MeasureRulerGeometry">M 1.5,5.5 H 14.5 V 10.5 H 1.5 Z M 4.5,5.5 V 8.5 M 8,5.5 V 9.5 M 11.5,5.5 V 8.5</Geometry>
+
         <!-- #177: the two halves of a shortcuts-overlay row. Rows are 2-column Grids (a fixed key
              column, the description taking the rest), both cells wrapping and vertically centred
              so a long description folds onto a second line without knocking its key out of line.
@@ -1147,6 +1164,16 @@
                 <MenuItem Header="_Crop"            InputGestureText="C"            Click="ToolCrop_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7A8;"/></MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="_Measure"         InputGestureText="M"            Click="ToolMeasure_Click">
+                    <!-- Same vector icon as the toolbar button; TextSecondary matches MenuGlyph,
+                         which is what every other icon in this menu is painted with. -->
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource MeasureRulerGeometry}"
+                              Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.2"
+                              StrokeLineJoin="Round" Fill="{x:Null}"
+                              Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE90F;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1258,6 +1285,16 @@
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature (G, Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature tool" AutomationProperties.HelpText="Create and place signatures. Shortcut G. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
                     <Button x:Name="ToolCropBtn" Content="&#xE7A8;" Style="{StaticResource ToolbarButton}" Click="ToolCrop_Click" ToolTip="Crop pages (C, Alt+C)" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Crop tool" AutomationProperties.HelpText="Drag a rectangle on the page, then apply the crop. Shortcut C. Access key Alt+C." AutomationProperties.AccessKey="C" AutomationProperties.LabeledBy="{Binding ElementName=CropToolButtonLabel}"/>
+                    <!-- Measure. Content is a vector Path, not a Segoe MDL2 glyph — see the
+                         MeasureRulerGeometry resource for why. The stroke binds to the button's own
+                         Foreground so SetTool's active-tool highlight (AccentGreen) and every theme
+                         switch reach it without this button needing to know about either. -->
+                    <Button x:Name="ToolMeasureBtn" Style="{StaticResource ToolbarButton}" Click="ToolMeasure_Click" ToolTip="Measure (M) — drag to measure a distance in inches, millimetres and points" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Measure tool" AutomationProperties.HelpText="Drag from one point on the page to another to read the distance between them in inches, millimetres and PDF points. Nothing is added to the document. Shortcut M.">
+                        <Path Data="{StaticResource MeasureRulerGeometry}"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2" StrokeLineJoin="Round" Fill="{x:Null}"
+                              Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
+                    </Button>
                     <!-- Redaction is destructive and irreversible, so it wears the danger chrome
                          rather than the ordinary tool chrome: it is the only edit tool that removes
                          content from the file outright. -->
@@ -1841,6 +1878,10 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Crop"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="R"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Redact"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="F"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Form fields"/></Grid>
+                            <!-- Keep in step with KeyboardMapOverlay.cs KbMap[KbLayer.Base] and with
+                                 TrySelectToolByKey. This list and the rendered keyboard drifted apart
+                                 once already and it was reported as a bug. -->
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="M"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Measure"/></Grid>
                             <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Step back to the Select tool"/></Grid>
 
                             <TextBlock Text="HELP" Foreground="{DynamicResource AccentGreen}"
