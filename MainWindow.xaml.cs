@@ -2082,7 +2082,22 @@ namespace TDPdf
         {
             if (_doc is null) return;
             var menu = new ContextMenu();
+            int[] selectedPages = SelectedPageIndices();
             menu.Items.Add(MakeMenuItem("Insert Blank Page After", (s, ev) => InsertBlankPage_Click(s!, ev), null, null, "\uE7C3"));
+            // Pluralised on the plain count, unlike the Move rows below: every selected page is
+            // duplicated whether or not the selection is contiguous, so there is no equivalent of
+            // movesBlock's "does this actually move more than one page" question to ask.
+            var duplicate = MakeMenuItem(selectedPages.Length > 1 ? "Duplicate Pages" : "Duplicate Page",
+                (s, ev) => DuplicatePages_Click(), null,
+                "Insert a copy of each selected page after the last of them", "\uE8C8");
+            // Greyed rather than falling back to the current page. Duplicating is a structural edit:
+            // it rewrites and reloads the document and takes the unsaved overlay annotations with it
+            // (see SaveTempAndReload), so guessing at what the user meant is expensive to be wrong
+            // about. In practice the list always has a selection \u2014 opening a document and every
+            // reload select a page \u2014 so this state is the genuinely ambiguous one, and a greyed row
+            // says "choose the pages first" without spending anything to say it.
+            duplicate.IsEnabled = selectedPages.Length > 0;
+            menu.Items.Add(duplicate);
             menu.Items.Add(new Separator());
             // One Rotate glyph serves both directions: the counter-clockwise row draws it mirrored,
             // so the pair reads as a matched set instead of two unrelated icons.
@@ -2093,7 +2108,6 @@ namespace TDPdf
             menu.Items.Add(new Separator());
             // #135: a contiguous multi-page selection now moves as a block, so say so \u2014 the rows
             // used to move exactly one page whatever was selected.
-            int[] selectedPages = SelectedPageIndices();
             bool movesBlock = selectedPages.Length > 1
                               && selectedPages[^1] - selectedPages[0] == selectedPages.Length - 1;
             menu.Items.Add(MakeMenuItem(movesBlock ? "Move Pages Up" : "Move Page Up",
@@ -20718,6 +20732,61 @@ namespace TDPdf
             PageList.SelectedIndex = insertAt;
             for (int k = 1; k < moving.Count && insertAt + k < PageList.Items.Count; k++)
                 PageList.SelectedItems.Add(PageList.Items[insertAt + k]);
+        }
+
+        /// <summary>
+        /// Duplicate Page(s): inserts a copy of every selected page as one block immediately after
+        /// the last of them, and leaves the copies selected.
+        /// </summary>
+        /// <remarks>
+        /// The copy itself is <see cref="TDPdf.Services.PdfPageDuplicate"/>'s problem, and it is a
+        /// real problem — inserting a page back into the document it already belongs to shares one
+        /// object rather than copying it, and PdfSharpCore has no in-document copy to offer. That
+        /// file's header explains the mechanism; tests/PdfCore proves the two pages are genuinely
+        /// independent by mutating one across a save round trip and checking the other.
+        ///
+        /// Everything after the copy is the ordinary structural-edit path, deliberately: mutate
+        /// _doc.Pages, then SaveTempAndReload, which is what marks the document dirty and what
+        /// clears the overlay annotations whose page numbering this just changed. Insert Blank Page
+        /// keeps its annotations by renumbering them instead, but it adds an EMPTY page — here the
+        /// copies are made from the saved page content, which the unsaved overlay is not part of, so
+        /// keeping the originals' annotations would leave two apparently identical pages one of
+        /// which carries annotations. The default clear is the honest answer.
+        /// </remarks>
+        private void DuplicatePages_Click()
+        {
+            if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            var doc = _doc;
+            int[] pages = SelectedPageIndices();
+            // The menu row is disabled with an empty selection, so this only catches a caller that
+            // arrives some other way; it must not fall back to page one and edit the document unasked.
+            if (pages.Length == 0) { SetStatus("Select the pages to duplicate first."); return; }
+            CommitActiveTextBox();   // a half-typed box belongs to the layout about to be rewritten
+            try
+            {
+                int insertAt = TDPdf.Services.PdfPageDuplicate.Duplicate(doc, pages);
+                if (insertAt < 0) return;
+                SaveTempAndReload();
+
+                // #135 item 5: the copies end up selected, and therefore shown in the viewer — the
+                // whole point of the request. Same order of operations as MovePageBlock above, for
+                // the same reason: on a multi-select ListBox the SelectedIndex setter means "select
+                // just this one", so it has to go FIRST and the rest of the block be added after,
+                // or every copy but the first is silently dropped from the selection.
+                PageList.SelectedItems.Clear();
+                if (insertAt < PageList.Items.Count)
+                {
+                    PageList.SelectedIndex = insertAt;
+                    for (int k = 1; k < pages.Length && insertAt + k < PageList.Items.Count; k++)
+                        PageList.SelectedItems.Add(PageList.Items[insertAt + k]);
+                }
+                SetStatus($"Duplicated {pages.Length} page{(pages.Length == 1 ? "" : "s")}");
+            }
+            catch (Exception ex)
+            {
+                TdpDialog.Show(this, $"Duplicate failed:\n{ex.Message}", "TDPdf",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         // ============================================================

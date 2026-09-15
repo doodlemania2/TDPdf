@@ -50,6 +50,7 @@
     <Compile Include="..\..\Services\PdfContentInspector.cs" />
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
     <Compile Include="..\..\Services\PageBlockMove.cs" />
+    <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
   </ItemGroup>
 
