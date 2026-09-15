@@ -38,6 +38,76 @@ namespace TDPdf.Services
             }, cancellationToken);
         }
 
+        /// <summary>
+        /// Serializes to a sibling temp file and only then moves it into place, so a failure while
+        /// writing cannot damage the file the user already has.
+        /// </summary>
+        /// <remarks>
+        /// SAVING STRAIGHT OVER THE DESTINATION IS THE BUG THIS EXISTS TO PREVENT. PdfSharpCore
+        /// serializes incrementally into the destination stream, so an exception part-way through —
+        /// exactly the #106 class of failure that <c>RunSaveWithRecoveryAsync</c> retries — left the
+        /// user's own document truncated, and the retry then ran over the damaged file. The window
+        /// is small but the loss is total and silent: the only copy of the document is the one being
+        /// written over.
+        ///
+        /// The temp file is a SIBLING of the destination, not one in %TEMP%, for two reasons: the
+        /// move has to stay on one volume to be atomic, and a document big enough to matter should
+        /// not be written twice across a network share or a different disk.
+        ///
+        /// <see cref="File.Replace(string,string,string)"/> is preferred when the destination
+        /// exists because it keeps the original file's identity — ACLs, and the alternate data
+        /// streams that carry the Mark of the Web. It is not universally supported (some SMB shares
+        /// and cloud-sync folders refuse it), so a refusal falls back to a plain overwrite from a
+        /// file that is by then complete and closed.
+        /// </remarks>
+        public Task SaveAtomicAsync(Action<string> saveToPath, string destinationPath, CancellationToken cancellationToken)
+        {
+            return Task.Run(() => WriteAtomic(saveToPath, destinationPath, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>The synchronous body of <see cref="SaveAtomicAsync"/>, for callers already off the UI thread.</summary>
+        private static void WriteAtomic(Action<string> saveToPath, string destinationPath, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath)) ?? ".";
+            string staging = Path.Combine(directory, $".tdpdf_save_{Guid.NewGuid():N}.tmp");
+            try
+            {
+                saveToPath(staging);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (File.Exists(destinationPath))
+                {
+                    try
+                    {
+                        File.Replace(staging, destinationPath, null, ignoreMetadataErrors: true);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+                    {
+                        // The staged file is complete at this point, so an overwrite here is
+                        // still strictly safer than having serialized into the destination.
+                        File.Copy(staging, destinationPath, overwrite: true);
+                        TryDelete(staging);
+                    }
+                }
+                else
+                {
+                    File.Move(staging, destinationPath);
+                }
+            }
+            catch
+            {
+                TryDelete(staging);
+                throw;
+            }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort */ }
+        }
+
         public Task<PdfDocument> OpenPdfSharpAsync(string path, PdfDocumentOpenMode mode, CancellationToken cancellationToken)
         {
             return Task.Run(() =>
@@ -122,7 +192,10 @@ namespace TDPdf.Services
                         }
                     }
 
-                    outDoc.Save(destinationPath);
+                    // Same reason as SaveAtomicAsync: Save As Flattened can be pointed at a file that
+                    // already exists, and the user answered an overwrite prompt about a file they
+                    // still have — not about one this may truncate on the way out.
+                    WriteAtomic(outDoc.Save, destinationPath, cancellationToken);
                 }
             }, cancellationToken);
         }

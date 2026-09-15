@@ -1337,7 +1337,10 @@ namespace TDPdf
             // Hide the badge immediately so it doesn't flash if relaunch is slow
             _portableBadge.Visibility = Visibility.Collapsed;
 
-            App.InstallAndRelaunch(_currentFile, wantDesktop: true);
+            // The ORIGINAL path, not _currentFile: after a decrypt-on-open _currentFile points at a
+            // working copy in %TEMP% that this process deletes on exit, so the installed build would
+            // relaunch onto a file that is already gone.
+            App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop: true);
         }
 
         private void MinimizeBtn_Click(object sender, RoutedEventArgs e) =>
@@ -2012,6 +2015,47 @@ namespace TDPdf
                 Math.Max(1, (int)Math.Round(hpt * scale)));
         }
 
+        /// <summary>
+        /// Renumbers unsaved annotations — and the page-snapshot undo history — across a page
+        /// inserted at <paramref name="insertIndex"/>.
+        /// </summary>
+        /// <remarks>
+        /// The companion to <see cref="RemapAnnotationSnapshots"/>, which handles the other
+        /// structural edit that keeps its annotations: a rotation changes a page's geometry but not
+        /// its number, so it remaps coordinates; an insertion changes the number but not the
+        /// geometry, so this remaps indices and leaves the coordinates alone.
+        ///
+        /// The undo stacks matter as much as the live dictionary. A PageSnapshot addresses its
+        /// page by index, so leaving one behind at its old number means a later Ctrl+Z quietly
+        /// restores a page's annotations onto its neighbour.
+        /// </remarks>
+        private void ShiftAnnotationPagesForInsert(int insertIndex)
+        {
+            // Descending, so a page is never moved onto one that has not moved up yet.
+            foreach (int page in _annotations.Keys.Where(k => k >= insertIndex)
+                                                  .OrderByDescending(k => k).ToList())
+            {
+                var annotations = _annotations[page];
+                _annotations.Remove(page);
+                foreach (var annotation in annotations) annotation.PageIndex = page + 1;
+                _annotations[page + 1] = annotations;
+            }
+            ShiftPageSnapshots(_undoStack, insertIndex);
+            ShiftPageSnapshots(_redoStack, insertIndex);
+        }
+
+        private static void ShiftPageSnapshots(LinkedList<UndoEntry> history, int insertIndex)
+        {
+            for (var node = history.First; node is not null; node = node.Next)
+            {
+                var entry = node.Value;
+                if (entry.Kind != UndoKind.PageSnapshot || entry.PageIdx < insertIndex) continue;
+                if (entry.PageAnnotations is { } annotations)
+                    foreach (var annotation in annotations) annotation.PageIndex = entry.PageIdx + 1;
+                node.Value = entry with { PageIdx = entry.PageIdx + 1 };
+            }
+        }
+
         private static void RemapAnnotationSnapshots(
             LinkedList<UndoEntry> history,
             int pageIndex,
@@ -2039,19 +2083,34 @@ namespace TDPdf
         /// partner for the clockwise one out of a single codepoint.
         /// </summary>
         private static MenuItem MakeMenuItem(string header, RoutedEventHandler click, string? gesture = null,
-                                             string? helpText = null, string? glyph = null, bool mirrorGlyph = false)
+                                             string? helpText = null, string? glyph = null, bool mirrorGlyph = false,
+                                             bool literalHeader = false)
         {
-            var item = new MenuItem { Header = header };
+            var item = new MenuItem { Header = literalHeader ? EscapeMenuHeader(header) : header };
             item.Click += click;
             if (gesture != null)
                 item.InputGestureText = gesture;
             if (glyph != null)
                 item.Icon = MakeMenuGlyph(glyph, mirrorGlyph);
-            var automationName = header.Replace("_", string.Empty);
+            // A literal header is a NAME, not a label: its underscores are part of the text and the
+            // screen reader should hear them. Only a label's accelerator marker gets stripped.
+            var automationName = literalHeader ? header : header.Replace("_", string.Empty);
             AutomationProperties.SetName(item, automationName);
             AutomationProperties.SetHelpText(item, helpText ?? automationName);
             return item;
         }
+
+        /// <summary>
+        /// Doubles the underscores in text that is a name rather than a menu label.
+        /// </summary>
+        /// <remarks>
+        /// Our MenuItem ControlTemplate sets RecognizesAccessKey="True" (MainWindow.xaml), so a
+        /// lone underscore in a Header is eaten and underlines the following letter instead:
+        /// "My_Report.pdf" shows as "MyReport.pdf". Every surface that displays a file name as a
+        /// menu header has to come through here. The surfaces that use a TextBlock — the title bar,
+        /// the tab chips, the status line, the start-page recents — are unaffected and must NOT.
+        /// </remarks>
+        private static string EscapeMenuHeader(string text) => text.Replace("_", "__");
 
         /// <summary>Segoe MDL2 "Rotate". Used as-is for clockwise and mirrored for counter-clockwise
         /// so the two rotate rows are a matched pair rather than two unrelated icons.</summary>
@@ -15238,7 +15297,7 @@ namespace TDPdf
                 var c = ctx;
                 var item = new MenuItem
                 {
-                    Header = (c.IsDirty ? "● " : "") + name,
+                    Header = (c.IsDirty ? "● " : "") + EscapeMenuHeader(name),
                     FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal,
                     ToolTip = c.OriginalPath ?? name
                 };
@@ -16184,7 +16243,13 @@ namespace TDPdf
             {
                 var blank = new PdfPage { Width = XUnit.FromPoint(wPt), Height = XUnit.FromPoint(hPt) };
                 doc.Pages.Insert(insertAfter + 1, blank);
-                SaveTempAndReload();
+                // Inserting renumbers the pages after the insertion point but does not change the
+                // geometry of any of them, so the annotations on those pages are still valid where
+                // they are drawn — they just belong to a page one further along. Renumber them and
+                // keep them, rather than taking the default clear and losing unsaved work to a page
+                // added somewhere else in the document entirely.
+                ShiftAnnotationPagesForInsert(insertAfter + 1);
+                SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = insertAfter + 1;
                 SetStatus($"Inserted blank page at position {insertAfter + 2}");
             }
@@ -16704,7 +16769,7 @@ namespace TDPdf
                     ExceptionDispatchInfo? saveError = null;
                     try
                     {
-                        await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                        await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -16717,7 +16782,7 @@ namespace TDPdf
                 }
                 else
                 {
-                    await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                    await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     status = $"Saved — {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
@@ -16833,7 +16898,7 @@ namespace TDPdf
                     ExceptionDispatchInfo? saveError = null;
                     try
                     {
-                        await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                        await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -16846,7 +16911,7 @@ namespace TDPdf
                 }
                 else
                 {
-                    await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                    await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     status = $"Saved to {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
@@ -17087,11 +17152,26 @@ namespace TDPdf
             catch { return false; }
         }
 
+        /// <summary>
+        /// Per-page sizes for the flatten pass, in points, as the page is DISPLAYED.
+        /// </summary>
+        /// <remarks>
+        /// These sizes become the page boxes of the rebuilt document, so they have to agree with
+        /// what PDFium rasterised — and PDFium rasterises the CropBox, rotated. PdfPage.Width/Height
+        /// agree on neither: they are MediaBox-derived, and their landscape swap reads /Rotate from
+        /// the page's own dictionary, so a quarter turn INHERITED from a /Pages node reads as
+        /// portrait. Either mismatch stretches a landscape raster onto a portrait page. Going
+        /// through PdfPageGeometry.DisplaySize — the single home for this mapping, and the one the
+        /// render, link, form-field and redaction paths already share — fixes both at once.
+        /// </remarks>
         private static IReadOnlyList<PdfPageSize> GetPageSizes(PdfDocument doc)
         {
             var pageSizes = new List<PdfPageSize>(doc.PageCount);
             for (int i = 0; i < doc.PageCount; i++)
-                pageSizes.Add(new PdfPageSize(doc.Pages[i].Width.Point, doc.Pages[i].Height.Point));
+            {
+                var (w, h) = PdfPageGeometry.DisplaySize(doc.Pages[i]);
+                pageSizes.Add(new PdfPageSize(w, h));
+            }
             return pageSizes;
         }
 
@@ -18857,7 +18937,7 @@ namespace TDPdf
                 {
                     string path = p;   // capture
                     var item = MakeMenuItem(System.IO.Path.GetFileName(path), async (_, _2) => await OpenRecentAsync(path),
-                                            null, null, "\uE8A5");
+                                            null, null, "\uE8A5", literalHeader: true);
                     item.ToolTip = path;
                     menu.Items.Add(item);
                 }
