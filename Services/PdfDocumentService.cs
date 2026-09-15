@@ -10,7 +10,6 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Docnet.Core;
 using Docnet.Core.Models;
-using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
 using TDPdf.Diagnostics;
@@ -38,6 +37,76 @@ namespace TDPdf.Services
             }, cancellationToken);
         }
 
+        /// <summary>
+        /// Serializes to a sibling temp file and only then moves it into place, so a failure while
+        /// writing cannot damage the file the user already has.
+        /// </summary>
+        /// <remarks>
+        /// SAVING STRAIGHT OVER THE DESTINATION IS THE BUG THIS EXISTS TO PREVENT. PdfSharpCore
+        /// serializes incrementally into the destination stream, so an exception part-way through —
+        /// exactly the #106 class of failure that <c>RunSaveWithRecoveryAsync</c> retries — left the
+        /// user's own document truncated, and the retry then ran over the damaged file. The window
+        /// is small but the loss is total and silent: the only copy of the document is the one being
+        /// written over.
+        ///
+        /// The temp file is a SIBLING of the destination, not one in %TEMP%, for two reasons: the
+        /// move has to stay on one volume to be atomic, and a document big enough to matter should
+        /// not be written twice across a network share or a different disk.
+        ///
+        /// <see cref="File.Replace(string,string,string)"/> is preferred when the destination
+        /// exists because it keeps the original file's identity — ACLs, and the alternate data
+        /// streams that carry the Mark of the Web. It is not universally supported (some SMB shares
+        /// and cloud-sync folders refuse it), so a refusal falls back to a plain overwrite from a
+        /// file that is by then complete and closed.
+        /// </remarks>
+        public Task SaveAtomicAsync(Action<string> saveToPath, string destinationPath, CancellationToken cancellationToken)
+        {
+            return Task.Run(() => WriteAtomic(saveToPath, destinationPath, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>The synchronous body of <see cref="SaveAtomicAsync"/>, for callers already off the UI thread.</summary>
+        private static void WriteAtomic(Action<string> saveToPath, string destinationPath, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath)) ?? ".";
+            string staging = Path.Combine(directory, $".tdpdf_save_{Guid.NewGuid():N}.tmp");
+            try
+            {
+                saveToPath(staging);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (File.Exists(destinationPath))
+                {
+                    try
+                    {
+                        File.Replace(staging, destinationPath, null, ignoreMetadataErrors: true);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+                    {
+                        // The staged file is complete at this point, so an overwrite here is
+                        // still strictly safer than having serialized into the destination.
+                        File.Copy(staging, destinationPath, overwrite: true);
+                        TryDelete(staging);
+                    }
+                }
+                else
+                {
+                    File.Move(staging, destinationPath);
+                }
+            }
+            catch
+            {
+                TryDelete(staging);
+                throw;
+            }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort */ }
+        }
+
         public Task<PdfDocument> OpenPdfSharpAsync(string path, PdfDocumentOpenMode mode, CancellationToken cancellationToken)
         {
             return Task.Run(() =>
@@ -56,11 +125,20 @@ namespace TDPdf.Services
                 cancellationToken.ThrowIfCancellationRequested();
                 int pageCount = pageSizes.Count;
 
+                // #366: which pages were ALREADY a JPEG scan, and so lose nothing by going back out
+                // as one. Read once, here, before any of the parallel work starts: PdfPig opens the
+                // whole document and the answer must not change under the loop, so the array is
+                // written on this thread and only READ inside it. A file PdfPig cannot open comes
+                // back all-false, which is the old, lossless behaviour.
+                bool[] jpegHints = PdfPageImageEncoder.ReadJpegPageHints(sourcePath, pageCount);
+
                 // Rasterize pages across CPU cores. Docnet/PDFium (pdfium.dll) is NOT
                 // thread-safe, so the page render is serialized behind a lock; the
-                // CPU-bound PNG encode (GDI+) runs in parallel. Each page's encoded
-                // bytes are stored by index so the PDF can be assembled in order.
-                var pngPages = new byte[pageCount][];
+                // CPU-bound encode runs in parallel. Each page's encoded bytes are
+                // stored by index so the PDF can be assembled in order. Nothing in the
+                // loop touches PdfSharpCore — that all happens on the single-threaded
+                // assembly pass below.
+                var encodedPages = new EncodedPageImage?[pageCount];
                 var docGate = new object();
                 var po = new ParallelOptions
                 {
@@ -97,8 +175,28 @@ namespace TDPdf.Services
 
                     if (bgra == null || bgra.Length == 0 || rw <= 0 || rh <= 0) return;
 
-                    // Encode BGRA to PNG (GDI+) outside the lock so it parallelizes.
-                    pngPages[i] = EncodeBgraToPng(bgra, rw, rh);
+                    // Encoding happens outside the lock so it parallelizes. Three routes, in
+                    // descending order of how much they save:
+                    //
+                    //   #323 — a page whose every pixel is pure black or pure white packs to 1 bit
+                    //   with NO loss at all, typically 20x smaller than the 24-bit RGB below. It is
+                    //   checked first because it beats JPEG on size and fidelity at once, and it
+                    //   needs no source hint: the rendered pixels themselves are the proof.
+                    //
+                    //   #366 — a page that was already a JPEG scan goes back out as a JPEG. Gated
+                    //   on the source hint, because JPEG-ing a page of text or line art puts
+                    //   permanent ringing around every glyph to save space on the one kind of page
+                    //   that was not large to begin with.
+                    //
+                    //   Otherwise the original lossless path: PNG in, 24-bit RGB FlateDecode out.
+                    var bitonal = PdfPageImageEncoder.TryEncodeBitonal(bgra, rw, rh);
+                    if (bitonal != null)
+                        encodedPages[i] = bitonal;
+                    else if (jpegHints[i])
+                        encodedPages[i] = PdfPageImageEncoder.EncodeJpeg(bgra, rw, rh);
+                    else
+                        encodedPages[i] = new EncodedPageImage(
+                            EncodeBgraToPng(bgra, rw, rh), PageImageEncoding.Png, rw, rh);
                 });
 
                 cancellationToken.ThrowIfCancellationRequested();
@@ -109,20 +207,20 @@ namespace TDPdf.Services
                     for (int i = 0; i < pageCount; i++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        var pngBytes = pngPages[i];
-                        if (pngBytes == null) continue;
+                        var encoded = encodedPages[i];
+                        if (encoded == null) continue;
 
                         var newPage = outDoc.AddPage();
                         newPage.Width = pageSizes[i].WidthPoint;
                         newPage.Height = pageSizes[i].HeightPoint;
-                        using (var xi = XImage.FromStream(() => new MemoryStream(pngBytes)))
-                        using (var gfx = XGraphics.FromPdfPage(newPage))
-                        {
-                            gfx.DrawImage(xi, 0, 0, newPage.Width.Point, newPage.Height.Point);
-                        }
+                        PdfPageImageEncoder.PaintFullPage(
+                            outDoc, newPage, encoded, newPage.Width.Point, newPage.Height.Point);
                     }
 
-                    outDoc.Save(destinationPath);
+                    // Same reason as SaveAtomicAsync: Save As Flattened can be pointed at a file that
+                    // already exists, and the user answered an overwrite prompt about a file they
+                    // still have — not about one this may truncate on the way out.
+                    WriteAtomic(outDoc.Save, destinationPath, cancellationToken);
                 }
             }, cancellationToken);
         }
@@ -415,6 +513,12 @@ namespace TDPdf.Services
                     if (pageCount <= 0)
                         return null;
 
+                    // #366: same source-hint gate as Save Flattened. Very often all-false here —
+                    // PdfSharpCore already refused this file, so PdfPig frequently will too — and
+                    // all-false is exactly the old behaviour, so the recovery is never made worse
+                    // by asking.
+                    bool[] jpegHints = PdfPageImageEncoder.ReadJpegPageHints(path, pageCount);
+
                     for (int i = 0; i < pageCount; i++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -429,15 +533,16 @@ namespace TDPdf.Services
                             if (bgra == null || bgra.Length == 0 || pw <= 0 || ph <= 0)
                                 continue;
 
-                            var pngBytes = EncodeBgraToPng(bgra, pw, ph);
+                            var encoded = jpegHints[i]
+                                ? PdfPageImageEncoder.EncodeJpeg(bgra, pw, ph)
+                                : new EncodedPageImage(EncodeBgraToPng(bgra, pw, ph),
+                                                       PageImageEncoding.Png, pw, ph);
+
                             var newPage = outDoc.AddPage();
                             newPage.Width = pw / scale;   // px -> points
                             newPage.Height = ph / scale;
-                            using (var xi = XImage.FromStream(() => new MemoryStream(pngBytes)))
-                            using (var gfx = XGraphics.FromPdfPage(newPage))
-                            {
-                                gfx.DrawImage(xi, 0, 0, newPage.Width.Point, newPage.Height.Point);
-                            }
+                            PdfPageImageEncoder.PaintFullPage(
+                                outDoc, newPage, encoded, newPage.Width.Point, newPage.Height.Point);
                         }
                     }
 

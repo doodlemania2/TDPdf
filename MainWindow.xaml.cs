@@ -248,6 +248,22 @@ namespace TDPdf
         // rather than coming back as a CS0414.
         private bool _fitResizePending;
 
+        // ── Per-tab view resume (#399) ─────────────────────────────────────────────────────────
+        // True only while a tab switch is putting a tab's own zoom back. A restored zoom is a
+        // RESUME, not a preference: the user already made that decision on that tab, and it was
+        // already persisted at the moment they made it. SaveZoomSetting consults this so
+        // re-entering a tab can never rewrite Settings.LastManualZoom / Settings.DefaultFitMode —
+        // otherwise merely clicking back to an older tab that happens to hold a manual zoom would
+        // silently retire a Fit Page the user had just chosen on the tab they came from.
+        private bool _restoringTabZoom;
+        // Work owed to a tab that is being re-activated, held until the thing it depends on
+        // exists. A FIT has to be measured against THIS tab's page, and a scroll offset is
+        // silently clamped to zero unless the new content is already laid out, so both wait for
+        // the render rather than being applied against the outgoing tab's geometry. See
+        // ApplyPendingViewResume.
+        private DocumentContext? _resumeZoomFor;
+        private (DocumentContext Ctx, double H, double V)? _resumeScroll;
+
         // Selection move/resize for non-placed annotations
         private bool _isMovingAnnot;
         private PageAnnotation? _movingAnnot;
@@ -442,6 +458,7 @@ namespace TDPdf
         // Footer chip that shows and drives the app scale (never itself scaled — the footer is
         // fixed so the chip holds still under the cursor while the wheel steps the size).
         private Button _appScaleButton = null!;
+        private Button _pageSizeButton = null!;   // footer page-size chip (see UpdatePageSizeReadout)
 
         // Outline / bookmarks sidebar tab (manual refs — XAML codegen doesn't resolve these)
         private TreeView _outlineTree = null!;
@@ -546,6 +563,7 @@ namespace TDPdf
             _statusBarBorder = (Border)FindName("StatusBarBorder")!;
             _sidebarOuterGrid = (Grid)FindName("SidebarOuterGrid")!;
             _appScaleButton = (Button)FindName("AppScaleButton")!;
+            _pageSizeButton = (Button)FindName("PageSizeButton")!;
             RebuildTabStrip();
             ApplyCustomChromeVisibility();
             ThemeManager.ThemeChanged += ThemeManager_ThemeChanged;
@@ -564,6 +582,7 @@ namespace TDPdf
             CommandBindings.Add(new CommandBinding(CloseOtherTabsCommand, (_, _) => CloseOtherTabs(_ctx)));
             InitDocInvert();   // #135: restore the persisted display-only dark mode + light the rail moon
             InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
+            InitPageSizeReadout();   // upstream v1.8.5: restore the footer page-size chip's unit
             ApplyLayoutShortcutLabels();   // #153: spell the zoom chords for THIS keyboard layout
             LoadSignatures();
             BuildContextMenu();
@@ -1256,6 +1275,32 @@ namespace TDPdf
             public IReadOnlyList<BitmapSource?>? Thumbnails;
             public int SelectedPageIndex = -1;
 
+            // ── Per-tab scroll + zoom (#399, adapted from upstream KillerPDF) ──────────────────
+            // Scroll and zoom used to be purely app-global, so switching tabs dragged one
+            // document's zoom onto the next and dropped you wherever the re-render happened to
+            // land. These fields make an ALREADY-OPEN tab resume where it was left.
+            //
+            // They are deliberately NOT a second standing preference. The app-global preference
+            // (Settings.DefaultFitMode / Settings.LastManualZoom, read by ApplyViewModeOnOpen)
+            // still decides where a NEWLY OPENED document starts — see the long #201 comment
+            // there — and nothing on this block is ever written back to it. ViewCaptured=false
+            // means "this tab has never been switched away from", which is exactly what makes a
+            // brand-new tab fall through to ApplyViewModeOnOpen unchanged; it is cleared again
+            // whenever the page geometry moves under the offsets (a reload, or a
+            // rotate/crop/transform via SaveTempAndReload), because an offset measured against
+            // page heights that no longer exist points at nothing in particular.
+            public bool ViewCaptured;
+            public double ViewScrollH;
+            public double ViewScrollV;
+            public double ViewZoomLevel = 1.0;
+            public ZoomFitMode ViewFitMode = ZoomFitMode.None;
+            public bool ViewManualZoomIntent;   // mirrors MainWindow._manualZoomIntent (#201)
+            // The view mode the offsets were captured in. View mode is app-wide, so it can change
+            // while a tab sits in the background, and an offset into the continuous strip means
+            // nothing in Grid — a mismatch drops the resume instead of scrolling somewhere
+            // arbitrary.
+            public ViewMode ViewModeAtCapture = ViewMode.Single;
+
             // The clickable tab-header chip (built lazily by RebuildTabStrip).
             public Border? Chip;
 
@@ -1337,7 +1382,10 @@ namespace TDPdf
             // Hide the badge immediately so it doesn't flash if relaunch is slow
             _portableBadge.Visibility = Visibility.Collapsed;
 
-            App.InstallAndRelaunch(_currentFile, wantDesktop: true);
+            // The ORIGINAL path, not _currentFile: after a decrypt-on-open _currentFile points at a
+            // working copy in %TEMP% that this process deletes on exit, so the installed build would
+            // relaunch onto a file that is already gone.
+            App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop: true);
         }
 
         private void MinimizeBtn_Click(object sender, RoutedEventArgs e) =>
@@ -2012,6 +2060,47 @@ namespace TDPdf
                 Math.Max(1, (int)Math.Round(hpt * scale)));
         }
 
+        /// <summary>
+        /// Renumbers unsaved annotations — and the page-snapshot undo history — across a page
+        /// inserted at <paramref name="insertIndex"/>.
+        /// </summary>
+        /// <remarks>
+        /// The companion to <see cref="RemapAnnotationSnapshots"/>, which handles the other
+        /// structural edit that keeps its annotations: a rotation changes a page's geometry but not
+        /// its number, so it remaps coordinates; an insertion changes the number but not the
+        /// geometry, so this remaps indices and leaves the coordinates alone.
+        ///
+        /// The undo stacks matter as much as the live dictionary. A PageSnapshot addresses its
+        /// page by index, so leaving one behind at its old number means a later Ctrl+Z quietly
+        /// restores a page's annotations onto its neighbour.
+        /// </remarks>
+        private void ShiftAnnotationPagesForInsert(int insertIndex)
+        {
+            // Descending, so a page is never moved onto one that has not moved up yet.
+            foreach (int page in _annotations.Keys.Where(k => k >= insertIndex)
+                                                  .OrderByDescending(k => k).ToList())
+            {
+                var annotations = _annotations[page];
+                _annotations.Remove(page);
+                foreach (var annotation in annotations) annotation.PageIndex = page + 1;
+                _annotations[page + 1] = annotations;
+            }
+            ShiftPageSnapshots(_undoStack, insertIndex);
+            ShiftPageSnapshots(_redoStack, insertIndex);
+        }
+
+        private static void ShiftPageSnapshots(LinkedList<UndoEntry> history, int insertIndex)
+        {
+            for (var node = history.First; node is not null; node = node.Next)
+            {
+                var entry = node.Value;
+                if (entry.Kind != UndoKind.PageSnapshot || entry.PageIdx < insertIndex) continue;
+                if (entry.PageAnnotations is { } annotations)
+                    foreach (var annotation in annotations) annotation.PageIndex = entry.PageIdx + 1;
+                node.Value = entry with { PageIdx = entry.PageIdx + 1 };
+            }
+        }
+
         private static void RemapAnnotationSnapshots(
             LinkedList<UndoEntry> history,
             int pageIndex,
@@ -2039,19 +2128,34 @@ namespace TDPdf
         /// partner for the clockwise one out of a single codepoint.
         /// </summary>
         private static MenuItem MakeMenuItem(string header, RoutedEventHandler click, string? gesture = null,
-                                             string? helpText = null, string? glyph = null, bool mirrorGlyph = false)
+                                             string? helpText = null, string? glyph = null, bool mirrorGlyph = false,
+                                             bool literalHeader = false)
         {
-            var item = new MenuItem { Header = header };
+            var item = new MenuItem { Header = literalHeader ? EscapeMenuHeader(header) : header };
             item.Click += click;
             if (gesture != null)
                 item.InputGestureText = gesture;
             if (glyph != null)
                 item.Icon = MakeMenuGlyph(glyph, mirrorGlyph);
-            var automationName = header.Replace("_", string.Empty);
+            // A literal header is a NAME, not a label: its underscores are part of the text and the
+            // screen reader should hear them. Only a label's accelerator marker gets stripped.
+            var automationName = literalHeader ? header : header.Replace("_", string.Empty);
             AutomationProperties.SetName(item, automationName);
             AutomationProperties.SetHelpText(item, helpText ?? automationName);
             return item;
         }
+
+        /// <summary>
+        /// Doubles the underscores in text that is a name rather than a menu label.
+        /// </summary>
+        /// <remarks>
+        /// Our MenuItem ControlTemplate sets RecognizesAccessKey="True" (MainWindow.xaml), so a
+        /// lone underscore in a Header is eaten and underlines the following letter instead:
+        /// "My_Report.pdf" shows as "MyReport.pdf". Every surface that displays a file name as a
+        /// menu header has to come through here. The surfaces that use a TextBlock — the title bar,
+        /// the tab chips, the status line, the start-page recents — are unaffected and must NOT.
+        /// </remarks>
+        private static string EscapeMenuHeader(string text) => text.Replace("_", "__");
 
         /// <summary>Segoe MDL2 "Rotate". Used as-is for clockwise and mirrored for counter-clockwise
         /// so the two rotate rows are a matched pair rather than two unrelated icons.</summary>
@@ -2213,6 +2317,10 @@ namespace TDPdf
                 RefreshPageList(thumbnails);
                 LoadOutlines();
                 _ctx.Thumbnails = thumbnails;
+                // #399: a different document in this tab — or the same one reloaded at a new
+                // geometry, as the crop path does — has no resume point. ApplyViewModeOnOpen
+                // below places it from the app-global standing preference, exactly as always.
+                _ctx.ViewCaptured = false;
                 DropZone.Visibility = Visibility.Collapsed;
                 PagePreviewPanel.Visibility = Visibility.Visible;
                 if (_closeFileBtnRef != null) _closeFileBtnRef.IsEnabled = true;
@@ -2541,6 +2649,10 @@ namespace TDPdf
                     RenderAdditionalPages(pageIndex);
                     RenderPageLinks(pageIndex, linkBitmapW, linkBitmapH);
                     RenderFormFields(pageIndex, linkBitmapW, linkBitmapH);
+                    // #399: the page bitmap is on screen and the panel is sized, which is the
+                    // earliest moment the ScrollViewer's extent is real — so this is where a
+                    // re-activated tab's own zoom and scroll offsets are put back.
+                    ApplyPendingViewResume();
                 });
             }
             catch (OperationCanceledException)
@@ -2867,6 +2979,101 @@ namespace TDPdf
              : bytes >= 1L << 10 ? $"{bytes / (double)(1 << 10):N0} KB"
              : $"{bytes} bytes";
 
+        // ---- Footer page-size chip (upstream v1.8.5) ----------------------------------------
+        // The current page's dimensions, parked next to the zoom and app-size chips and cycling
+        // units on each click. Deliberately its own control rather than more work for the status
+        // line: the file-size flash above answers a question you ask once and then want gone, this
+        // is a number you want sitting in the corner of your eye while you lay a page out. The
+        // click gesture on StatusText is untouched.
+        //
+        // Like everything else down there it lives in the UNSCALED footer — AppScale.cs leaves the
+        // title bar and status bar alone on purpose, so the chip holds still under the cursor while
+        // it is being clicked through the units — and it never touches the document, so no dirty
+        // flag is involved.
+        private enum PageSizeUnit { Pixels, Inches, Millimetres, Points }
+
+        private PageSizeUnit _pageSizeUnit;
+
+        /// <summary>Restores the persisted unit. Called from the constructor, beside InitAppScale.</summary>
+        private void InitPageSizeReadout()
+        {
+            try
+            {
+                // An unrecognised or missing value simply leaves the field at its default (Pixels).
+                if (Enum.TryParse(TDPdf.Properties.Settings.Default.PageSizeUnit, out PageSizeUnit saved))
+                    _pageSizeUnit = saved;
+            }
+            catch { /* non-critical user preference */ }
+            UpdatePageSizeReadout();
+        }
+
+        private void PageSizeReadout_Click(object sender, RoutedEventArgs e)
+        {
+            _pageSizeUnit = _pageSizeUnit switch
+            {
+                PageSizeUnit.Pixels      => PageSizeUnit.Inches,
+                PageSizeUnit.Inches      => PageSizeUnit.Millimetres,
+                PageSizeUnit.Millimetres => PageSizeUnit.Points,
+                _                        => PageSizeUnit.Pixels
+            };
+            try
+            {
+                TDPdf.Properties.Settings.Default.PageSizeUnit = _pageSizeUnit.ToString();
+                TDPdf.Properties.Settings.Default.Save();
+            }
+            catch { /* persistence is best-effort */ }
+            UpdatePageSizeReadout();
+        }
+
+        /// <summary>
+        /// Repaints the chip from whatever page is current, and hides it outright when no document
+        /// is open — an empty workspace has no page to have a size, and a stale "8.5 × 11 in" left
+        /// over the start screen would be worse than nothing. Cheap and idempotent, so every
+        /// page-change path can simply call it.
+        /// </summary>
+        private void UpdatePageSizeReadout()
+        {
+            if (_pageSizeButton is null) return;   // a page change before the constructor's FindName pass
+            int idx = CurrentReadoutPage();
+            if (_doc is null || idx < 0 || idx >= _doc.PageCount)
+            {
+                _pageSizeButton.Content = string.Empty;
+                _pageSizeButton.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            // VisiblePageSize, never PdfPage.Width/Height: it resolves CropBox over MediaBox, walks
+            // the page tree for an inherited box, and applies /Rotate exactly once. A cropped or a
+            // rotated page therefore reports what the viewer is actually showing.
+            var (wPt, hPt) = VisiblePageSize(_doc.Pages[idx]);
+            _pageSizeButton.Content = FormatPageSize(wPt, hPt, _pageSizeUnit);
+            _pageSizeButton.Visibility = Visibility.Visible;
+        }
+
+        // The page the footer is talking about. The page-jump box is the one number every view mode
+        // keeps current — Grid tracks the nearest tile into it and deliberately does NOT move
+        // PageList.SelectedIndex (a selection change there scroll-jumps and re-renders) — so it is
+        // read first, with the sidebar selection as the fallback before it has been filled in.
+        private int CurrentReadoutPage()
+            => int.TryParse(_pageJumpBox.Text, out int oneBased) ? oneBased - 1 : PageList.SelectedIndex;
+
+        /// <summary>The page's size in the chosen unit, as it reads on the footer chip.</summary>
+        /// <remarks>
+        /// "Pixels" needs a resolution before it means anything, and the honest one here is 96 DPI:
+        /// the page at TRUE 100% zoom (1 pt = 1/72 in, 1 px = 1/96 in), which is exactly what the
+        /// zoom chip sitting beside it means by 100%. Deliberately NOT the size of the bitmap
+        /// currently on screen — that moves with the zoom, the monitor's DPI scaling and
+        /// PdfDocumentService.RenderBoxDip, so one unchanged page would flicker between three
+        /// numbers and every one of them would describe this machine rather than the document.
+        /// </remarks>
+        private static string FormatPageSize(double wPt, double hPt, PageSizeUnit unit) => unit switch
+        {
+            PageSizeUnit.Pixels      => $"{wPt * 96.0 / 72.0:0} × {hPt * 96.0 / 72.0:0} px",
+            PageSizeUnit.Inches      => $"{wPt / 72.0:0.##} × {hPt / 72.0:0.##} in",
+            PageSizeUnit.Millimetres => $"{wPt / 72.0 * 25.4:0} × {hPt / 72.0 * 25.4:0} mm",
+            _                        => $"{wPt:0} × {hPt:0} pt"
+        };
+
         private void SetBusy(bool isBusy, string? status = null)
         {
             _busyDepth = isBusy ? _busyDepth + 1 : Math.Max(0, _busyDepth - 1);
@@ -2988,6 +3195,13 @@ namespace TDPdf
             // invisible while still being the active one.
             CommitActiveTextBox();
             _viewMode = mode;
+            // #399: an offset still owed to a tab switch was measured in the mode we are leaving
+            // — Continuous's strip and Grid's wrap panel are different scroll surfaces entirely —
+            // so it is dropped here rather than being applied against the new one. The tab's
+            // stored ViewModeAtCapture makes the same call for its captured state on the next
+            // activation.
+            _resumeZoomFor = null;
+            _resumeScroll = null;
             // The scroll surface underneath the wheel just changed, so a half-accumulated
             // page-flip gesture from the previous mode must not complete against the new one.
             _wheelFlipGate.Reset();
@@ -3375,7 +3589,16 @@ namespace TDPdf
                                 int tgt = _continuousScrollTarget;
                                 _continuousScrollTarget = -1;
                                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                                    (Action)(() => ScrollContinuousToPageSuppressed(tgt)));
+                                    (Action)(() =>
+                                    {
+                                        // #399: a re-activated tab's own offset is finer than the
+                                        // page top and was captured against these very slot tops
+                                        // at this very zoom, so it wins here — and this is the
+                                        // first moment those tops are final, which is exactly why
+                                        // the offset could not simply be applied on activation.
+                                        if (!TryApplyContinuousResumeScroll())
+                                            ScrollContinuousToPageSuppressed(tgt);
+                                    }));
                             }
                         });
                     }
@@ -3845,6 +4068,7 @@ namespace TDPdf
             if (nearestPage >= 0)
             {
                 _pageJumpBox.Text = (nearestPage + 1).ToString();
+                UpdatePageSizeReadout();   // Grid leaves the selection alone, so this is its only hook
                 if (showBadge) ShowPageBadge(nearestPage);   // #197
             }
         }
@@ -6663,6 +6887,9 @@ namespace TDPdf
             // The status line only does something (flash the file size) with a document open, so it only
             // looks clickable then — an empty workspace keeps the plain arrow.
             StatusText.Cursor = hasDoc ? Cursors.Hand : null;
+            // The footer page-size chip follows the same rule, and this is the one place both the
+            // open and the close paths — and every tab switch — pass through.
+            UpdatePageSizeReadout();
         }
 
         private void ToolSelect_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Select);
@@ -14086,6 +14313,17 @@ namespace TDPdf
                 FitToPage();
                 e.Handled = true;
             }
+            // Ctrl+R / Ctrl+Shift+R rotate the selected pages clockwise / counter-clockwise
+            // (upstream v1.8.5). Rotation was reachable from the toolbar and the Pages panel but had
+            // no key of its own; bare R is the Redact tool, so the modified pair is free.
+            // RotatePages_Click already works off PageList.SelectedItems and handles its own errors.
+            else if (e.Key == Key.R && _doc is not null
+                     && (Keyboard.Modifiers == ModifierKeys.Control
+                         || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
+            {
+                RotatePages_Click(Keyboard.Modifiers == ModifierKeys.Control ? 90 : -90);
+                e.Handled = true;
+            }
             // Jump history: Alt+Left / Alt+Right retrace bookmark / link / jump-box / Home-End hops,
             // browser-style. Alt makes the key arrive as Key.System with the real key in SystemKey.
             else if (e.Key == Key.System && e.SystemKey == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
@@ -15118,8 +15356,116 @@ namespace TDPdf
         /// <summary>Captures the live view state of the active tab before switching away.</summary>
         private void CaptureViewState()
         {
-            if (_ctx.Doc is not null)
-                _ctx.SelectedPageIndex = PageList.SelectedIndex;
+            if (_ctx.Doc is null) return;
+            _ctx.SelectedPageIndex = PageList.SelectedIndex;
+
+            // #399: the rest of "where this tab was". The zoom is read off the app-global view
+            // model because that IS this tab's zoom for as long as the tab is active; it stops
+            // being shared the moment the tab goes into the background and its value is parked
+            // here. Nothing recorded here is a preference — see the DocumentContext block.
+            _ctx.ViewScrollH = PagePreviewPanel.HorizontalOffset;
+            _ctx.ViewScrollV = PagePreviewPanel.VerticalOffset;
+            _ctx.ViewZoomLevel = Zoom.ZoomLevel;
+            _ctx.ViewFitMode = _zoomFitMode;
+            _ctx.ViewManualZoomIntent = _manualZoomIntent;
+            _ctx.ViewModeAtCapture = _viewMode;
+            _ctx.ViewCaptured = true;
+        }
+
+        /// <summary>
+        /// Re-applies the zoom a tab was left at (#399). A FIT is replayed as a fit and never as
+        /// the number it once produced: the window may well have been resized — or dragged to
+        /// another monitor — while this tab sat in the background, and replaying a raw number
+        /// against different geometry is exactly the "opens enormous or microscopic" failure the
+        /// #201 comment block in <see cref="ApplyViewModeOnOpen"/> exists to prevent. A deliberate
+        /// manual zoom is window-independent by definition, so that one is replayed as a number.
+        ///
+        /// Grid is excluded for the same reason ApplyViewModeOnOpen excludes it: Grid's zoom is
+        /// not a free number but a column count that RefreshPageView immediately snaps back, so
+        /// replaying one only starts a fight it always loses.
+        /// </summary>
+        private void RestoreTabZoom(DocumentContext ctx)
+        {
+            if (_viewMode == ViewMode.Grid) return;
+            _restoringTabZoom = true;
+            try
+            {
+                if (ctx.ViewFitMode == ZoomFitMode.Width) FitToWidth();
+                else if (ctx.ViewFitMode == ZoomFitMode.Page) FitToPage();
+                else
+                {
+                    // The same three writes as ApplyRestoredManualZoom, except that the tab's own
+                    // intent flag is carried back rather than forced true: resuming a tab must
+                    // leave the zoom subsystem exactly as the user left it there, not stronger.
+                    _zoomFitMode = ZoomFitMode.None;
+                    _manualZoomIntent = ctx.ViewManualZoomIntent;
+                    Zoom.SetZoomLevel(ctx.ViewZoomLevel);
+                }
+            }
+            finally { _restoringTabZoom = false; }
+        }
+
+        /// <summary>
+        /// Settles whatever a re-activated tab is still owed (#399). Called from the tail of the
+        /// render that put that tab's page on screen.
+        /// </summary>
+        /// <remarks>
+        /// The timing is the whole point of this method existing. A scroll offset handed to a
+        /// ScrollViewer is clamped to the extent it knows about at that instant, and the extent of
+        /// a page that has not been measured and arranged yet is zero — so an offset applied from
+        /// ActivateContext, where the incoming page is still an un-rendered placeholder, does not
+        /// fail loudly, it just silently becomes 0. It is applied here instead: after the bitmap,
+        /// the canvases and the wrap panel have been sized, with an explicit UpdateLayout to force
+        /// the pass rather than hope one has already run.
+        ///
+        /// Restoring a FIT re-renders, so the zoom is settled first and the scroll deliberately
+        /// stays owed whenever the zoom actually moved — the next render's tail then applies it
+        /// against the extent that zoom produced, instead of this one scrolling to an offset that
+        /// is about to be wrong.
+        /// </remarks>
+        private void ApplyPendingViewResume()
+        {
+            // Continuous has its own anchor point — RenderContinuousPages re-scrolls once the slot
+            // heights above the target page are final — so its offsets must not be applied here.
+            if (_viewMode == ViewMode.Continuous) return;
+
+            if (_resumeZoomFor is { } zoomCtx)
+            {
+                if (!ReferenceEquals(_ctx, zoomCtx)) { _resumeZoomFor = null; _resumeScroll = null; return; }
+                _resumeZoomFor = null;
+                double before = Zoom.ZoomLevel;
+                RestoreTabZoom(zoomCtx);
+                // A changed zoom means ApplyZoom has already queued a fresh render pass; leave the
+                // scroll owed so it lands after that one rather than against this stale extent.
+                if (Zoom.ZoomLevel != before) return;
+            }
+
+            if (_resumeScroll is not { } scroll) return;
+            if (!ReferenceEquals(_ctx, scroll.Ctx)) { _resumeScroll = null; return; }
+            _resumeScroll = null;
+            PagePreviewPanel.UpdateLayout();
+            PagePreviewPanel.ScrollToHorizontalOffset(scroll.H);
+            PagePreviewPanel.ScrollToVerticalOffset(scroll.V);
+        }
+
+        /// <summary>
+        /// Continuous-view half of <see cref="ApplyPendingViewResume"/>: puts a re-activated tab's
+        /// own offset back in place of the "scroll to the top of the target page" anchor,
+        /// suppressing the scroll→selection feedback loop exactly as ScrollContinuousToPageSuppressed
+        /// does. Returns false when nothing is owed, so the caller falls back to the page anchor.
+        /// </summary>
+        private bool TryApplyContinuousResumeScroll()
+        {
+            if (_resumeScroll is not { } scroll) return false;
+            if (!ReferenceEquals(_ctx, scroll.Ctx)) { _resumeScroll = null; return false; }
+            _resumeScroll = null;
+            _suppressContinuousScrollSync = true;
+            PagePreviewPanel.UpdateLayout();
+            PagePreviewPanel.ScrollToHorizontalOffset(scroll.H);
+            PagePreviewPanel.ScrollToVerticalOffset(scroll.V);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                (Action)(() => _suppressContinuousScrollSync = false));
+            return true;
         }
 
         /// <summary>Makes <paramref name="ctx"/> the active tab and rebuilds the shared UI from it.</summary>
@@ -15131,6 +15477,11 @@ namespace TDPdf
             CaptureViewState();
             CancelDocumentWork(cancelWindowOperation: false);
             ClearContinuousRenderState();
+
+            // #399: anything the previous activation was still owed dies with it — the render it
+            // was waiting on has just been cancelled.
+            _resumeZoomFor = null;
+            _resumeScroll = null;
 
             _ctx = ctx;
 
@@ -15195,6 +15546,32 @@ namespace TDPdf
                 int idx = _ctx.SelectedPageIndex;
                 if (idx < 0 || idx >= PageList.Items.Count)
                     idx = PageList.Items.Count > 0 ? 0 : -1;
+
+                // #399: a tab that has been looked at before resumes where it was left — its own
+                // scroll offsets and its own zoom — rather than inheriting whatever the tab being
+                // left behind happened to be showing. A tab with nothing captured (never switched
+                // away from, or invalidated by a reload / a geometry-changing edit) falls through
+                // to precisely the behaviour it had before: the render lands where it lands, at
+                // the app-global zoom ApplyViewModeOnOpen set from the standing preference. This
+                // is a RESUME only; nothing below ever writes that preference back.
+                var resumeCtx = _ctx;
+                bool resume = _ctx.ViewCaptured && _ctx.ViewModeAtCapture == _viewMode && idx >= 0;
+                if (resume)
+                {
+                    _resumeScroll = (resumeCtx, _ctx.ViewScrollH, _ctx.ViewScrollV);
+                    // Grid restores no zoom at all (RestoreTabZoom says why), and Continuous does
+                    // its own below because it has to land after SetupContinuousView's FitToWidth.
+                    // Everywhere else: a manual zoom is a bare number that needs no page under it,
+                    // so it goes on NOW and the incoming page renders at the right size first
+                    // time; a FIT measures whatever page is on screen — which at this instant is
+                    // still the OUTGOING tab's — so it has to wait for this tab's render.
+                    if (_viewMode != ViewMode.Grid && _viewMode != ViewMode.Continuous)
+                    {
+                        if (_ctx.ViewFitMode == ZoomFitMode.None) RestoreTabZoom(_ctx);
+                        else _resumeZoomFor = resumeCtx;
+                    }
+                }
+
                 if (idx >= 0)
                 {
                     if (_viewMode == ViewMode.Continuous)
@@ -15206,12 +15583,28 @@ namespace TDPdf
                         PageList.SelectedIndex = idx;
                         _suppressContinuousScrollSync = false;
                         Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                            (Action)(() => SetupContinuousView(idx)));
+                            (Action)(() =>
+                            {
+                                if (!ReferenceEquals(_ctx, resumeCtx)) return;
+                                SetupContinuousView(idx);
+                                // #399: SetupContinuousView ends in FitToWidth (Continuous's own
+                                // default) and only THEN defers its scroll, so this tab's zoom has
+                                // to go back immediately after it returns — late enough that a fit
+                                // measures this document's strip width, early enough that the
+                                // deferred scroll and the slot heights are computed at the zoom we
+                                // are resuming at rather than at fit-width.
+                                if (resume) RestoreTabZoom(resumeCtx);
+                            }));
                     }
                     // Setting SelectedIndex fires PageList_SelectionChanged (→ render).
                     // If the index is unchanged, render explicitly.
                     else if (PageList.SelectedIndex == idx) RerenderCurrentPage();
                     else PageList.SelectedIndex = idx;
+                }
+                else
+                {
+                    _resumeZoomFor = null;   // #399: no page, so no render will ever settle these
+                    _resumeScroll = null;
                 }
             }
 
@@ -15238,7 +15631,7 @@ namespace TDPdf
                 var c = ctx;
                 var item = new MenuItem
                 {
-                    Header = (c.IsDirty ? "● " : "") + name,
+                    Header = (c.IsDirty ? "● " : "") + EscapeMenuHeader(name),
                     FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal,
                     ToolTip = c.OriginalPath ?? name
                 };
@@ -15371,8 +15764,46 @@ namespace TDPdf
             chipMenu.Items.Add(closeOthers);
             chipMenu.Items.Add(MakeMenuItem("Move to New Window", (_, _) => _ = TearOffTabToNewWindowAsync(ctx), null,
                 "Open this document alone in a new TDPdf window", "\uE78B"));
+            // OriginalPath, not the working path: after a decrypt-on-open or a structural edit the
+            // working file is a temp copy, and revealing %TEMP% is not what "containing folder"
+            // means. A document with no home on disk (a merge result, say) has nothing to show.
+            var openFolder = MakeMenuItem("Open Containing Folder", (_, _) => RevealInExplorer(ctx.OriginalPath), null,
+                "Show this document in File Explorer", "\uE8DA");
+            openFolder.IsEnabled = ctx.OriginalPath is not null;
+            chipMenu.Items.Add(openFolder);
             chip.ContextMenu = chipMenu;
             return chip;
+        }
+
+        /// <summary>
+        /// Selects a file in File Explorer, opening its folder if it is not already showing.
+        /// </summary>
+        /// <remarks>
+        /// The path is quoted but /select, is deliberately outside the quotes — that is the shape
+        /// explorer.exe expects, and it is the reason this is a helper rather than an inline call
+        /// waiting to be got wrong a second time. A file that has been deleted or moved since it
+        /// was opened just falls back to its folder.
+        /// </remarks>
+        private void RevealInExplorer(string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            try
+            {
+                if (System.IO.File.Exists(path))
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                    return;
+                }
+                string? folder = System.IO.Path.GetDirectoryName(path);
+                if (System.IO.Directory.Exists(folder))
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+                else
+                    SetStatus("That folder is no longer available");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Could not open the folder — {ex.Message}");
+            }
         }
 
         /// <summary>Updates each chip's label (name + dirty marker) and active styling.</summary>
@@ -15473,6 +15904,7 @@ namespace TDPdf
             ctx.AllSearchRects.Clear();
             ctx.SearchResultPages.Clear();
             ctx.Thumbnails = null;
+            ctx.ViewCaptured = false;   // #399: nothing left to resume into
             _tabs.Remove(ctx);
 
             QueueReleasedDocumentCollection();
@@ -16184,7 +16616,13 @@ namespace TDPdf
             {
                 var blank = new PdfPage { Width = XUnit.FromPoint(wPt), Height = XUnit.FromPoint(hPt) };
                 doc.Pages.Insert(insertAfter + 1, blank);
-                SaveTempAndReload();
+                // Inserting renumbers the pages after the insertion point but does not change the
+                // geometry of any of them, so the annotations on those pages are still valid where
+                // they are drawn — they just belong to a page one further along. Renumber them and
+                // keep them, rather than taking the default clear and losing unsaved work to a page
+                // added somewhere else in the document entirely.
+                ShiftAnnotationPagesForInsert(insertAfter + 1);
+                SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = insertAfter + 1;
                 SetStatus($"Inserted blank page at position {insertAfter + 2}");
             }
@@ -16214,6 +16652,7 @@ namespace TDPdf
             var textPrimary = (SolidColorBrush)FindResource("TextPrimary");
             var textSecondary = (SolidColorBrush)FindResource("TextSecondary");
             var accent = (SolidColorBrush)FindResource("AccentGreen");
+            var danger = (SolidColorBrush)FindResource("DangerRed");
 
             var win = new Window
             {
@@ -16245,8 +16684,83 @@ namespace TDPdf
                 Height = 28
             };
             foreach (var s in sizes) sizeBox.Items.Add(s.Name);
+            // "Custom…" sits one past the end of the presets, so its combo index IS sizes.Length —
+            // every custom-only branch below tests that rather than a magic number.
+            int customIndex = sizes.Length;
+            sizeBox.Items.Add("Custom…");
             sizeBox.SelectedIndex = 0;
             root.Children.Add(sizeBox);
+
+            // ---- Custom size (revealed only while "Custom…" is the selection) ----
+            // Points are the PDF's own unit, but nobody buys paper in points, so the entry is a
+            // width/height pair plus a unit picker and the conversion to points happens on the way
+            // out. The floor and ceiling are the format's, not ours: PDF 32000-1 puts a hard 14400
+            // pt (200 in) limit on a page side, and a page thinner than a few points is a file no
+            // viewer will draw anything on.
+            const double MinSidePt = 3.0;
+            const double MaxSidePt = 14400.0;
+
+            // (display name, points per unit, format for the seeded value)
+            var units = new (string Name, double PtPer, string Fmt)[]
+            {
+                ("inches",      72.0,        "0.##"),
+                ("millimetres", 72.0 / 25.4, "0.#"),
+                ("points",      1.0,         "0.#")
+            };
+
+            TextBox NumBox() => new()
+            {
+                Width = 74,
+                Height = 28,
+                Foreground = textPrimary,
+                Background = bgPanel,
+                BorderBrush = borderDim,
+                BorderThickness = new Thickness(1),
+                CaretBrush = accent,
+                Padding = new Thickness(6, 4, 6, 4),
+                VerticalContentAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Right
+            };
+
+            var customPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+            var customRow = new StackPanel { Orientation = Orientation.Horizontal };
+            var widthBox = NumBox();
+            var heightBox = NumBox();
+            var unitBox = new ComboBox
+            {
+                Style = (Style)FindResource("DarkComboBox"),
+                Height = 28,
+                Width = 120,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            foreach (var u in units) unitBox.Items.Add(u.Name);
+            unitBox.SelectedIndex = 0;
+
+            customRow.Children.Add(widthBox);
+            customRow.Children.Add(new TextBlock
+            {
+                Text = "×",
+                Foreground = textSecondary,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 6, 0)
+            });
+            customRow.Children.Add(heightBox);
+            customRow.Children.Add(unitBox);
+            customPanel.Children.Add(customRow);
+
+            // Doubles as the inline validation message (DangerRed) and, once the numbers are good,
+            // the point equivalent — so the user can see what the PDF is actually going to get.
+            // Deliberately not a second dialog: a modal on top of a modal to say "that is not a
+            // number" is the kind of thing this app's dialogs exist to avoid.
+            var customNote = new TextBlock
+            {
+                Foreground = textSecondary,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 0)
+            };
+            customPanel.Children.Add(customNote);
+            root.Children.Add(customPanel);
 
             root.Children.Add(new TextBlock
             {
@@ -16313,6 +16827,88 @@ namespace TDPdf
                 Child = root
             };
 
+            // ---- Custom-size validation and state ----
+            // Reads both boxes in the selected unit. Rejects anything that is not a number, plus
+            // zero / negative / absurd sizes, and names the first problem it finds.
+            bool TryReadCustom(out double wPt, out double hPt, out string problem)
+            {
+                double ptPer = units[Math.Max(0, unitBox.SelectedIndex)].PtPer;
+                wPt = hPt = 0;
+                if (!double.TryParse(widthBox.Text.Trim(), out double w) ||
+                    !double.TryParse(heightBox.Text.Trim(), out double h))
+                {
+                    problem = "Enter a number for both the width and the height.";
+                    return false;
+                }
+                wPt = w * ptPer;
+                hPt = h * ptPer;
+                if (double.IsNaN(wPt) || double.IsNaN(hPt) || double.IsInfinity(wPt) || double.IsInfinity(hPt))
+                {
+                    problem = "Those dimensions are not a usable page size.";
+                    return false;
+                }
+                if (wPt < MinSidePt || hPt < MinSidePt)
+                {
+                    problem = $"Too small — each side must be at least {MinSidePt / ptPer:0.###} {units[Math.Max(0, unitBox.SelectedIndex)].Name}.";
+                    return false;
+                }
+                if (wPt > MaxSidePt || hPt > MaxSidePt)
+                {
+                    problem = $"Too large — a PDF page cannot exceed {MaxSidePt / ptPer:0.##} {units[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
+                    return false;
+                }
+                problem = string.Empty;
+                return true;
+            }
+
+            void ValidateCustom()
+            {
+                if (sizeBox.SelectedIndex != customIndex) return;
+                bool valid = TryReadCustom(out double wPt, out double hPt, out string problem);
+                customNote.Text = valid ? $"= {wPt:0.#} × {hPt:0.#} pt" : problem;
+                customNote.Foreground = valid ? textSecondary : danger;
+                okBtn.IsEnabled = valid;
+            }
+
+            void SyncCustomState()
+            {
+                bool custom = sizeBox.SelectedIndex == customIndex;
+                customPanel.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
+                // Portrait/Landscape is disabled for a custom size, deliberately. The two boxes
+                // already say which way round the page is; swapping the numbers someone just typed
+                // in — and having the dialog decide 5 × 7 really meant 7 × 5 — reads as the entry
+                // being ignored. The radios come back the moment a preset is selected again.
+                rbPortrait.IsEnabled = !custom;
+                rbLandscape.IsEnabled = !custom;
+                if (custom) ValidateCustom(); else okBtn.IsEnabled = true;
+            }
+
+            // Re-expresses whatever is in the boxes when the unit changes, so picking "millimetres"
+            // after typing 8.5 x 11 inches gives 215.9 x 279.4 rather than a 8.5 mm page. Unparsable
+            // text is left exactly as typed for the user to fix.
+            int lastUnit = unitBox.SelectedIndex;
+            unitBox.SelectionChanged += (_, _) =>
+            {
+                int now = Math.Max(0, unitBox.SelectedIndex);
+                double from = units[Math.Max(0, lastUnit)].PtPer;
+                double to = units[now].PtPer;
+                if (double.TryParse(widthBox.Text.Trim(), out double w))
+                    widthBox.Text = (w * from / to).ToString(units[now].Fmt);
+                if (double.TryParse(heightBox.Text.Trim(), out double h))
+                    heightBox.Text = (h * from / to).ToString(units[now].Fmt);
+                lastUnit = now;
+                ValidateCustom();
+            };
+
+            // Seed the boxes from the page being inserted after, in the starting unit, so Custom
+            // opens on something real to edit rather than two empty boxes.
+            widthBox.Text = (currentWPt / units[0].PtPer).ToString(units[0].Fmt);
+            heightBox.Text = (currentHPt / units[0].PtPer).ToString(units[0].Fmt);
+            widthBox.TextChanged += (_, _) => ValidateCustom();
+            heightBox.TextChanged += (_, _) => ValidateCustom();
+            sizeBox.SelectionChanged += (_, _) => SyncCustomState();
+            SyncCustomState();
+
             bool ok = false;
             okBtn.Click += (_, _) => { ok = true; win.DialogResult = true; };
             cancelBtn.Click += (_, _) => { ok = false; win.DialogResult = false; };
@@ -16320,12 +16916,22 @@ namespace TDPdf
             win.ShowDialog();
             if (!ok) return null;
 
+            if (sizeBox.SelectedIndex == customIndex)
+            {
+                // Insert is disabled while the boxes are invalid, so this cannot fail from the UI;
+                // the guard stays so a later change to the enable rule fails closed rather than
+                // inserting a zero-size page. The orientation radios are disabled here (see
+                // SyncCustomState), so the typed numbers are used exactly as entered.
+                if (!TryReadCustom(out double customW, out double customH, out _)) return null;
+                return (customW, customH);
+            }
+
             var selected = sizes[sizeBox.SelectedIndex];
-            double w = selected.W;
-            double h = selected.H;
-            if (rbLandscape.IsChecked == true && h > w) (w, h) = (h, w);
-            if (rbPortrait.IsChecked == true && w > h) (w, h) = (h, w);
-            return (w, h);
+            double presetW = selected.W;
+            double presetH = selected.H;
+            if (rbLandscape.IsChecked == true && presetH > presetW) (presetW, presetH) = (presetH, presetW);
+            if (rbPortrait.IsChecked == true && presetW > presetH) (presetW, presetH) = (presetH, presetW);
+            return (presetW, presetH);
         }
 
         private void DocumentInfo_Click(object sender, RoutedEventArgs e) => ShowDocumentInfoDialog();
@@ -16704,7 +17310,7 @@ namespace TDPdf
                     ExceptionDispatchInfo? saveError = null;
                     try
                     {
-                        await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                        await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -16717,7 +17323,7 @@ namespace TDPdf
                 }
                 else
                 {
-                    await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                    await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     status = $"Saved — {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
@@ -16833,7 +17439,7 @@ namespace TDPdf
                     ExceptionDispatchInfo? saveError = null;
                     try
                     {
-                        await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                        await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -16846,7 +17452,7 @@ namespace TDPdf
                 }
                 else
                 {
-                    await _pdfDocumentService.SaveAsync(() => doc.Save(targetFile), CancellationToken.None);
+                    await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
                     status = $"Saved to {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
@@ -17087,11 +17693,26 @@ namespace TDPdf
             catch { return false; }
         }
 
+        /// <summary>
+        /// Per-page sizes for the flatten pass, in points, as the page is DISPLAYED.
+        /// </summary>
+        /// <remarks>
+        /// These sizes become the page boxes of the rebuilt document, so they have to agree with
+        /// what PDFium rasterised — and PDFium rasterises the CropBox, rotated. PdfPage.Width/Height
+        /// agree on neither: they are MediaBox-derived, and their landscape swap reads /Rotate from
+        /// the page's own dictionary, so a quarter turn INHERITED from a /Pages node reads as
+        /// portrait. Either mismatch stretches a landscape raster onto a portrait page. Going
+        /// through PdfPageGeometry.DisplaySize — the single home for this mapping, and the one the
+        /// render, link, form-field and redaction paths already share — fixes both at once.
+        /// </remarks>
         private static IReadOnlyList<PdfPageSize> GetPageSizes(PdfDocument doc)
         {
             var pageSizes = new List<PdfPageSize>(doc.PageCount);
             for (int i = 0; i < doc.PageCount; i++)
-                pageSizes.Add(new PdfPageSize(doc.Pages[i].Width.Point, doc.Pages[i].Height.Point));
+            {
+                var (w, h) = PdfPageGeometry.DisplaySize(doc.Pages[i]);
+                pageSizes.Add(new PdfPageSize(w, h));
+            }
             return pageSizes;
         }
 
@@ -17671,6 +18292,11 @@ namespace TDPdf
             // cache key already changes — the working path is repointed at a fresh temp file just
             // below — but this keeps the invalidation explicit rather than incidental.)
             InvalidateTextRunCache();
+            // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
+            // this tab's captured scroll offset now measures against a layout that no longer
+            // exists. Drop the resume point and let the next activation place the view the way it
+            // did before the feature, rather than restoring a number that means nothing.
+            _ctx.ViewCaptured = false;
             ClearSelection();
             MarkDirty();
             var doc = _doc;
@@ -17713,6 +18339,11 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
+
+            // Rotate / crop / transform change the current page's geometry without necessarily
+            // changing WHICH page it is, so the chip is refreshed here rather than left to a
+            // selection change that may well restore the very same index.
+            UpdatePageSizeReadout();
         }
 
         // ============================================================
@@ -18155,7 +18786,14 @@ namespace TDPdf
                 // Recording it also retires any remembered fit: the last explicit zoom decision
                 // wins, whichever kind it was, which is the same single-preference model the fit
                 // side already uses (SaveDefaultFitMode clears this in return).
-                if (_manualZoomIntent)
+                //
+                // #399: _restoringTabZoom excludes the one kind of zoom change that is not a
+                // decision at all — a tab switch putting back the zoom that tab was already on.
+                // That zoom was recorded here when the user chose it; letting it write again
+                // would mean clicking back to an older tab could retire the preference set on the
+                // tab just left, so a per-tab RESUME deliberately writes nothing but LastZoomLevel
+                // (which only tracks what is on screen).
+                if (_manualZoomIntent && !_restoringTabZoom)
                 {
                     TDPdf.Properties.Settings.Default.LastManualZoom = Zoom.ZoomLevel;
                     TDPdf.Properties.Settings.Default.DefaultFitMode = ZoomFitMode.None.ToString();
@@ -18640,6 +19278,32 @@ namespace TDPdf
             var dim = new System.Drawing.Imaging.FrameDimension(img.FrameDimensionsList[0]);
             int frameCount = Math.Max(1, img.GetFrameCount(dim));
 
+            // #366: a source that is ALREADY a JPEG goes into the PDF byte for byte. The loop below
+            // redraws every frame into a 32bpp bitmap and re-encodes it as PNG, which PdfSharpCore
+            // then stores as 24-bit RGB FlateDecode — so importing a 400 KB phone photo produced a
+            // 12 MB page, and the picture in the file was no longer the picture the user chose.
+            //
+            // Note that handing the JPEG bytes to XImage would NOT have fixed it: PdfSharpCore's
+            // image source decodes the stream and saves it again at quality 75. Only writing the
+            // XObject directly (PdfPageImageEncoder) leaves the original bytes alone.
+            //
+            // Single-frame only — a multi-frame TIFF/GIF is one page per frame and cannot be one
+            // pass-through image — and only for the JPEG variants /DCTDecode actually covers; the
+            // sniff refuses anything else, which falls through to the lossless path unchanged.
+            if (frameCount == 1
+                && PdfPageImageEncoder.TryReadPassThroughJpeg(path) is { } jpeg
+                && jpeg.PixelWidth == img.Width && jpeg.PixelHeight == img.Height)
+            {
+                double jpegDpiX = img.HorizontalResolution > 0 ? img.HorizontalResolution : 96.0;
+                double jpegDpiY = img.VerticalResolution   > 0 ? img.VerticalResolution   : 96.0;
+                var jpegPage = pdf.AddPage();
+                jpegPage.Width  = img.Width  * 72.0 / jpegDpiX;
+                jpegPage.Height = img.Height * 72.0 / jpegDpiY;
+                PdfPageImageEncoder.PaintFullPage(
+                    pdf, jpegPage, jpeg, jpegPage.Width.Point, jpegPage.Height.Point);
+                return;
+            }
+
             for (int f = 0; f < frameCount; f++)
             {
                 img.SelectActiveFrame(dim, f);
@@ -18857,7 +19521,7 @@ namespace TDPdf
                 {
                     string path = p;   // capture
                     var item = MakeMenuItem(System.IO.Path.GetFileName(path), async (_, _2) => await OpenRecentAsync(path),
-                                            null, null, "\uE8A5");
+                                            null, null, "\uE8A5", literalHeader: true);
                     item.ToolTip = path;
                     menu.Items.Add(item);
                 }
@@ -19154,6 +19818,7 @@ namespace TDPdf
                 ClearTextSelection();
                 ClearCropSelection();
                 _pageJumpBox.Text = (PageList.SelectedIndex + 1).ToString();
+                UpdatePageSizeReadout();   // pages can differ in size, so the chip follows the page
 
                 // Continuous view: the whole document is one scroll, so a sidebar selection
                 // scrolls the strip rather than re-rendering a single page. The scroll-sync

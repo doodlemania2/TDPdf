@@ -95,6 +95,7 @@ namespace TDPdf
                 ["F"] = ("Search", "Find"),         ["A"] = ("Search", "Select all text"),
                 ["Z"] = ("Edit", "Undo"),           ["Y"] = ("Edit", "Redo"),
                 ["C"] = ("Edit", "Copy text"),
+                ["R"] = ("Edit", "Rotate pages CW"),
                 ["D0"] = ("View", "Reset zoom"),    ["D1"] = ("View", "Actual size"),
                 ["D2"] = ("View", "Fit width"),     ["D3"] = ("View", "Fit page"),
                 ["Equals"] = ("View", "Zoom in"),   ["Minus"] = ("View", "Zoom out"),
@@ -110,6 +111,7 @@ namespace TDPdf
             {
                 ["S"] = ("File", "Save as"),
                 ["Z"] = ("Edit", "Redo"),
+                ["R"] = ("Edit", "Rotate pages CCW"),
                 ["O"] = ("Ocr", "OCR page to clipboard"),
                 ["Equals"] = ("View", "App size larger"),
                 ["Minus"] = ("View", "App size smaller"),
