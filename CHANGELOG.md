@@ -25,6 +25,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 - **Running `TDPdf.exe /silent` tried to open a file literally named `/silent`** instead of installing. A bare silent switch now installs, which is what anyone passing it meant.
 
+## [1.31.0.0] - 2026-09-15
+
+**A curated sync with upstream KillerPDF v1.8.3, v1.8.4 and v1.8.5.** Upstream has replaced its PDF engine and restructured its tree since the last sync, so nothing here was copied — each item was reimplemented against TDPdf's own architecture. Three of the fixes are defects the review exposed in TDPdf's own code rather than ports; they are marked as such. Eleven candidates were checked and rejected, listed at the end.
+
+### Added
+
+- **Each document tab keeps its own scroll position and zoom** (upstream #399). Switching tabs used to drag one document's zoom onto the next and drop you wherever the re-render happened to land. An already-open tab now resumes where you left it. This is not a second standing preference: the app-wide preference still decides where a *newly opened* document starts, and a fit is still replayed as a fit rather than as the number it produced — replaying a raw zoom against a different window or monitor is what used to open a document enormous or microscopic. Restoring per-file state across *sessions* is not included; that needs a keyed store the settings file has no structure for.
+- **Open Containing Folder on the document tab menu** (upstream v1.8.5, #399). Reveals the file you opened, not the working copy — after opening a password-protected PDF, or after any structural edit, the file TDPdf is actually working against is a copy in `%TEMP%`, and showing you that folder is not what the command means.
+- **Ctrl+R and Ctrl+Shift+R rotate the selected pages** clockwise and counter-clockwise (upstream v1.8.5). Rotation was already on the toolbar and in the Pages panel but had no keyboard shortcut. Bare `R` is the Redact tool, so the modified pair was free.
+- **Insert Blank Page accepts a custom width and height**, in inches, millimetres or points, alongside the existing presets (upstream v1.8.5, #400). Out-of-range sizes are reported in the dialog rather than in a second dialog on top of it, and the limits are the PDF format's own — 3 to 14400 points a side.
+- **A footer readout showing the current page's size**, cycling pixels → inches → millimetres → points each time you click it, remembered between sessions (upstream v1.8.4, #364). Pixels mean the page at a true 100%, not the size of the bitmap currently on screen — that number moves with the zoom and the monitor, so it describes your machine rather than your document.
+- **The image-export and Transform dialogs say how many pixels the chosen DPI will actually produce** (upstream v1.8.4/v1.8.3, #365, #310). A DPI on its own tells you nothing about the file you are about to get. Where the selected pages are not all the same size, both say so instead of quoting the first page's numbers for all of them.
+
+### Changed
+
+- **A page that was already a JPEG scan stays a JPEG** instead of being re-encoded as 24-bit RGB, which was inflating flattened scans several times over (upstream v1.8.4, #366). The test is deliberately narrow — every image on the page must be a JPEG *and* one of them must cover almost the whole sheet — because re-encoding text or line art as JPEG damages it permanently, and a rule that only checked "are the images JPEGs" would also fire on a page of text with a photo in the corner, ringing every letter to save nothing. Imported image pages skip a pointless decode-and-re-encode when the file is already a baseline JPEG; progressive, 12-bit and CMYK sources keep the old path, because guessing wrong about a CMYK JPEG's colour inversion ships a photographic negative.
+- **A flattened page that is purely black and white is stored as a 1-bit image** rather than 24-bit colour (upstream v1.8.3, #323) — roughly a twentyfold reduction on scanned text. Detection is strict and confirmed against the rendered page itself: one nearly-black pixel and the page takes the lossless path, because a misjudged page is far worse than a large one.
+- **Saving writes to a temporary file first and then moves it into place.** Previously the document was serialized directly over the file you already had, so a failure part-way through truncated it — and the built-in retry then ran over the damaged file. The window was small, but the loss was total and silent, because the only copy of the document was the one being written over. *(A TDPdf defect found during this review, not an upstream port.)*
+
+### Fixed
+
+- **Inserting a blank page no longer discards every unsaved annotation** (upstream v1.8.4, #388). Inserting renumbers the pages after it without changing how any of them look, so their annotations were still perfectly valid — they were being thrown away for a page added somewhere else entirely. The undo history is renumbered with them, which also fixes a quieter version of the same bug: an undo after an insert could restore one page's annotations onto its neighbour.
+- **Save Flattened no longer distorts rotated or cropped pages** (upstream v1.8.4, #362). The rebuilt pages were sized from the raw page box, which ignores a quarter-turn inherited from a parent page node and ignores the crop box entirely — so a landscape page could come back stretched onto a portrait sheet. It now uses the same rotation- and crop-aware geometry the viewer, the link overlays and redaction already share. *(A TDPdf defect found during this review.)*
+- **File names containing an underscore display correctly in the recent-files and tab-overflow menus.** `My_Report.pdf` was drawing as `MyReport.pdf` with the R underlined, because a menu treats an underscore as a keyboard-accelerator marker. *(A TDPdf defect found during this review.)*
+- **Installing while a password-protected document is open** now relaunches onto your original file instead of the decrypted working copy in `%TEMP%`, which the closing process deletes. *(A TDPdf defect found during this review.)*
+- **The keyboard shortcut list was missing the Redact and Form field tools** (upstream v1.8.5, #339). Both tools exist and both were correct in the on-screen keyboard view; only the printed list was stale.
+
+### Not ported
+
+Each of these was a candidate from upstream's 1.8.3–1.8.5 notes and was checked in TDPdf before any work started.
+
+- **Guards against stale and repeated tab closes** (#353), **the correct first page after opening or switching documents** (#378, #379), **PDFs with empty unsigned signature values**, and **keeping the displayed, saved and working paths separate** (#370, #371, #376) — **all already present**, in some cases more thoroughly than upstream's fix.
+- **Title-bar dragging and double-click from a maximized window** (#380) — **already correct, and the upstream fix would be a regression here.** TDPdf has always handed the drag to Windows itself rather than moving the window by hand, which is the behaviour upstream was working towards.
+- **Scaling the footer with the interface** (#354, #355) — **declined.** The footer deliberately never scales, so the app-size control living in it cannot move out from under the cursor while it is being used.
+- **Preserving pasted clipboard images with an empty alpha channel** (#389) — not applicable: TDPdf has no clipboard image paste to fix. Adopting it would mean porting the whole feature, not the fix.
+- **Signature revision and appearance preservation** (#381) — not applicable. "Signature" in TDPdf means a drawn or imported overlay; there is no cryptographic signing, and a TDPdf save is a full rewrite rather than an appended revision.
+- **Tagged-PDF work** — saving markup into tagged PDFs, Transform on tagged PDFs (#383), and form fields on tagged PDFs with multiple top-level structure elements. All three need real structure-tree support, which the PDF library TDPdf writes with offers no help for. Out of scope for a sync; worth its own issue.
+- **Single-channel grayscale Transform output** (#324) — TDPdf's Transform has no grayscale mode at all, so this is a new feature rather than a port.
+- **A sorting file picker** — still declined, as in v1.20: TDPdf uses the standard Windows file dialogs deliberately.
+- **A portable data folder beside the launcher** (#327) — TDPdf deliberately went the other way, moving its data under `%LOCALAPPDATA%` so it stays writable.
+- **A global keyboard-shortcut toggle** (#405) and **startup update checks** — the first is low value against three separate dispatch paths; the second is what Intune and the Microsoft Store already do for TDPdf.
+- Unchanged from standing policy: all localization, the landing page, and WinGet/Chocolatey packaging.
+
 ## [1.30.2.0] - 2026-09-09
 
 ### Fixed
@@ -1135,7 +1178,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.30.2.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v1.31.0.0...HEAD
+[1.31.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.2.0...v1.31.0.0
 [1.30.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.1.0...v1.30.2.0
 [1.30.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.0.0...v1.30.1.0
 [1.30.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.7.0...v1.30.0.0
