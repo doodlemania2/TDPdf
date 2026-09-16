@@ -1,0 +1,187 @@
+<!--
+  TDPdf site theme — injected into Ghost Settings -> Code injection -> Site header
+  by build/ghost/publish-site.ps1. Do not paste this into the Ghost admin UI by hand:
+  the script owns this field, and a hand-edit is overwritten on the next publish.
+
+  Every colour below is lifted from Themes/Dark.xaml, which is the application's own
+  dark palette. Keep the two in step — if a brush changes there, change it here.
+
+  This is deliberately code injection rather than a forked Ghost theme. A fork means
+  owning a whole theme's markup, its Handlebars templates and its upgrade path forever,
+  in exchange for restyling what is really a handful of surfaces on five static pages.
+  Ghost's stock theme already carries the accessibility and responsive work; this only
+  repaints it.
+-->
+<style>
+  :root {
+    /* Themes/Dark.xaml */
+    --tdp-bg-dark:        #1a1a1a;  /* BgDark          */
+    --tdp-bg-panel:       #242424;  /* BgPanel         */
+    --tdp-bg-deep:        #111111;  /* PanelBackground */
+    --tdp-bg-hover:       #2e2e2e;  /* BgHover         */
+    --tdp-border:         #333333;  /* BorderDim       */
+    --tdp-accent:         #4ade80;  /* AccentGreen     */
+    --tdp-accent-dim:     #22543d;  /* AccentGreenDim  */
+    --tdp-accent-mid:     #1a8f48;  /* SelectionAccent */
+    --tdp-text:           #e0e0e0;  /* TextPrimary     */
+    --tdp-text-secondary: #888888;  /* TextSecondary   */
+    --tdp-text-muted:     #444444;  /* TextMuted       */
+    --tdp-warning:        #ffa500;  /* WarningOrange   */
+    --tdp-danger:         #ef4444;  /* DangerRed       */
+
+    /* Ghost's stock themes (Source, Casper) read these. Overriding them here
+       repaints most of the site without touching a single theme selector. */
+    --background-color: var(--tdp-bg-dark);
+    --ghost-accent-color: var(--tdp-accent);
+    --color-darkgrey: var(--tdp-text);
+    --color-midgrey: var(--tdp-text-secondary);
+    --color-lightgrey: var(--tdp-border);
+    --color-wash: var(--tdp-bg-panel);
+    --color-border: var(--tdp-border);
+
+    /* Dark form controls, scrollbars and focus rings, for free. */
+    color-scheme: dark;
+  }
+
+  html, body {
+    background-color: var(--tdp-bg-dark);
+    color: var(--tdp-text);
+  }
+
+  /* Ghost themes paint several full-width bands with their own background. */
+  .site-header, .gh-head, .site-footer, .gh-foot,
+  .site-header-content, .gh-navigation, .gh-outer, .gh-inner {
+    background-color: transparent;
+    color: var(--tdp-text);
+  }
+
+  h1, h2, h3, h4, h5, h6,
+  .gh-article-title, .post-card-title, .article-title {
+    color: #ffffff;
+  }
+
+  h2 {
+    border-bottom: 1px solid var(--tdp-border);
+    padding-bottom: 0.3em;
+  }
+
+  a { color: var(--tdp-accent); }
+  a:hover { color: #ffffff; }
+
+  /* Navigation and footer links read as chrome, not as body links. */
+  .gh-head a, .site-header a, .gh-foot a, .site-footer a, .nav a {
+    color: var(--tdp-text-secondary);
+  }
+  .gh-head a:hover, .site-header a:hover, .gh-foot a:hover,
+  .site-footer a:hover, .nav a:hover {
+    color: var(--tdp-accent);
+  }
+
+  /* --- Content ------------------------------------------------------------ */
+
+  .gh-content, .post-full-content, .post-content {
+    color: var(--tdp-text);
+  }
+
+  .gh-content blockquote, .post-full-content blockquote, blockquote {
+    background-color: var(--tdp-bg-panel);
+    border-left: 4px solid var(--tdp-warning);
+    color: var(--tdp-text);
+    padding: 1rem 1.25rem;
+    margin-left: 0;
+    margin-right: 0;
+    font-style: normal;
+  }
+
+  /* Inline code and fenced blocks: the download page leans on both. */
+  code, kbd, samp, tt {
+    background-color: var(--tdp-bg-panel);
+    color: var(--tdp-accent);
+    border: 1px solid var(--tdp-border);
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    font-size: 0.9em;
+  }
+
+  pre {
+    background-color: var(--tdp-bg-deep);
+    border: 1px solid var(--tdp-border);
+    border-radius: 5px;
+    color: var(--tdp-text);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+  }
+
+  pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font-size: 0.95em;
+  }
+
+  /* The licences page is one very long table-and-heading document; the privacy
+     and telemetry pages are mostly tables. These need to be legible, not pretty. */
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    display: block;
+    overflow-x: auto;
+  }
+
+  th, td {
+    border: 1px solid var(--tdp-border);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    background-color: var(--tdp-bg-panel);
+    color: #ffffff;
+  }
+
+  tbody tr:nth-child(even) { background-color: #1f1f1f; }
+
+  hr { border: 0; border-top: 1px solid var(--tdp-border); }
+
+  img { border-radius: 5px; }
+
+  ::selection {
+    background-color: var(--tdp-accent-mid);
+    color: #ffffff;
+  }
+
+  /* --- Buttons and cards -------------------------------------------------- */
+
+  .gh-button, .button, button, input[type="submit"],
+  .gh-head-button, .post-card, .gh-card {
+    border-color: var(--tdp-border);
+  }
+
+  .gh-button, .button, button, input[type="submit"], .gh-head-button {
+    background-color: var(--tdp-accent-dim);
+    color: var(--tdp-accent);
+  }
+
+  .gh-button:hover, .button:hover, button:hover,
+  input[type="submit"]:hover, .gh-head-button:hover {
+    background-color: var(--tdp-accent-mid);
+    color: #ffffff;
+  }
+
+  .post-card, .gh-card, .gh-canvas .kg-card {
+    background-color: var(--tdp-bg-panel);
+  }
+
+  input, textarea, select {
+    background-color: var(--tdp-bg-panel);
+    color: var(--tdp-text);
+    border: 1px solid var(--tdp-border);
+  }
+
+  /* --- Anchored headings -------------------------------------------------- */
+  /* The licences and privacy pages carry in-page tables of contents, so a
+     heading jumped to must not land flush against the viewport top. */
+  :is(h1, h2, h3, h4, h5, h6)[id] { scroll-margin-top: 1.5rem; }
+</style>
