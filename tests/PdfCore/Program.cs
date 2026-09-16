@@ -173,6 +173,12 @@ Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 Forms.Run(Check, tmp);
 TextEdit.Run(Check, tmp);
+Measure.Run(Check, tmp);
+PageMove.Run(Check);
+SignatureScan.Run(Check);
+Duplicate.Run(Check, tmp);
+LetterSpacing.Run(Check);
+SelectCursor.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

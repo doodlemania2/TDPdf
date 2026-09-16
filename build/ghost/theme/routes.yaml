@@ -1,0 +1,26 @@
+# Ghost routing for www.tdpdf.com.
+#
+# ONE-TIME MANUAL STEP. publish-site.ps1 deliberately does not upload this file.
+# Routing replaces the whole site's URL structure in one write, and that is not
+# something a content publish should do as a side effect. Upload it by hand, once:
+#
+#   Ghost admin -> Settings -> Advanced -> Labs -> Routes -> Upload routes file
+#
+# Without it, Ghost serves its post index at / and the home page lives at /home/.
+# The four other pages are already at their own URLs either way, so the site works
+# before this is uploaded; it is just not pointing at the right front door.
+
+routes:
+  # The home page is a static page, not the post index.
+  /: page-home
+
+collections:
+  # Keep a post index, but off the root. TDPdf has no blog yet; when it gets one,
+  # this is where it lives, and nothing else has to move.
+  /news/:
+    permalink: /news/{slug}/
+    template: index
+
+taxonomies:
+  tag: /tag/{slug}/
+  author: /author/{slug}/

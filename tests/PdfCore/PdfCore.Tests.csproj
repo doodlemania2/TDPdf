@@ -42,12 +42,18 @@
     <Compile Include="..\..\Services\PdfiumInterop.cs" />
     <Compile Include="..\..\Services\CmapCoverage.cs" />
     <Compile Include="..\..\Services\PdfPageGeometry.cs" />
+    <Compile Include="..\..\Services\MeasureGeometry.cs" />
+    <Compile Include="..\..\Services\PdfSignatureScan.cs" />
     <Compile Include="..\..\Services\PdfPageImageEncoder.cs" />
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
     <Compile Include="..\..\Services\PdfTextEdit.cs" />
     <Compile Include="..\..\Services\PdfContentInspector.cs" />
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
+    <Compile Include="..\..\Services\PageBlockMove.cs" />
+    <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
+    <Compile Include="..\..\Services\TextLetterSpacing.cs" />
+    <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
   </ItemGroup>
 
 </Project>
