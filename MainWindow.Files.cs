@@ -1834,6 +1834,7 @@ namespace TDPdf
             // %TEMP%. Route them to Save As. OriginalPath — not _currentFile — is the destination.
             if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
+            if (!ConfirmSaveOverDigitalSignature()) return;
             await SaveInPlaceAsync();
         }
 
@@ -1965,30 +1966,60 @@ namespace TDPdf
         {
             try
             {
-                var cat = doc.Internals.Catalog;
-                cat.Elements.Remove("/Perms");
-                var acroItem = cat.Elements["/AcroForm"];
-                if (acroItem is null || DerefItemStatic(acroItem) is not PdfDictionary acro) return;
-                var fieldsItem = acro.Elements["/Fields"];
-                if (fieldsItem is not null && DerefItemStatic(fieldsItem) is PdfArray fields)
-                    ScrubSigFieldValues(fields, 0);
+                doc.Internals.Catalog.Elements.Remove("/Perms");
+                // Same walk the warning counts with (PdfSignatureScan). Sharing it is the point:
+                // when these were two walks, the warning could go stale the first time one learned
+                // about a field shape the other did not — and the failure mode is staying silent
+                // while still removing the signature.
+                foreach (var field in TDPdf.Services.PdfSignatureScan.SignedFields(doc))
+                    field.Elements.Remove("/V");
             }
             catch { /* malformed catalog - leave the save as-is */ }
         }
 
-        private static void ScrubSigFieldValues(PdfArray fields, int depth)
+        /// <summary>
+        /// Gate every save on the digital signature it is about to destroy.
+        /// </summary>
+        /// <remarks>
+        /// A TDPdf save rewrites the entire file, so any signature in it no longer covers the bytes
+        /// it was made over. <see cref="ScrubDeadSignatures"/> removes it rather than writing one
+        /// that fails validation, which is the right call — a broken signature reads as tampering,
+        /// where an unsigned document merely reads as unsigned.
+        ///
+        /// The defect this fixes is not the removal, it is the silence. Opening a signed PDF and
+        /// pressing Ctrl+S destroyed the signature with nothing on screen to say so, and the file
+        /// on disk was already overwritten by the time anyone could notice. Returns false to
+        /// abandon the save, in the shape of <see cref="ConfirmSaveWithPendingRedactions"/>.
+        /// </remarks>
+        private bool ConfirmSaveOverDigitalSignature()
         {
-            if (depth > 8) return;   // defensive: malformed circular /Kids
-            foreach (var item in fields.Elements)
-            {
-                if (item is null || DerefItemStatic(item) is not PdfDictionary field) continue;
-                if (field.Elements.GetName("/FT") == "/Sig" && field.Elements["/V"] is not null)
-                    field.Elements.Remove("/V");
-                var kidsItem = field.Elements["/Kids"];
-                if (kidsItem is not null && DerefItemStatic(kidsItem) is PdfArray kids)
-                    ScrubSigFieldValues(kids, depth + 1);
-            }
+            if (_doc is null) return true;
+            int signed = TDPdf.Services.PdfSignatureScan.SignedFields(_doc).Count;
+            bool rights = TDPdf.Services.PdfSignatureScan.HasUsageRights(_doc);
+            if (signed == 0 && !rights) return true;
+
+            string what = signed > 0
+                ? $"This PDF carries {signed} digital signature{(signed == 1 ? "" : "s")}"
+                : "This PDF carries usage rights";
+            if (signed > 0 && rights) what += " and usage rights";
+
+            var answer = TdpDialog.ShowYesNo(this,
+                $"{what}.\n\n" +
+                "Saving rewrites the whole file, which leaves any signature covering bytes that no " +
+                "longer exist. TDPdf removes it rather than writing one that fails to validate — a " +
+                "broken signature looks like the document was tampered with, an unsigned one only " +
+                "looks unsigned.\n\n" +
+                "The original file on disk is unchanged until you continue. To keep the signature, " +
+                "cancel and work on a copy instead.",
+                "Save anyway", "Cancel",
+                "Saving Removes the Signature", MessageBoxImage.Warning);
+            return answer == MessageBoxResult.Yes;
         }
+
+        // ScrubSigFieldValues used to live here. It is gone rather than left unused: it was the
+        // second copy of the /Kids walk, and PdfSignatureScan.SignedFields — which both the scrub
+        // and the warning now share — is the first. Keeping a dead duplicate is how the two drift
+        // back apart the next time someone edits "the" walker and picks the wrong one.
 
         /// <summary>
         /// Saves the active document back over the file the user opened. <paramref name="removingPassword"/>
@@ -2119,6 +2150,7 @@ namespace TDPdf
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
+            if (!ConfirmSaveOverDigitalSignature()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save PDF as" };
             // #112: seed the dialog with the document's display name so Save As pre-fills the real
@@ -2226,6 +2258,7 @@ namespace TDPdf
             // still there, in full, as pixels. Ask before writing a file the user has every reason
             // to believe is safe.
             if (!ConfirmSaveWithPendingRedactions()) return;
+            if (!ConfirmSaveOverDigitalSignature()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
             if (dlg.ShowDialog() != true) return;

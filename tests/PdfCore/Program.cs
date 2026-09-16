@@ -175,6 +175,7 @@ Forms.Run(Check, tmp);
 TextEdit.Run(Check, tmp);
 Measure.Run(Check, tmp);
 PageMove.Run(Check);
+SignatureScan.Run(Check);
 Duplicate.Run(Check, tmp);
 LetterSpacing.Run(Check);
 SelectCursor.Run(Check);

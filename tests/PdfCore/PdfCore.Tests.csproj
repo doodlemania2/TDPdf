@@ -43,6 +43,7 @@
     <Compile Include="..\..\Services\CmapCoverage.cs" />
     <Compile Include="..\..\Services\PdfPageGeometry.cs" />
     <Compile Include="..\..\Services\MeasureGeometry.cs" />
+    <Compile Include="..\..\Services\PdfSignatureScan.cs" />
     <Compile Include="..\..\Services\PdfPageImageEncoder.cs" />
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
