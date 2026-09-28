@@ -2525,9 +2525,17 @@ namespace TDPdf
             string? printablePath = null;
             try
             {
+                // As DISPLAYED — CropBox, rotated — for the same reason GetPageSizes above uses
+                // DisplaySize: the preview rasterises through PDFium, which renders exactly that.
+                // PdfPage.Width/Height are MediaBox-derived and miss an inherited /Rotate, which
+                // made a rotated page read as portrait for the default orientation, and made
+                // "Actual size" scale a cropped page by its uncropped MediaBox width.
                 var pageSizes = new List<Size>(_doc.PageCount);
                 for (int i = 0; i < _doc.PageCount; i++)
-                    pageSizes.Add(new Size(_doc.Pages[i].Width.Point, _doc.Pages[i].Height.Point));
+                {
+                    var (w, h) = PdfPageGeometry.DisplaySize(_doc.Pages[i]);
+                    pageSizes.Add(new Size(w, h));
+                }
 
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0);
 

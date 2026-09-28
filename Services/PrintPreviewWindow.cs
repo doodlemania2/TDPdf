@@ -457,7 +457,11 @@ namespace TDPdf.Services
             ApplyComboStyle(orient);
             orient.Items.Add("Portrait");
             orient.Items.Add("Landscape");
-            _landscape = TDPdf.Properties.Settings.Default.PrintOrientation == "Landscape";
+            // Default the orientation from the document itself, not from whatever the last print
+            // job used (upstream KillerPDF #432): printing a landscape PDF after a portrait one
+            // otherwise came out shrunk onto a portrait sheet unless the user noticed and flipped
+            // it. The first page with a real size decides; the combo still overrides per job.
+            _landscape = DocumentIsLandscape(_pageSizes);
             orient.SelectedIndex = _landscape ? 1 : 0;
             orient.SelectionChanged += (s, _) =>
             {
@@ -869,6 +873,19 @@ namespace TDPdf.Services
                 _printerCombo.SelectedIndex = sel >= 0 ? sel : 0;
                 _queue = _queues[_printerCombo.SelectedIndex];
             }
+        }
+
+        /// <summary>
+        /// True when the first page with a positive size is wider than it is tall. The sizes are
+        /// as DISPLAYED (CropBox, after /Rotate — see Print_Click), so a portrait MediaBox turned
+        /// a quarter turn correctly reads as landscape. No usable page means portrait.
+        /// </summary>
+        private static bool DocumentIsLandscape(IReadOnlyList<Size> pageSizes)
+        {
+            foreach (var size in pageSizes)
+                if (size.Width > 0 && size.Height > 0)
+                    return size.Width > size.Height;
+            return false;
         }
 
         private static int NUpIndex(int n) => n switch { 2 => 1, 4 => 2, 6 => 3, 9 => 4, _ => 0 };
@@ -1499,13 +1516,14 @@ namespace TDPdf.Services
         }
 
         // Persists the device-level print choices so the dialog reopens with the user's last setup.
+        // Orientation is deliberately NOT among them: it is a property of the document being
+        // printed (see DocumentIsLandscape), not of the printer.
         private void SavePrintPrefs()
         {
             try
             {
                 var s = TDPdf.Properties.Settings.Default;
                 if (_queue != null) s.PrintPrinter = _queue.FullName;
-                s.PrintOrientation = _landscape ? "Landscape" : "Portrait";
                 s.PrintColor       = _grayscale ? "Grayscale" : "Color";
                 s.PrintDuplex      = _duplexMode != Duplexing.OneSided;
                 s.Save();
