@@ -6877,33 +6877,27 @@ namespace TDPdf
             try
             {
                 var (renderW, renderH) = _renderDims[pageIdx];
+                if (renderW <= 0 || renderH <= 0) { ClearTextSelection(); return; }
 
                 using var pigDoc = PdfPigDoc.Open(_currentFile);
                 if (pageIdx >= pigDoc.NumberOfPages) { ClearTextSelection(); return; }
                 var page = pigDoc.GetPage(pageIdx + 1); // PdfPig is 1-based
 
-                double pdfW = page.Width;
-                double pdfH = page.Height;
-                double sx = pdfW / renderW;
-                double sy = pdfH / renderH;
-
-                // Convert canvas rect to PDF coordinates (flip Y - PDF origin is bottom-left)
-                double pdfLeft = canvasBounds.Left * sx;
-                double pdfRight = canvasBounds.Right * sx;
-                double pdfTop = pdfH - (canvasBounds.Top * sy);
-                double pdfBottom = pdfH - (canvasBounds.Bottom * sy);
-                // pdfTop > pdfBottom because of Y flip
-                double pdfMinY = Math.Min(pdfTop, pdfBottom);
-                double pdfMaxY = Math.Max(pdfTop, pdfBottom);
+                // A plain scale and Y flip against PdfPig's own page size, and deliberately NOT the
+                // user-space table (PdfPageGeometry.CanvasRectToPdf) the crop and redaction tools
+                // use. PdfPig reports words in the page AS DISPLAYED — crop origin subtracted,
+                // /Rotate applied — which is exactly the view PDFium rendered onto this canvas; the
+                // user-space table would shift a cropped page's marquee by the inset and turn a
+                // rotated one a quarter turn. tests/PdfCore RegionCopy.cs renders cropped pages at
+                // every quarter turn and pins both halves of that, so a PdfPig upgrade that changed
+                // its convention would fail there rather than here.
+                var region = PdfPageGeometry.CanvasRectToTextFrame(
+                    canvasBounds.X, canvasBounds.Y, canvasBounds.Width, canvasBounds.Height,
+                    renderW, renderH, page.Width, page.Height);
 
                 var words = page.GetWords()
-                    .Where(w =>
-                    {
-                        var bb = w.BoundingBox;
-                        double cx = (bb.Left + bb.Right) / 2;
-                        double cy = (bb.Bottom + bb.Top) / 2;
-                        return cx >= pdfLeft && cx <= pdfRight && cy >= pdfMinY && cy <= pdfMaxY;
-                    })
+                    .Where(w => PdfPageGeometry.ContainsCenter(region,
+                        w.BoundingBox.Left, w.BoundingBox.Bottom, w.BoundingBox.Right, w.BoundingBox.Top))
                     .ToList();
 
                 if (words.Count == 0)
@@ -9837,9 +9831,14 @@ namespace TDPdf
             if (Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
+                // Proportional to the delta and anchored on the pointer (see ZoomAnchorMath). This
+                // used to be one whole preset per wheel MESSAGE, so a precision-touchpad pinch —
+                // a burst of small-delta messages — skipped several presets at a time. Keyboard and
+                // toolbar zoom still step through the presets; only the analogue inputs glide.
                 BeginManualZoom();
-                if (e.Delta > 0) Zoom.ZoomIn();
-                else Zoom.ZoomOut();
+                ContinueZoomGesture(e.GetPosition(PagePreviewPanel),
+                    TDPdf.Services.ZoomAnchorMath.ZoomForWheel(Zoom.ZoomLevel, e.Delta,
+                        ZoomViewModel.MinZoomLevel, ZoomViewModel.MaxZoomLevel));
                 return;
             }
 
@@ -10138,8 +10137,10 @@ namespace TDPdf
         //    separates FitToWidth from a person turning a wheel.
         // 2. It must fire on SUSTAINED churn only. A rate alone is not a defect signature: the
         //    sidebar's 250 ms width animation re-fits on every frame by design (see the comment on
-        //    AnimateSidebarWidth), dragging a window edge does the same, and one flick of
-        //    Ctrl+wheel walks nine presets. All three clear any threshold worth setting. What was
+        //    AnimateSidebarWidth) and dragging a window edge does the same. Both clear any
+        //    threshold worth setting. (Ctrl+wheel and pinch used to be a third — one flick walked
+        //    nine presets, a full pass each — but a gesture now runs its full pass once, on
+        //    settle, and bypasses this detector while live; see ContinueZoomGesture.) What was
         //    pathological in production was that the rate held with no one touching anything, so
         //    require the window to STAY above threshold for ZoomChurnSustainMs before reporting.
         private const int ZoomChurnThreshold = 8;
@@ -10199,6 +10200,19 @@ namespace TDPdf
         private void ApplyZoom([CallerMemberName] string? via = null)
         {
             SyncLayoutZoom();
+            // A zoom gesture in flight (Ctrl+wheel / pinch): the transform above is the whole live
+            // update — the bitmap on screen is scaled, not re-rendered — plus the scroll that keeps
+            // the pointer's point still. Everything below runs once, from SettleZoomGesture. The
+            // churn detector is skipped too: a long touchpad pinch is sustained by design, and what
+            // that detector exists to catch is repeated FULL passes, which this is not.
+            if (_applyingGestureZoom)
+            {
+                ScheduleZoomAnchorCorrection();
+                return;
+            }
+            // Any other zoom source (toolbar, keyboard, a fit, a tab switch) supersedes a gesture
+            // still inside its settle window; drop it so it cannot settle a second pass on top.
+            if (!_settlingZoomGesture && _zoomGestureAnchor is not null) CancelZoomGesture();
             NoteZoomApplied(via);
             // #131: a zoom change must NOT settle the live text editor, and never needed to.
             //
@@ -10222,9 +10236,14 @@ namespace TDPdf
             // view doesn't jump when zooming.
             if (_viewMode == ViewMode.Continuous)
             {
-                int curIdx = PageList.SelectedIndex;
-                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                    (Action)(() => ScrollContinuousToPageSuppressed(curIdx)));
+                // ...except after a zoom gesture, which has already scrolled so the point under the
+                // pointer stayed put; snapping to the page top now would undo exactly that.
+                if (!_settlingZoomGesture)
+                {
+                    int curIdx = PageList.SelectedIndex;
+                    Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                        (Action)(() => ScrollContinuousToPageSuppressed(curIdx)));
+                }
                 // #85: once the zoom settles, sharpen the visible pages (zoom-in) or restore their
                 // base bitmaps so hi-res memory is released (zoom-out). Debounced + cancellable.
                 StartContinuousResharpen();
@@ -10431,14 +10450,157 @@ namespace TDPdf
         private void PageContentGrid_ManipulationDelta(object sender, ManipulationDeltaEventArgs e)
         {
             double scale = (e.DeltaManipulation.Scale.X + e.DeltaManipulation.Scale.Y) / 2.0;
-            if (Math.Abs(scale - 1.0) < 0.01) return;
+            if (!double.IsFinite(scale) || scale <= 0) return;
+            // A one-finger drag reports a scale of exactly 1. The START threshold is small because
+            // a slow pinch arrives as many frames of ~1.002: the old 0.01 floor on every frame
+            // silently dropped those, so a gentle pinch did nothing at all. Once a gesture is
+            // running every frame counts, or the slow tail of a pinch would be lost the same way.
+            if (_zoomGestureAnchor is null && Math.Abs(scale - 1.0) < 0.002) return;
+            e.Handled = true;
+            if (_doc is null) return;
             // #131: a pinch is as explicit as Ctrl+wheel and stops the view tracking the window,
             // the same as every other manual path. It never did so on its own — it only ever
             // reached BeginManualZoom by accident, through the zoom combo reading its own update
             // back as a user pick, and then only when the pinch happened to land on a preset.
             BeginManualZoom();
-            Zoom.SetZoomLevel(Zoom.ZoomLevel * scale);
-            e.Handled = true;
+            // ManipulationOrigin is in the manipulation container's coordinates, which is this grid
+            // unless a ManipulationStarting handler says otherwise; translate from whichever it is
+            // so the anchor is right either way. The grid carries the zoom as a LayoutTransform,
+            // so its own coordinates are NOT viewport coordinates.
+            Point viewportOrigin = e.ManipulationContainer is UIElement container
+                ? container.TranslatePoint(e.ManipulationOrigin, PagePreviewPanel)
+                : _pageContentGrid.TranslatePoint(e.ManipulationOrigin, PagePreviewPanel);
+            ContinueZoomGesture(viewportOrigin,
+                TDPdf.Services.ZoomAnchorMath.ZoomForPinch(Zoom.ZoomLevel, scale,
+                    ZoomViewModel.MinZoomLevel, ZoomViewModel.MaxZoomLevel));
+        }
+
+        // ============================================================
+        // Zoom gestures: Ctrl+wheel, precision-touchpad pinch, touchscreen pinch
+        // ============================================================
+        //
+        // A gesture is a run of zoom messages with no gap longer than ZoomGestureSettleMs. While
+        // one is running, each message only moves the ScaleTransform — the page bitmap on screen is
+        // simply scaled, which is instant — and scrolls so the document point that was under the
+        // pointer when the gesture began stays under it. The expensive half of ApplyZoom (the
+        // re-render at the new DPI, secondary-page reflow, link/form overlays, Continuous
+        // re-sharpen) and the user.config write run ONCE, when the gesture settles. Previously
+        // every wheel message did all of that, including a Settings.Save() disk write.
+        //
+        // The anchor is captured once per gesture, not per message, because layout lags the
+        // messages: re-reading "the point under the pointer" between a scale change and the layout
+        // pass that applies it reads a stale mapping, and the zoom creeps sideways over a long
+        // pinch. It is stored in PageContentGrid's own (pre-LayoutTransform) coordinates, which do
+        // not change with zoom — nor with the settle re-render, since the page tile is sized from
+        // the fixed RenderBoxDip and only its pixel density follows the zoom.
+
+        /// <summary>Quiet time after the last zoom message that ends a gesture.</summary>
+        private const int ZoomGestureSettleMs = 200;
+        private System.Windows.Threading.DispatcherTimer? _zoomGestureTimer;
+        /// <summary>The document point being held still, in PageContentGrid coordinates; null when no gesture is running.</summary>
+        private Point? _zoomGestureAnchor;
+        /// <summary>Where in the viewport the anchor has to stay: the pointer position the gesture began at.</summary>
+        private Point _zoomGestureTarget;
+        /// <summary>The tab the gesture belongs to, so a tab switch inside the settle window cannot settle it onto another document.</summary>
+        private DocumentContext? _zoomGestureCtx;
+        /// <summary>Raised only around a gesture's own zoom write, so ApplyZoom can tell it from every other zoom source.</summary>
+        private bool _applyingGestureZoom;
+        /// <summary>Raised only while the settled gesture runs the full ApplyZoom, so Continuous keeps the anchored scroll instead of snapping to the page top.</summary>
+        private bool _settlingZoomGesture;
+        /// <summary>The zoom the gesture began at, so a gesture that never moved it can settle to nothing.</summary>
+        private double _zoomGestureStartZoom;
+        /// <summary>Bumped per scheduled anchor correction; only the newest one runs.</summary>
+        private long _zoomAnchorRevision;
+
+        /// <summary>
+        /// Applies one zoom message of a gesture: <paramref name="newZoom"/>, held about
+        /// <paramref name="viewportPoint"/> if this message starts the gesture.
+        /// </summary>
+        private void ContinueZoomGesture(Point viewportPoint, double newZoom)
+        {
+            if (_zoomGestureAnchor is null || !ReferenceEquals(_zoomGestureCtx, _ctx))
+            {
+                _zoomGestureTarget = viewportPoint;
+                _zoomGestureCtx = _ctx;
+                _zoomGestureStartZoom = Zoom.ZoomLevel;
+                try { _zoomGestureAnchor = PagePreviewPanel.TranslatePoint(viewportPoint, _pageContentGrid); }
+                catch (InvalidOperationException) { _zoomGestureAnchor = null; }   // not in a common visual tree yet
+            }
+
+            if (_zoomGestureTimer is null)
+            {
+                _zoomGestureTimer = new System.Windows.Threading.DispatcherTimer
+                    { Interval = TimeSpan.FromMilliseconds(ZoomGestureSettleMs) };
+                _zoomGestureTimer.Tick += (_, _) => SettleZoomGesture();
+            }
+            _zoomGestureTimer.Stop();
+            _zoomGestureTimer.Start();
+
+            _applyingGestureZoom = true;
+            try { Zoom.SetZoomLevel(newZoom); }
+            finally { _applyingGestureZoom = false; }
+        }
+
+        /// <summary>
+        /// The gesture has gone quiet: run the full zoom pass once — re-render at the final DPI,
+        /// reflow, re-sharpen, and persist the zoom (the one SaveZoomSetting of the gesture).
+        /// </summary>
+        private void SettleZoomGesture()
+        {
+            _zoomGestureTimer?.Stop();
+            bool sameTab = ReferenceEquals(_zoomGestureCtx, _ctx);
+            // Cleared first: the anchor correction the last message queued has its own copy, and
+            // ApplyZoom below must not mistake this pass for a new zoom superseding a live gesture.
+            _zoomGestureAnchor = null;
+            _zoomGestureCtx = null;
+            // A different tab is on screen now; its activation ran its own full zoom pass, and
+            // settling here would re-render and persist the wrong document's view.
+            if (!sameTab || _doc is null) return;
+            // A gesture spent entirely against the 5% / 400% clamp changed nothing, and the old
+            // per-preset path did no pass for it either (an equal SetZoomLevel raises no change).
+            if (Zoom.ZoomLevel == _zoomGestureStartZoom) return;
+            _settlingZoomGesture = true;
+            try { ApplyZoom(); }
+            finally { _settlingZoomGesture = false; }
+        }
+
+        /// <summary>Drops a gesture in flight without settling it — another zoom source has taken over.</summary>
+        private void CancelZoomGesture()
+        {
+            _zoomGestureTimer?.Stop();
+            _zoomGestureAnchor = null;
+            _zoomGestureCtx = null;
+            _zoomAnchorRevision++;   // and any anchor correction still queued for it
+        }
+
+        /// <summary>
+        /// After the layout pass for the new scale, scrolls so the gesture's anchor is back under
+        /// the pointer. Loaded priority runs after layout (Render); only the newest request runs,
+        /// so a burst of messages faster than layout costs one scroll, not one per message.
+        /// </summary>
+        private void ScheduleZoomAnchorCorrection()
+        {
+            if (_zoomGestureAnchor is not Point anchor) return;
+            Point target = _zoomGestureTarget;
+            long revision = ++_zoomAnchorRevision;
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)(() =>
+            {
+                if (revision != _zoomAnchorRevision || PagePreviewPanel.Visibility != Visibility.Visible) return;
+                // Force the pass rather than trust one has run: the extent the offsets are clamped
+                // against, and the anchor's new position, are both products of it.
+                PagePreviewPanel.UpdateLayout();
+                Point now;
+                try { now = _pageContentGrid.TranslatePoint(anchor, PagePreviewPanel); }
+                catch (InvalidOperationException) { return; }
+                var (h, v) = TDPdf.Services.ZoomAnchorMath.OffsetsKeepingAnchor(
+                    PagePreviewPanel.HorizontalOffset, PagePreviewPanel.VerticalOffset,
+                    now.X, now.Y, target.X, target.Y,
+                    PagePreviewPanel.ScrollableWidth, PagePreviewPanel.ScrollableHeight);
+                // In Continuous this is deliberately NOT suppressed: the scroll moves the view like
+                // a user scroll does, so the page counter and sidebar should follow it the same way.
+                PagePreviewPanel.ScrollToHorizontalOffset(h);
+                PagePreviewPanel.ScrollToVerticalOffset(v);
+            }));
         }
 
         // ============================================================

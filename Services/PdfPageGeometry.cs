@@ -125,6 +125,60 @@ namespace TDPdf.Services
             return (x0, y0, Math.Max(0, x1 - x0), Math.Max(0, y1 - y0));
         }
 
+        /// <summary>
+        /// Converts a rectangle on the rendered page into PdfPig's TEXT frame — the frame
+        /// <c>Page.GetWords()</c> reports word boxes in — as opposed to PDF user space, which is
+        /// what <see cref="CanvasRectToPdf"/> produces.
+        /// </summary>
+        /// <param name="x">Rectangle left, in rendered-image units, from the left.</param>
+        /// <param name="y">Rectangle top, in rendered-image units, DOWN from the top.</param>
+        /// <param name="w">Rectangle width.</param>
+        /// <param name="h">Rectangle height.</param>
+        /// <param name="renderW">Width of the rendered page image.</param>
+        /// <param name="renderH">Height of the rendered page image.</param>
+        /// <param name="textPageW">PdfPig's <c>Page.Width</c>.</param>
+        /// <param name="textPageH">PdfPig's <c>Page.Height</c>.</param>
+        /// <remarks>
+        /// The two are NOT the same space, and mixing them is silent: PdfPig (0.1.14, pinned by
+        /// tests/PdfCore RegionCopy.cs) reports words in the page AS DISPLAYED — the CropBox origin
+        /// already subtracted and /Rotate already applied, y up from the bottom-left of the turned
+        /// page — and its Page.Width/Height are that displayed size. PDFium renders exactly that
+        /// view, so from the canvas it is a plain scale and a Y flip; running the rectangle through
+        /// the user-space table instead moves it by the crop inset and turns it a quarter turn.
+        /// </remarks>
+        internal static PdfiumInterop.PdfRect CanvasRectToTextFrame(
+            double x, double y, double w, double h,
+            double renderW, double renderH, double textPageW, double textPageH)
+        {
+            double sx = renderW > 0 ? textPageW / renderW : 0;
+            double sy = renderH > 0 ? textPageH / renderH : 0;
+            double yA = textPageH - y * sy;
+            double yB = textPageH - (y + h) * sy;
+            double xA = x * sx, xB = (x + w) * sx;
+            return new PdfiumInterop.PdfRect(
+                Left: Math.Min(xA, xB), Bottom: Math.Min(yA, yB),
+                Right: Math.Max(xA, xB), Top: Math.Max(yA, yB));
+        }
+
+        /// <summary>
+        /// Whether a box — a PdfPig word, typically — belongs to <paramref name="region"/>: its
+        /// CENTRE has to lie inside. Both must be in the same frame (see
+        /// <see cref="CanvasRectToTextFrame"/>).
+        /// </summary>
+        /// <remarks>
+        /// The centre rather than any overlap because a marquee dragged along a line of text
+        /// clips the ascenders of the line below; an overlap test would copy that line too. The
+        /// centre also survives PdfPig's letter boxes on a turned page, whose Left can exceed their
+        /// Right (and Bottom their Top).
+        /// </remarks>
+        internal static bool ContainsCenter(
+            PdfiumInterop.PdfRect region, double left, double bottom, double right, double top)
+        {
+            double cx = (left + right) / 2.0;
+            double cy = (bottom + top) / 2.0;
+            return cx >= region.Left && cx <= region.Right && cy >= region.Bottom && cy <= region.Top;
+        }
+
         /// <summary>The page's size as displayed, in points — width and height swapped on a quarter turn.</summary>
         internal static (double W, double H) DisplaySize(PdfPage page)
         {

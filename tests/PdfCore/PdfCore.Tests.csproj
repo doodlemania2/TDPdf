@@ -55,6 +55,7 @@
     <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
+    <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
   </ItemGroup>
 
 </Project>
