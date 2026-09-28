@@ -1,4 +1,5 @@
 using System;
+using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.Advanced;
 
@@ -129,6 +130,79 @@ namespace TDPdf.Services
         {
             var box = VisibleBox(page);
             return Rotation(page) is 90 or 270 ? (box.Height, box.Width) : (box.Width, box.Height);
+        }
+
+        /// <summary>
+        /// The exact inverse of <see cref="RectToCanvas"/>, expressed as a matrix to PREPEND to an
+        /// <see cref="XGraphics"/> transform: it maps VISUAL-frame points — canvas coordinates scaled to
+        /// points, top-left origin, y down, laid out on the box PDFium actually rendered with /Rotate
+        /// already applied — onto the frame XGraphics draws in. Prepend it and every subsequent draw call
+        /// can keep passing canvas-scaled coordinates unchanged. Null when there is nothing to apply.
+        /// </summary>
+        /// <param name="rotation">Page /Rotate, already normalized to 0/90/180/270.</param>
+        /// <param name="box">The rendered page box from <see cref="VisibleBox"/> (UNROTATED, and
+        /// with its real origin — a /CropBox inset from or offset within the /MediaBox is why the
+        /// mapping is not simply a rotation about (0,0)).</param>
+        /// <param name="pageHeightPt">
+        /// <c>page.Height.Point</c> — the height XGraphics flips about: its Initialize builds
+        /// DefaultViewMatrix = [1 0 0 -1 0 pageHeight] from the page size, so a draw at (X, Y) lands at
+        /// user-space (X, pageHeightPt - Y). It is passed in rather than derived because PdfSharpCore
+        /// reports the SWAPPED media-box dimensions for a page whose /Rotate is 90/270 (PdfPage's
+        /// dictionary ctor sets _orientation = Landscape), so "page height" there is really the visual
+        /// height. Every case below is written as "pageHeightPt minus the user-space y we want", so the
+        /// value cancels out of the result: a page whose /MediaBox is unreadable — the empty [0 0 0 0]
+        /// the lazy getter plants — still burns in the right place.
+        /// </param>
+        internal static XMatrix? VisualToXGraphics(int rotation, PageBox box, double pageHeightPt)
+        {
+            // Inverting RectToCanvas point-by-point gives visual (vx, vy) -> PDF user space:
+            //    0 : (box.X + vx,            box.Y + box.Height - vy)
+            //   90 : (box.X + vy,            box.Y + vx)
+            //  180 : (box.X + box.Width - vx, box.Y + vy)
+            //  270 : (box.X + box.Width - vy, box.Y + box.Height - vx)
+            // XGraphics then applies (X, Y) -> (X, pageHeightPt - Y), so this matrix has to produce
+            // X = user x and Y = pageHeightPt - user y. XMatrix is (m11, m12, m21, m22, dx, dy) with
+            // x' = x*m11 + y*m21 + dx and y' = x*m12 + y*m22 + dy.
+            double atTop    = pageHeightPt - box.Top;   // Y for a user-space y at the box's top edge
+            double atBottom = pageHeightPt - box.Y;     // ...and at its bottom edge
+            switch (rotation)
+            {
+                case 90:  return new XMatrix(0, -1, 1, 0, box.X,     atBottom);
+                case 180: return new XMatrix(-1, 0, 0, -1, box.Right, atBottom);
+                case 270: return new XMatrix(0, 1, -1, 0, box.Right, atTop);
+                default:
+                    // Unrotated page whose rendered box is the whole media box at the origin: the
+                    // matrix is the identity XGraphics already applies, so emit nothing and keep the
+                    // content stream byte-identical to what earlier builds wrote.
+                    return box.X == 0 && atTop == 0 ? null : new XMatrix(1, 0, 0, 1, box.X, atTop);
+            }
+        }
+
+        /// <summary>
+        /// Everything needed to draw onto a PdfSharpCore page in the coordinates of a PDFium raster
+        /// of it: the pixel → visual-point scale, and the matrix to PREPEND to the XGraphics
+        /// transform (<see cref="VisualToXGraphics"/>; null when it would be the identity).
+        /// </summary>
+        /// <param name="page">The page being drawn on.</param>
+        /// <param name="renderW">Width of the raster, in pixels.</param>
+        /// <param name="renderH">Height of the raster, in pixels.</param>
+        /// <remarks>
+        /// PDFium rasterises the VISIBLE box with /Rotate applied, so a pixel position maps to a
+        /// visual-frame point by scaling against <see cref="DisplaySize"/> — never against
+        /// page.Width/Height, which are MediaBox-derived, assume a (0,0) origin and read /Rotate
+        /// only from the page's own dictionary. After <c>gfx.MultiplyTransform(matrix, Prepend)</c>,
+        /// drawing at (px * Sx, py * Sy) lands exactly on raster pixel (px, py).
+        /// </remarks>
+        internal static (double Sx, double Sy, XMatrix? VisualToPage) RasterToXGraphics(
+            PdfPage page, double renderW, double renderH)
+        {
+            var (dw, dh) = DisplaySize(page);
+            double sx = renderW > 0 ? dw / renderW : 0;
+            double sy = renderH > 0 ? dh / renderH : 0;
+            // page.Height is the one exception to this file's "raw entries only" rule, and a safe
+            // one: it must be the SAME value XGraphics.FromPdfPage flips about, which reads it
+            // itself regardless, and VisualToXGraphics cancels it out of the result.
+            return (sx, sy, VisualToXGraphics(Rotation(page), VisibleBox(page), page.Height.Point));
         }
 
         /// <summary>/Rotate, normalised to 0, 90, 180 or 270.</summary>
