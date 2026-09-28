@@ -182,6 +182,7 @@ LetterSpacing.Run(Check);
 SelectCursor.Run(Check);
 ZoomAnchor.Run(Check);
 RegionCopy.Run(Check, tmp);
+RedactVerify.Run(Check, tmp);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

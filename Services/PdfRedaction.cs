@@ -243,37 +243,53 @@ namespace TDPdf.Services
         ///
         /// Asking "does any glyph still sit inside the area the user redacted" has no such
         /// ambiguity. A letter counts as inside when its CENTRE is inside, so a glyph merely
-        /// clipping the boundary does not raise a false alarm.
+        /// clipping the boundary does not raise a false alarm. It is asked per LETTER, not per
+        /// word: a long word the rectangle covers only half of has its centre outside, and a
+        /// word-level test would pass the half that is still sitting in the redacted area.
         ///
-        /// PdfPig reads page geometry in the same space PDFium reported it — points, origin
-        /// bottom-left — so no conversion is involved and there is nothing to get wrong.
+        /// The two sides are NOT in the same space, and this is where that matters most. The
+        /// rectangles are PDF user space — what PDFium removed objects against. PdfPig reports
+        /// glyphs in the page AS DISPLAYED: the visible box's origin subtracted and /Rotate
+        /// applied. The two coincide only on an unrotated page whose visible box starts at 0,0,
+        /// and on any other page a raw comparison looks somewhere else entirely and reports a
+        /// clean redaction over text that is still there. Each rectangle is therefore carried into
+        /// PdfPig's frame through <see cref="PdfPageGeometry.PdfToTextFrame(PdfPage, PdfiumInterop.PdfRect)"/>,
+        /// with the page geometry read from the file being verified — the finished output, not
+        /// the source — through the same inheritance-aware, MediaBox-clipped reads the rest of the
+        /// pipeline uses. tests/PdfCore RedactVerify.cs runs this against an unredacted word on a
+        /// cropped page at every quarter turn, and it must report it every time.
+        ///
+        /// Anything unreadable throws, which <see cref="Apply"/> turns into a refusal: a check
+        /// that cannot run has not confirmed anything.
         /// </remarks>
-        private static IReadOnlyList<string> FindSurvivingText(
+        internal static IReadOnlyList<string> FindSurvivingText(
             string path, IReadOnlyDictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>> rectsByPage)
         {
             var survivors = new List<string>();
             using var doc = PdfPigDoc.Open(path);
+            using var geometry = PdfReader.Open(path, PdfDocumentOpenMode.Import);
 
             foreach (var (pageIndex, rects) in rectsByPage)
             {
                 if (rects is null || rects.Count == 0) continue;
                 if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) continue;
+                if (pageIndex >= geometry.PageCount)
+                    throw new InvalidOperationException(
+                        $"page {pageIndex + 1} could not be read back to verify the redaction");
+
+                var pageGeometry = geometry.Pages[pageIndex];
+                var framed = rects.Select(r => PdfPageGeometry.PdfToTextFrame(pageGeometry, r)).ToList();
 
                 var page = doc.GetPage(pageIndex + 1);   // PdfPig pages are 1-based
                 foreach (var word in page.GetWords())
                 {
-                    var b = word.BoundingBox;
-                    double cx = (b.Left + b.Right) / 2.0;
-                    double cy = (b.Bottom + b.Top) / 2.0;
-
-                    foreach (var r in rects)
+                    bool inside = word.Letters.Any(letter =>
                     {
-                        if (cx >= r.Left && cx <= r.Right && cy >= r.Bottom && cy <= r.Top)
-                        {
-                            survivors.Add(word.Text);
-                            break;
-                        }
-                    }
+                        var b = letter.BoundingBox;
+                        return framed.Any(r => PdfPageGeometry.ContainsCenter(r, b.Left, b.Bottom, b.Right, b.Top));
+                    });
+                    if (inside) survivors.Add(word.Text);
+
                     // A handful is enough to prove the failure; no need to enumerate a whole page.
                     if (survivors.Count >= 25) return survivors;
                 }

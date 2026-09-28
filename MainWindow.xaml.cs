@@ -4651,12 +4651,16 @@ namespace TDPdf
         ///
         /// Two things make it more than a loop over the hits:
         ///
-        ///   * The hits are PdfPig word boxes in PDF user space and a mark is a canvas rectangle,
-        ///     so each one goes through <see cref="Services.PdfPageGeometry"/> — the same table the
-        ///     dragged marks are converted back through on apply, and the one that knows about
-        ///     /Rotate and a CropBox that does not start at the origin. The flat scale the search
-        ///     HIGHLIGHTS paint with is fine for a translucent box a quarter turn out of place. It
-        ///     is not fine for deciding what gets deleted.
+        ///   * The hits are PdfPig word boxes and a mark is a canvas rectangle. PdfPig's boxes are
+        ///     NOT user space: they are the page as displayed, crop origin subtracted and /Rotate
+        ///     applied. Each hit is carried into user space by
+        ///     <see cref="Services.PdfPageGeometry.TextFrameToPdf(PdfSharpCore.Pdf.PdfPage, Services.PdfiumInterop.PdfRect)"/>
+        ///     and only then onto the canvas through the same table the dragged marks are
+        ///     converted back through on apply, so the mark and the apply agree on the words.
+        ///     Feeding the raw box to the user-space table — as this once did — put every mark on
+        ///     a cropped page off by the crop inset and on a turned page a quarter or half turn
+        ///     away, over whatever happened to be there rather than over the matched words.
+        ///     tests/PdfCore RedactVerify.cs pins both halves.
         ///   * Most hits are on pages that have never been displayed, so they have no render
         ///     dimensions and no canvas space to be a rectangle in. Those are computed here rather
         ///     than left for <see cref="ApplyRedactionsAsync"/> to refuse the whole operation over.
@@ -4681,10 +4685,10 @@ namespace TDPdf
 
                 foreach (var (left, bottom, right, top) in hits)
                 {
-                    var (x, y, w, h) = TDPdf.Services.PdfPageGeometry.PdfRectToCanvas(
+                    var user = TDPdf.Services.PdfPageGeometry.TextFrameToPdf(
                         page,
-                        new TDPdf.Services.PdfiumInterop.PdfRect(Left: left, Bottom: bottom, Right: right, Top: top),
-                        rw, rh);
+                        new TDPdf.Services.PdfiumInterop.PdfRect(Left: left, Bottom: bottom, Right: right, Top: top));
+                    var (x, y, w, h) = TDPdf.Services.PdfPageGeometry.PdfRectToCanvas(page, user, rw, rh);
                     if (w <= 0 || h <= 0) { unplaceable++; continue; }
 
                     var rect = new Rect(x, y, w, h);

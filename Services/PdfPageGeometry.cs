@@ -76,24 +76,101 @@ namespace TDPdf.Services
             PdfPage page, double x, double y, double w, double h, double renderW, double renderH)
         {
             var box = VisibleBox(page);
-            double bx = box.X, by = box.Y, bw = box.Width, bh = box.Height;
             int rotate = Rotation(page);
 
-            (double X, double Y) Map(double u, double v) => rotate switch
+            var a = VisualFractionToPdf(box, rotate, x / renderW, y / renderH);
+            var b = VisualFractionToPdf(box, rotate, (x + w) / renderW, (y + h) / renderH);
+
+            return new PdfiumInterop.PdfRect(
+                Left: Math.Min(a.X, b.X), Bottom: Math.Min(a.Y, b.Y),
+                Right: Math.Max(a.X, b.X), Top: Math.Max(a.Y, b.Y));
+        }
+
+        /// <summary>
+        /// The canvas-to-PDF table itself: a point on the page AS DISPLAYED, given as fractions of
+        /// the displayed width (<paramref name="u"/>, from the left) and height (<paramref name="v"/>,
+        /// DOWN from the top), to PDF user space.
+        /// </summary>
+        /// <remarks>
+        /// Factored out so <see cref="CanvasRectToPdf"/> and <see cref="TextFrameToPdf(PageBox, int, PdfiumInterop.PdfRect)"/>
+        /// share one copy. Both frames are the displayed page and differ only in scale and in which
+        /// way y runs, so both reduce to this once expressed as fractions.
+        /// </remarks>
+        private static (double X, double Y) VisualFractionToPdf(PageBox box, int rotate, double u, double v)
+        {
+            double bx = box.X, by = box.Y, bw = box.Width, bh = box.Height;
+            return rotate switch
             {
                 90  => (bx + v * bw,       by + u * bh),
                 180 => (bx + (1 - u) * bw, by + v * bh),
                 270 => (bx + (1 - v) * bw, by + (1 - u) * bh),
                 _   => (bx + u * bw,       by + (1 - v) * bh),
             };
+        }
 
-            var a = Map(x / renderW, y / renderH);
-            var b = Map((x + w) / renderW, (y + h) / renderH);
+        /// <summary>
+        /// Converts a rectangle in PdfPig's TEXT frame — where <c>Page.GetWords()</c> and
+        /// <c>Letter.GlyphRectangle</c> put things — into PDF user space, where PDFium reports object
+        /// bounds and where every redaction rectangle lives.
+        /// </summary>
+        /// <param name="box">The page's <see cref="VisibleBox"/> (unrotated, real origin).</param>
+        /// <param name="rotation">/Rotate, normalised to 0/90/180/270 (<see cref="Rotation"/>).</param>
+        /// <param name="rect">A rectangle in the text frame. Need not be normalised — PdfPig's
+        /// boxes on a turned page can have Left &gt; Right — and the result always is.</param>
+        /// <remarks>
+        /// THE ONE PLACE THIS CONVERSION IS WRITTEN, with <see cref="PdfToTextFrame(PageBox, int, PdfiumInterop.PdfRect)"/>
+        /// as its inverse. PdfPig 0.1.14 reports text in the page as displayed: the visible box's
+        /// origin subtracted, /Rotate applied, y UP from the bottom-left of the turned page, and
+        /// Page.Width/Height the displayed size (tests/PdfCore RegionCopy.cs pins that against a
+        /// PDFium render at every quarter turn). That is the canvas frame scaled to points with y
+        /// flipped, so a text-frame point (tx, ty) is the displayed-page fraction
+        /// (tx / W, 1 - ty / H) and goes through the same table as a canvas point.
+        ///
+        /// Anything that holds a PdfPig box and a user-space box at once — the post-redaction
+        /// verification, search hits turned into redaction marks — must meet through here. Comparing
+        /// them raw is right only on an unrotated page whose visible box starts at 0,0, which is
+        /// exactly the page every hand-made test fixture is, and so it looks right until a cropped
+        /// or turned page arrives.
+        /// </remarks>
+        internal static PdfiumInterop.PdfRect TextFrameToPdf(PageBox box, int rotation, PdfiumInterop.PdfRect rect)
+        {
+            var (dw, dh) = rotation is 90 or 270 ? (box.Height, box.Width) : (box.Width, box.Height);
+            if (!(dw > 0) || !(dh > 0)) return rect;
 
+            var a = VisualFractionToPdf(box, rotation, rect.Left / dw, 1 - rect.Bottom / dh);
+            var b = VisualFractionToPdf(box, rotation, rect.Right / dw, 1 - rect.Top / dh);
             return new PdfiumInterop.PdfRect(
                 Left: Math.Min(a.X, b.X), Bottom: Math.Min(a.Y, b.Y),
                 Right: Math.Max(a.X, b.X), Top: Math.Max(a.Y, b.Y));
         }
+
+        /// <summary><see cref="TextFrameToPdf(PageBox, int, PdfiumInterop.PdfRect)"/> for a page.</summary>
+        internal static PdfiumInterop.PdfRect TextFrameToPdf(PdfPage page, PdfiumInterop.PdfRect rect)
+            => TextFrameToPdf(VisibleBox(page), Rotation(page), rect);
+
+        /// <summary>
+        /// The inverse of <see cref="TextFrameToPdf(PageBox, int, PdfiumInterop.PdfRect)"/>: a PDF
+        /// user-space rectangle expressed in PdfPig's text frame, so it can be compared with word boxes.
+        /// </summary>
+        /// <remarks>
+        /// Goes through <see cref="RectToCanvas"/> — laid out on a canvas the size of the displayed
+        /// page in points, then y flipped — rather than an inverse table of its own, for the same
+        /// reason <see cref="PdfRectToCanvas"/> does. The tests assert the round trip.
+        /// </remarks>
+        internal static PdfiumInterop.PdfRect PdfToTextFrame(PageBox box, int rotation, PdfiumInterop.PdfRect rect)
+        {
+            var (dw, dh) = rotation is 90 or 270 ? (box.Height, box.Width) : (box.Width, box.Height);
+            if (!(dw > 0) || !(dh > 0)) return rect;
+
+            var (cx, cy, cw, ch) = RectToCanvas(box, rotation, dw, dh,
+                rect.Left, rect.Bottom, rect.Right, rect.Top);
+            return new PdfiumInterop.PdfRect(
+                Left: cx, Bottom: dh - (cy + ch), Right: cx + cw, Top: dh - cy);
+        }
+
+        /// <summary><see cref="PdfToTextFrame(PageBox, int, PdfiumInterop.PdfRect)"/> for a page.</summary>
+        internal static PdfiumInterop.PdfRect PdfToTextFrame(PdfPage page, PdfiumInterop.PdfRect rect)
+            => PdfToTextFrame(VisibleBox(page), Rotation(page), rect);
 
         /// <summary>
         /// The inverse of <see cref="CanvasRectToPdf"/>: where a PDF-space rectangle lands in the
