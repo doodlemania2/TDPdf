@@ -242,10 +242,9 @@ namespace TDPdf
                     () =>
                     {
                         if (!ReferenceEquals(_activeTextBox, tb)) return;
-                        // Same reasoning as TextBox_LostFocus: the style bar is part of this same
-                        // edit, not a click-away.
-                        if (Keyboard.FocusedElement is DependencyObject nf && _textSettingsBar is not null
-                            && IsDescendantOf(nf, _textSettingsBar))
+                        // Same reasoning as TextBox_LostFocus: the style bar (including an open
+                        // Font/Size drop-down) is part of this same edit, not a click-away.
+                        if (IsTextSettingsBarInteraction())
                             return;
                         CommitTextEdit();
                     });
@@ -913,14 +912,31 @@ namespace TDPdf
             AutomationProperties.SetHelpText(tb, "Type annotation text. Press Enter to save or Escape to cancel.");
             double maxX = Math.Max(0, _textEditorCanvas.Width - width);
             double maxY = Math.Max(0, _textEditorCanvas.Height - Math.Max(tb.MinHeight, 24));
+            // A NEW box is placed so its first line is centred on the I-beam's hotspot. Putting the
+            // box's top edge at the click made the typed text appear about half a line below where
+            // you clicked (upstream KillerPDF v1.8.70, TextBoxTop). The offset is the box's own
+            // chrome (border + padding) plus half of one line at the box's font. A re-edit keeps
+            // the annotation's stored position — pos is its top-left, not a click.
+            double top = pos.Y;
+            if (existing is null)
+            {
+                double lineHeight = tb.FontSize * tb.FontFamily.LineSpacing;
+                top -= tb.BorderThickness.Top + tb.Padding.Top + lineHeight / 2.0;
+            }
             Canvas.SetLeft(tb, Math.Clamp(pos.X, 0, maxX));
-            Canvas.SetTop(tb, Math.Clamp(pos.Y, 0, maxY));
+            Canvas.SetTop(tb, Math.Clamp(top, 0, maxY));
             Telemetry.TrackEvent("Annotation.PlaceStarted",
                 new Dictionary<string, string> { ["Type"] = "Text" });
             _activeTextBox = tb;
             _activeTextBoxPlacedUtc = DateTime.UtcNow;
             _activeTextBoxTouched = false;
-            tb.KeyDown += TextBox_KeyDown;
+            // PreviewKeyDown, not KeyDown: with AcceptsReturn = true the TextBox's own class-level
+            // Enter / Shift+Enter bindings (EditingCommands.EnterParagraphBreak / EnterLineBreak)
+            // run in its KeyDown class handler and mark the event handled BEFORE any instance
+            // KeyDown handler is called — so a bubbling handler never saw Enter at all, and
+            // "Enter to place" silently inserted a newline instead. The tunnelling event reaches
+            // us first, so Enter commits and Shift+Enter falls through to the TextBox's newline.
+            tb.PreviewKeyDown += TextBox_PreviewKeyDown;
             tb.PreviewMouseLeftButtonDown += (_, _) =>
             {
                 tb.Focus();
@@ -1051,15 +1067,17 @@ namespace TDPdf
             tb.CaretBrush = new SolidColorBrush(_textColor);
         }
 
-        private void TextBox_KeyDown(object sender, KeyEventArgs e)
+        private void TextBox_PreviewKeyDown(object sender, KeyEventArgs e)
         {
             // #135 (upstream KillerPDF v1.7.5): bold / italic / underline while editing. Applied to
             // the live TextBox AND mirrored onto the tool state, so the next box you place inherits
             // what you last chose — the same way size, colour and fill already behave.
             // Ctrl+I is also the window's Invert Colors binding (MainWindow.xaml). That resolves
-            // correctly and on purpose: KeyDown bubbles from the TextBox outward, so this runs and
-            // marks the event handled before it ever reaches the Window's InputBindings. Inside a
-            // text box Ctrl+I means italic; everywhere else it still means night mode.
+            // correctly and on purpose: the Window's InputBindings are matched on the bubbling
+            // KeyDown, and this tunnelling handler marks the event handled before that is ever
+            // raised. (The window's own OnPreviewKeyDown runs earlier still, but steps aside while
+            // the live text box has focus.) Inside a text box Ctrl+I means italic; everywhere else
+            // it still means night mode.
             if (Keyboard.Modifiers == ModifierKeys.Control && sender is TextBox styled)
             {
                 switch (e.Key)
@@ -1112,9 +1130,10 @@ namespace TDPdf
                         // this box, which used to read as "the user clicked away" and silently
                         // committed mid-edit — ending the session and switching to Select the
                         // instant someone tried to tweak a style. Interacting with the bar is the
-                        // SAME editing session, not leaving it.
-                        if (Keyboard.FocusedElement is DependencyObject nf && _textSettingsBar is not null
-                            && IsDescendantOf(nf, _textSettingsBar))
+                        // SAME editing session, not leaving it — and that includes an open Font or
+                        // Size drop-down, whose popup is outside the bar's visual tree (see
+                        // IsTextSettingsBarInteraction).
+                        if (IsTextSettingsBarInteraction())
                             return;
                         CommitActiveTextBox();
                     });

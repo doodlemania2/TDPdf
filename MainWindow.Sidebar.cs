@@ -88,11 +88,28 @@ namespace TDPdf
             // model because that IS this tab's zoom for as long as the tab is active; it stops
             // being shared the moment the tab goes into the background and its value is parked
             // here. Nothing recorded here is a preference — see the DocumentContext block.
-            _ctx.ViewScrollH = PagePreviewPanel.HorizontalOffset;
-            _ctx.ViewScrollV = PagePreviewPanel.VerticalOffset;
-            _ctx.ViewZoomLevel = Zoom.ZoomLevel;
-            _ctx.ViewFitMode = _zoomFitMode;
-            _ctx.ViewManualZoomIntent = _manualZoomIntent;
+            //
+            // A resume still OWED to this tab means the live values are not its own yet: leaving
+            // the tab before its render tail ran (fast Ctrl+Tab through several tabs) would read
+            // the offsets of a page that has not been laid out — typically 0 — and a fit zoom
+            // that is still the outgoing tab's, and park THOSE as where this tab was, so the
+            // next visit resumed somewhere the user never left it. Whatever is still owed is by
+            // definition the tab's real state, so it is kept as captured. (Owed state only ever
+            // exists in the mode it was captured in — a view-mode switch drops it — so
+            // ViewModeAtCapture stays consistent with the offsets either way.)
+            bool scrollOwed = _resumeScroll is { } owed && ReferenceEquals(owed.Ctx, _ctx);
+            bool zoomOwed = ReferenceEquals(_resumeZoomFor, _ctx);
+            if (!scrollOwed)
+            {
+                _ctx.ViewScrollH = PagePreviewPanel.HorizontalOffset;
+                _ctx.ViewScrollV = PagePreviewPanel.VerticalOffset;
+            }
+            if (!zoomOwed)
+            {
+                _ctx.ViewZoomLevel = Zoom.ZoomLevel;
+                _ctx.ViewFitMode = _zoomFitMode;
+                _ctx.ViewManualZoomIntent = _manualZoomIntent;
+            }
             _ctx.ViewModeAtCapture = _viewMode;
             _ctx.ViewCaptured = true;
         }

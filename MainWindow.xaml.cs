@@ -892,6 +892,7 @@ namespace TDPdf
             var hwnd = new WindowInteropHelper(this).Handle;
             _hwndSource = HwndSource.FromHwnd(hwnd);
             _hwndSource?.AddHook(WndProc);
+            InitializeTaskbarIcons(hwnd);
             ApplyNativeTitleBarTheme(hwnd);
 
             // Custom chrome (AllowsTransparency=True, see ApplyInitialWindowChromeSettings) makes
@@ -925,12 +926,34 @@ namespace TDPdf
         private const int DWMWA_HAS_ICONIC_BITMAP = 10;
         private const int WM_DWMSENDICONICTHUMBNAIL = 0x0323;
         private const int WM_DWMSENDICONICLIVEPREVIEWBITMAP = 0x0326;
+        private const int WM_ENTERSIZEMOVE = 0x0231;
+        private const int WM_EXITSIZEMOVE = 0x0232;
+        private const int WM_SETICON = 0x0080;
+        private const int ICON_SMALL = 0;
+        private const int ICON_BIG = 1;
+        // The apphost (single-file bundle included) carries <ApplicationIcon> as its first icon
+        // group, which the SDK writes at resource id 32512 — the IDI_APPLICATION slot.
+        private const int APPLICATION_ICON_RESOURCE_ID = 32512;
+        private const uint IMAGE_ICON = 1;
+        private const uint LR_SHARED = 0x00008000;
+
+        // True between WM_ENTERSIZEMOVE and WM_EXITSIZEMOVE, i.e. while the user is dragging or
+        // resizing the window with the modal move/size loop. WmGetMinMaxInfo reads it.
+        private bool _inWindowSizeMove;
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (msg == WM_GETMINMAXINFO && !_useNativeWindowFrame)
+            if (msg == WM_ENTERSIZEMOVE)
             {
-                WmGetMinMaxInfo(hwnd, lParam);
+                _inWindowSizeMove = true; // observe only; WPF still needs to see the message
+            }
+            else if (msg == WM_EXITSIZEMOVE)
+            {
+                _inWindowSizeMove = false;
+            }
+            else if (msg == WM_GETMINMAXINFO && !_useNativeWindowFrame)
+            {
+                WmGetMinMaxInfo(hwnd, lParam, _inWindowSizeMove);
                 handled = true;
             }
             else if (msg == WM_DPICHANGED)
@@ -967,6 +990,45 @@ namespace TDPdf
                 handled = true;
             }
             return IntPtr.Zero;
+        }
+
+        // Windows 11 can create the taskbar button before WPF has published the XAML Icon= to the
+        // HWND, and our startup is slow enough (single-file self-extract, splash, first render) for
+        // that race to be lost — the button then keeps the generic placeholder icon. Hand the shell
+        // the exe's own icon resource directly via WM_SETICON as soon as the HWND exists, and again
+        // once startup work has gone idle in case Explorer created the button in between.
+        // LR_SHARED: the system owns and caches these handles, so they are never destroyed here.
+        // If the resource isn't there (LoadImage returns zero) this is a no-op and WPF's icon stands.
+        // Ported from upstream KillerPDF v1.8.70.
+        private void InitializeTaskbarIcons(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            IntPtr module = GetModuleHandle(null);
+            if (module == IntPtr.Zero) return;
+
+            IntPtr largeIcon = LoadImage(module, new IntPtr(APPLICATION_ICON_RESOURCE_ID), IMAGE_ICON, 32, 32, LR_SHARED);
+            IntPtr smallIcon = LoadImage(module, new IntPtr(APPLICATION_ICON_RESOURCE_ID), IMAGE_ICON, 16, 16, LR_SHARED);
+            if (largeIcon == IntPtr.Zero && smallIcon == IntPtr.Zero) return;
+
+            ApplyTaskbarIcons(hwnd, largeIcon, smallIcon);
+            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+                (Action)(() => ApplyTaskbarIcons(hwnd, largeIcon, smallIcon)));
+        }
+
+        // Clearing first (lParam = 0) forces the shell to treat the second send as a change even
+        // when the handle equals what it already has, which is what refreshes a stale button.
+        private static void ApplyTaskbarIcons(IntPtr hwnd, IntPtr largeIcon, IntPtr smallIcon)
+        {
+            if (largeIcon != IntPtr.Zero)
+            {
+                SendMessage(hwnd, WM_SETICON, new IntPtr(ICON_BIG), IntPtr.Zero);
+                SendMessage(hwnd, WM_SETICON, new IntPtr(ICON_BIG), largeIcon);
+            }
+            if (smallIcon != IntPtr.Zero)
+            {
+                SendMessage(hwnd, WM_SETICON, new IntPtr(ICON_SMALL), IntPtr.Zero);
+                SendMessage(hwnd, WM_SETICON, new IntPtr(ICON_SMALL), smallIcon);
+            }
         }
 
         // Renders the window's current content to an HBITMAP DWM can copy for a taskbar hover
@@ -1086,10 +1148,18 @@ namespace TDPdf
                 (Action)(() => { if (_doc is not null) RerenderCurrentPage(); }));
         }
 
-        private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam)
+        private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam, bool inSizeMove)
         {
             var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
-            IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            // During a cross-monitor drag (e.g. drag-to-top Aero Snap maximize) the HWND can still
+            // belong to the SOURCE monitor at the moment Windows asks for the maximize bounds, so
+            // the first maximize after the move came out sized for the monitor the window just
+            // left. The pointer is already on the target monitor, so inside the move/size loop use
+            // the cursor's monitor; every other request keeps the HWND's own monitor.
+            // Ported from upstream KillerPDF #363.
+            IntPtr monitor = inSizeMove && GetCursorPos(out POINT cursor)
+                ? MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+                : MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             if (monitor != IntPtr.Zero)
             {
                 var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
@@ -1158,6 +1228,19 @@ namespace TDPdf
 
         [DllImport("user32.dll")]
         private static extern IntPtr MonitorFromWindow(IntPtr handle, uint flags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetCursorPos(out POINT pt);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr GetModuleHandle(string? moduleName);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr LoadImage(IntPtr hInst, IntPtr name, uint type, int cx, int cy, uint flags);
 
         [DllImport("user32.dll")]
         private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
@@ -5562,6 +5645,7 @@ namespace TDPdf
             {
                 if (fontBox.SelectedItem is string f) ApplyFont(f);
             };
+            fontBox.DropDownClosed += (_, _) => ReturnFocusToActiveTextBox();
             panel.Children.Add(fontBox);
 
             // Separator
@@ -5601,6 +5685,8 @@ namespace TDPdf
                 if (double.TryParse(sizeBox.Text, out double v) && v > 0)
                     ApplySize(v);
             };
+            // Only on closing the LIST: typing a size into the editable box must keep focus there.
+            sizeBox.DropDownClosed += (_, _) => ReturnFocusToActiveTextBox();
             panel.Children.Add(sizeBox);
 
             // Separator
@@ -6277,50 +6363,12 @@ namespace TDPdf
             PdfPageGeometry.RectToCanvas(box, rotation, canvasW, canvasH, rx1, ry1, rx2, ry2);
 
         /// <summary>
-        /// The exact inverse of <see cref="PdfRectToCanvas"/>, expressed as a matrix to PREPEND to an
-        /// <see cref="XGraphics"/> transform: it maps VISUAL-frame points — canvas coordinates scaled to
-        /// points, top-left origin, y down, laid out on the box PDFium actually rendered with /Rotate
-        /// already applied — onto the frame XGraphics draws in. Prepend it and every subsequent draw call
-        /// can keep passing canvas-scaled coordinates unchanged. Null when there is nothing to apply.
+        /// The visual-frame → XGraphics matrix for a page. Lives in
+        /// <see cref="PdfPageGeometry.VisualToXGraphics"/> (see the full derivation there) so the
+        /// OCR text layer and the tests can share it; this name is kept for the annotation bake.
         /// </summary>
-        /// <param name="rotation">Page /Rotate, already normalized to 0/90/180/270.</param>
-        /// <param name="box">The rendered page box from <see cref="GetVisiblePageBox"/> (UNROTATED, and
-        /// with its real origin — a /CropBox inset from or offset within the /MediaBox is why the
-        /// mapping is not simply a rotation about (0,0)).</param>
-        /// <param name="pageHeightPt">
-        /// <c>page.Height.Point</c> — the height XGraphics flips about: its Initialize builds
-        /// DefaultViewMatrix = [1 0 0 -1 0 pageHeight] from the page size, so a draw at (X, Y) lands at
-        /// user-space (X, pageHeightPt - Y). It is passed in rather than derived because PdfSharpCore
-        /// reports the SWAPPED media-box dimensions for a page whose /Rotate is 90/270 (PdfPage's
-        /// dictionary ctor sets _orientation = Landscape), so "page height" there is really the visual
-        /// height. Every case below is written as "pageHeightPt minus the user-space y we want", so the
-        /// value cancels out of the result: a page whose /MediaBox is unreadable — the empty [0 0 0 0]
-        /// the lazy getter plants — still burns in the right place.
-        /// </param>
-        private static XMatrix? VisualToPageMatrix(int rotation, PdfPageGeometry.PageBox box, double pageHeightPt)
-        {
-            // Inverting PdfRectToCanvas point-by-point gives visual (vx, vy) -> PDF user space:
-            //    0 : (box.X + vx,            box.Y + box.Height - vy)
-            //   90 : (box.X + vy,            box.Y + vx)
-            //  180 : (box.X + box.Width - vx, box.Y + vy)
-            //  270 : (box.X + box.Width - vy, box.Y + box.Height - vx)
-            // XGraphics then applies (X, Y) -> (X, pageHeightPt - Y), so this matrix has to produce
-            // X = user x and Y = pageHeightPt - user y. XMatrix is (m11, m12, m21, m22, dx, dy) with
-            // x' = x*m11 + y*m21 + dx and y' = x*m12 + y*m22 + dy.
-            double atTop    = pageHeightPt - box.Top;   // Y for a user-space y at the box's top edge
-            double atBottom = pageHeightPt - box.Y;     // ...and at its bottom edge
-            switch (rotation)
-            {
-                case 90:  return new XMatrix(0, -1, 1, 0, box.X,     atBottom);
-                case 180: return new XMatrix(-1, 0, 0, -1, box.Right, atBottom);
-                case 270: return new XMatrix(0, 1, -1, 0, box.Right, atTop);
-                default:
-                    // Unrotated page whose rendered box is the whole media box at the origin: the
-                    // matrix is the identity XGraphics already applies, so emit nothing and keep the
-                    // content stream byte-identical to what earlier builds wrote.
-                    return box.X == 0 && atTop == 0 ? null : new XMatrix(1, 0, 0, 1, box.X, atTop);
-            }
-        }
+        private static XMatrix? VisualToPageMatrix(int rotation, PdfPageGeometry.PageBox box, double pageHeightPt) =>
+            PdfPageGeometry.VisualToXGraphics(rotation, box, pageHeightPt);
 
         // ============================================================
         // Selection
@@ -6590,6 +6638,50 @@ namespace TDPdf
         }
 
         /// <summary>
+        /// True when keyboard focus has moved into the text style bar — i.e. the user is restyling
+        /// the live text box, not leaving it. The text editors' LostFocus guards use this so that
+        /// touching the bar does not commit the box mid-edit.
+        /// </summary>
+        /// <remarks>
+        /// The visual-descendant test alone is not enough (upstream KillerPDF #428): a ComboBox's
+        /// drop-down is a Popup with its own visual tree, so while the Font or Size list is open
+        /// the focused ComboBoxItem is NOT a visual descendant of the bar. Opening the font list
+        /// therefore committed the box, and the family you then picked landed on nothing but the
+        /// next box's defaults. An open ComboBox anywhere in the bar means the user is mid-pick.
+        /// </remarks>
+        private bool IsTextSettingsBarInteraction()
+        {
+            if (_textSettingsBar is null) return false;
+            if (Keyboard.FocusedElement is DependencyObject focused && IsDescendantOf(focused, _textSettingsBar))
+                return true;
+            return ContainsOpenComboBox(_textSettingsBar);
+        }
+
+        private static bool ContainsOpenComboBox(DependencyObject root)
+        {
+            if (root is ComboBox { IsDropDownOpen: true }) return true;
+            int count = VisualTreeHelper.GetChildrenCount(root);
+            for (int i = 0; i < count; i++)
+                if (ContainsOpenComboBox(VisualTreeHelper.GetChild(root, i))) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// After a pick from a style-bar drop-down, hand keyboard focus back to the live text box so
+        /// the user can keep typing in the new font/size without clicking back into it. Deferred so
+        /// the ComboBox finishes its own close-and-refocus first; no-op when no editor is live.
+        /// </summary>
+        private void ReturnFocusToActiveTextBox()
+        {
+            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, () =>
+            {
+                if (_activeTextBox is not { } tb || !ReferenceEquals(tb.Parent, _textEditorCanvas)) return;
+                tb.Focus();
+                Keyboard.Focus(tb);
+            });
+        }
+
+        /// <summary>
         /// Return a representative point on/inside an annotation that the corresponding
         /// HitTest case will accept as a hit — used after move/resize to refresh the
         /// stored bounds without re-hit-testing the original cursor position.
@@ -6773,15 +6865,21 @@ namespace TDPdf
 
         private void ExtractTextFromRegion(int pageIdx, Rect canvasBounds)
         {
-            if (_currentFile is null || pageIdx < 0) return;
-            if (!_renderDims.ContainsKey(pageIdx)) return;
+            // Every way out of here that copies nothing must also drop the marquee, as the no-words
+            // and exception paths below always have: a rectangle left on screen with nothing on the
+            // clipboard reads as "copied" when it was not (upstream KillerPDF 41b5c142 class).
+            if (_currentFile is null || pageIdx < 0 || !_renderDims.ContainsKey(pageIdx))
+            {
+                ClearTextSelection();
+                return;
+            }
 
             try
             {
                 var (renderW, renderH) = _renderDims[pageIdx];
 
                 using var pigDoc = PdfPigDoc.Open(_currentFile);
-                if (pageIdx >= pigDoc.NumberOfPages) return;
+                if (pageIdx >= pigDoc.NumberOfPages) { ClearTextSelection(); return; }
                 var page = pigDoc.GetPage(pageIdx + 1); // PdfPig is 1-based
 
                 double pdfW = page.Width;
