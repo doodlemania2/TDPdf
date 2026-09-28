@@ -14,7 +14,7 @@ TDPdf is a Windows-only WPF PDF editor shipped as a single self-contained `TDPdf
 - Full signed release: `./release.ps1` (Windows; needs Certum cert + signtool), or `./release.ps1 -SkipSign` for a dry run.
 - **There is no test suite or linter.** `dotnet build` warnings are the only lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
 - Single-file publish uses SDK properties in `TDPdf.csproj` (`IncludeNativeLibrariesForSelfExtract`, compression); do not reintroduce Costura/Fody bundling. `PublishTrimmed` and Native AOT are intentionally off — WPF and the PDF libraries are not trim-safe.
-- **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and reports only the 2 `MSB3243` warnings — a false clean that hides every `CS*` warning you just introduced. The real baseline is **4 warnings, 0 errors** (2x `MSB3243`, 2x `CS8602` at `Services/PdfDocumentService.cs:517`, each doubled by the `wpftmp` project). It was 6 until 1.24.1.0 removed the `_applyingFitZoom` field and its `CS0414`.
+- **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and reports only the 2 `MSB3243` warnings — a false clean that hides every `CS*` warning you just introduced. The real baseline is **4 warnings, 0 errors** (2x `MSB3243`, 2x `CS8602` at `Services/PdfDocumentService.cs:622`, each doubled by the `wpftmp` project). It was 6 until 1.24.1.0 removed the `_applyingFitZoom` field and its `CS0414`.
 
 ### Release checklist
 
@@ -35,13 +35,14 @@ Then, to actually cut a release:
 
 #### Automated release pipeline
 
-The `tdpdf` runner is **Linux** (self-hosted ARC on the K3s cluster). That single fact explains the design: `signtool.exe` and `IntuneWinAppUtil.exe` are Windows-only, so the workflow signs with **`osslsigncode`** and talks to **Microsoft Graph directly**. A `.intunewin` is only a transport container for the portal UI — Graph accepts the encrypted payload plus a `fileEncryptionInfo` block, which `build/intune/Deploy-IntuneUpdate.ps1` produces itself.
+The `tdpdf` runner is **Linux** (self-hosted ARC on the K3s cluster). That single fact explains the design: `signtool.exe` and `IntuneWinAppUtil.exe` are Windows-only, so the workflow signs with **Jsign** (against Azure Artifact Signing, whose own tooling is a Windows-only signtool dlib) and talks to **Microsoft Graph directly**. A `.intunewin` is only a transport container for the portal UI — Graph accepts the encrypted payload plus a `fileEncryptionInfo` block, which `build/intune/Deploy-IntuneUpdate.ps1` produces itself.
 
 Each stage is gated on its secret being present, so a missing or rotated secret degrades the run to build-and-release rather than failing it:
 
 | Secret | Enables | If absent |
 |---|---|---|
-| `CODESIGN_PFX_BASE64`, `CODESIGN_PFX_PASSWORD` | Authenticode signing | **unsigned exe**, with a warning |
+| `SIGN_TENANT_ID`, `SIGN_CLIENT_ID`, `SIGN_CLIENT_SECRET` | Azure Artifact Signing — the publicly-trusted signature the Store requires | falls back to the PFX below |
+| `CODESIGN_PFX_BASE64`, `CODESIGN_PFX_PASSWORD` | Fallback private-PFX signing, fleet-only and **not** Store-eligible | **unsigned exe**, with a warning |
 | `INTUNE_APP_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Intune app updated | Intune step skipped |
 
 - **The Intune step updates an app that already exists and is already targeted.** It adds a `mobileAppContentVersion` and repoints `committedContentVersion`. Assignments hang off the *app*, not the content version, so **targeting is never touched** — the script also refuses to run against anything that is not a `win32LobApp`.
@@ -50,11 +51,28 @@ Each stage is gated on its secret being present, so a missing or rotated secret 
 - Run `Deploy-IntuneUpdate.ps1 -DryRun` to zip, encrypt and digest locally with no Graph writes. Do that first when changing anything in that script.
 - `workflow_dispatch` accepts `skip_intune: true` to cut a GitHub Release without touching the fleet.
 - The signing and Intune steps only work off Windows — do not "fix" them back to `signtool`/`IntuneWinAppUtil` unless the runner becomes Windows.
+- Signing is **Azure Artifact Signing** (account `tdp`, profile `TDPCertProfile`, endpoint `https://eus.codesigning.azure.net`), reached with Jsign 7.5 pinned by SHA-256. The private key lives in Microsoft's HSMs and never touches the runner. Its certificates last **three days**, so the service timestamps every signature itself — do not add a `--tsaurl`. The private-PFX step remains only as a one-release fallback; retire it, and both `CODESIGN_PFX_*` secrets, once a release has shipped through Artifact Signing.
 - `pdf-landing/` is not part of this ritual — it has been stale for many versions and no workflow deploys it. Leave it alone unless asked.
 
 ## Architecture
 
-Single-window WPF app with MVVM foundations but no DI. Almost all UI behavior lives in `MainWindow.xaml.cs` (~8,000 lines): tools, rendering, search, signatures, save/flatten, install/uninstall, print, crop, zoom, dialogs, themes. New UI features usually go there unless there's a strong reason to split.
+Single-window WPF app with MVVM foundations but no DI. Most UI behavior lives on the `MainWindow` class, which is **split across one `partial class` per feature area** — `MainWindow.xaml.cs` (~11,400 lines) plus the files below. `MainWindow.xaml.cs` is still the largest by far and still holds everything that has not been extracted: window chrome, menus, settings, view modes, link overlays, tools (crop, redaction, shapes, form-field authoring), settings bars, selection, search, keyboard shortcuts, annotation management and rendering, measure, dirty tracking, cross-window tab drag, save-to-PDF, zoom, drag/drop, MRU, print, themes, install/uninstall. New UI features go in the partial that owns the area, or in `MainWindow.xaml.cs` when no partial fits.
+
+| File | Holds |
+|---|---|
+| `MainWindow.Files.cs` | File operations (open/save/save-as/flatten/merge/split) + the file toolbar handlers |
+| `MainWindow.Canvas.cs` | Canvas interaction — pointer/mouse handling, panning, tool gestures, annotation hit-testing, drag/resize |
+| `MainWindow.TextEditing.cs` | Inline text editing (double-click) + text box handling |
+| `MainWindow.Forms.cs` | Interactive AcroForm field overlays (form filling) |
+| `MainWindow.Signatures.cs` | Signatures: draw/import/place, `signatures.json` store |
+| `MainWindow.ContinuousView.cs` | Continuous (vertical-strip) view |
+| `MainWindow.Sidebar.cs` | The page sidebar (PageList) / page viewer and multi-document tab switching |
+| `MainWindow.Bookmarks.cs` | Bookmark editing (#133): add / rename / child / reorder / retarget / delete |
+| `MainWindow.Undo.cs` | Snapshot-based undo helpers |
+
+`TdpDialog.cs` is **not** a `MainWindow` partial — it is the standalone themed `MessageBox` replacement, which used to sit at the bottom of `MainWindow.xaml.cs`.
+
+These files were produced by a pure move-only split; the banner comments (`// ====`) inside them are the original region markers, so a region's members are still in their original order. Private nested types (`DocumentContext`, `UndoEntry`, `RenderedPage`, `LinkInfo`, `FormFieldInfo`, …) may be declared in any partial — most remain in `MainWindow.xaml.cs`.
 
 - `ViewModels/MainWindowViewModel.cs` is a foundation-only stub — per its header comment, do NOT wire it into MainWindow yet; migration happens in separate PRs (issue #18). `Services/` is likewise a placeholder for future extractions (only `ZoomViewModel` and the few existing services are live).
 - `Models/Annotations.cs` holds the entire annotation data model: `PageAnnotation` subclasses (`TextAnnotation`, `InkAnnotation`, `HighlightAnnotation`, `TextEditAnnotation`, `ImageEditAnnotation`, `CropAnnotation`, `SignatureAnnotation`) plus `SavedSignature` for JSON persistence.

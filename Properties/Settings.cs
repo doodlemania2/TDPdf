@@ -146,15 +146,6 @@ namespace TDPdf.Properties
             set => this[nameof(PrintPrinter)] = value;
         }
 
-        // Last print orientation: "Portrait" or "Landscape".
-        [UserScopedSetting]
-        [DefaultSettingValue("Portrait")]
-        public string PrintOrientation
-        {
-            get => (string)this[nameof(PrintOrientation)];
-            set => this[nameof(PrintOrientation)] = value;
-        }
-
         // Last color mode: "Color" or "Grayscale".
         [UserScopedSetting]
         [DefaultSettingValue("Color")]

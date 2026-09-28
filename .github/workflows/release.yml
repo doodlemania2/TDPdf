@@ -5,7 +5,7 @@ name: release
 # it to a GitHub Release, and updates the existing Intune Win32 app.
 #
 # The runner is LINUX (self-hosted ARC, label `tdpdf`), which is why signing
-# uses osslsigncode rather than signtool.exe, and why the Intune step talks to
+# signs with Jsign rather than signtool.exe, and why the Intune step talks to
 # Microsoft Graph directly instead of building a .intunewin with the
 # Windows-only IntuneWinAppUtil.exe. A .intunewin is only a transport container
 # for the portal UI; Graph takes the encrypted payload plus fileEncryptionInfo.
@@ -41,6 +41,7 @@ jobs:
     # resolved once here into plain env flags (job-level `env` may read secrets)
     # and the steps gate on those.
     env:
+      HAS_AZSIGN:    ${{ secrets.SIGN_CLIENT_SECRET != '' }}
       HAS_PFX:       ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
       HAS_INTUNE:    ${{ secrets.INTUNE_APP_ID != '' }}
       HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' }}
@@ -103,9 +104,77 @@ jobs:
             -p:EnableCompressionInSingleFile=true \
             -o publish
 
-      - name: Sign
+      # Azure Artifact Signing (formerly Trusted Signing). Microsoft's documented path is
+      # signtool.exe plus a Windows-only dlib, which would have forced this job back onto a
+      # Windows runner and undone the reason it is on the K3s cluster at all. Jsign reaches the
+      # same REST endpoint from any JVM: the file's digest goes to Azure, Microsoft's HSMs sign
+      # it, and only the signature comes back. No private key exists on the runner, in a secret,
+      # or anywhere we could leak one.
+      #
+      # This is the signature the Microsoft Store requires — it chains to a CA in the Microsoft
+      # Trusted Root Program, which the private PFX below does not. The Store step is gated on
+      # `steps.sign` specifically, so a fallback-signed build can never reach certification.
+      - name: Sign (Azure Artifact Signing)
         id: sign
-        if: env.HAS_PFX == 'true'
+        if: env.HAS_AZSIGN == 'true'
+        env:
+          # Not secrets. RBAC on the certificate profile is what protects signing, not the
+          # names. The endpoint is region-specific (eus = East US, where the account lives);
+          # Artifact Signing resources cannot be migrated across region, subscription or tenant,
+          # so this value is as permanent as the account itself.
+          AZSIGN_ENDPOINT: https://eus.codesigning.azure.net
+          AZSIGN_ALIAS: tdp/TDPCertProfile
+          # Jsign reads exactly these three variable names when --storepass is omitted, which
+          # keeps the client secret off the command line and out of `ps`. They are fed from the
+          # SIGN_* secrets rather than the AZURE_* trio the Intune step uses, so the signing
+          # identity and the fleet-management identity rotate independently.
+          AZURE_TENANT_ID: ${{ secrets.SIGN_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.SIGN_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.SIGN_CLIENT_SECRET }}
+          JSIGN_VERSION: '7.5'
+          JSIGN_SHA256: 602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c
+        run: |
+          set -euo pipefail
+          : "${AZURE_TENANT_ID:?SIGN_TENANT_ID is not set — Jsign cannot acquire a token without it}"
+          : "${AZURE_CLIENT_ID:?SIGN_CLIENT_ID is not set — Jsign cannot acquire a token without it}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq default-jre-headless
+          curl -fsSL -o /tmp/jsign.jar \
+            "https://github.com/ebourg/jsign/releases/download/${JSIGN_VERSION}/jsign-${JSIGN_VERSION}.jar"
+          # Pinned by digest. This jar is handed our signing credential, so "whatever the latest
+          # release happens to be" is not an acceptable supply chain for it.
+          echo "${JSIGN_SHA256}  /tmp/jsign.jar" | sha256sum -c - || {
+            echo "::error::jsign-${JSIGN_VERSION}.jar does not match its pinned SHA-256. Refusing to run it."
+            exit 1
+          }
+          # No --tsaurl: the service timestamps every signature itself, and it must — the
+          # certificates it issues live three days, so an untimestamped signature would expire
+          # before most people had downloaded the release.
+          java -jar /tmp/jsign.jar \
+            --storetype TRUSTEDSIGNING \
+            --keystore "$AZSIGN_ENDPOINT" \
+            --alias "$AZSIGN_ALIAS" \
+            --alg SHA-256 \
+            --name "TDPdf" \
+            --url "https://thedoodleproject.com/tdpdf" \
+            publish/TDPdf.exe
+          sudo apt-get install -y -qq osslsigncode
+          # Informational only. Ubuntu's CA bundle does not carry the Microsoft code-signing
+          # roots, so a chain failure here says nothing about how Windows will see the file.
+          osslsigncode verify -in publish/TDPdf.exe || \
+            echo "::warning::Signature present; chain not verifiable on a Linux CA bundle, which does not carry the Microsoft Trusted Root Program roots. Verify on Windows."
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      # Transitional fallback, kept for exactly one release cycle: if Artifact Signing is not
+      # configured or its credential has been rotated out, the fleet still gets a build signed
+      # with the private PFX rather than an unsigned one. It deliberately cannot satisfy the
+      # Store, whose step reads `steps.sign` only.
+      #
+      # RETIRE once a release has gone out through Artifact Signing: delete this step, the
+      # HAS_PFX flag, and the CODESIGN_PFX_BASE64 / CODESIGN_PFX_PASSWORD secrets.
+      - name: Sign (private PFX — fallback)
+        id: sign_pfx
+        if: env.HAS_AZSIGN != 'true' && env.HAS_PFX == 'true'
         env:
           PFX_B64: ${{ secrets.CODESIGN_PFX_BASE64 }}
           PFX_PASS: ${{ secrets.CODESIGN_PFX_PASSWORD }}
@@ -150,8 +219,8 @@ jobs:
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Warn if unsigned
-        if: env.HAS_PFX != 'true'
-        run: echo "::warning::CODESIGN_PFX_BASE64 not set — shipping an UNSIGNED exe."
+        if: env.HAS_AZSIGN != 'true' && env.HAS_PFX != 'true'
+        run: echo "::warning::Neither SIGN_CLIENT_SECRET nor CODESIGN_PFX_BASE64 is set — shipping an UNSIGNED exe."
 
       - name: Stage release assets
         id: asset
@@ -246,7 +315,7 @@ jobs:
 
       - name: Note why the Store step was skipped
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed != 'true'
-        run: echo "::warning::Store submission skipped — the exe is unsigned, and the Store requires a publicly-trusted signature for EXE/MSI listings."
+        run: echo "::warning::Store submission skipped — this build is not signed by Azure Artifact Signing, and the Store requires a publicly-trusted signature for EXE/MSI listings. A PFX-signed build does not qualify."
 
       # Updates the EXISTING app: adds a content version and repoints
       # committedContentVersion. Assignments live on the app, not on the content
@@ -273,7 +342,7 @@ jobs:
             echo "| Stage | Result |"
             echo "|---|---|"
             echo "| Version (from csproj) | ${{ steps.ver.outputs.version }} |"
-            echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes' || 'NO — unsigned' }} |"
+            echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes — Azure Artifact Signing (publicly trusted)' || (steps.sign_pfx.outputs.signed == 'true' && 'yes — private PFX (fleet only, not Store-eligible)' || 'NO — unsigned') }} |"
             echo "| Intune | ${{ (env.HAS_INTUNE == 'true' && github.event.inputs.skip_intune != 'true') && 'updated' || 'skipped' }} |"
             echo "| Store | ${{ (env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true') && 'submitted' || 'skipped' }} |"
           } >> "$GITHUB_STEP_SUMMARY"

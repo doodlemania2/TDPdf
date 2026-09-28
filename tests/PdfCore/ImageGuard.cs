@@ -20,7 +20,7 @@ using TDPdf.Services;
 internal static class ImageGuard
 {
     /// <summary>A minimal RGB PNG, built by hand so the harness needs no imaging library.</summary>
-    private static byte[] Png(int w, int h, byte r, byte g, byte b)
+    internal static byte[] Png(int w, int h, byte r, byte g, byte b)
     {
         var raw = new List<byte>();
         for (int y = 0; y < h; y++)

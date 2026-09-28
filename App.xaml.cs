@@ -1359,25 +1359,44 @@ namespace TDPdf
 
             SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
 
-            // Self-delete: deferred via cmd batch so the EXE can exit first
-            string bat = Path.Combine(Path.GetTempPath(), "tdpdf_uninstall.bat");
+            // Self-delete: deferred via cmd batch so the EXE can exit first.
+            //
+            // It retries rather than waiting a fixed two seconds and trying once. The interactive path
+            // below holds this process open on the "uninstalled" message until the user clicks OK, which
+            // is routinely longer than two seconds, and antivirus scanners briefly hold a just-closed exe
+            // too - either way the single rmdir hit a locked file and left the install folder behind
+            // with nothing to say so. Up to a minute, once a second, until the folder is gone. The
+            // batch name is unique so nothing pre-placed at a fixed %TEMP% path runs in its place.
+            // (Upstream KillerPDF #434 found the same lock on its installer's folder swap.)
+            string dir = installDir.TrimEnd('\\');
+            string bat = Path.Combine(Path.GetTempPath(), $"tdpdf_uninstall_{Guid.NewGuid():N}.bat");
             File.WriteAllText(bat,
                 "@echo off\r\n" +
-                "ping -n 3 127.0.0.1 >nul\r\n" +
-                $"rmdir /s /q \"{installDir}\"\r\n" +
+                "set tries=0\r\n" +
+                ":retry\r\n" +
+                "ping -n 2 127.0.0.1 >nul\r\n" +
+                $"rmdir /s /q \"{dir}\" 2>nul\r\n" +
+                $"if not exist \"{dir}\\\" goto done\r\n" +
+                "set /a tries+=1\r\n" +
+                "if %tries% lss 60 goto retry\r\n" +
+                ":done\r\n" +
                 "del \"%~f0\"\r\n");
+
+            // The message comes first and the batch starts after it, so the minute of retries is spent
+            // after this process is about to exit rather than while a dialog nobody has clicked holds
+            // the exe open.
+            if (!silent)
+            {
+                MessageBox.Show("TDPdf has been uninstalled.", AppName,
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
             {
                 WindowStyle    = ProcessWindowStyle.Hidden,
                 UseShellExecute = true
             });
             InstallLog.Write($"Scheduled deferred delete via {bat}");
-
-            if (!silent)
-            {
-                MessageBox.Show("TDPdf has been uninstalled.", AppName,
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-            }
         }
     }
 }

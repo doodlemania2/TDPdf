@@ -14,15 +14,6 @@ using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
 {
-    /// <summary>
-    /// One image's placement on a page, as FRACTIONS of the unrotated page with a top-left origin,
-    /// so a single cached set serves every render resolution. Produced by
-    /// <see cref="TDPdf.Services.PdfImages.GetFracRects"/> and consumed by
-    /// <c>MainWindow.InvertBgraInPlaceExcept</c>. Lives here, next to its only consumer, because
-    /// TDPdf has no BitmapHelpers class to hang it off (upstream's home for it).
-    /// </summary>
-    internal readonly record struct FracRect(double L, double T, double R, double B);
-
     public partial class MainWindow
     {
         // ============================================================
@@ -329,8 +320,9 @@ namespace TDPdf
 
         /// <summary>
         /// In-place inversion of a straight-alpha BGRA buffer for the display dark mode, applied at
-        /// the render sites BEFORE any pixel-buffer rotation (the two commute for a whole page, and
-        /// it keeps the carve-out rects in the unrotated page space PdfPig measured them in).
+        /// the render sites to the buffer exactly as PDFium returned it. That buffer is the page as
+        /// DISPLAYED — visible box, /Rotate already applied by PDFium, no TDPdf-side pixel rotation
+        /// after it — which is the frame the carve-out rects are in (see PdfImages.GetFracRects).
         ///
         /// Composite over white and invert in ONE step: out = a*(255-c)/255, alpha forced opaque.
         /// A plain RGB flip that leaves alpha alone is wrong for a PDF, because a page usually

@@ -173,6 +173,17 @@ Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 Forms.Run(Check, tmp);
 TextEdit.Run(Check, tmp);
+Measure.Run(Check, tmp);
+PageMove.Run(Check);
+PageRemap.Run(Check);
+SignatureScan.Run(Check);
+Duplicate.Run(Check, tmp);
+LetterSpacing.Run(Check);
+SelectCursor.Run(Check);
+ZoomAnchor.Run(Check);
+RegionCopy.Run(Check, tmp);
+RedactVerify.Run(Check, tmp);
+NightModeImages.Run(Check, tmp);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
