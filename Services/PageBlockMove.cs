@@ -43,9 +43,8 @@ namespace TDPdf.Services
 
             /// <summary>
             /// True when carrying this move out would leave the page order exactly as it is. Worth a
-            /// field rather than a caller-side guess: a reorder rewrites and reloads the document,
-            /// which costs the user every unsaved annotation (SaveTempAndReload clears them for any
-            /// structural edit), so a drag that changes nothing must cost nothing.
+            /// field rather than a caller-side guess: a reorder rewrites, reloads and re-renders the
+            /// document and marks it dirty, so a drag that changes nothing must cost nothing.
             /// </summary>
             public bool IsNoOp { get; }
         }

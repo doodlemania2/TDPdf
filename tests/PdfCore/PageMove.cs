@@ -66,8 +66,8 @@ internal static class PageMove
               Move(6, [0, 3], 6) == "1,2,4,5,0,3", Move(6, [0, 3], 6));
 
         // ── No-ops ─────────────────────────────────────────────────────────────────────────
-        // Dropping a block onto itself must cost nothing: the reorder rewrites and reloads the
-        // document, which throws away the user's unsaved annotations.
+        // Dropping a block onto itself must cost nothing: the reorder rewrites, reloads and
+        // re-renders the document and marks it dirty.
         Check("a block dropped back where it started is a no-op", NoOp(6, [2, 3], 2), Move(6, [2, 3], 2));
         Check("a block dropped INSIDE itself is a no-op", NoOp(6, [2, 3, 4], 3), Move(6, [2, 3, 4], 3));
         Check("a block dropped into the gap just below itself is a no-op", NoOp(6, [2, 3], 4), Move(6, [2, 3], 4));

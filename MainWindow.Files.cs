@@ -699,7 +699,15 @@ namespace TDPdf
             {
                 if (ct.IsCancellationRequested) return;
 
-                _renderDims[pi] = (w, h);
+                // _renderDims is the ANNOTATION frame — DIPs, the units the primary tile records and
+                // every overlay coordinate is stored in — but w/h here are DEVICE pixels (the box
+                // above is RenderBoxDip scaled up by the monitor's DPI). Writing them raw put a
+                // 1.5x-too-large frame on every tile page on a 150% display, and anything that later
+                // read it — the save-time bake, text selection, OCR placement — scaled that page's
+                // annotations down by the same factor. Divide the density back out, rounding the way
+                // PdfDocumentService.RenderPageAsync does for the primary tile.
+                _renderDims[pi] = (Math.Max(1, (int)Math.Round(w / dpiScaleX)),
+                                   Math.Max(1, (int)Math.Round(h / dpiScaleY)));
                 // #135: display-only invert, with the page's pictures carved back out (empty keep =
                 // the plain full-page flip). The buffer is ours and is about to become a throwaway
                 // display bitmap, so flip it in place — nothing else ever sees these bytes.
@@ -1030,9 +1038,13 @@ namespace TDPdf
             if (dlg.ShowDialog() != true) return;
             try
             {
+                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
                 foreach (var file in dlg.FileNames)
                     AppendPdfFileToDoc(doc, file);
-                SaveTempAndReload();
+                // Merge only ever APPENDS, so every existing page keeps its number and its geometry:
+                // the unsaved annotations are still exactly right and need no remapping. The default
+                // clear used to throw them all away for pages the merge never touched.
+                SaveTempAndReload(keepAnnotations: true);
                 SetStatus($"Merged {dlg.FileNames.Length} file(s) - {_doc?.PageCount} total pages");
             }
             catch (Exception ex)
@@ -1285,11 +1297,21 @@ namespace TDPdf
             if (result != MessageBoxResult.Yes) return;
             try
             {
+                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
                 var indices = new List<int>();
                 foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+                // Upstream KillerPDF #429, and ours was worse: the reload's default clear discarded
+                // EVERY unsaved annotation in the document, including those on pages before the
+                // deleted range that the delete does not even renumber. Deleting changes page numbers
+                // but no page's geometry, so the survivors' annotations are still valid where they
+                // are drawn — drop the deleted pages' own, renumber the rest, and keep them. The map
+                // is taken against the page count BEFORE the delete and applied only once the pages
+                // are actually gone, so the annotations always describe the page list _doc holds.
+                var map = TDPdf.Services.PageIndexRemap.ForDelete(doc.PageCount, indices);
                 foreach (var idx in indices.OrderByDescending(i => i))
                     doc.Pages.RemoveAt(idx);
-                SaveTempAndReload();
+                ApplyPageIndexMap(map);
+                SaveTempAndReload(keepAnnotations: true);
                 SetStatus($"Deleted {indices.Count} page(s) - {_doc?.PageCount} remaining");
             }
             catch (Exception ex)
@@ -1317,6 +1339,8 @@ namespace TDPdf
 
             try
             {
+                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
+                var map = TDPdf.Services.PageIndexRemap.ForInsert(doc.PageCount, insertAfter + 1, 1);
                 var blank = new PdfPage { Width = XUnit.FromPoint(wPt), Height = XUnit.FromPoint(hPt) };
                 doc.Pages.Insert(insertAfter + 1, blank);
                 // Inserting renumbers the pages after the insertion point but does not change the
@@ -1324,7 +1348,7 @@ namespace TDPdf
                 // they are drawn — they just belong to a page one further along. Renumber them and
                 // keep them, rather than taking the default clear and losing unsaved work to a page
                 // added somewhere else in the document entirely.
-                ShiftAnnotationPagesForInsert(insertAfter + 1);
+                ApplyPageIndexMap(map);
                 SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = insertAfter + 1;
                 SetStatus($"Inserted blank page at position {insertAfter + 2}");
@@ -1703,11 +1727,21 @@ namespace TDPdf
                 return box;
             }
 
-            var titleBox    = AddField("Title",    doc.Info.Title);
-            var authorBox   = AddField("Author",   doc.Info.Author);
-            var subjectBox  = AddField("Subject",  doc.Info.Subject);
-            var keywordsBox = AddField("Keywords", doc.Info.Keywords, tall: true);
-            var creatorBox  = AddField("Creator",  doc.Info.Creator);
+            // Read through InfoString: PdfSharpCore throws on any /Info entry that is not a string
+            // (a "/Title null" or a number is common enough in the wild), which used to take the
+            // whole dialog down. The shown values are kept so Save only writes a field the user
+            // actually changed — otherwise a non-string entry, shown here as blank, would be
+            // silently replaced with an empty string just for opening and saving the dialog.
+            string title    = InfoString(() => doc.Info.Title);
+            string author   = InfoString(() => doc.Info.Author);
+            string subject  = InfoString(() => doc.Info.Subject);
+            string keywords = InfoString(() => doc.Info.Keywords);
+            string creator  = InfoString(() => doc.Info.Creator);
+            var titleBox    = AddField("Title",    title);
+            var authorBox   = AddField("Author",   author);
+            var subjectBox  = AddField("Subject",  subject);
+            var keywordsBox = AddField("Keywords", keywords, tall: true);
+            var creatorBox  = AddField("Creator",  creator);
 
             root.Children.Add(new TextBlock
             {
@@ -1762,11 +1796,13 @@ namespace TDPdf
             cancelBtn.Click += (_, _) => { win.DialogResult = false; };
             saveBtn.Click += (_, _) =>
             {
-                doc.Info.Title    = titleBox.Text;
-                doc.Info.Author   = authorBox.Text;
-                doc.Info.Subject  = subjectBox.Text;
-                doc.Info.Keywords = keywordsBox.Text;
-                doc.Info.Creator  = creatorBox.Text;
+                // The setters replace the entry outright (PdfDictionary's indexer), so writing over
+                // a key that held null or a number is safe; they are skipped only when unchanged.
+                if (titleBox.Text    != title)    doc.Info.Title    = titleBox.Text;
+                if (authorBox.Text   != author)   doc.Info.Author   = authorBox.Text;
+                if (subjectBox.Text  != subject)  doc.Info.Subject  = subjectBox.Text;
+                if (keywordsBox.Text != keywords) doc.Info.Keywords = keywordsBox.Text;
+                if (creatorBox.Text  != creator)  doc.Info.Creator  = creatorBox.Text;
                 MarkDirty(true);
                 win.DialogResult = true;
             };
@@ -1775,12 +1811,23 @@ namespace TDPdf
             win.ShowDialog();
         }
 
+        /// <summary>
+        /// One /Info string for display, or "" when the entry is absent or is not a string at all.
+        /// PdfSharpCore's GetString throws InvalidCastException for a null, number, array or
+        /// dictionary value, and a metadata oddity is no reason to fail the dialog showing it.
+        /// </summary>
+        private static string InfoString(Func<string?> read)
+        {
+            try { return read() ?? ""; }
+            catch (InvalidCastException) { return ""; }
+        }
+
         // Read-only structure summary for the Document Info dialog: Producer (may throw — guarded),
         // page count, PDF version, creation date (if present — guarded), and file size in KB.
         private static string BuildDocumentInfoSummary(PdfDocument doc, string? filePath)
         {
             var parts = new List<string>();
-            string producer = ""; try { producer = doc.Info.Producer ?? ""; } catch { }
+            string producer = InfoString(() => doc.Info.Producer);
             if (producer.Length > 0) parts.Add($"Producer: {producer}");
             parts.Add($"{doc.PageCount} pages");
             parts.Add($"PDF {doc.Version / 10}.{doc.Version % 10}");

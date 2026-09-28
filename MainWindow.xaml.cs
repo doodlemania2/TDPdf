@@ -100,8 +100,12 @@ namespace TDPdf
 
         // Snapshot-based undo/redo.
         // PageSnapshot: deep-cloned annotation list for one page captured BEFORE the mutation.
-        // Document: full PDF byte snapshot for crop/insert/delete/reorder; acts as a history barrier
-        //   (clears mixed-kind entries to avoid restoring page snapshots onto a re-ordered document).
+        // Document: full PDF byte snapshot (PushDocUndo) for crop, transform, text-content edits,
+        //   bookmark and form-field authoring; acts as a history barrier (clears mixed-kind entries
+        //   to avoid restoring page snapshots onto a different document). Page insert / delete /
+        //   reorder / duplicate / merge / rotate take NO document snapshot and are not undoable;
+        //   they keep the page snapshots valid instead, by renumbering them (ApplyPageIndexMap) or
+        //   remapping them through the turn (RemapAnnotationSnapshots).
         private enum UndoKind { PageSnapshot, Document }
         private readonly record struct UndoEntry(
             UndoKind Kind,
@@ -2139,9 +2143,10 @@ namespace TDPdf
                 // the reload will re-render at the swapped frame — then keep them across the reload.
                 foreach (var idx in indices)
                 {
-                    // Always derive the canonical DIP canvas frame from page geometry. _renderDims can
-                    // also be filled by secondary grid rendering, whose w/h are device pixels on a
-                    // HiDPI monitor rather than the primary annotation canvas's DPI-normalized DIPs.
+                    // Always derive the canonical DIP canvas frame from page geometry rather than
+                    // _renderDims, which may be missing for this page (emptied by a DPI change or an
+                    // adopted text edit) or come from a secondary Grid tile's rounding rather than
+                    // the primary canvas the user drew on.
                     var dims = AnnotationCanvasSize(_doc.Pages[idx]);
                     if (_annotations.TryGetValue(idx, out var anns))
                         TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h);
@@ -2198,43 +2203,66 @@ namespace TDPdf
         }
 
         /// <summary>
-        /// Renumbers unsaved annotations — and the page-snapshot undo history — across a page
-        /// inserted at <paramref name="insertIndex"/>.
+        /// Moves unsaved annotations — and the page-snapshot undo history — to their pages' new
+        /// numbers after a structural page edit described by <paramref name="map"/> (see
+        /// <see cref="TDPdf.Services.PageIndexRemap"/>: map[old] is the new index, or Removed).
         /// </summary>
         /// <remarks>
         /// The companion to <see cref="RemapAnnotationSnapshots"/>, which handles the other
         /// structural edit that keeps its annotations: a rotation changes a page's geometry but not
-        /// its number, so it remaps coordinates; an insertion changes the number but not the
-        /// geometry, so this remaps indices and leaves the coordinates alone.
+        /// its number, so it remaps coordinates; insert / delete / reorder / duplicate change the
+        /// number but not the geometry, so this remaps indices and leaves the coordinates alone.
         ///
         /// The undo stacks matter as much as the live dictionary. A PageSnapshot addresses its
         /// page by index, so leaving one behind at its old number means a later Ctrl+Z quietly
-        /// restores a page's annotations onto its neighbour.
+        /// restores a page's annotations onto its neighbour. A snapshot of a deleted page goes with
+        /// the page — there is nothing left for it to restore onto. Document entries carry whole-file
+        /// bytes and no page index, so they need nothing here.
+        ///
+        /// Everything is computed before anything is committed, so a map that fails validation
+        /// (two pages onto one) throws with the annotations and both stacks exactly as they were.
+        /// Callers apply the map AFTER mutating _doc.Pages and before SaveTempAndReload, so the
+        /// annotations always describe whichever page list _doc actually holds.
         /// </remarks>
-        private void ShiftAnnotationPagesForInsert(int insertIndex)
+        private void ApplyPageIndexMap(int[] map)
         {
-            // Descending, so a page is never moved onto one that has not moved up yet.
-            foreach (int page in _annotations.Keys.Where(k => k >= insertIndex)
-                                                  .OrderByDescending(k => k).ToList())
+            var annotations = TDPdf.Services.PageIndexRemap.RemapKeys(_annotations, map);
+            var undo = RemapPageSnapshotIndices(_undoStack, map);
+            var redo = RemapPageSnapshotIndices(_redoStack, map);
+
+            _annotations.Clear();
+            foreach (var (page, list) in annotations)
             {
-                var annotations = _annotations[page];
-                _annotations.Remove(page);
-                foreach (var annotation in annotations) annotation.PageIndex = page + 1;
-                _annotations[page + 1] = annotations;
+                foreach (var annotation in list) annotation.PageIndex = page;
+                _annotations[page] = list;
             }
-            ShiftPageSnapshots(_undoStack, insertIndex);
-            ShiftPageSnapshots(_redoStack, insertIndex);
+            ReplaceHistory(_undoStack, undo);
+            ReplaceHistory(_redoStack, redo);
         }
 
-        private static void ShiftPageSnapshots(LinkedList<UndoEntry> history, int insertIndex)
+        private static List<UndoEntry> RemapPageSnapshotIndices(LinkedList<UndoEntry> history, int[] map)
         {
-            for (var node = history.First; node is not null; node = node.Next)
+            var result = new List<UndoEntry>(history.Count);
+            foreach (var entry in history)
             {
-                var entry = node.Value;
-                if (entry.Kind != UndoKind.PageSnapshot || entry.PageIdx < insertIndex) continue;
-                if (entry.PageAnnotations is { } annotations)
-                    foreach (var annotation in annotations) annotation.PageIndex = entry.PageIdx + 1;
-                node.Value = entry with { PageIdx = entry.PageIdx + 1 };
+                if (entry.Kind != UndoKind.PageSnapshot) { result.Add(entry); continue; }
+                int page = TDPdf.Services.PageIndexRemap.Map(map, entry.PageIdx);
+                if (page == TDPdf.Services.PageIndexRemap.Removed) continue;
+                result.Add(entry with { PageIdx = page });
+            }
+            return result;
+        }
+
+        private static void ReplaceHistory(LinkedList<UndoEntry> history, List<UndoEntry> entries)
+        {
+            history.Clear();
+            foreach (var entry in entries)
+            {
+                // ApplyUndoRedoStep re-stamps PageIndex on restore as well; keeping the snapshot's
+                // own copies in step means nothing ever reads a stale number off one.
+                if (entry.Kind == UndoKind.PageSnapshot && entry.PageAnnotations is { } annotations)
+                    foreach (var annotation in annotations) annotation.PageIndex = entry.PageIdx;
+                history.AddLast(entry);
             }
         }
 
@@ -4732,19 +4760,24 @@ namespace TDPdf
             if (PendingRedactionCount == 0) { SetStatus("Redact: nothing marked"); return; }
             CommitActiveTextBox();
 
-            // Build the PDF-space rectangles first: a page we cannot map (never rendered, so no
-            // render dimensions) must stop the whole operation rather than be quietly skipped —
-            // skipping it would leave content the user marked for destruction in the file.
+            // Build the PDF-space rectangles first: a page we cannot map must stop the whole
+            // operation rather than be quietly skipped — skipping it would leave content the user
+            // marked for destruction in the file. The frame comes from EnsureRenderDims, not a raw
+            // _renderDims lookup: that map is emptied by a monitor DPI change or an adopted text
+            // edit, which used to refuse the redaction until the user revisited every marked page,
+            // although page geometry alone gives the same frame the marks were drawn in. Only a
+            // degenerate page box, which has no frame at all, still stops it.
             var rects = new Dictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>>();
             foreach (var (pageIndex, marks) in _redactionMarks)
             {
                 if (marks.Count == 0) continue;
                 if (pageIndex < 0 || pageIndex >= _doc.PageCount) continue;
-                if (!_renderDims.TryGetValue(pageIndex, out var dims) || dims.w <= 0 || dims.h <= 0)
+                var dims = EnsureRenderDims(pageIndex);
+                if (dims.w <= 0 || dims.h <= 0)
                 {
                     TdpDialog.Show(this,
-                        $"Page {pageIndex + 1} has marks but has not been displayed yet, so TDPdf cannot map " +
-                        "them onto the page. Visit that page, then redact.",
+                        $"Page {pageIndex + 1} has marks, but its page size could not be read, so TDPdf cannot " +
+                        "map them onto the page. Nothing was redacted.",
                         "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
@@ -7660,7 +7693,8 @@ namespace TDPdf
 
         /// <summary>
         /// Saves the current in-memory document bytes onto the undo stack so that
-        /// document-level operations (crop, delete page, merge, reorder) can be undone.
+        /// document-level operations (crop, transform, text-content edits, bookmark and form-field
+        /// authoring) can be undone. Page delete / reorder / merge do not call this.
         /// Document edits are a hard history barrier: page-level snapshots from before this
         /// edit refer to a different document layout, so we clear the stacks here.
         /// Must be called BEFORE modifying _doc.
@@ -9211,11 +9245,22 @@ namespace TDPdf
             {
                 int pageIdx = kvp.Key;
                 var annots = kvp.Value;
-                if (annots.Count == 0 || pageIdx >= _doc.PageCount) continue;
-                if (!_renderDims.ContainsKey(pageIdx)) continue;
+                if (annots.Count == 0 || pageIdx < 0 || pageIdx >= _doc.PageCount) continue;
 
                 var page = _doc.Pages[pageIdx];
-                var (renderW, renderH) = _renderDims[pageIdx];
+                // The annotation frame: the DIP canvas the page was drawn on. This used to be a raw
+                // _renderDims lookup that SKIPPED the page when the entry was missing, and the entry
+                // goes missing far more often than "never rendered" — InvalidateRenderCache empties
+                // the whole map on a monitor DPI change and on AdoptEditedFile, both of which keep
+                // the annotations, and only pages the user then revisits get it back. Every other
+                // page's unsaved annotations were silently left out of the save / print / export
+                // (upstream KillerPDF 689e9f6b). EnsureRenderDims returns the rendered frame when
+                // there is one — so the common path is unchanged to the pixel — and otherwise
+                // derives the same RenderBoxDip frame from page geometry, which is the frame the
+                // annotations were placed in (see AnnotationCanvasSize). Only a degenerate page box
+                // yields zero, and there is nothing a scale factor could map onto then.
+                var (renderW, renderH) = EnsureRenderDims(pageIdx);
+                if (renderW <= 0 || renderH <= 0) continue;
 
                 // Annotation coordinates are positions on the bitmap PDFium rasterized, and PDFium
                 // renders the page's VISIBLE box (/CropBox over /MediaBox, inheritance-aware) with
@@ -9589,11 +9634,13 @@ namespace TDPdf
         private void SaveTempAndReload(bool keepAnnotations = false)
         {
             if (_doc is null || _currentFile is null) return;
-            // Structural edits (delete / reorder / crop / transform) invalidate the overlay
-            // annotations, whose canvas coordinates are tied to the pre-edit page geometry, so they
-            // are cleared by default. Rotation is the one exception: it remaps its pages'
-            // annotations through the turn beforehand (see RotatePages_Click) and passes
-            // keepAnnotations: true so that unsaved work survives the reload.
+            // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
+            // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
+            // cleared by default. Every caller that can keep them passes keepAnnotations: true
+            // having first made them valid for the new layout: rotation remaps its pages'
+            // annotations through the turn (RotatePages_Click); insert / delete / reorder /
+            // duplicate renumber them with their pages (ApplyPageIndexMap); merge and append-drop
+            // only add pages at the end, so nothing needs to move.
             if (!keepAnnotations) _annotations.Clear();
             // Unconditional, for the same reason the redaction marks below are: every caller has
             // just changed page geometry or page numbering, so a surviving ruler would be two
@@ -11076,7 +11123,9 @@ namespace TDPdf
             }
             int added = doc.PageCount - before;
             // Same persist-and-repaint path as the page reorder below; it marks the document dirty.
-            SaveTempAndReload();
+            // Appending renumbers nothing (see the summary), so the unsaved annotations are kept
+            // as they are rather than taking the reload's default clear.
+            SaveTempAndReload(keepAnnotations: true);
             SetStatus($"Appended {added} page{(added == 1 ? "" : "s")} from {files.Length} file{(files.Length == 1 ? "" : "s")}");
         }
 
@@ -11162,11 +11211,18 @@ namespace TDPdf
         {
             // IsNoOp covers a block dropped back onto itself, or into a gap inside itself. It has to
             // be honoured rather than performed harmlessly: a reorder rewrites and reloads the
-            // document, which costs the user every unsaved annotation (SaveTempAndReload clears them
-            // for any structural edit) in exchange for nothing at all.
+            // document — a full re-render, a dirty flag and a lost scroll position — in exchange
+            // for nothing at all.
             if (_doc is null || plan.IsNoOp || plan.From.Length == 0) return;
             var doc = _doc;
             CommitActiveTextBox();   // a half-typed box belongs to the layout about to be rewritten
+
+            // Each page's annotations travel with it (upstream KillerPDF #429 widened to reorder).
+            // PageBlockMove.Apply is the model of exactly the mutation below, so inverting the order
+            // it produces gives every page's new number; the map is taken against the document as
+            // it stands and applied once the pages have moved.
+            var map = TDPdf.Services.PageIndexRemap.ForOrder(
+                doc.PageCount, TDPdf.Services.PageBlockMove.Apply(doc.PageCount, plan));
 
             // Lift the pages in document order, then remove from the end so the earlier indices
             // stay valid while we do it. Each PdfPage carries its own /Rotate, so a page's rotation
@@ -11177,9 +11233,11 @@ namespace TDPdf
             int insertAt = Math.Clamp(plan.InsertAt, 0, doc.PageCount);
             for (int k = 0; k < moving.Count; k++) doc.Pages.Insert(insertAt + k, moving[k]);
 
-            // Persists, reloads, repaints and marks the document dirty — and deliberately clears the
-            // overlay annotations, whose canvas coordinates were tied to the old page numbering.
-            SaveTempAndReload();
+            // Persists, reloads, repaints and marks the document dirty. A reorder moves pages but
+            // changes no page's geometry, so the annotations — renumbered with their pages — are
+            // still valid where they are drawn, and are kept.
+            ApplyPageIndexMap(map);
+            SaveTempAndReload(keepAnnotations: true);
 
             // Leave the block selected where it landed, so a second drag (or a second Move Down)
             // continues from where the eye already is rather than from wherever the rebuilt list
@@ -11206,13 +11264,14 @@ namespace TDPdf
         /// file's header explains the mechanism; tests/PdfCore proves the two pages are genuinely
         /// independent by mutating one across a save round trip and checking the other.
         ///
-        /// Everything after the copy is the ordinary structural-edit path, deliberately: mutate
-        /// _doc.Pages, then SaveTempAndReload, which is what marks the document dirty and what
-        /// clears the overlay annotations whose page numbering this just changed. Insert Blank Page
-        /// keeps its annotations by renumbering them instead, but it adds an EMPTY page — here the
-        /// copies are made from the saved page content, which the unsaved overlay is not part of, so
-        /// keeping the originals' annotations would leave two apparently identical pages one of
-        /// which carries annotations. The default clear is the honest answer.
+        /// Everything after the copy is the ordinary structural-edit path: mutate _doc.Pages,
+        /// renumber the unsaved annotations to match (ApplyPageIndexMap), then SaveTempAndReload,
+        /// which is what marks the document dirty. The COPIES start clean: they are made from the
+        /// saved page content, which the unsaved overlay is not part of, and cloning the overlay
+        /// onto them would be guessing at intent. But the originals — and every other page in the
+        /// document — keep theirs. This used to take the reload's default clear, which bought
+        /// "no two identical-looking pages where only one is annotated" by throwing away every
+        /// unsaved annotation in the document, including on pages the duplicate never touched.
         /// </remarks>
         private void DuplicatePages_Click()
         {
@@ -11225,9 +11284,13 @@ namespace TDPdf
             CommitActiveTextBox();   // a half-typed box belongs to the layout about to be rewritten
             try
             {
+                int oldCount = doc.PageCount;
                 int insertAt = TDPdf.Services.PdfPageDuplicate.Duplicate(doc, pages);
                 if (insertAt < 0) return;
-                SaveTempAndReload();
+                // The copies arrive as one run at insertAt, so the map is an insertion of however
+                // many pages were actually added; nothing maps onto the copies themselves.
+                ApplyPageIndexMap(TDPdf.Services.PageIndexRemap.ForInsert(oldCount, insertAt, doc.PageCount - oldCount));
+                SaveTempAndReload(keepAnnotations: true);
 
                 // #135 item 5: the copies end up selected, and therefore shown in the viewer — the
                 // whole point of the request. Same order of operations as MovePageBlock above, for
