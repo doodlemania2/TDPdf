@@ -1,5 +1,18 @@
 using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
+namespace TDPdf
+{
+    /// <summary>
+    /// One image's placement on a page, as FRACTIONS of the page AS RENDERED (the visible box, with
+    /// /Rotate applied) with a top-left origin, so a single cached set serves every render
+    /// resolution. Produced by <see cref="TDPdf.Services.PdfImages.GetFracRects"/> and consumed by
+    /// <c>MainWindow.InvertBgraInPlaceExcept</c> (DocInvert.cs). Declared here, beside its producer,
+    /// rather than beside that WPF consumer so tests/PdfCore can compile the real producer and
+    /// check its boxes against a PDFium render.
+    /// </summary>
+    internal readonly record struct FracRect(double L, double T, double R, double B);
+}
+
 namespace TDPdf.Services
 {
     // ============================================================
@@ -23,15 +36,25 @@ namespace TDPdf.Services
     internal static class PdfImages
     {
         /// <summary>
-        /// The page's image bounding boxes as fractions of the UNROTATED page, top-left origin.
-        /// PdfPig reports PDF points with a bottom-left origin, so the y axis is flipped here —
-        /// the same flip the annotation pipeline uses. Two properties matter to the callers:
+        /// The page's image bounding boxes as fractions of the page AS RENDERED, top-left origin.
+        /// Two properties matter to the callers:
         ///
         ///  * Fractional, so ONE cached set serves every render resolution (the primary tile, the
         ///    grid tiles, the continuous base pass and its hi-res re-sharpen all rasterize the same
         ///    page at different pixel sizes).
-        ///  * Unrotated, because the render sites apply the inversion BEFORE any pixel-buffer
-        ///    rotation, which keeps these boxes in the space PdfPig measured them in.
+        ///  * In the DISPLAYED frame — the visible box (CropBox clipped to the MediaBox) with
+        ///    /Rotate applied — because that is the buffer the inversion runs over. Every render
+        ///    site sizes it from Docnet's page reader and calls FPDF_RenderPageBitmap with rotate 0,
+        ///    which draws the page with its own /Rotate already applied, and nothing in TDPdf turns
+        ///    the pixels afterwards.
+        ///
+        /// That makes this a plain scale and a y flip, with no crop or rotation table, for the same
+        /// reason <see cref="PdfPageGeometry.CanvasRectToTextFrame"/> is one: PdfPig 0.1.14 reports
+        /// IMAGE boxes in that same displayed frame as its words (crop origin subtracted, /Rotate —
+        /// inherited or not — applied, y up), and Page.Width/Height are the displayed size.
+        /// Routing the box through the user-space table would move it by the crop inset and turn
+        /// it a quarter turn. tests/PdfCore NightModeImages.cs renders cropped pages at every
+        /// quarter turn and pins both the convention and the carve-out against PDFium's pixels.
         ///
         /// <paramref name="pageIndex"/> is 0-based; PdfPig's GetPage is 1-based.
         /// Returns an empty array for a missing or degenerate page, which the callers read as
@@ -51,8 +74,10 @@ namespace TDPdf.Services
                 var b = img.BoundingBox;
                 double l = b.Left / pw, r = b.Right / pw;
                 double t = (ph - b.Top) / ph, bo = (ph - b.Bottom) / ph;
-                // A PdfRectangle is normalized in the common case, but a content stream can place an
-                // image with a negative scale; take whichever edge is actually smaller.
+                // Not normalized: on a 90 / 270 page PdfPig hands image boxes back with Left > Right
+                // (90) or Bottom > Top (270), and a content stream can place an image with a negative
+                // scale on any page. Take whichever edge is actually smaller — without this every
+                // picture on a turned page is dropped as degenerate and gets inverted.
                 if (r < l) (l, r) = (r, l);
                 if (bo < t) (t, bo) = (bo, t);
                 if (!double.IsFinite(l) || !double.IsFinite(r)

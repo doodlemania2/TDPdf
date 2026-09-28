@@ -56,6 +56,7 @@
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
+    <Compile Include="..\..\Services\PdfImages.cs" />
   </ItemGroup>
 
 </Project>
