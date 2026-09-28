@@ -1,6 +1,7 @@
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace TDPdf.Services
 {
@@ -14,15 +15,18 @@ namespace TDPdf.Services
     internal static class OcrNativeBootstrap
     {
         private const string NativePrefix = "TDPdf.OcrNative.";
+        // The exact names TDPdf.csproj embeds. Loading by these names, rather than whatever matches a
+        // wildcard in the cache, is what keeps a DLL someone else dropped into that folder from loading.
+        private const string LeptonicaFileName = "leptonica-1.82.0.dll";
+        private const string TesseractFileName = "tesseract50.dll";
+        private const uint LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100;
+        private const uint LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
 
         private static readonly object _gate = new();
         private static bool _nativeReady;
 
-        [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
-        private static extern bool SetDllDirectory(string lpPathName);
-
-        [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
-        private static extern IntPtr LoadLibrary(string lpFileName);
+        [DllImport("kernel32", EntryPoint = "LoadLibraryExW", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
 
         /// <summary>
         /// Version-independent tessdata folder. Downloaded language packs are written here, so they persist
@@ -88,15 +92,22 @@ namespace TDPdf.Services
                 }
                 catch { /* fall through to the preload */ }
 
-                // Belt and suspenders: add the native dir to the DLL search path and preload the libs.
-                // leptonica must load before tesseract50, which depends on it.
+                // Belt and suspenders: preload the two bundled libs by exact path. leptonica must load
+                // before tesseract50, which depends on it.
+                //
+                // This used to call SetDllDirectory(nativeDir) and load every leptonica*/tesseract* file it
+                // found there. SetDllDirectory is process-wide and permanent, so from the first OCR onward
+                // every unqualified DLL load in the process - pdfium's included - searched a folder under
+                // %LOCALAPPDATA% that any process running as the user can write to. LoadLibraryEx with
+                // SEARCH_DLL_LOAD_DIR | SEARCH_SYSTEM32 resolves each library's dependencies from its own
+                // folder and System32 only, and changes nothing for anyone else. (Upstream KillerPDF 1.8.70.)
                 try
                 {
-                    SetDllDirectory(nativeDir);
-                    foreach (string dll in Directory.GetFiles(nativeDir, "leptonica*.dll")) LoadLibrary(dll);
-                    foreach (string dll in Directory.GetFiles(nativeDir, "tesseract*.dll")) LoadLibrary(dll);
+                    const uint flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
+                    LoadLibraryEx(Path.Combine(nativeDir, LeptonicaFileName), IntPtr.Zero, flags);
+                    LoadLibraryEx(Path.Combine(nativeDir, TesseractFileName), IntPtr.Zero, flags);
                 }
-                catch { /* loader search paths above still apply */ }
+                catch { /* Tesseract's own loader, pointed at the cache above, still applies */ }
 
                 _nativeReady = true;
                 return TessDataDir;
@@ -108,15 +119,32 @@ namespace TDPdf.Services
             using var src = asm.GetManifestResourceStream(resourceName);
             if (src == null) return;
 
-            // A length match means the cached copy is already the current one - skip the rewrite. A version
-            // change lands in a fresh cache dir, so this only ever no-ops within a single app version.
-            if (File.Exists(targetPath) && new FileInfo(targetPath).Length == src.Length) return;
+            // A hash match means the cached copy is already the current one - skip the rewrite. This was a
+            // length check, which trusted any same-length file in a user-writable folder and then loaded it
+            // as native code. Hashing two ~5 MB files once per launch that uses OCR is cheap by comparison.
+            if (File.Exists(targetPath))
+            {
+                byte[] expected = SHA256.HashData(src);
+                byte[] actual;
+                using (var existing = File.OpenRead(targetPath))
+                    actual = SHA256.HashData(existing);
+                if (CryptographicOperations.FixedTimeEquals(expected, actual)) return;
+                src.Position = 0;
+            }
 
-            string tmp = targetPath + ".tmp";
-            using (var dst = File.Create(tmp))
-                src.CopyTo(dst);
-            if (File.Exists(targetPath)) File.Delete(targetPath);
-            File.Move(tmp, targetPath);
+            // A unique temp name opened CreateNew, so nothing pre-placed at a predictable path is written
+            // through, and one atomic replace so a reader never sees a half-written library.
+            string tmp = $"{targetPath}.{Guid.NewGuid():N}.tmp";
+            try
+            {
+                using (var dst = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    src.CopyTo(dst);
+                File.Move(tmp, targetPath, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(tmp)) File.Delete(tmp);
+            }
         }
     }
 }
