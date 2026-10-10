@@ -1,6 +1,6 @@
 # E-Signature: native Documenso integration — design
 
-Status: **design approved with amendments, build blocked.** See "Decisions taken" below.
+Status: **design approved; building for 2.0.0.0** (unblocked 2026-10-10). See both "Decisions taken" tables below.
 Tracked by TDPdf issue #176. Written 2026-09-15 for the 2.0.0 train.
 
 ## Decisions taken (Derek, 2026-09-15)
@@ -12,7 +12,21 @@ Tracked by TDPdf issue #176. Written 2026-09-15 for the 2.0.0 train.
 | Validation | **Ship the signing surface dark** (Derek: *"We may want to ship sign dark"*), consistent with how telemetry is already inert until policy-provisioned. **No local PAdES validation** — no cryptographic code is added to TDPdf in 2.0.0; evidence comes from the server's certificate and audit trail, and TDPdf asserts no validity of its own. |
 | Dev instance | **Wait for the hosted instance.** No local Docker instance. This is what blocks the build. |
 
-## What blocks the build
+## Decisions taken (Derek, 2026-10-10) — these supersede the design below where they differ
+
+| Question | Decision |
+|---|---|
+| Blockers | **Cleared.** `https://sign.tdpdf.com` is live on Documenso **v2.18.0** (Q1), signing with the SSL.com AATL certificate through Azure Key Vault, with SSL.com RFC 3161 timestamps (Q5). The hostname is settled. |
+| Scope | Electronic signing is **the headline of 2.0.0.0**. 2.0 does not ship without it. |
+| Default endpoint | **Default to `https://sign.tdpdf.com`.** This reverses "no compiled-in endpoint": the default is the lowest resolution tier, below env var, policy and the user setting, and policy `Enabled = 0` still removes the feature entirely. It ships *on*, not dark. |
+| Naming (Q8) | The existing image overlay becomes **"Signature Picture"** (UI strings only). The new feature is **"Electronic Signature"**. New identifiers are prefixed `ESign`/`Documenso`. |
+| Field placement (Q7) | **Both** drag-to-place on the canvas and `{{…}}` placeholders, in 2.0.0. |
+| Cancel / Delete (Q9) | **In**, behind a confirm. |
+| Token page (Q3) | Documenso v2 tokens are per team: `/t/{teamUrl}/settings/tokens`, and every user's personal team has a random URL. So the Connect dialog opens `{BaseUrl}/` and says where to click. |
+| Local PAdES validation (Q4) | **Out**, as decided 2026-09-15. |
+| DPAPI (Q10) | **In**, as decided 2026-09-15. |
+
+## What blocked the build (historical)
 
 1. The hosted Documenso instance must be deployed and configured.
 2. The **hostname must be settled first** — Documenso embeds its own address in the PAdES `location` field of every signature and in every emailed signing link, so changing it after the first real signature leaves dead audit-trail URLs and broken links in inboxes. Tracked as step 0 of TRACK 2 in Derek's task inbox.
