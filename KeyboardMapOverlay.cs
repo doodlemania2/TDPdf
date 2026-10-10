@@ -84,7 +84,7 @@ namespace TDPdf
                 ["D8"] = ("Tools", "Shape"),            ["S"] = ("Tools", "Shape"),
                 ["D9"] = ("Tools", "Draw"),             ["D"] = ("Tools", "Draw"),
                 ["D0"] = ("Tools", "Eraser"),           ["E"] = ("Tools", "Eraser"),
-                ["G"] = ("Tools", "Signature"),         ["C"] = ("Tools", "Crop"),
+                ["G"] = ("Tools", "Signature Picture"), ["C"] = ("Tools", "Crop"),
                 ["R"] = ("Tools", "Redact"),      ["F"] = ("Tools", "Form fields"),
                 ["M"] = ("Tools", "Measure"),
             },

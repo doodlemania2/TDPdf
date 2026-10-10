@@ -81,7 +81,7 @@ namespace TDPdf
             // Title
             stack.Children.Add(new TextBlock
             {
-                Text = "Signatures",
+                Text = "Signature Pictures",
                 Foreground = (SolidColorBrush)FindResource("TextPrimary"),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontWeight = FontWeights.SemiBold,
@@ -158,7 +158,7 @@ namespace TDPdf
                         _pendingSignature = sigCopy;
                         HideSignaturePopup();
                         _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                        SetStatus("Click on the page to place your signature");
+                        SetStatus("Click on the page to place your signature picture");
                     };
                     item.MouseEnter += (s, e) =>
                         ((Border)s!).BorderBrush = (SolidColorBrush)FindResource("AccentGreen");
@@ -200,7 +200,7 @@ namespace TDPdf
             {
                 stack.Children.Add(new TextBlock
                 {
-                    Text = "No saved signatures",
+                    Text = "No saved signature pictures",
                     Foreground = (SolidColorBrush)FindResource("TextSecondary"),
                     FontFamily = new FontFamily("Segoe UI"),
                     FontSize = 11,
@@ -575,7 +575,7 @@ namespace TDPdf
                 // Auto-select the new signature for placement
                 _pendingSignature = saved;
                 _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                SetStatus("Signature saved - click on the page to place it");
+                SetStatus("Signature picture saved - click on the page to place it");
 
                 win.Close();
             };
@@ -895,7 +895,7 @@ namespace TDPdf
 
                 _pendingSignature = saved;
                 _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                SetStatus("Signature saved - click on the page to place it");
+                SetStatus("Signature picture saved - click on the page to place it");
                 win.Close();
             }
             saveBtn.Click += (_, _2) => DoSave();
@@ -1040,7 +1040,7 @@ namespace TDPdf
             double sigH = annot.SourceHeight * annot.Scale;
             SetTool(EditTool.Select);
             SelectAnnotation(annot, new Rect(annot.Position.X, annot.Position.Y, sigW, sigH));
-            SetStatus("Signature placed — drag the corner handle to resize, or Delete to remove");
+            SetStatus("Signature picture placed — drag the corner handle to resize, or Delete to remove");
             Telemetry.TrackEvent("Annotation.PlaceCompleted",
                 new Dictionary<string, string> { ["Type"] = "Signature" });
         }

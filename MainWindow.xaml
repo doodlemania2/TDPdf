@@ -1158,7 +1158,7 @@
                 <MenuItem Header="_Eraser"          InputGestureText="0, E"         Click="ToolErase_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE75C;"/></MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="Si_gnature"       InputGestureText="G"            Click="ToolSignature_Click">
+                <MenuItem Header="Si_gnature Picture" InputGestureText="G"          Click="ToolSignature_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEE56;"/></MenuItem.Icon>
                 </MenuItem>
                 <MenuItem Header="_Crop"            InputGestureText="C"            Click="ToolCrop_Click">
@@ -1239,7 +1239,7 @@
                     <TextBlock x:Name="SelectToolButtonLabel" Text="Select tool"/><TextBlock x:Name="TextToolButtonLabel" Text="Text tool"/>
                     <TextBlock x:Name="HighlightToolButtonLabel" Text="Highlight tool"/><TextBlock x:Name="DrawToolButtonLabel" Text="Draw tool"/>
                     <TextBlock x:Name="StrikeToolButtonLabel" Text="Strikethrough tool"/><TextBlock x:Name="UnderlineToolButtonLabel" Text="Underline tool"/>
-                    <TextBlock x:Name="SignatureButtonLabel" Text="Signature tool"/><TextBlock x:Name="CropToolButtonLabel" Text="Crop tool"/>
+                    <TextBlock x:Name="SignatureButtonLabel" Text="Signature Picture tool"/><TextBlock x:Name="CropToolButtonLabel" Text="Crop tool"/>
                     <TextBlock x:Name="EditTextToolButtonLabel" Text="Edit existing text tool"/><TextBlock x:Name="EditImageToolButtonLabel" Text="Edit existing image tool"/>
                     <TextBlock x:Name="UndoButtonLabel" Text="Undo last annotation"/><TextBlock x:Name="SettingsButtonLabel" Text="Settings"/>
                     <TextBlock x:Name="ClearAnnotationsButtonLabel" Text="Clear annotations"/><TextBlock x:Name="ZoomLabel" Text="Zoom level"/>
@@ -1283,7 +1283,7 @@
                     <Button x:Name="ToolDrawBtn" Content="&#xED63;" Style="{StaticResource ToolbarButton}" Click="ToolDraw_Click" ToolTip="Draw Tool (9 or D, Alt+R)" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Draw tool" AutomationProperties.HelpText="Draw freehand ink on the page. Shortcut 9 or D. Access key Alt+R." AutomationProperties.AccessKey="R" AutomationProperties.LabeledBy="{Binding ElementName=DrawToolButtonLabel}"/>
                     <Button x:Name="ToolEraseBtn" Content="&#xE75C;" Style="{StaticResource ToolbarButton}" Click="ToolErase_Click" ToolTip="Eraser (0 or E) — click an annotation to remove it" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Eraser tool" AutomationProperties.HelpText="Click an annotation to delete it. Shortcut 0 or E."/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
-                    <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature (G, Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature tool" AutomationProperties.HelpText="Create and place signatures. Shortcut G. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
+                    <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature Picture (G, Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature Picture tool" AutomationProperties.HelpText="Create and place a picture of your signature. Shortcut G. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
                     <Button x:Name="ToolCropBtn" Content="&#xE7A8;" Style="{StaticResource ToolbarButton}" Click="ToolCrop_Click" ToolTip="Crop pages (C, Alt+C)" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Crop tool" AutomationProperties.HelpText="Drag a rectangle on the page, then apply the crop. Shortcut C. Access key Alt+C." AutomationProperties.AccessKey="C" AutomationProperties.LabeledBy="{Binding ElementName=CropToolButtonLabel}"/>
                     <!-- Measure. Content is a vector Path, not a Segoe MDL2 glyph — see the
                          MeasureRulerGeometry resource for why. The stroke binds to the button's own
@@ -1875,7 +1875,7 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="8 / S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Shape"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="9 / D"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Draw"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="0 / E"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Eraser"/></Grid>
-                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="G"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Signature"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="G"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Signature Picture"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Crop"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="R"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Redact"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="F"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Form fields"/></Grid>

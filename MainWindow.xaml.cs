@@ -6530,7 +6530,7 @@ namespace TDPdf
                 Canvas.SetLeft(_resizeHandle, bounds.X + bounds.Width - 4 - hSize / 2);
                 Canvas.SetTop(_resizeHandle, bounds.Y + bounds.Height - 4 - hSize / 2);
                 _annotationCanvas.Children.Add(_resizeHandle);
-                string label = annot is SignatureAnnotation ? "Signature" : "Image";
+                string label = annot is SignatureAnnotation ? "Signature picture" : "Image";
                 SetStatus($"{label} selected — drag corner handle to resize, Delete to remove");
             }
             else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation or TextEditAnnotation)
