@@ -2191,6 +2191,7 @@ namespace TDPdf
         private void FileMenu_SubmenuOpened(object sender, RoutedEventArgs e)
         {
             _removePasswordMenuItem.IsEnabled = _doc is not null && _ctx.WasProtected;
+            UpdateESignatureMenu();   // MainWindow.ESignature.cs
         }
 
         private async void SaveAs_Click(object sender, RoutedEventArgs e)

@@ -406,6 +406,13 @@ namespace TDPdf
         private Border _recentFilesBox = null!;
         private StackPanel _recentFilesList = null!;
         private MenuItem _removePasswordMenuItem = null!;
+        // Electronic Signature submenu (MainWindow.ESignature.cs); visibility and enablement are
+        // set in FileMenu_SubmenuOpened.
+        private MenuItem _eSignatureMenuItem = null!;
+        private MenuItem _eSignSendMenuItem = null!;
+        private MenuItem _eSignSelfMenuItem = null!;
+        private MenuItem _eSignRequestsMenuItem = null!;
+        private MenuItem _eSignVerifyMenuItem = null!;
         private Button _invertColorsBtn = null!;
         private MenuItem _invertColorsMenuItem = null!;
         private MenuItem _invertImagesMenuItem = null!;
@@ -568,6 +575,11 @@ namespace TDPdf
             _recentFilesBox = (Border)FindName("RecentFilesBox")!;
             _recentFilesList = (StackPanel)FindName("RecentFilesList")!;
             _removePasswordMenuItem = (MenuItem)FindName("RemovePasswordMenuItem")!;
+            _eSignatureMenuItem = (MenuItem)FindName("ESignatureMenuItem")!;
+            _eSignSendMenuItem = (MenuItem)FindName("ESignSendMenuItem")!;
+            _eSignSelfMenuItem = (MenuItem)FindName("ESignSelfMenuItem")!;
+            _eSignRequestsMenuItem = (MenuItem)FindName("ESignRequestsMenuItem")!;
+            _eSignVerifyMenuItem = (MenuItem)FindName("ESignVerifyMenuItem")!;
             _invertColorsBtn = (Button)FindName("InvertColorsBtn")!;
             _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
             _invertImagesMenuItem = (MenuItem)FindName("InvertImagesMenuItem")!;
@@ -1966,6 +1978,9 @@ namespace TDPdf
                 FontSize = 11,
                 Margin = new Thickness(22, 0, 0, 12)
             });
+
+            panel.Children.Add(new Separator { Margin = new Thickness(0, 0, 0, 12) });
+            AddESignatureSettingsSection(panel);   // MainWindow.ESignature.cs
 
             var note = new TextBlock
             {

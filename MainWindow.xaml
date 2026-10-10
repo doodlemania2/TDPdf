@@ -1035,6 +1035,27 @@
                 <MenuItem Header="_Print…"          InputGestureText="Ctrl+P"       Click="Print_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE749;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- Electronic Signature (Documenso, MainWindow.ESignature.cs). Shown or Collapsed by
+                     FileMenu_SubmenuOpened from DocumensoConfig.HasEndpoint() - absent, not disabled,
+                     when an administrator has switched the feature off. It sits in Print's group with
+                     no separator of its own so collapsing it never leaves two separators touching.
+                     Mnemonic L: S (Save), E (Export Tables), I (Images, Info) and X are all taken. -->
+                <MenuItem x:Name="ESignatureMenuItem" Header="E_lectronic Signature">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB95;"/></MenuItem.Icon>
+                    <MenuItem x:Name="ESignSendMenuItem"     Header="_Send for Signature…"  Click="ESignSend_Click">
+                        <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE724;"/></MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem x:Name="ESignSelfMenuItem"     Header="Sign _This Document…" Click="ESignSelf_Click">
+                        <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8FB;"/></MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem x:Name="ESignRequestsMenuItem" Header="Signature _Requests…"  Click="ESignRequests_Click">
+                        <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE9D5;"/></MenuItem.Icon>
+                    </MenuItem>
+                    <Separator/>
+                    <MenuItem x:Name="ESignVerifyMenuItem"   Header="_Verify Signatures…"   Click="ESignVerify_Click">
+                        <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEA18;"/></MenuItem.Icon>
+                    </MenuItem>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="Document _Info…"   InputGestureText="F12"          Click="DocumentInfo_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE946;"/></MenuItem.Icon>

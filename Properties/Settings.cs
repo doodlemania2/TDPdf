@@ -314,5 +314,52 @@ namespace TDPdf.Properties
             get => (string)this[nameof(OcrHqLanguages)];
             set => this[nameof(OcrHqLanguages)] = value;
         }
+
+        // --- Electronic Signature (Documenso) ---
+        //
+        // None of these is a secret: the API token lives in DPAPI (Services/DocumensoCredentialStore),
+        // never here. All four must survive App.EnsureSettingsHealthy resetting user.config without
+        // warning, which their defaults do — a reset only forgets a typed URL and three preferences.
+
+        // The instance URL the user typed in Settings. "" means "not set here": Services/DocumensoConfig
+        // then falls back to the policy URL or the built-in default. Honoured only when no policy URL
+        // is pushed or the policy allows overriding it.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string DocumensoBaseUrl
+        {
+            get => (string)this[nameof(DocumensoBaseUrl)];
+            set => this[nameof(DocumensoBaseUrl)] = value;
+        }
+
+        // Send for Signature: whether "Sign in order" starts ticked (sequential rather than parallel).
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool DocumensoDefaultSigningOrder
+        {
+            get => (bool)this[nameof(DocumensoDefaultSigningOrder)];
+            set => this[nameof(DocumensoDefaultSigningOrder)] = value;
+        }
+
+        // Send for Signature: the remembered "Include me as a signer" checkbox.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool DocumensoIncludeSelfAsSigner
+        {
+            get => (bool)this[nameof(DocumensoIncludeSelfAsSigner)];
+            set => this[nameof(DocumensoIncludeSelfAsSigner)] = value;
+        }
+
+        // The "don't ask again" for warning before a save would strip a digital signature
+        // (design §5.5). The existing guard, MainWindow.ConfirmSaveOverDigitalSignature, has no
+        // opt-out and always asks, so there was nothing to reuse; this is read by nothing yet and
+        // Phase 3 decides whether that guard gains a checkbox at all.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool DocumensoWarnOnSignedSave
+        {
+            get => (bool)this[nameof(DocumensoWarnOnSignedSave)];
+            set => this[nameof(DocumensoWarnOnSignedSave)] = value;
+        }
     }
 }
