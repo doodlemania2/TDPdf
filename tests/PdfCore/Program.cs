@@ -184,6 +184,8 @@ ZoomAnchor.Run(Check);
 RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);
 NightModeImages.Run(Check, tmp);
+Documenso.Run(Check, tmp);
+DocumensoLive.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

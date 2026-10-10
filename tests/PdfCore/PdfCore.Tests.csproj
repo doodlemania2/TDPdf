@@ -57,6 +57,12 @@
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />
+    <!-- Electronic Signature: the WPF-free parts. The registry reads in DocumensoConfig are
+         guarded by OperatingSystem.IsWindows(), and Settings.Default is shimmed in Shims.cs. -->
+    <Compile Include="..\..\Services\DocumensoConfig.cs" />
+    <Compile Include="..\..\Services\DocumensoModels.cs" />
+    <Compile Include="..\..\Services\DocumensoClient.cs" />
+    <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
   </ItemGroup>
 
 </Project>
