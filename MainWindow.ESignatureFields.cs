@@ -134,7 +134,8 @@ namespace TDPdf
             int page = PageList.SelectedIndex;
             if (_doc is not null && page >= 0 && ReferenceEquals(_ctx, p.Ctx)) RenderAllAnnotations(page);
 
-            if (how == ESignPlacementEnd.Aborted && p.Session.Fields.Count > 0 && ReferenceEquals(_ctx, p.Ctx))
+            if (how == ESignPlacementEnd.Aborted && p.Session.Fields.Count > 0 && ReferenceEquals(_ctx, p.Ctx)
+                && ReferenceEquals(p.Session, p.Ctx.ESignSession))
                 SetStatus("Field placement ended. Your fields are kept — choose Send for Signature again to finish.");
             p.Ended.TrySetResult(how);
         }
@@ -252,7 +253,11 @@ namespace TDPdf
         private void RenderESignFieldDrafts(int pageIndex)
         {
             if (_eSignPlacement is null && !_eSignDialogOpen) return;
-            if (_ctx.ESignSession is not { Fields.Count: > 0 } session) return;
+            // Placement may be working on a session other than the tab's Send session — Sign This
+            // Document places your signature on a session of its own — and what is being placed is
+            // what has to be drawn.
+            var drawn = _eSignPlacement is { } live && ReferenceEquals(live.Ctx, _ctx) ? live.Session : _ctx.ESignSession;
+            if (drawn is not { Fields.Count: > 0 } session) return;
             var (cw, ch) = EnsureRenderDims(pageIndex);
             if (cw <= 0 || ch <= 0) return;
 

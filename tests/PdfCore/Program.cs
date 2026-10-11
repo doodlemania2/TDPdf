@@ -190,6 +190,8 @@ DocumensoLive.Run(Check);
 DocumensoSendLive.Run(Check, tmp);
 DocumensoRequests.Run(Check, tmp);
 DocumensoRequestsLive.Run(Check);
+DocumensoSelfSign.Run(Check);
+DocumensoSelfSignLive.Run(Check, tmp);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");

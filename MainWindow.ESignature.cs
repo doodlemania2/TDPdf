@@ -273,7 +273,7 @@ namespace TDPdf
         /// </remarks>
         private async Task<DocumensoSendWindow.SendAttempt> ESignRunSendAsync(DocumensoClient client,
             DocumentContext ctx, ESignSendSession session, string path, int pageCount,
-            System.IProgress<string> progress, CancellationToken ct)
+            System.IProgress<string> progress, CancellationToken ct, string operation = "DocumensoSend")
         {
             string host = DocumensoConfig.HostOf(client.BaseUrl);
             var request = DocumensoSendPlan.BuildCreateRequest(session, DocumensoSendPlan.LocalIanaTimezone());
@@ -281,7 +281,7 @@ namespace TDPdf
             int fieldCount = request.Recipients?.Sum(r => r.Fields?.Count ?? 0) ?? 0;
             var none = System.Array.Empty<ESignSigningLink>();
 
-            using var op = Telemetry.StartOperation("DocumensoSend")
+            using var op = Telemetry.StartOperation(operation)
                 .With("recipientCount", recipientCount.ToString(System.Globalization.CultureInfo.InvariantCulture))
                 .With("fieldCount", fieldCount.ToString(System.Globalization.CultureInfo.InvariantCulture))
                 .With("pageCount", pageCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -345,7 +345,7 @@ namespace TDPdf
                 catch { /* the send succeeded; this was only a nicety */ }
             }
 
-            return new(true, null, DocumensoSendPlan.MatchLinks(session.Recipients, res.Recipients), recipientCount);
+            return new(true, null, DocumensoSendPlan.MatchLinks(session.Recipients, res.Recipients), recipientCount, envelopeId);
         }
 
         /// <summary>The inline sentence for a send that did not go out. Never the response body.</summary>
@@ -369,15 +369,7 @@ namespace TDPdf
                 : $"{why} Nothing was sent.";
         }
 
-        // Phase 4 — Sign This Document: one recipient (you), distribute, open the signing link
-        // in the browser, then Refresh → download the signed copy.
-        private Task ESignSelfAsync()
-        {
-            if (!ESignRequireDocument()) return Task.CompletedTask;
-            if (ESignConnectedClient() is not { } client) return Task.CompletedTask;
-            SetStatus($"Electronic Signature: connected to {DocumensoConfig.HostOf(client.BaseUrl)}.");
-            return Task.CompletedTask;
-        }
+        // Sign This Document (Phase 4): MainWindow.ESignatureSelfSign.cs.
 
         // Signature Requests (Phase 3): MainWindow.ESignatureRequests.cs.
 

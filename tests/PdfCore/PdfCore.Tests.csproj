@@ -67,6 +67,7 @@
     <Compile Include="..\..\Services\DocumensoSend.cs" />
     <Compile Include="..\..\Services\DocumensoRequestStore.cs" />
     <Compile Include="..\..\Services\DocumensoRequests.cs" />
+    <Compile Include="..\..\Services\DocumensoSelfSign.cs" />
     <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
   </ItemGroup>
 

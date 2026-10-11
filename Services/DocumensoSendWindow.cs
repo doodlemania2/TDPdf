@@ -42,7 +42,8 @@ namespace TDPdf.Services
         internal enum Outcome { Cancelled, PlaceFields, Sent }
 
         /// <summary>What one press of Send produced, as the dialog needs it.</summary>
-        internal sealed record SendAttempt(bool Ok, string? Error, IReadOnlyList<ESignSigningLink> Links, int RecipientCount);
+        internal sealed record SendAttempt(bool Ok, string? Error, IReadOnlyList<ESignSigningLink> Links, int RecipientCount,
+            string? EnvelopeId = null);
 
         /// <summary>What the caller supplies besides the session.</summary>
         internal sealed class Inputs

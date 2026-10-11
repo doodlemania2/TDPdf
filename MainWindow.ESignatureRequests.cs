@@ -34,7 +34,7 @@ namespace TDPdf
                 StoredTeamUrl = meta?.TeamUrl,
                 TryClient = () => client,
                 Connect = ESignReconnect,
-                DownloadAsync = (owner, c, env, what) => ESignDownloadArtifactAsync(owner, c, env, what, openAfter: true),
+                DownloadAsync = async (owner, c, env, what) => (await ESignDownloadArtifactAsync(owner, c, env, what, openAfter: true))?.Message,
             });
             return Task.CompletedTask;
         }
@@ -56,10 +56,13 @@ namespace TDPdf
         // Download (design §5.5 step 1)
         // ============================================================
 
+        /// <summary>What a download produced: the sentence to show, and the saved file when there is one.</summary>
+        private sealed record ESignDownloaded(string Message, string? Path);
+
         /// <summary>
         /// Saves one PDF of an envelope where the user chooses and, when
         /// <paramref name="openAfter"/>, opens it in a new tab. Returns the sentence to show the
-        /// user, or null when they cancelled the Save dialog. Throws
+        /// user (and the saved path), or null when they cancelled the Save dialog. Throws
         /// <see cref="DocumensoApiException"/> for the caller to show inline.
         /// </summary>
         /// <remarks>
@@ -77,7 +80,7 @@ namespace TDPdf
         /// (by order) is the signed copy, and the sentence says so when there were more.
         /// </para>
         /// </remarks>
-        private async Task<string?> ESignDownloadArtifactAsync(Window owner, DocumensoClient client,
+        private async Task<ESignDownloaded?> ESignDownloadArtifactAsync(Window owner, DocumensoClient client,
             DocumensoEnvelope env, DocumensoArtifact what, bool openAfter)
         {
             var dlg = new SaveFileDialog
@@ -107,9 +110,9 @@ namespace TDPdf
                         // The list endpoint carries no envelope items; get / get-many do.
                         var full = env.EnvelopeItems.Count > 0 ? env : await client.GetEnvelopeAsync(env.Id, CancellationToken.None);
                         if (full.Status != DocumensoEnvelopeStatus.Completed)
-                            return "That request is not completed yet, so there is no signed copy to download.";
+                            return new("That request is not completed yet, so there is no signed copy to download.", null);
                         var items = full.EnvelopeItems.OrderBy(i => i.Order).ToList();
-                        if (items.Count == 0) return $"{DocumensoConfig.HostOf(client.BaseUrl)} returned no document for that request.";
+                        if (items.Count == 0) return new($"{DocumensoConfig.HostOf(client.BaseUrl)} returned no document for that request.", null);
                         if (items.Count > 1) extra = $" The request holds {items.Count} documents; this is the first.";
                         await client.DownloadItemAsync(items[0].Id, DocumensoDownloadVersion.Signed, dest, CancellationToken.None);
                         try
@@ -131,7 +134,7 @@ namespace TDPdf
             catch (System.Exception ex) when (ex is IOException or System.UnauthorizedAccessException)
             {
                 SetStatus("Electronic Signature: the download could not be saved.");
-                return $"TDPdf could not write {name}. It may be open in another program, or the folder may be read-only.";
+                return new($"TDPdf could not write {name}. It may be open in another program, or the folder may be read-only.", null);
             }
             catch (DocumensoApiException)
             {
@@ -141,7 +144,7 @@ namespace TDPdf
 
             SetStatus($"Saved {name}.");
             if (openAfter) await OpenInTabAsync(dest);
-            return $"Saved {name}{(openAfter ? " and opened it" : "")}.{extra}";
+            return new($"Saved {name}{(openAfter ? " and opened it" : "")}.{extra}", dest);
         }
 
         // ============================================================
