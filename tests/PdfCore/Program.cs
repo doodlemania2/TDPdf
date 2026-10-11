@@ -177,6 +177,7 @@ Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);
 SignatureScan.Run(Check);
+SignatureInspect.Run(Check, tmp);
 Duplicate.Run(Check, tmp);
 LetterSpacing.Run(Check);
 SelectCursor.Run(Check);

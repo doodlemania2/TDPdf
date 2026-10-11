@@ -276,6 +276,45 @@ namespace TDPdf.Services
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Which of this device's tracked requests an open file is the signed copy of, for Verify
+        /// Signatures' certificate and audit-log downloads. Documenso writes no envelope id into the
+        /// PDF it seals (no /Info, no XMP — checked in seal-document.handler.ts, v2.18.0), so:
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>Exact:</b> the file's SHA-256 equals the fingerprint recorded when TDPdf downloaded
+        /// that signed copy. Unambiguous.
+        /// </para>
+        /// <para>
+        /// <b>By name:</b> only when the file states it was sealed by the configured instance
+        /// (<paramref name="sealedByThisInstance"/>, from the signature's /Location), and its name,
+        /// less a " (signed)" / "_signed" suffix, equals exactly one tracked title. Two candidates
+        /// is no match — offering the wrong agreement's audit log is worse than offering none.
+        /// </para>
+        /// </remarks>
+        internal static (DocumensoRequestStore.Entry? Entry, bool Exact) MatchTracked(
+            IReadOnlyList<DocumensoRequestStore.Entry> entries, string? fileSha256, string? fileName, bool sealedByThisInstance)
+        {
+            if (!string.IsNullOrEmpty(fileSha256))
+            {
+                var exact = entries.FirstOrDefault(e => string.Equals(e.SignedSha256, fileSha256, StringComparison.OrdinalIgnoreCase));
+                if (exact is not null) return (exact, true);
+            }
+            if (!sealedByThisInstance || string.IsNullOrWhiteSpace(fileName)) return (null, false);
+
+            string stem = System.IO.Path.GetFileNameWithoutExtension(fileName.Trim());
+            foreach (var suffix in new[] { " (signed)", "_signed", "-signed", " signed" })
+            {
+                if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) { stem = stem[..^suffix.Length]; break; }
+            }
+            stem = stem.Trim();
+            if (stem.Length == 0) return (null, false);
+            var byName = entries.Where(e => string.Equals(SafeFileStem(e.Title), stem, StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(e.Title.Trim(), stem, StringComparison.OrdinalIgnoreCase)).ToList();
+            return byName.Count == 1 ? (byName[0], false) : (null, false);
+        }
+
         /// <summary>The API's ISO-8601 timestamps, as UTC. Null for anything unreadable.</summary>
         internal static DateTime? ParseApiDate(string? s)
         {

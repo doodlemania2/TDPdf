@@ -1758,6 +1758,11 @@ namespace TDPdf
                 Margin = new Thickness(0, 0, 0, 4)
             });
 
+            // Design Phase 5: what the document's digital signatures state — observed, never "valid".
+            // Built for any signed PDF, whether or not Electronic Signature is configured.
+            try { if (ESignBuildDocumentInfoSignatures(doc, win) is { } signatures) root.Children.Add(signatures); }
+            catch { /* the dialog's job is the metadata; a signature oddity must not take it down */ }
+
             var buttons = new StackPanel
             {
                 Orientation = Orientation.Horizontal,

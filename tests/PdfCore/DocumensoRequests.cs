@@ -24,6 +24,32 @@ internal static class DocumensoRequests
         Merge(Check);
         Wire(Check);
         Store(Check, tmp);
+        Matching(Check);
+    }
+
+    private static void Matching(Action<string, bool, string> Check)
+    {
+        var t0 = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc);
+        string sha = new string('b', 64);
+        var entries = new List<DocumensoRequestStore.Entry>
+        {
+            new("e1", "Lease 2026", t0, 1, sha),
+            new("e2", "NDA", t0, 1),
+            new("e3", "Offer", t0, 1),
+            new("e4", "Offer", t0.AddDays(1), 1),
+        };
+        var (m, exact) = DocumensoRequestView.MatchTracked(entries, sha.ToUpperInvariant(), "renamed anything.pdf", sealedByThisInstance: false);
+        Check("the recorded fingerprint matches exactly, whatever the file is called", m?.EnvelopeId == "e1" && exact, m?.EnvelopeId ?? "null");
+        (m, exact) = DocumensoRequestView.MatchTracked(entries, new string('c', 64), "NDA (signed).pdf", sealedByThisInstance: true);
+        Check("by name: '{title} (signed).pdf' sealed by this instance", m?.EnvelopeId == "e2" && !exact, m?.EnvelopeId ?? "null");
+        (m, _) = DocumensoRequestView.MatchTracked(entries, null, "nda_signed.pdf", sealedByThisInstance: true);
+        Check("by name: Documenso's own '_signed' download name", m?.EnvelopeId == "e2", m?.EnvelopeId ?? "null");
+        (m, _) = DocumensoRequestView.MatchTracked(entries, null, "NDA (signed).pdf", sealedByThisInstance: false);
+        Check("by name is refused unless the file names this signing service", m is null, "");
+        (m, _) = DocumensoRequestView.MatchTracked(entries, null, "Offer (signed).pdf", sealedByThisInstance: true);
+        Check("two requests with that title is no match, not a guess", m is null, m?.EnvelopeId ?? "null");
+        (m, _) = DocumensoRequestView.MatchTracked(entries, null, "Something else.pdf", sealedByThisInstance: true);
+        Check("an unrelated file matches nothing", m is null, "");
     }
 
     private static void Actions(Action<string, bool, string> Check)
@@ -248,6 +274,36 @@ internal static class DocumensoRequestsLive
             Check("live: get-many carries envelope items (what a download needs)", many.All(e => e.EnvelopeItems.Count > 0), "");
             var (mine, others) = DocumensoRequestView.Merge(Array.Empty<DocumensoRequestStore.Entry>(), many, page.Data);
             Check("live: the merge shows each envelope once", mine.Count + others.Count == page.Data.Count, "");
+
+            // A real Documenso-sealed PDF, if the account has one: the §5.5 detection and the
+            // Phase 5 read against the actual output, plus the two evidence routes. Downloads only.
+            var done = many.FirstOrDefault(e => e.Status == DocumensoEnvelopeStatus.Completed && e.EnvelopeItems.Count > 0);
+            if (done is null)
+            {
+                Console.WriteLine("  SKIP  live sealed-PDF checks: no completed envelope on the first page");
+                return;
+            }
+            string dir = Path.Combine(Path.GetTempPath(), "tdpdf-live-sealed");
+            Directory.CreateDirectory(dir);
+            string signedPath = Path.Combine(dir, "signed.pdf");
+            await client.DownloadItemAsync(done.EnvelopeItems.OrderBy(i => i.Order).First().Id, DocumensoDownloadVersion.Signed, signedPath, CancellationToken.None);
+            byte[] bytes = File.ReadAllBytes(signedPath);
+            using (var doc = PdfSharpCore.Pdf.IO.PdfReader.Open(new MemoryStream(bytes), PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.ReadOnly))
+            {
+                int n = PdfSignatureScan.SignedFields(doc).Count;
+                Check("live sealed: the save warning's walk sees Documenso's signature", n >= 1, $"{n} signed field(s)");
+                var r = PdfSignatureInspector.Inspect(doc, bytes);
+                Check("live sealed: the signature container is read", r.Signatures.Any(s => s.CmsReadable && !s.IsDocumentTimestamp),
+                      string.Join(" / ", r.Signatures.Select(s => $"{s.SubFilter} ts={s.IsDocumentTimestamp} cms={s.CmsReadable}")));
+                Check("live sealed: it names its sealing service in /Location",
+                      r.Signatures.Any(s => s.Location is { } l && l.Contains(new Uri(client.BaseUrl).Host, StringComparison.OrdinalIgnoreCase)), "");
+                Console.WriteLine($"        observed: {SignatureObservationText.Summary(r)}");
+            }
+            string certPath = Path.Combine(dir, "certificate.pdf"), auditPath = Path.Combine(dir, "audit.pdf");
+            await client.DownloadCertificateAsync(done.Id, certPath, CancellationToken.None);
+            await client.DownloadAuditLogAsync(done.Id, auditPath, CancellationToken.None);
+            Check("live sealed: certificate and audit log download as PDFs", new FileInfo(certPath).Length > 0 && new FileInfo(auditPath).Length > 0, "");
+            try { Directory.Delete(dir, recursive: true); } catch { }
         }
         catch (DocumensoApiException ex)
         {

@@ -37,6 +37,10 @@
     <PackageReference Include="bblanchon.PDFium.Linux" Version="154.0.8035" />
     <PackageReference Include="bblanchon.PDFium.Win32" Version="154.0.8035" />
     <PackageReference Include="PdfPig" Version="0.1.14" />
+    <!-- Test runner only: the app gets System.Security.Cryptography.Pkcs from the WindowsDesktop
+         shared framework (net10.0-windows), which this plain net10.0 console does not reference.
+         Nothing here ships, so it needs no THIRD-PARTY-NOTICES entry. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.0" />
     <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
     <Compile Include="..\..\Services\PdfiumInterop.cs" />
@@ -44,6 +48,7 @@
     <Compile Include="..\..\Services\PdfPageGeometry.cs" />
     <Compile Include="..\..\Services\MeasureGeometry.cs" />
     <Compile Include="..\..\Services\PdfSignatureScan.cs" />
+    <Compile Include="..\..\Services\PdfSignatureInspector.cs" />
     <Compile Include="..\..\Services\PdfPageImageEncoder.cs" />
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />

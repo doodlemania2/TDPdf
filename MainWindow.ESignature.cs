@@ -373,15 +373,7 @@ namespace TDPdf
 
         // Signature Requests (Phase 3): MainWindow.ESignatureRequests.cs.
 
-        // Phase 5 — Verify Signatures: informational only (observed, never "valid"), plus the
-        // certificate of completion and audit log for envelopes we can match.
-        private Task ESignVerifyAsync()
-        {
-            if (!ESignRequireDocument()) return Task.CompletedTask;
-            if (ESignConnectedClient() is not { } client) return Task.CompletedTask;
-            SetStatus($"Electronic Signature: connected to {DocumensoConfig.HostOf(client.BaseUrl)}.");
-            return Task.CompletedTask;
-        }
+        // Verify Signatures (Phase 5): MainWindow.ESignatureVerify.cs.
 
         private bool ESignRequireDocument()
         {
