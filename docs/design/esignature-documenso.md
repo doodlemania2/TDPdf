@@ -26,6 +26,19 @@ Tracked by TDPdf issue #176. Written 2026-09-15 for the 2.0.0 train.
 | Local PAdES validation (Q4) | **Out**, as decided 2026-09-15. |
 | DPAPI (Q10) | **In**, as decided 2026-09-15. |
 
+## Phase 2 as built (2026-10-10) — supersedes §5.4(a) where they differ
+
+Checked against the live OpenAPI document and the Documenso **v2.18.0** source, not the docs:
+
+| Topic | What v2.18.0 actually does | What TDPdf does |
+|---|---|---|
+| Field frame | Percent of the page **as displayed**: the seal (`jobs/definitions/internal/seal-document.handler.ts`, `internalVersion === 2`) draws an overlay of `@libpdf/core`'s `page.width × page.height` — the effective box, width/height swapped on 90/270 — rotated by `page.rotation`. Same frame as the signer's react-pdf view and as `auto-place-fields.ts`. | `Services/DocumensoFieldGeometry`: canvas rect ÷ canvas size. Pinned in `tests/PdfCore/DocumensoSend.cs` against a model of the seal's matrices at every quarter turn. |
+| Cropped pages | The seal never adds the visible box's origin, so on a page whose CropBox/MediaBox does not start at 0,0 (TDPdf's Crop tool makes these) the field is burned in shifted by that origin, while the browser shows it correctly. | Not compensated (that would misplace it for the signer). The send dialog warns; the test pins the offset so an upstream fix shows up. Worth fixing in our fork. |
+| `{{…}}` placeholders | Found, whited out and turned into fields **inside** `/envelope/create`, `rN` → Nth recipient of the create payload. With no recipients in the payload it invents `recipient.N@documenso.com` stand-ins. | Recipients (with their placed fields) go **inside** create; no explicit placeholder fields are sent (they would duplicate). An `rN` beyond the recipient count is blocked client-side. |
+| Pipeline | — | `create` (recipients + fields inline) → `distribute`, delete on any failure or Esc after create. Two calls, not four; no id mapping step. |
+| Signer without a signature field | `distribute` refuses: `MISSING_SIGNATURE_FIELD` (`utils/recipients.ts` `getRecipientsWithMissingFields`). | A **blocking** inline error, not the "recipients will place their own" warning sketched in §5.4(a) — that behaviour does not exist in v2.18. |
+| Placement view | — | Single page view, switched to and back: Continuous is view-only by design. |
+
 ## What blocked the build (historical)
 
 1. The hosted Documenso instance must be deployed and configured.
