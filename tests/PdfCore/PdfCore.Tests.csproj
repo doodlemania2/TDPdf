@@ -62,6 +62,10 @@
     <Compile Include="..\..\Services\DocumensoConfig.cs" />
     <Compile Include="..\..\Services\DocumensoModels.cs" />
     <Compile Include="..\..\Services\DocumensoClient.cs" />
+    <Compile Include="..\..\Services\DocumensoFieldGeometry.cs" />
+    <Compile Include="..\..\Services\DocumensoPlaceholders.cs" />
+    <Compile Include="..\..\Services\DocumensoSend.cs" />
+    <Compile Include="..\..\Services\DocumensoRequestStore.cs" />
     <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
   </ItemGroup>
 

@@ -193,12 +193,16 @@ namespace TDPdf.Services
 
         /// <summary>
         /// <c>POST /envelope/create</c> (multipart): a <c>payload</c> JSON part and one
-        /// <c>files</c> part. Returns the new envelope id. Recipients and fields are added by the
-        /// follow-up calls, not inline, so each step's failure is attributable.
+        /// <c>files</c> part. Returns the new envelope id. Recipients (and their fields) travel
+        /// inline when <see cref="DocumensoCreateEnvelopeRequest.Recipients"/> is set; otherwise
+        /// they are added by the follow-up <c>create-many</c> calls.
         /// </summary>
         /// <remarks>
         /// Documenso scans an uploaded PDF for <c>{{signature, r1}}</c>-style placeholders on its
-        /// own. <paramref name="pdf"/> is read to the end and left open — the caller owns it.
+        /// own, whites the text out, and creates the fields in this same call — which is why Send
+        /// for Signature passes its recipients here rather than afterwards (see
+        /// <see cref="DocumensoCreateEnvelopeRequest.Recipients"/>). <paramref name="pdf"/> is read
+        /// to the end and left open — the caller owns it.
         /// </remarks>
         internal async Task<string> CreateEnvelopeAsync(DocumensoCreateEnvelopeRequest request, Stream pdf,
             string fileName, CancellationToken ct)
@@ -221,6 +225,7 @@ namespace TDPdf.Services
                 type = "DOCUMENT",
                 externalId = request.ExternalId,
                 meta = request.Meta,
+                recipients = request.Recipients,
             };
 
             // Copied rather than wrapped: StreamContent disposes its stream, and this one is the

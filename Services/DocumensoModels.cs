@@ -113,6 +113,8 @@ namespace TDPdf.Services
         public List<DocumensoRecipient> Recipients { get; set; } = new();
         /// <summary>Present on get / get-many; absent from the list endpoint.</summary>
         public List<DocumensoEnvelopeItem> EnvelopeItems { get; set; } = new();
+        /// <summary>Present on get / get-many; absent from the list endpoint.</summary>
+        public List<DocumensoField> Fields { get; set; } = new();
         public DocumensoTeamRef? Team { get; set; }
         /// <summary>The envelope's owner — for an envelope this token created, the token's user.</summary>
         public DocumensoUserRef? User { get; set; }
@@ -164,6 +166,12 @@ namespace TDPdf.Services
         public string? EnvelopeItemId { get; set; }
         public DocumensoFieldType Type { get; set; }
         public int Page { get; set; }
+        // The OpenAPI document leaves these four untyped ({}): they are Prisma Decimals, which the
+        // server may serialise as strings. The web defaults read numbers from strings, so either works.
+        public double PositionX { get; set; }
+        public double PositionY { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
     }
 
     /// <summary>One entry of the <c>/envelope/distribute</c> response.</summary>
@@ -282,5 +290,56 @@ namespace TDPdf.Services
         /// <summary>Our own correlation id, echoed back by the API. Never a file path.</summary>
         public string? ExternalId { get; init; }
         public DocumensoEnvelopeMeta? Meta { get; init; }
+        /// <summary>
+        /// Recipients created together with the envelope, in list order, each carrying its placed
+        /// fields. Null sends none (the follow-up <c>recipient/create-many</c> path).
+        /// </summary>
+        /// <remarks>
+        /// Send for Signature always fills this, and the reason is the <c>{{…}}</c> placeholders.
+        /// Documenso v2.18 turns placeholders into fields <em>inside</em> the create call, mapping
+        /// <c>r1</c> to the first recipient of <b>this</b> list. When the list is empty it invents
+        /// stand-in recipients (<c>recipient.1@documenso.com</c>, "Recipient 1") and hangs the
+        /// fields on them instead — so creating recipients afterwards would leave every
+        /// placeholder field belonging to an address nobody reads, and distribute would mail it.
+        /// See packages/lib/server-only/envelope/create-envelope.ts (v2.18.0, ~line 480).
+        /// </remarks>
+        public IReadOnlyList<DocumensoCreateRecipient>? Recipients { get; init; }
+    }
+
+    /// <summary>One recipient inside <c>/envelope/create</c>'s payload.</summary>
+    internal sealed record DocumensoCreateRecipient
+    {
+        public string Email { get; init; } = "";
+        public string Name { get; init; } = "";
+        public DocumensoRecipientRole Role { get; init; } = DocumensoRecipientRole.Signer;
+        /// <summary>1-based; null for parallel signing and always for CC.</summary>
+        public int? SigningOrder { get; init; }
+        /// <summary>Fields placed for this recipient. Null or empty sends none.</summary>
+        public IReadOnlyList<DocumensoInlineField>? Fields { get; init; }
+    }
+
+    /// <summary>
+    /// A placed field inside a create-payload recipient. No <c>recipientId</c> (the recipient does
+    /// not exist yet — nesting is what binds them) and no <c>identifier</c> (omitted means the
+    /// first, and for TDPdf only, uploaded file). Geometry as in <see cref="DocumensoFieldDraft"/>:
+    /// percent of the displayed page, origin top-left, <see cref="Page"/> 1-based.
+    /// </summary>
+    internal sealed record DocumensoInlineField
+    {
+        public DocumensoFieldType Type { get; init; }
+        public int Page { get; init; }
+        public double PositionX { get; init; }
+        public double PositionY { get; init; }
+        public double Width { get; init; }
+        public double Height { get; init; }
+    }
+
+    /// <summary>
+    /// A field rectangle in Documenso's frame: percent (0–100) of the page as displayed, origin
+    /// top-left. See <see cref="DocumensoFieldGeometry"/> for why that frame is the canvas frame.
+    /// </summary>
+    internal readonly record struct DocumensoFieldRect(double X, double Y, double Width, double Height)
+    {
+        public bool Contains(double x, double y) => x >= X && x <= X + Width && y >= Y && y <= Y + Height;
     }
 }
