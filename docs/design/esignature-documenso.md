@@ -39,6 +39,25 @@ Checked against the live OpenAPI document and the Documenso **v2.18.0** source, 
 | Signer without a signature field | `distribute` refuses: `MISSING_SIGNATURE_FIELD` (`utils/recipients.ts` `getRecipientsWithMissingFields`). | A **blocking** inline error, not the "recipients will place their own" warning sketched in §5.4(a) — that behaviour does not exist in v2.18. |
 | Placement view | — | Single page view, switched to and back: Continuous is view-only by design. |
 
+## Phases 3–5 as built (2026-10-10) — supersedes §5.4(b)(c)(d), §5.5 and §6 Phases 3–5 where they differ
+
+| Topic | Design said | What v2.18.0 / TDPdf actually does |
+|---|---|---|
+| Signature Requests window | Window shape unspecified. | **Modeless, single instance** (`Services/DocumensoRequestsWindow.cs`): a status board left open while people sign; modal would block the editor for as long as it is useful. 30 s `DispatcherTimer` only while open, stopped on close; 429 doubles it to a 5 min cap (a longer `Retry-After` wins). A refresh that changed nothing does not rebuild the rows. |
+| "This computer" refresh | `get-many` over the tracked ids. | One `get-many` over the **20** newest tracked sends (the API's per-call cap); older ones still appear in the paged server-wide list, and a tracked id on the list page is still shown as "this computer". |
+| Open in browser | — | `/t/{teamUrl}/documents/{envelopeId}` — the remix route loads `envelope.get` with the route id. Team from the envelope, else the one stored at connect. |
+| Copy signing link | "if the API exposes tokens". | It does: the list returns each recipient's `token` to the owner; the link is `{base}/sign/{token}` (`formatSigningLink`). Offered only for pending recipients who act and have not. |
+| Delete | Hidden for COMPLETED "because the API refuses". | v2.18 does **not** refuse — it soft-deletes a completed envelope. TDPdf still never offers it: an executed agreement should not vanish from the list. Cancel is PENDING-only (Documenso's rule) and emails recipients; deleting a sent draft can email them too — both confirms say so. |
+| Downloads | — | Signed copy, certificate, audit log — COMPLETED only, via SaveFileDialog (`{title} (signed).pdf`, made Windows-safe) and the client's `.part` + delete-then-move writer, opened in a new tab. The first envelope item is the signed copy. A signed copy's SHA-256 is recorded in `documenso-requests.json` for Verify's exact match. |
+| §5.5 warning | Reuse `ShowWithCheckbox` for "don't ask again" (`DocumensoWarnOnSignedSave`). | The 76aa9a1a warning already guards all three saves and is the only one. **`DocumensoWarnOnSignedSave` was removed unread**: a "don't ask again" on an irreversible signature loss brings back exactly the silent loss 76aa9a1a fixed, and the warning only fires on files that really are signed. |
+| §5.5 detection of Documenso output | — | Documenso seals with `@libpdf/core` 0.4.2: a merged field + widget in `/AcroForm /Fields` with `/FT /Sig` and `/V` → `/Type /Sig /SubFilter /ETSI.CAdES.detached` (plus `/DocTimeStamp` and `/DSS` updates when a TSA is configured). `PdfSignatureScan` matches that shape; a test builds it and checks it before and after an incremental update. |
+| Signed indicator | "Signed" in status bar / tab. | `DocumentContext.HasDigitalSignature`, set on open and **recomputed after every save** (a save strips `/V` from the live document). Neutral "Digitally signed" footer chip → Document Info; never a validity colour. |
+| Self-sign fields | Placed fields, else placement, else placeholder. | Fields placed in Send for Signature **for your own address** are adopted; else a `{{signature, r1}}` placeholder is used (placing a field as well would ask for two signatures); else placement on a session of its own. |
+| Self-sign window | "stays open". | Modeless, single instance. Confirm (what is uploaded where, that the service signs) → send → browser → Refresh → Download signed copy… / Open it. Tracked like any send. |
+| Matching a file to a request | "by title or Documenso's embedded id". | Documenso embeds **no** envelope id (no /Info, no XMP). Exact match by the recorded SHA-256; else by name only when the signature's `/Location` is this instance and exactly one tracked title fits. |
+| Local read | CN/email, claimed time, coverage, appended update. | Also issuer, an embedded RFC 3161 time and authority, reason/location as stated, updates-after count, and whether an appended update carries `/DSS`. A Documenso B-LTA file is reported honestly as "updates were added after the last signature" — its final DSS update follows the document timestamp. `SignedCms.Decode` only; the Pkcs assembly is in the WindowsDesktop framework (no package, notices unchanged). |
+| Open in PDF reader | Process.Start the file. | When TDPdf is the default `.pdf` app, Acrobat/Reader is launched directly from App Paths if installed; otherwise the user is told to use Acrobat Reader instead of reopening the file in TDPdf. |
+
 ## What blocked the build (historical)
 
 1. The hosted Documenso instance must be deployed and configured.
