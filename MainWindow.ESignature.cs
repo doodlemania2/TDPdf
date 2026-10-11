@@ -13,6 +13,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
+using TDPdf.Diagnostics;
 using TDPdf.Services;
 
 namespace TDPdf
@@ -83,14 +84,289 @@ namespace TDPdf
             _ => "The signing service answered unexpectedly. Nothing was changed.",
         };
 
-        // Phase 2 — Send for Signature: DocumensoSendWindow (recipients, {{…}} placeholders and
-        // drag-to-place fields), then create → recipients → fields → distribute with rollback.
-        private Task ESignSendAsync()
+        // ============================================================
+        // Send for Signature (design §5.4a)
+        // ============================================================
+
+        /// <summary>
+        /// Send for Signature: save if needed, connect if needed, then the dialog — looping through
+        /// canvas placement and back as often as the user likes — and finally the send, which the
+        /// dialog runs through <see cref="ESignRunSendAsync"/>.
+        /// </summary>
+        /// <remarks>
+        /// The recipients and fields gathered live on the tab (<c>DocumentContext.ESignSession</c>),
+        /// not in this method, so a Cancel keeps them for next time and a tab switch can never send
+        /// one document's fields with another. They are cleared by a successful send, by closing the
+        /// tab, and (fields only) by any change to the page layout.
+        /// </remarks>
+        private async Task ESignSendAsync()
         {
-            if (!ESignRequireDocument()) return Task.CompletedTask;
-            if (ESignConnectedClient() is not { } client) return Task.CompletedTask;
-            SetStatus($"Electronic Signature: connected to {DocumensoConfig.HostOf(client.BaseUrl)}.");
-            return Task.CompletedTask;
+            if (!ESignRequireDocument()) return;
+            if (_eSignPlacement is { Palette: { } palette })
+            {
+                palette.Activate();
+                return;
+            }
+            if (!await ESignEnsureSavedAsync()) return;
+            if (ESignConnectedClient() is not { } client) return;
+            if (_doc is null || ESignSourcePath() is not { } path)
+            {
+                SetStatus("Open a PDF first.");
+                return;
+            }
+
+            var ctx = _ctx;
+            var doc = _doc;
+            string host = DocumensoConfig.HostOf(client.BaseUrl);
+            if (ctx.ESignSession is null)
+            {
+                bool sequential = false;
+                try { sequential = TDPdf.Properties.Settings.Default.DocumensoDefaultSigningOrder; } catch { }
+                string title = "";
+                try { title = System.IO.Path.GetFileNameWithoutExtension(ctx.DisplayName) ?? ""; } catch { }
+                ctx.ESignSession = new ESignSendSession { Title = title, SequentialOrder = sequential };
+            }
+            var session = ctx.ESignSession;
+
+            SetStatus("Electronic Signature: reading the document…");
+            var placeholders = await Task.Run(() => DocumensoPlaceholders.Scan(path));
+            // Read once: VisibleBox walks raw dictionaries, but there is no reason to do it per keystroke.
+            var offsetPages = new HashSet<int>();
+            for (int i = 0; i < doc.PageCount; i++)
+            {
+                try
+                {
+                    var box = PdfPageGeometry.VisibleBox(doc.Pages[i]);
+                    if (DocumensoFieldGeometry.HasOffsetOrigin(box.X, box.Y)) offsetPages.Add(i);
+                }
+                catch { /* a malformed page box: no warning rather than a crash */ }
+            }
+            SetStatus("Ready");
+
+            bool first = true;
+            while (true)
+            {
+                if (!ReferenceEquals(ctx, _ctx) || ctx.Doc is null) return;
+                // Back from placing fields: if anything was edited meanwhile, the saved file is no
+                // longer what is on screen, and it is the saved file that goes out.
+                if (!first && (_isDirty || PendingRedactionCount > 0) && !await ESignEnsureSavedAsync()) return;
+                first = false;
+                var account = DocumensoCredentialStore.ReadMetadataFor(client.BaseUrl);
+                var inputs = new DocumensoSendWindow.Inputs
+                {
+                    Host = host,
+                    AccountEmail = account?.AccountEmail,
+                    AccountName = account?.AccountName,
+                    Placeholders = placeholders,
+                    PageHasOffsetOrigin = offsetPages.Contains,
+                    SendAsync = (progress, ct) => ESignRunSendAsync(client, ctx, session, path, doc.PageCount, progress, ct),
+                };
+
+                _eSignDialogOpen = true;
+                ESignRefreshCanvas();
+                DocumensoSendWindow.Outcome outcome;
+                DocumensoSendWindow.SendAttempt? result;
+                try
+                {
+                    (outcome, result) = DocumensoSendWindow.Show(this, session, inputs);
+                }
+                finally
+                {
+                    _eSignDialogOpen = false;
+                    ESignRefreshCanvas();
+                }
+
+                switch (outcome)
+                {
+                    case DocumensoSendWindow.Outcome.PlaceFields:
+                        if (await ESignPlaceFieldsAsync(session) == ESignPlacementEnd.Aborted) return;
+                        continue;
+
+                    case DocumensoSendWindow.Outcome.Sent when result is not null:
+                        if (ReferenceEquals(ctx.ESignSession, session)) ctx.ESignSession = null;
+                        ESignRefreshCanvas();
+                        SetStatus($"Sent to {result.RecipientCount} recipient{(result.RecipientCount == 1 ? "" : "s")} for signature.");
+                        DocumensoSendWindow.ShowSent(this, host, result);
+                        return;
+
+                    default:
+                        SetStatus(session.Fields.Count > 0 || session.Recipients.Count > 0
+                            ? "Not sent. Your recipients and fields are kept for next time."
+                            : "Not sent.");
+                        return;
+                }
+            }
+        }
+
+        private void ESignRefreshCanvas()
+        {
+            int page = PageList.SelectedIndex;
+            if (_doc is not null && page >= 0) RenderAllAnnotations(page);
+        }
+
+        /// <summary>
+        /// What is sent must be what is on disk (design §5.4a), so unsaved changes are saved first —
+        /// with the user's say-so — and pending redaction marks stop the send outright: they look
+        /// like redactions on screen, but until applied the text under them is in the file and would
+        /// go to every recipient.
+        /// </summary>
+        private async Task<bool> ESignEnsureSavedAsync()
+        {
+            if (PendingRedactionCount > 0)
+            {
+                TdpDialog.Show(this,
+                    "Some areas of this document are marked for redaction but not yet redacted.\n\n" +
+                    "The text under them is still in the file and would be sent. Apply the redactions " +
+                    "(or clear the marks), then send.",
+                    "Electronic Signature", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+            if (!_isDirty) return true;
+
+            var answer = TdpDialog.ShowYesNo(this,
+                "This document has unsaved changes.\n\nWhat is sent for signature is the saved file, so it needs saving first.",
+                "Save and continue", "Cancel", "Electronic Signature", MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+            {
+                SetStatus("Not sent — the document has unsaved changes.");
+                return false;
+            }
+            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath))
+            {
+                // Save As is a fire-and-forget click handler; it cannot be awaited from here.
+                SetStatus("Choose where to save the document, then choose Send for Signature again.");
+                SaveAs_Click(this, new RoutedEventArgs());
+                return false;
+            }
+            if (!ConfirmSaveWithPendingRedactions()) return false;
+            if (!ConfirmSaveOverDigitalSignature()) return false;
+            await SaveInPlaceAsync();
+            if (_isDirty)
+            {
+                SetStatus("The document was not saved, so nothing was sent.");
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// The file whose bytes are uploaded. Normally the user's saved document. A document opened
+        /// with a password is the exception: the file on disk is still encrypted, which Documenso
+        /// refuses, so the decrypted working copy — identical in content while nothing is unsaved —
+        /// is sent instead.
+        /// </summary>
+        private string? ESignSourcePath()
+        {
+            if (_ctx.WasProtected) return _currentFile;
+            if (!string.IsNullOrEmpty(_ctx.OriginalPath) && System.IO.File.Exists(_ctx.OriginalPath)) return _ctx.OriginalPath;
+            return _currentFile;
+        }
+
+        /// <summary>
+        /// One press of Send: build the request, run create → distribute (with rollback), and on
+        /// success record it and learn the account's email. Never throws — the dialog shows the
+        /// returned sentence inline.
+        /// </summary>
+        /// <remarks>
+        /// Telemetry carries exactly the design §2.4 allow-list: outcome, httpStatus, recipientCount,
+        /// fieldCount, pageCount. Never a name, an address, a title, a path, a host or an envelope id.
+        /// </remarks>
+        private async Task<DocumensoSendWindow.SendAttempt> ESignRunSendAsync(DocumensoClient client,
+            DocumentContext ctx, ESignSendSession session, string path, int pageCount,
+            System.IProgress<string> progress, CancellationToken ct)
+        {
+            string host = DocumensoConfig.HostOf(client.BaseUrl);
+            var request = DocumensoSendPlan.BuildCreateRequest(session, DocumensoSendPlan.LocalIanaTimezone());
+            int recipientCount = request.Recipients?.Count ?? 0;
+            int fieldCount = request.Recipients?.Sum(r => r.Fields?.Count ?? 0) ?? 0;
+            var none = System.Array.Empty<ESignSigningLink>();
+
+            using var op = Telemetry.StartOperation("DocumensoSend")
+                .With("recipientCount", recipientCount.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                .With("fieldCount", fieldCount.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                .With("pageCount", pageCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+            byte[] bytes;
+            try
+            {
+                bytes = await System.IO.File.ReadAllBytesAsync(path, ct);
+            }
+            catch (System.OperationCanceledException)
+            {
+                op.With("outcome", "cancelled").Fail();
+                return new(false, "Cancelled. Nothing was sent.", none, 0);
+            }
+            catch (System.Exception)
+            {
+                op.With("outcome", "error").Fail();
+                return new(false, "TDPdf could not read the saved document. Nothing was sent.", none, 0);
+            }
+
+            var stages = new System.Progress<DocumensoSendStage>(stage =>
+            {
+                string text = stage switch
+                {
+                    DocumensoSendStage.Uploading => $"Uploading to {host}…  (Esc to cancel)",
+                    DocumensoSendStage.Sending => "Sending to recipients…",
+                    _ => "Withdrawing the unsent draft…",
+                };
+                progress.Report(text);
+                SetStatus(text);
+            });
+
+            string fileName = DocumensoClient.SafeFileName(string.IsNullOrWhiteSpace(ctx.DisplayName) ? "document.pdf" : ctx.DisplayName);
+            var res = await DocumensoSender.SendAsync(client, request, bytes, fileName, stages, ct);
+
+            op.With("outcome", res.Outcome);
+            if (res.Failure?.StatusCode is int status)
+                op.With("httpStatus", status.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (!res.Ok)
+            {
+                op.Fail();
+                string why = ESignDescribeSendFailure(res, host);
+                SetStatus(res.Cancelled ? "Electronic Signature: cancelled. Nothing was sent." : "Electronic Signature: not sent.");
+                return new(false, why, none, 0);
+            }
+
+            string envelopeId = res.EnvelopeId!;
+            DocumensoRequestStore.Add(new DocumensoRequestStore.Entry(envelopeId, request.Title, System.DateTime.UtcNow, recipientCount));
+
+            // Documenso has no "who am I": the account's address is only knowable from an envelope
+            // this token created. Learn it now, once, so [Add me] works next time. Best effort.
+            if (DocumensoCredentialStore.ReadMetadataFor(client.BaseUrl)?.AccountEmail is not { Length: > 0 })
+            {
+                try
+                {
+                    var env = await client.GetEnvelopeAsync(envelopeId, CancellationToken.None);
+                    if (env.User is { Email.Length: > 0 } owner)
+                        DocumensoCredentialStore.RememberAccount(client.BaseUrl,
+                            new DocumensoAccount(owner.Email, string.IsNullOrWhiteSpace(owner.Name) ? null : owner.Name, env.Team?.Url));
+                }
+                catch { /* the send succeeded; this was only a nicety */ }
+            }
+
+            return new(true, null, DocumensoSendPlan.MatchLinks(session.Recipients, res.Recipients), recipientCount);
+        }
+
+        /// <summary>The inline sentence for a send that did not go out. Never the response body.</summary>
+        private static string ESignDescribeSendFailure(DocumensoSendResult res, string host)
+        {
+            var f = res.Failure;
+            string why = res.Cancelled ? "Cancelled."
+                : f?.Failure switch
+                {
+                    DocumensoFailure.AuthRejected => $"{host} rejected your sign-in — it may have expired. Connect again in Settings ▸ Electronic signature.",
+                    DocumensoFailure.Network or DocumensoFailure.Timeout => $"Could not reach {host}. Check your connection and try again.",
+                    DocumensoFailure.RateLimited => $"{host} is busy. Wait a minute and try again.",
+                    DocumensoFailure.Rejected when f.ErrorCode == "MISSING_SIGNATURE_FIELD" => "Every signer needs a Signature field.",
+                    DocumensoFailure.Rejected or DocumensoFailure.NotFound => $"{host} refused the request (HTTP {f.StatusCode}{(f.ErrorCode is null ? "" : " " + f.ErrorCode)}).",
+                    DocumensoFailure.Server => $"{host} had a problem (HTTP {f.StatusCode}). Try again shortly.",
+                    DocumensoFailure.UnexpectedResponse => $"{host} answered unexpectedly.",
+                    _ => "Something went wrong.",
+                };
+            return res.RolledBack == false
+                ? $"{why} Nothing was sent, but an unsent draft could not be removed — delete it on {host}."
+                : $"{why} Nothing was sent.";
         }
 
         // Phase 4 — Sign This Document: one recipient (you), distribute, open the signing link

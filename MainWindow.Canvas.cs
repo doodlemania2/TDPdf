@@ -109,6 +109,9 @@ namespace TDPdf
         private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
             if (_doc is null) return;
+            // Electronic Signature field placement owns the pointer while it lasts — ahead of form
+            // fields, links and every tool (MainWindow.ESignatureFields.cs).
+            if (_eSignPlacement is not null) { ESignPlacementMouseDown(e); return; }
             // Don't intercept clicks on form-field overlay controls (TextBox, checkbox, etc.)
             // — WPF must handle those natively so focus, toggling, and text entry work.
             if (e.OriginalSource is DependencyObject formSrc && IsFormFieldElement(formSrc))
@@ -900,6 +903,7 @@ namespace TDPdf
 
         private void Canvas_MouseMove(object sender, MouseEventArgs e)
         {
+            if (_eSignPlacement is { Dragging: true }) { ESignPlacementMouseMove(e); return; }
             // Don't interfere with mouse interaction inside form-field overlays.
             if (e.OriginalSource is DependencyObject moveSrc && IsFormFieldElement(moveSrc))
                 return;
@@ -1185,6 +1189,9 @@ namespace TDPdf
                 e.Handled = true;
                 return;
             }
+
+            if (_eSignPlacement is { Dragging: true }) { ESignPlacementMouseUp(e); return; }
+            if (_eSignPlacement is not null) { e.Handled = true; return; }
 
             // Don't process release events that originate inside the crop confirm bar.
             if (_cropConfirmBar is not null && e.OriginalSource is DependencyObject cropSrc &&

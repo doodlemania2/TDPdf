@@ -1469,6 +1469,11 @@ namespace TDPdf
             // pages, and a mark leaking across a tab switch would redact the wrong file.
             public readonly Dictionary<int, List<Rect>> RedactionMarks = new();
 
+            // Send for Signature's recipients and placed fields (MainWindow.ESignature*.cs). Per-tab
+            // for the same reason as the marks above: the fields are positions on THIS document's
+            // pages. Never baked into the PDF, never in Annotations; null until Send is first opened.
+            public TDPdf.Services.ESignSendSession? ESignSession;
+
             // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
             // by widget object number, checkboxes by widget object number, radios by field
             // name (shared across the widgets in a group). Persisted into the PDF on save.
@@ -3468,6 +3473,9 @@ namespace TDPdf
 
         private void SetTool(EditTool tool)
         {
+            // Picking a tool means leaving Electronic Signature field placement; the fields placed so
+            // far stay on the tab for the next Send for Signature.
+            if (_eSignPlacement is not null) EndESignPlacement(ESignPlacementEnd.Aborted);
             Telemetry.TrackEvent("Tool.Selected", new Dictionary<string, string> { ["Tool"] = tool.ToString() });
             var previousTool = _currentTool;
             CommitActiveTextBox();
@@ -5059,6 +5067,7 @@ namespace TDPdf
 
             _annotations.Clear();
             _redactionMarks.Clear();
+            ESignDropFieldsForLayoutChange(_ctx);
             ClearMeasurement();
             ClearFormState();
             InvalidateRenderCache();
@@ -7428,6 +7437,15 @@ namespace TDPdf
                 return;
             }
 
+            // Electronic Signature field placement is a mode the Send dialog lent out; Esc hands it
+            // back with the fields as they were (MainWindow.ESignatureFields.cs).
+            if (_eSignPlacement is not null && e.Key == Key.Escape)
+            {
+                EndESignPlacement(ESignPlacementEnd.Cancelled);
+                e.Handled = true;
+                return;
+            }
+
             // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
             // modifier layer on the board. (upstream KillerPDF v1.6.4)
             KbSyncLayerFromModifiers();
@@ -8184,6 +8202,7 @@ namespace TDPdf
             if (!_annotations.ContainsKey(pageIndex))
             {
                 RenderRedactionMarks(pageIndex);
+                RenderESignFieldDrafts(pageIndex);
                 RestoreFormOverlays(pageIndex);
                 RestorePolyPreview(pageIndex);
                 RestoreMeasurement(pageIndex);
@@ -8403,7 +8422,9 @@ namespace TDPdf
 
             // Pending redaction marks are not annotations and so are not in the loop above; they
             // are repainted here for the same reason the overlays below are — the clear wiped them.
+            // Electronic Signature fields are the same kind of thing and go with them.
             RenderRedactionMarks(pageIndex);
+            RenderESignFieldDrafts(pageIndex);
 
             // The canvas was cleared above, so restore any form-field overlays.
             RestoreFormOverlays(pageIndex);
@@ -8814,6 +8835,7 @@ namespace TDPdf
                 ClearPageSnapshotsOnly(source);
                 ClearPageSnapshotsExceptLast(target);
                 _annotations.Clear();
+                ESignDropFieldsForLayoutChange(_ctx);
                 ClearFormState();
                 ClearMeasurement();
                 _renderDims.Clear();
@@ -9772,6 +9794,8 @@ namespace TDPdf
                 // marks silently gone.
                 SetStatusHeld("Redaction marks were cleared — the page layout changed. Mark the areas again.", 4000);
             }
+            // Placed Electronic Signature fields are positions on pages for exactly the same reason.
+            ESignDropFieldsForLayoutChange(_ctx);
             ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();

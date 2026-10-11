@@ -215,6 +215,9 @@ namespace TDPdf
         {
             if (ReferenceEquals(_ctx, ctx)) { UpdateTabChrome(); return; }
 
+            // Field placement belongs to the tab it started on; switching away ends it (its fields
+            // stay on that tab's session) before anything below can draw this tab's canvas.
+            if (_eSignPlacement is not null) EndESignPlacement(ESignPlacementEnd.Aborted);
             CommitActiveTextBox();
             CaptureViewState();
             CancelDocumentWork(cancelWindowOperation: false);
@@ -638,6 +641,8 @@ namespace TDPdf
             ctx.Doc = null;
             ctx.Annotations.Clear();
             ctx.RedactionMarks.Clear();
+            if (_eSignPlacement is { } placing && ReferenceEquals(placing.Ctx, ctx)) EndESignPlacement(ESignPlacementEnd.Aborted);
+            ctx.ESignSession = null;
             ctx.RenderCache.Clear();
             ctx.RenderDims.Clear();
             ctx.UndoStack.Clear();

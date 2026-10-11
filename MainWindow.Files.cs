@@ -156,6 +156,10 @@ namespace TDPdf
                 // internal reload (crop's "<name>.crop-<guid>.pdf") is the SAME document, so it keeps
                 // its state, as do SaveTempAndReload and the reopen-after-save, which never come here.
                 if (!internalReload) { _ctx.OutlineExpanded.Clear(); _ctx.OutlineExpandSeen = false; }
+                // Electronic Signature: a different document drops the whole send (its recipients were
+                // chosen for the other file); an internal reload (crop) keeps them but not the fields.
+                ESignDropFieldsForLayoutChange(_ctx);
+                if (!internalReload) _ctx.ESignSession = null;
                 _annotations.Clear();
                 ClearFormState();
                 ClearMeasurement();   // a reading about the document that just went away
