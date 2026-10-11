@@ -2337,38 +2337,55 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
-                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
-                var pageSizes = GetPageSizes(doc);
-                string sourcePath;
-                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
-                if (hasAnnotations)
+                // Flatten writes a NEW file and leaves this tab's document where it was, but
+                // NormalizeDocumentForSave works on the live document: it strips any digital
+                // signature from it. Without the snapshot, the tab was left holding a signature-less
+                // copy of a still-signed original, not dirty, with the "Digitally signed" indicator
+                // cleared — so the next Ctrl+S silently overwrote the signed file, and the
+                // save-over-signature warning could not fire because nothing looked signed any more.
+                // Snapshot first, restore in the finally (a retry from RunSaveWithRecoveryAsync must
+                // never start from an already-stripped document).
+                var tempPristine = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_pristine_{Guid.NewGuid():N}.pdf");
+                await _pdfDocumentService.SaveAsync(() => doc.Save(tempPristine), CancellationToken.None);
+                try
                 {
-                    var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
-                    var tempBurned = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_burned_{Guid.NewGuid():N}.pdf");
-                    await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
-                    DrawAnnotationsOnDocument();
-                    ExceptionDispatchInfo? saveError = null;
-                    try
+                    NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
+                    var pageSizes = GetPageSizes(doc);
+                    string sourcePath;
+                    bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
+                    if (hasAnnotations)
                     {
-                        await _pdfDocumentService.SaveAsync(() => doc.Save(tempBurned), CancellationToken.None);
+                        var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                        var tempBurned = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_burned_{Guid.NewGuid():N}.pdf");
+                        await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
+                        DrawAnnotationsOnDocument();
+                        ExceptionDispatchInfo? saveError = null;
+                        try
+                        {
+                            await _pdfDocumentService.SaveAsync(() => doc.Save(tempBurned), CancellationToken.None);
+                        }
+                        catch (Exception ex)
+                        {
+                            saveError = ExceptionDispatchInfo.Capture(ex);
+                        }
+
+                        doc = await RestoreDocumentAsync(doc, tempClean, CancellationToken.None);
+                        saveError?.Throw();
+                        sourcePath = tempBurned;
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        saveError = ExceptionDispatchInfo.Capture(ex);
+                        var temp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_src_{Guid.NewGuid():N}.pdf");
+                        await _pdfDocumentService.SaveAsync(() => doc.Save(temp), CancellationToken.None);
+                        sourcePath = temp;
                     }
 
-                    doc = await RestoreDocumentAsync(doc, tempClean, CancellationToken.None);
-                    saveError?.Throw();
-                    sourcePath = tempBurned;
+                    await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, CancellationToken.None);
                 }
-                else
+                finally
                 {
-                    var temp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_src_{Guid.NewGuid():N}.pdf");
-                    await _pdfDocumentService.SaveAsync(() => doc.Save(temp), CancellationToken.None);
-                    sourcePath = temp;
+                    await RestoreDocumentAsync(_doc!, tempPristine, CancellationToken.None);
                 }
-
-                await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, CancellationToken.None);
             }
 
             try
@@ -2395,7 +2412,7 @@ namespace TDPdf
             finally
             {
                 SetFileOperationBusy(false);
-                ESignRefreshSignedState();   // the save stripped any signature from the live document
+                ESignRefreshSignedState();   // restored from the pre-flatten snapshot: a signed tab stays signed
             }
         }
 
