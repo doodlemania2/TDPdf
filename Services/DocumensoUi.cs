@@ -1,3 +1,5 @@
+using System;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -213,6 +215,36 @@ namespace TDPdf.Services
             Foreground = Brush("TextPrimary"),
             VerticalContentAlignment = VerticalAlignment.Center,
         };
+
+        /// <summary>A compact secondary button for per-row actions in a list.</summary>
+        internal static Button SmallButton(Window? owner, string text, string? accessibleName = null)
+        {
+            var b = MakeButton(owner, text, primary: false);
+            b.Padding = new Thickness(8, 2, 8, 2);
+            b.FontSize = 11;
+            b.Margin = new Thickness(0, 0, 6, 4);
+            if (accessibleName is not null) System.Windows.Automation.AutomationProperties.SetName(b, accessibleName);
+            return b;
+        }
+
+        /// <summary>
+        /// Opens an http(s) address in the default browser. Anything else — file:, a UNC path, a
+        /// script scheme — is refused rather than handed to the shell. False when nothing opened.
+        /// </summary>
+        internal static bool OpenInBrowser(string? url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var u)
+                || (u.Scheme != Uri.UriSchemeHttps && u.Scheme != Uri.UriSchemeHttp)) return false;
+            try
+            {
+                Process.Start(new ProcessStartInfo(u.AbsoluteUri) { UseShellExecute = true });
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         /// <summary>A section heading inside a dialog body.</summary>
         internal static TextBlock Heading(string text, Thickness margin)

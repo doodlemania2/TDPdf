@@ -186,6 +186,7 @@ namespace TDPdf
                 _gridViewToggle.IsEnabled = true;
                 _pageJumpBox.IsEnabled = true;
                 _pageTotalLabel.Text = $"/ {_doc.PageCount}";
+                ESignRefreshSignedState();   // before the sync below, which redraws the footer from it
                 SyncSidebarToDocState(hasDoc: true, startup: false);   // a document is up: open the rail
                 MarkDirty(false);
                 if (!internalReload)
@@ -1837,6 +1838,11 @@ namespace TDPdf
             parts.Add($"PDF {doc.Version / 10}.{doc.Version % 10}");
             try { var d = doc.Info.CreationDate; if (d != default) parts.Add($"created {d:yyyy-MM-dd HH:mm}"); } catch { }
             try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) parts.Add(FormatFileSize(new FileInfo(filePath).Length)); } catch { }
+            // Design §5.5: the same walk the save warning and the scrub use. Present, not valid —
+            // TDPdf does not check signatures.
+            int signed = TDPdf.Services.PdfSignatureScan.SignedFields(doc).Count;
+            if (signed > 0)
+                parts.Add($"Digitally signed: {signed} signature{(signed == 1 ? "" : "s")} (not checked by TDPdf; saving in TDPdf removes {(signed == 1 ? "it" : "them")})");
             return string.Join("\n", parts);
         }
 
@@ -2158,6 +2164,7 @@ namespace TDPdf
             finally
             {
                 SetFileOperationBusy(false);
+                ESignRefreshSignedState();   // the save stripped any signature from the live document
             }
         }
 
@@ -2299,6 +2306,7 @@ namespace TDPdf
             finally
             {
                 SetFileOperationBusy(false);
+                ESignRefreshSignedState();   // the save stripped any signature from the live document
             }
         }
 
@@ -2382,6 +2390,7 @@ namespace TDPdf
             finally
             {
                 SetFileOperationBusy(false);
+                ESignRefreshSignedState();   // the save stripped any signature from the live document
             }
         }
 

@@ -33,7 +33,13 @@ namespace TDPdf.Services
         internal static string DefaultPath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TDPdf", "documenso-requests.json");
 
-        internal sealed record Entry(string EnvelopeId, string Title, DateTime SentUtc, int RecipientCount);
+        /// <param name="SignedSha256">
+        /// SHA-256 (lower-case hex) of the signed copy TDPdf last downloaded for this envelope, so
+        /// Verify Signatures can recognise that exact file again without guessing from its name.
+        /// A fingerprint of the user's own file, not its content; null until a download.
+        /// </param>
+        internal sealed record Entry(string EnvelopeId, string Title, DateTime SentUtc, int RecipientCount,
+            string? SignedSha256 = null);
 
         private sealed class FileShape
         {
@@ -47,6 +53,7 @@ namespace TDPdf.Services
             public string? Title { get; set; }
             public DateTime SentUtc { get; set; }
             public int RecipientCount { get; set; }
+            public string? SignedSha256 { get; set; }
         }
 
         private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
@@ -62,7 +69,7 @@ namespace TDPdf.Services
                 return (f?.Requests ?? new List<EntryShape>())
                     .Where(e => !string.IsNullOrWhiteSpace(e?.EnvelopeId))
                     .Select(e => new Entry(e.EnvelopeId!.Trim(), e.Title ?? "", DateTime.SpecifyKind(e.SentUtc, DateTimeKind.Utc),
-                        Math.Max(0, e.RecipientCount)))
+                        Math.Max(0, e.RecipientCount), IsSha256Hex(e.SignedSha256) ? e.SignedSha256!.ToLowerInvariant() : null))
                     .GroupBy(e => e.EnvelopeId, StringComparer.Ordinal).Select(g => g.First())
                     .OrderByDescending(e => e.SentUtc)
                     .Take(Cap)
@@ -82,16 +89,52 @@ namespace TDPdf.Services
         internal static bool Add(Entry entry, string? path = null)
         {
             path ??= DefaultPath;
+            var list = Load(path).Where(e => e.EnvelopeId != entry.EnvelopeId).ToList();
+            list.Insert(0, entry);
+            return Write(list, path);
+        }
+
+        /// <summary>
+        /// Forgets an envelope — after Signature Requests deleted it on the server. False when
+        /// it was not recorded or the file could not be written; neither is worth reporting.
+        /// </summary>
+        internal static bool Remove(string envelopeId, string? path = null)
+        {
+            path ??= DefaultPath;
+            var list = Load(path);
+            if (list.RemoveAll(e => e.EnvelopeId == envelopeId) == 0) return false;
+            return Write(list, path);
+        }
+
+        /// <summary>
+        /// Remembers the fingerprint of the signed copy just downloaded for a tracked envelope.
+        /// An envelope this device did not send is not added: the store is "this device's sends".
+        /// </summary>
+        internal static bool RecordSignedCopy(string envelopeId, string sha256Hex, string? path = null)
+        {
+            if (!IsSha256Hex(sha256Hex)) return false;
+            path ??= DefaultPath;
+            var list = Load(path);
+            int i = list.FindIndex(e => e.EnvelopeId == envelopeId);
+            if (i < 0) return false;
+            list[i] = list[i] with { SignedSha256 = sha256Hex.ToLowerInvariant() };
+            return Write(list, path);
+        }
+
+        internal static bool IsSha256Hex(string? s)
+            => s is { Length: 64 } && s.All(Uri.IsHexDigit);
+
+        private static bool Write(List<Entry> list, string path)
+        {
             string part = path + ".part";
             try
             {
-                var list = Load(path).Where(e => e.EnvelopeId != entry.EnvelopeId).ToList();
-                list.Insert(0, entry);
                 var shape = new FileShape
                 {
                     Requests = list.OrderByDescending(e => e.SentUtc).Take(Cap).Select(e => new EntryShape
                     {
                         EnvelopeId = e.EnvelopeId, Title = e.Title, SentUtc = e.SentUtc, RecipientCount = e.RecipientCount,
+                        SignedSha256 = e.SignedSha256,
                     }).ToList(),
                 };
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);

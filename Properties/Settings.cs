@@ -318,8 +318,8 @@ namespace TDPdf.Properties
         // --- Electronic Signature (Documenso) ---
         //
         // None of these is a secret: the API token lives in DPAPI (Services/DocumensoCredentialStore),
-        // never here. All four must survive App.EnsureSettingsHealthy resetting user.config without
-        // warning, which their defaults do — a reset only forgets a typed URL and three preferences.
+        // never here. All three must survive App.EnsureSettingsHealthy resetting user.config without
+        // warning, which their defaults do — a reset only forgets a typed URL and two preferences.
 
         // The instance URL the user typed in Settings. "" means "not set here": Services/DocumensoConfig
         // then falls back to the policy URL or the built-in default. Honoured only when no policy URL
@@ -350,16 +350,10 @@ namespace TDPdf.Properties
             set => this[nameof(DocumensoIncludeSelfAsSigner)] = value;
         }
 
-        // The "don't ask again" for warning before a save would strip a digital signature
-        // (design §5.5). The existing guard, MainWindow.ConfirmSaveOverDigitalSignature, has no
-        // opt-out and always asks, so there was nothing to reuse; this is read by nothing yet and
-        // Phase 3 decides whether that guard gains a checkbox at all.
-        [UserScopedSetting]
-        [DefaultSettingValue("True")]
-        public bool DocumensoWarnOnSignedSave
-        {
-            get => (bool)this[nameof(DocumensoWarnOnSignedSave)];
-            set => this[nameof(DocumensoWarnOnSignedSave)] = value;
-        }
+        // There is deliberately no "don't ask again" for the warning before a save strips a digital
+        // signature (MainWindow.ConfirmSaveOverDigitalSignature). Design §5.5 sketched one
+        // (DocumensoWarnOnSignedSave); it was removed unread in 2.0.0 because ticking it would bring
+        // back exactly the silent, irreversible loss commit 76aa9a1a fixed, and the warning only
+        // ever fires on a file that really is signed, so it cannot become noise.
     }
 }

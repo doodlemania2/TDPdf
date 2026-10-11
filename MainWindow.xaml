@@ -1695,6 +1695,18 @@
                     </Button>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <!-- Electronic Signature (design §5.5): shown while the active tab's document carries
+                         a digital signature, so "Ctrl+S removes it" is never a surprise. Neutral colours
+                         on purpose — it says a signature is PRESENT, never that it is valid; TDPdf does
+                         not check signatures. Visibility is per tab, from ESignUpdateSignedBadge. Click
+                         opens Document Info, which lists what the signature states. -->
+                    <Button x:Name="ESignSignedBadge" Content="Digitally signed"
+                             Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
+                             FontFamily="Consolas" FontSize="10" Visibility="Collapsed"
+                             Click="ESignSignedBadge_Click"
+                             ToolTip="This file carries a digital signature. TDPdf has not checked it, and saving in TDPdf removes it. Click for details (F12)."
+                             AutomationProperties.Name="Digitally signed"
+                             AutomationProperties.HelpText="This document carries a digital signature. TDPdf does not check it, and saving the document in TDPdf removes it. Opens Document Info."/>
                     <!-- Current page's dimensions, cycling pixels → inches → millimetres →
                          points on each click (PageSizeReadout_Click). Collapsed while no document
                          is open, since there is no page to have a size. It sits in the footer,

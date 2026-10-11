@@ -512,6 +512,7 @@ namespace TDPdf
         // fixed so the chip holds still under the cursor while the wheel steps the size).
         private Button _appScaleButton = null!;
         private Button _pageSizeButton = null!;   // footer page-size chip (see UpdatePageSizeReadout)
+        private Button? _eSignSignedBadge;       // footer "Digitally signed" indicator (MainWindow.ESignatureRequests.cs)
 
         // Outline / bookmarks sidebar tab (manual refs — XAML codegen doesn't resolve these)
         private TreeView _outlineTree = null!;
@@ -623,6 +624,7 @@ namespace TDPdf
             _sidebarOuterGrid = (Grid)FindName("SidebarOuterGrid")!;
             _appScaleButton = (Button)FindName("AppScaleButton")!;
             _pageSizeButton = (Button)FindName("PageSizeButton")!;
+            _eSignSignedBadge = (Button)FindName("ESignSignedBadge")!;
             RebuildTabStrip();
             ApplyCustomChromeVisibility();
             ThemeManager.ThemeChanged += ThemeManager_ThemeChanged;
@@ -1473,6 +1475,12 @@ namespace TDPdf
             // for the same reason as the marks above: the fields are positions on THIS document's
             // pages. Never baked into the PDF, never in Annotations; null until Send is first opened.
             public TDPdf.Services.ESignSendSession? ESignSession;
+
+            // True when the document in this tab carries a digital signature (a signed /FT /Sig
+            // field — PdfSignatureScan, no cryptography). Set when it opens and recomputed after
+            // every save, because a TDPdf save strips it (ScrubDeadSignatures). Drives the footer's
+            // "Digitally signed" indicator (MainWindow.ESignatureRequests.cs).
+            public bool HasDigitalSignature;
 
             // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
             // by widget object number, checkboxes by widget object number, radios by field
@@ -3834,6 +3842,7 @@ namespace TDPdf
             // The footer page-size chip follows the same rule, and this is the one place both the
             // open and the close paths — and every tab switch — pass through.
             UpdatePageSizeReadout();
+            ESignUpdateSignedBadge();   // so does the "Digitally signed" indicator (per tab)
         }
 
         private void ToolSelect_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Select);

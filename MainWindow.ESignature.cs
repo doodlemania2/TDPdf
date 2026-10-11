@@ -379,14 +379,7 @@ namespace TDPdf
             return Task.CompletedTask;
         }
 
-        // Phase 3 — Signature Requests: DocumensoRequestsWindow (list + get-many refresh,
-        // download, certificate, cancel / delete behind a confirm).
-        private Task ESignRequestsAsync()
-        {
-            if (ESignConnectedClient() is not { } client) return Task.CompletedTask;
-            SetStatus($"Electronic Signature: connected to {DocumensoConfig.HostOf(client.BaseUrl)}.");
-            return Task.CompletedTask;
-        }
+        // Signature Requests (Phase 3): MainWindow.ESignatureRequests.cs.
 
         // Phase 5 — Verify Signatures: informational only (observed, never "valid"), plus the
         // certificate of completion and audit log for envelopes we can match.
