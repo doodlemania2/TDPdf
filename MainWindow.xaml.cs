@@ -492,6 +492,7 @@ namespace TDPdf
         private bool _gridViewEnabled => _viewMode == ViewMode.Grid;
         private ComboBox _zoomBox = null!;
         private StackPanel _portableBadge = null!;
+        private Button _installBtn = null!;
         private TextBox _pageJumpBox = null!;
         private TextBlock _pageTotalLabel = null!;
         private Border _customTitleBar = null!;
@@ -601,6 +602,7 @@ namespace TDPdf
             PreviewMouseDown += NavHistory_PreviewMouseDown;   // mouse back/forward buttons = jump history
             _zoomBox = (ComboBox)FindName("ZoomBox")!;
             _portableBadge = (StackPanel)FindName("PortableBadge")!;
+            _installBtn = (Button)FindName("InstallBtn")!;
             _pageJumpBox = (TextBox)FindName("PageJumpBox")!;
             _pageTotalLabel = (TextBlock)FindName("PageTotalLabel")!;
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
@@ -701,7 +703,10 @@ namespace TDPdf
                     await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 
                 if (App.IsPortable())
+                {
+                    RefreshPortableBadge();
                     _portableBadge.Visibility = Visibility.Visible;
+                }
 
                 FlushPendingExternalOpen();   // #202: a forward that landed before we were wired up
 
@@ -1597,23 +1602,119 @@ namespace TDPdf
             SendMessage(hwnd, WM_NCLBUTTONDOWN, new IntPtr(HTCAPTION), IntPtr.Zero);
         }
 
+        /// <summary>
+        /// Points the portable badge's button at what is actually on this machine: the first-run
+        /// "Install TDPdf..." when nothing is installed, otherwise the installed version and a way
+        /// to manage it. Returns the current offer so a click acts on fresh state, not on launch-time.
+        /// </summary>
+        private (PortableInstallOffer Offer, Version? Installed) RefreshPortableBadge()
+        {
+            var (existing, installed) = App.DetectExistingInstall();
+            var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
+            var offer = PortableInstallPolicy.Decide(existing, installed, running);
+
+            string label = PortableInstallPolicy.BadgeLabel(offer, installed);
+            _installBtn.Content = label;
+            AutomationProperties.SetName(_installBtn, label.TrimEnd('.'));
+            AutomationProperties.SetHelpText(_installBtn, offer switch
+            {
+                PortableInstallOffer.FreshInstall =>
+                    "Install TDPdf to your user profile and relaunch from the installed location.",
+                PortableInstallOffer.Managed =>
+                    "TDPdf is installed for all users and managed by your organisation.",
+                _ => "TDPdf is already installed. Upgrade, reinstall or uninstall it.",
+            });
+            return (offer, installed);
+        }
+
         private void Install_Click(object sender, RoutedEventArgs e)
         {
-            var res = TdpDialog.Show(this,
-                "Install TDPdf to your user profile?\n\n" +
-                "• Start Menu shortcut\n" +
-                "• Added to \"Open with\" for .pdf files\n" +
-                "• Appears in Add/Remove Programs",
-                "Install TDPdf", MessageBoxButton.OKCancel);
-            if (res != MessageBoxResult.OK) return;
+            // Re-read on every click: the install may have changed since launch (an Intune push, an
+            // uninstall from Settings, another copy installing).
+            var (offer, installed) = RefreshPortableBadge();
+            var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
+            string thisVer = PortableInstallPolicy.Display(running);
+            string installedVer = installed is null ? "" : $" v{PortableInstallPolicy.Display(installed)}";
 
-            // Hide the badge immediately so it doesn't flash if relaunch is slow
-            _portableBadge.Visibility = Visibility.Collapsed;
+            switch (offer)
+            {
+                case PortableInstallOffer.FreshInstall:
+                {
+                    var res = TdpDialog.Show(this,
+                        "Install TDPdf to your user profile?\n\n" +
+                        "• Start Menu shortcut\n" +
+                        "• Added to \"Open with\" for .pdf files\n" +
+                        "• Appears in Add/Remove Programs",
+                        "Install TDPdf", MessageBoxButton.OKCancel);
+                    if (res != MessageBoxResult.OK) return;
 
-            // The ORIGINAL path, not _currentFile: after a decrypt-on-open _currentFile points at a
-            // working copy in %TEMP% that this process deletes on exit, so the installed build would
-            // relaunch onto a file that is already gone.
-            App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop: true);
+                    // Hide the badge immediately so it doesn't flash if relaunch is slow
+                    _portableBadge.Visibility = Visibility.Collapsed;
+
+                    // The ORIGINAL path, not _currentFile: after a decrypt-on-open _currentFile points at a
+                    // working copy in %TEMP% that this process deletes on exit, so the installed build would
+                    // relaunch onto a file that is already gone.
+                    App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop: true);
+                    return;
+                }
+
+                case PortableInstallOffer.Managed:
+                    // A machine-wide install is the organisation's: Intune put it there and keeps it
+                    // current. This copy runs as the user, so it could not overwrite or remove it without
+                    // elevation — and must not try to, or it would be fighting the management channel.
+                    TdpDialog.Show(this,
+                        $"TDPdf{installedVer} is installed on this computer for all users and is " +
+                        "managed by your organisation, which keeps it up to date.\n\n" +
+                        $"This portable copy (v{thisVer}) can't replace or remove it. You can keep " +
+                        "using this copy, or open the installed TDPdf from the Start menu.",
+                        "TDPdf", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+            }
+
+            string comparison = offer switch
+            {
+                PortableInstallOffer.Upgrade =>
+                    $"This portable copy is v{thisVer}, which is newer.\n\n" +
+                    "Upgrade replaces the installed copy with this one and relaunches from it.",
+                PortableInstallOffer.Downgrade =>
+                    $"This portable copy is v{thisVer}, which is OLDER.\n\n" +
+                    "\"Replace with older\" downgrades the installed TDPdf to this version and " +
+                    "relaunches from it.",
+                _ when installed is null =>
+                    $"Its version could not be read. This portable copy is v{thisVer}.\n\n" +
+                    "Reinstall repairs the installed copy with this one and relaunches from it.",
+                _ =>
+                    $"This portable copy is the same version (v{thisVer}).\n\n" +
+                    "Reinstall repairs the installed copy — shortcuts and file associations — and " +
+                    "relaunches from it.",
+            };
+
+            var choice = TdpDialog.ShowYesNoCancel(this,
+                $"TDPdf{installedVer} is already installed for your user account. {comparison}\n\n" +
+                "Uninstall removes the installed copy; this portable copy keeps running.",
+                yesLabel: PortableInstallPolicy.ActionLabel(offer)!,
+                noLabel: "Uninstall",
+                title: "TDPdf is installed",
+                image: offer == PortableInstallOffer.Downgrade ? MessageBoxImage.Warning : MessageBoxImage.Question,
+                // An older copy replacing a newer install has to be a deliberate click, never Enter.
+                defaultToCancel: offer == PortableInstallOffer.Downgrade);
+
+            if (choice == MessageBoxResult.Yes)
+            {
+                _portableBadge.Visibility = Visibility.Collapsed;
+                // ORIGINAL path for the same reason as the fresh install above.
+                if (!App.ReinstallAndRelaunch(_ctx.OriginalPath ?? _currentFile))
+                {
+                    // The install failed (already reported) or was refused. Show the real state.
+                    RefreshPortableBadge();
+                    _portableBadge.Visibility = Visibility.Visible;
+                }
+            }
+            else if (choice == MessageBoxResult.No)
+            {
+                App.UninstallFromPortable(this);
+                RefreshPortableBadge();
+            }
         }
 
         private void MinimizeBtn_Click(object sender, RoutedEventArgs e) =>

@@ -432,6 +432,31 @@ namespace TDPdf
                 yesLabel,
                 noLabel).result;
 
+        // Three caller-labelled buttons (e.g. "Upgrade" / "Uninstall" / "Cancel"), mapped to
+        // Yes / No / Cancel. With defaultToCancel the Yes button loses its accent and its Enter
+        // binding to Cancel — for a choice that should take a deliberate click, never a reflex Enter.
+        // The window is widened for these: three free-text labels do not fit the 380px shell.
+        public static MessageBoxResult ShowYesNoCancel(
+            Window? owner,
+            string message,
+            string yesLabel,
+            string noLabel,
+            string cancelLabel = "Cancel",
+            string title = "TDPdf",
+            MessageBoxImage image = MessageBoxImage.None,
+            bool defaultToCancel = false)
+            => ShowCore(
+                owner,
+                message,
+                title,
+                MessageBoxButton.YesNoCancel,
+                image,
+                null,
+                yesLabel,
+                noLabel,
+                cancelLabel,
+                defaultToCancel).result;
+
         // Same themed dialog as Show, plus a single opt-out checkbox below the message (e.g. "Don't ask
         // again"). Returns the button result together with whether the checkbox was ticked.
         public static (MessageBoxResult result, bool ticked) ShowWithCheckbox(
@@ -451,7 +476,9 @@ namespace TDPdf
             MessageBoxImage image,
             string? checkboxLabel,
             string? yesLabel,
-            string? noLabel)
+            string? noLabel,
+            string? cancelLabel = null,
+            bool defaultToCancel = false)
         {
             var result = MessageBoxResult.OK;
             bool ticked = false;
@@ -466,6 +493,7 @@ namespace TDPdf
             var warning = Brush("WarningOrange");
 
             var (win, root) = CreateShell(owner, title);
+            if (cancelLabel != null) win.Width = 460;
 
             // Message body: icon column + wrapped message text.
             var msgGrid = new Grid { Margin = new Thickness(20, 16, 20, 8) };
@@ -564,11 +592,17 @@ namespace TDPdf
                     btnPanel.Children.Add(MakeBtn(noLabel ?? "No", MessageBoxResult.No, isCancel: true));
                     break;
                 case MessageBoxButton.YesNoCancel:
-                    defaultBtn = MakeBtn("Yes", MessageBoxResult.Yes, accent: true, isDefault: true);
-                    btnPanel.Children.Add(defaultBtn);
-                    btnPanel.Children.Add(MakeBtn("No", MessageBoxResult.No));
-                    btnPanel.Children.Add(MakeBtn("Cancel", MessageBoxResult.Cancel, isCancel: true));
+                {
+                    var yesBtn = MakeBtn(yesLabel ?? "Yes", MessageBoxResult.Yes,
+                        accent: !defaultToCancel, isDefault: !defaultToCancel);
+                    var cancelBtn = MakeBtn(cancelLabel ?? "Cancel", MessageBoxResult.Cancel,
+                        isDefault: defaultToCancel, isCancel: true);
+                    defaultBtn = defaultToCancel ? cancelBtn : yesBtn;
+                    btnPanel.Children.Add(yesBtn);
+                    btnPanel.Children.Add(MakeBtn(noLabel ?? "No", MessageBoxResult.No));
+                    btnPanel.Children.Add(cancelBtn);
                     break;
+                }
             }
 
             root.Children.Add(new Border

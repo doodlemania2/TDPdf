@@ -43,15 +43,18 @@ missing or broken.
 
 ## Running it
 
-Double-click the executable. Running it from outside its install location offers you a
-choice:
+Double-click the executable. Run from anywhere other than its install location, it simply
+**runs portable** — from where it is, installing nothing. Fine from a USB stick.
 
-- **Run Portable** — it runs from where it is, writes nothing outside its own folder,
-  and installs nothing. Fine from a USB stick.
-- **Install** — it copies itself to `%LOCALAPPDATA%\Programs\TDPdf\`, adds a Start Menu
-  entry, registers as a handler for `.pdf`, and creates one Add/Remove Programs entry.
-  **No administrator rights, and no UAC prompt** — nothing outside your own profile is
-  written.
+When you want it installed, click **Install TDPdf…** in the status bar. It copies itself to
+`%LOCALAPPDATA%\Programs\TDPdf\`, adds a Start Menu entry, registers as a handler for
+`.pdf`, and creates one Add/Remove Programs entry. **No administrator rights, and no UAC
+prompt** — nothing outside your own profile is written.
+
+If TDPdf is already installed, the same button shows the installed version and offers to
+**upgrade** (or reinstall) it from the copy you are running, or to **uninstall** it. On a
+machine where your organisation installed TDPdf for everyone, it says so and leaves that
+install alone.
 
 To open a file straight away: `TDPdf.exe "C:\path\to\file.pdf"`.
 

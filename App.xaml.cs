@@ -76,7 +76,7 @@ namespace TDPdf
             s == InstallScope.PerMachine ? Registry.LocalMachine : Registry.CurrentUser;
 
         // Discover an existing install by checking registry markers. Used by
-        // Uninstall and IsInstalled so they don't depend on the current
+        // Uninstall and the portable badge so they don't depend on the current
         // process's user context (PerMachine uninstall fires under UAC as the
         // user, not SYSTEM — `IsSystemContextSafe()` would lie there).
         /// <summary>
@@ -510,6 +510,16 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// Gives up the single-instance mutex early, so a process this one is about to start can
+        /// take it. Only for a hand-over immediately before shutdown; see InstallAndRelaunchCore.
+        /// </summary>
+        private void ReleaseSingleInstance()
+        {
+            try { _singleInstanceMutex?.Dispose(); } catch { }
+            _singleInstanceMutex = null;
+        }
+
         private void StartSingleInstanceServer()
         {
             var thread = new Thread(SingleInstanceServerLoop)
@@ -689,25 +699,82 @@ namespace TDPdf
         }
 
         /// <summary>
-        /// Installs TDPdf, offers to set as default PDF handler, then relaunches
-        /// from the installed location. Returns false if installation failed or was
-        /// already installed from this path.
+        /// What a portable copy finds already installed: which scope (from the registry markers, the
+        /// same ones Uninstall trusts) and the installed exe's FileVersion — <c>null</c> when the exe
+        /// is missing or unreadable, which the badge treats as a repair.
         /// </summary>
-        internal static void InstallAndRelaunch(string? fileToOpen, bool wantDesktop)
+        internal static (ExistingInstall Existing, Version? Version) DetectExistingInstall()
+        {
+            InstallScope? scope;
+            try { scope = DetectInstalledScope(); }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError("Existing-install detection failed (treated as not installed)", ex);
+                return (ExistingInstall.None, null);
+            }
+            if (scope is null) return (ExistingInstall.None, null);
+
+            var existing = scope == InstallScope.PerMachine ? ExistingInstall.PerMachine : ExistingInstall.PerUser;
+            Version? version = null;
+            try
+            {
+                string exe = InstallExeFor(scope.Value);
+                if (File.Exists(exe))
+                {
+                    var fvi = FileVersionInfo.GetVersionInfo(exe);
+                    version = new Version(fvi.FileMajorPart, fvi.FileMinorPart, fvi.FileBuildPart, fvi.FilePrivatePart);
+                }
+            }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError("Installed FileVersion lookup failed (non-fatal)", ex);
+            }
+            return (existing, version);
+        }
+
+        /// <summary>
+        /// Installs TDPdf, offers to set as default PDF handler, then relaunches
+        /// from the installed location. On failure, says so and leaves this copy running.
+        /// </summary>
+        internal static void InstallAndRelaunch(string? fileToOpen, bool wantDesktop) =>
+            _ = InstallAndRelaunchCore(fileToOpen, wantDesktop, NewInstallScope, offerDefaultHandler: true);
+
+        /// <summary>
+        /// Upgrade / reinstall / downgrade from a portable copy: replaces the EXISTING per-user
+        /// install in place and relaunches from it. The target is the detected scope, never
+        /// <see cref="NewInstallScope"/> — and never a machine-wide install, which belongs to the
+        /// organisation (Intune) and which a user-context process could not write to anyway.
+        /// Returns false when nothing was relaunched (refused, or the install failed and said so).
+        /// </summary>
+        internal static bool ReinstallAndRelaunch(string? fileToOpen)
+        {
+            if (DetectInstalledScope() != InstallScope.PerUser)
+            {
+                InstallLog.Write("Reinstall refused: no per-user install to replace");
+                return false;
+            }
+            // Keep the user's shortcut choice: a desktop shortcut they deleted is not recreated.
+            return InstallAndRelaunchCore(fileToOpen, wantDesktop: File.Exists(DesktopLnk),
+                InstallScope.PerUser, offerDefaultHandler: false);
+        }
+
+        private static bool InstallAndRelaunchCore(
+            string? fileToOpen, bool wantDesktop, InstallScope scope, bool offerDefaultHandler)
         {
             try
             {
-                DoInstall(wantDesktop);
+                InstallLog.WriteHeader("INSTALL (interactive)", Array.Empty<string>());
+                DoInstall(wantDesktop, scope);
             }
             catch (Exception ex)
             {
                 InstallLog.WriteError("Interactive install failed", ex);
-                MessageBox.Show($"Installation failed:\n{ex.Message}", AppName,
+                TdpDialog.Show(Current?.MainWindow, $"Installation failed:\n{ex.Message}", AppName,
                     MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                return false;
             }
 
-            if (!IsDefaultPdfHandler())
+            if (offerDefaultHandler && !IsDefaultPdfHandler())
             {
                 var res = TdpDialog.Show(null,
                     "Would you like to set TDPdf as your default PDF viewer?\n\n" +
@@ -718,18 +785,24 @@ namespace TDPdf
                         { UseShellExecute = true });
             }
 
-            var psi = new ProcessStartInfo(InstallExeFor(NewInstallScope));
+            // Hand the single-instance role over BEFORE starting the installed copy. This process
+            // still holds the mutex until OnExit, so the new one would see it taken, forward its
+            // file down the pipe to THIS window - which is on its way out - and exit itself,
+            // leaving the user with no window at all. Released here, the new copy owns the mutex
+            // and starts its own pipe server (retrying until this one's listener is gone).
+            (Current as App)?.ReleaseSingleInstance();
+
+            var psi = new ProcessStartInfo(InstallExeFor(scope));
             if (fileToOpen != null)
                 psi.Arguments = $"\"{fileToOpen}\"";
             Process.Start(psi);
             Application.Current.Shutdown();
+            return true;
         }
 
         // ============================================================
         // Registry helpers
         // ============================================================
-
-        private static bool IsInstalled() => DetectInstalledScope() is not null;
 
         private static bool IsDefaultPdfHandler()
         {
@@ -737,230 +810,6 @@ namespace TDPdf
                 @"Software\Microsoft\Windows\Shell\Associations\FileAssociations\.pdf\UserChoice");
             return key?.GetValue("ProgId") is string progId &&
                    progId.Equals("TDPdf.pdf", StringComparison.OrdinalIgnoreCase);
-        }
-
-        // ============================================================
-        // Launcher dialog
-        // ============================================================
-
-        /// <summary>
-        /// Builds a button Style with a custom ControlTemplate so hover colours
-        /// actually render (WPF's default template ignores Background changes on hover).
-        /// </summary>
-        private static Style MakeLauncherButtonStyle(
-            SolidColorBrush normal, SolidColorBrush hover, SolidColorBrush fg)
-        {
-            var template = new ControlTemplate(typeof(Button));
-            var border   = new FrameworkElementFactory(typeof(Border));
-            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
-            border.SetBinding(Border.BackgroundProperty,
-                new System.Windows.Data.Binding("Background")
-                {
-                    RelativeSource = new System.Windows.Data.RelativeSource(
-                        System.Windows.Data.RelativeSourceMode.TemplatedParent)
-                });
-            var cp = new FrameworkElementFactory(typeof(ContentPresenter));
-            cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-            cp.SetValue(ContentPresenter.VerticalAlignmentProperty,   VerticalAlignment.Center);
-            cp.SetValue(ContentPresenter.MarginProperty,              new Thickness(0, 6, 0, 6));
-            border.AppendChild(cp);
-            template.VisualTree = border;
-
-            var style = new Style(typeof(Button));
-            style.Setters.Add(new Setter(Button.BackgroundProperty,  normal));
-            style.Setters.Add(new Setter(Button.ForegroundProperty,  fg));
-            style.Setters.Add(new Setter(Button.BorderThicknessProperty, new Thickness(0)));
-            style.Setters.Add(new Setter(Button.TemplateProperty,    template));
-            style.Setters.Add(new Setter(Button.CursorProperty,      Cursors.Hand));
-
-            var hoverTrigger = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-            hoverTrigger.Setters.Add(new Setter(Button.BackgroundProperty, hover));
-            style.Triggers.Add(hoverTrigger);
-
-            return style;
-        }
-
-        /// <summary>
-        /// Shows the Install / Run dialog.
-        /// Returns (cancelled, install, wantDesktopShortcut).
-        /// </summary>
-        private static (bool cancelled, bool install, bool desktop) ShowLauncher(bool alreadyInstalled)
-        {
-            bool cancelled = true;
-            bool install   = false;
-            bool desktop   = true;
-
-            var bg       = new SolidColorBrush(Color.FromRgb(0x1a, 0x1a, 0x1a));
-            var dimBg    = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
-            var accent   = new SolidColorBrush(Color.FromRgb(0x4a, 0xde, 0x80));
-            var dimText  = new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77));
-
-            var win = new Window
-            {
-                Title                 = AppName,
-                Width                 = 400,
-                Height                = 280,
-                WindowStartupLocation = WindowStartupLocation.CenterScreen,
-                ResizeMode            = ResizeMode.NoResize,
-                WindowStyle           = WindowStyle.None,
-                Background            = bg
-            };
-
-            // ── Root grid: title bar row + content row ──────────────────
-            var root = new Grid();
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-            // ── Title bar ───────────────────────────────────────────────
-            var titleBar = new DockPanel { Background = dimBg };
-            Grid.SetRow(titleBar, 0);
-
-            // Drag anywhere on the title bar
-            titleBar.MouseLeftButtonDown += (_, e) =>
-            {
-                if (e.ButtonState == MouseButtonState.Pressed) win.DragMove();
-            };
-
-            // Close button — custom template so Background trigger actually renders
-            var closeBtnTemplate = new ControlTemplate(typeof(Button));
-            var closeBorder = new FrameworkElementFactory(typeof(Border));
-            closeBorder.SetBinding(Border.BackgroundProperty,
-                new System.Windows.Data.Binding("Background")
-                {
-                    RelativeSource = new System.Windows.Data.RelativeSource(
-                        System.Windows.Data.RelativeSourceMode.TemplatedParent)
-                });
-            var closeContent = new FrameworkElementFactory(typeof(ContentPresenter));
-            closeContent.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-            closeContent.SetValue(ContentPresenter.VerticalAlignmentProperty,   VerticalAlignment.Center);
-            closeBorder.AppendChild(closeContent);
-            closeBtnTemplate.VisualTree = closeBorder;
-
-            var redHover = new SolidColorBrush(Color.FromRgb(0xc4, 0x2b, 0x1c));
-            var closeBtnStyle = new Style(typeof(Button));
-            closeBtnStyle.Setters.Add(new Setter(Button.BackgroundProperty,      Brushes.Transparent));
-            closeBtnStyle.Setters.Add(new Setter(Button.ForegroundProperty,      dimText));
-            closeBtnStyle.Setters.Add(new Setter(Button.TemplateProperty,        closeBtnTemplate));
-            var hoverTrigger = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-            hoverTrigger.Setters.Add(new Setter(Button.BackgroundProperty, redHover));
-            hoverTrigger.Setters.Add(new Setter(Button.ForegroundProperty, Brushes.White));
-            closeBtnStyle.Triggers.Add(hoverTrigger);
-
-            var closeBtn = new Button
-            {
-                Content                  = "\uE711",
-                FontFamily               = new FontFamily("Segoe MDL2 Assets"),
-                FontSize                 = 11,
-                Width                    = 46,
-                BorderThickness          = new Thickness(0),
-                VerticalAlignment        = VerticalAlignment.Stretch,
-                VerticalContentAlignment = VerticalAlignment.Center,
-                Cursor                   = Cursors.Arrow,
-                Style                    = closeBtnStyle
-            };
-            closeBtn.Click += (_, _) => win.Close();
-            DockPanel.SetDock(closeBtn, Dock.Right);
-            titleBar.Children.Add(closeBtn);
-
-            // App label in title bar
-            titleBar.Children.Add(new TextBlock
-            {
-                Text              = AppName,
-                Foreground        = dimText,
-                FontSize          = 12,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin            = new Thickness(12, 0, 0, 0)
-            });
-
-            root.Children.Add(titleBar);
-
-            // ── Content ─────────────────────────────────────────────────
-            var content = new StackPanel { Margin = new Thickness(36, 22, 36, 28) };
-            Grid.SetRow(content, 1);
-
-            content.Children.Add(new TextBlock
-            {
-                Text       = AppName,
-                FontSize   = 26,
-                FontWeight = FontWeights.Bold,
-                Foreground = accent
-            });
-
-            var version = Assembly.GetExecutingAssembly().GetName().Version;
-            content.Children.Add(new TextBlock
-            {
-                Text       = $"Version {version?.ToString(3)}",
-                Foreground = dimText,
-                FontSize   = 12,
-                Margin     = new Thickness(0, 2, 0, 18)
-            });
-
-            content.Children.Add(new TextBlock
-            {
-                Text         = alreadyInstalled
-                    ? "A newer version is available. Install it or run without updating."
-                    : "Install TDPdf on this computer, or run it without installing.",
-                Foreground   = Brushes.White,
-                TextWrapping = TextWrapping.Wrap,
-                Margin       = new Thickness(0, 0, 0, 16)
-            });
-
-            var desktopChk = new CheckBox
-            {
-                IsChecked = true,
-                Margin    = new Thickness(0, 0, 0, 22),
-                Content   = new TextBlock { Text = "Create desktop shortcut", Foreground = Brushes.White }
-            };
-            content.Children.Add(desktopChk);
-
-            var btnRow = new StackPanel
-            {
-                Orientation         = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
-
-            var runBtn = new Button
-            {
-                Content = "Run",
-                Width   = 88,
-                Margin  = new Thickness(0, 0, 8, 0),
-                Style   = MakeLauncherButtonStyle(
-                    normal: new SolidColorBrush(Color.FromRgb(0x30, 0x30, 0x30)),
-                    hover:  new SolidColorBrush(Color.FromRgb(0x16, 0x63, 0x34)),
-                    fg:     Brushes.White)
-            };
-            var installBtn = new Button
-            {
-                Content    = alreadyInstalled ? "Update" : "Install",
-                Width      = 110,
-                Style      = MakeLauncherButtonStyle(
-                    normal: accent,
-                    hover:  new SolidColorBrush(Color.FromRgb(0x4a, 0xf0, 0x90)),
-                    fg:     new SolidColorBrush(Color.FromRgb(0x0a, 0x0a, 0x0a))),
-                FontWeight = FontWeights.SemiBold
-            };
-
-            runBtn.Click += (_, _) =>
-            {
-                cancelled = false; install = false;
-                win.Close();
-            };
-            installBtn.Click += (_, _) =>
-            {
-                cancelled = false; install = true;
-                desktop = desktopChk.IsChecked == true;
-                win.Close();
-            };
-
-            btnRow.Children.Add(runBtn);
-            btnRow.Children.Add(installBtn);
-            content.Children.Add(btnRow);
-
-            root.Children.Add(content);
-            win.Content = root;
-            win.ShowDialog();
-
-            return (cancelled, install, desktop);
         }
 
         // ============================================================
@@ -1083,12 +932,14 @@ namespace TDPdf
         /// distinction is real for <see cref="Uninstall"/>, which genuinely does branch on it,
         /// so the asymmetry is worth stating rather than papering over with a dead parameter.
         ///
-        /// Anything interactive belongs to the CALLER — the first-run Install / Run Portable
-        /// prompt lives in the startup path, not here.
+        /// Anything interactive belongs to the CALLER — the portable badge's Install / Upgrade /
+        /// Reinstall prompts live in MainWindow.Install_Click, not here.
         /// </remarks>
-        private static void DoInstall(bool wantDesktop)
+        private static void DoInstall(bool wantDesktop, InstallScope? into = null)
         {
-            var scope = NewInstallScope;
+            // `into` is set only by a portable copy replacing an install it found (see
+            // ReinstallAndRelaunch); every other path installs where a NEW install belongs.
+            var scope = into ?? NewInstallScope;
             string installDir   = InstallDirFor(scope);
             string installExe   = InstallExeFor(scope);
             string startMenuDir = StartMenuDirFor(scope);
@@ -1298,11 +1149,25 @@ namespace TDPdf
         // Uninstall
         // ============================================================
 
-        private static void Uninstall(bool silent = false)
+        /// <summary>
+        /// Removes the detected install. Returns false only when the user declined the prompt.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="owner"/> is set when a running (portable) TDPdf calls this from its UI: the
+        /// prompts are then the themed dialogs, parented to that window. The <c>/uninstall</c> path
+        /// keeps the stock MessageBox — it runs before any theme is loaded, and a themed dialog's
+        /// window closing there would count as the app's last window closing.
+        /// </remarks>
+        private static bool Uninstall(bool silent = false, Window? owner = null)
         {
+            MessageBoxResult Prompt(string message, string title, MessageBoxButton buttons, MessageBoxImage image) =>
+                owner != null
+                    ? TdpDialog.Show(owner, message, title, buttons, image)
+                    : MessageBox.Show(message, title, buttons, image);
+
             if (!silent)
             {
-                var res = MessageBox.Show(
+                var res = Prompt(
                     "Uninstall TDPdf from this computer?",
                     $"{AppName} Uninstall",
                     MessageBoxButton.YesNo,
@@ -1310,7 +1175,7 @@ namespace TDPdf
                 if (res != MessageBoxResult.Yes)
                 {
                     InstallLog.Write("User cancelled uninstall");
-                    return;
+                    return false;
                 }
             }
 
@@ -1387,7 +1252,7 @@ namespace TDPdf
             // the exe open.
             if (!silent)
             {
-                MessageBox.Show("TDPdf has been uninstalled.", AppName,
+                Prompt("TDPdf has been uninstalled.", AppName,
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
@@ -1397,6 +1262,39 @@ namespace TDPdf
                 UseShellExecute = true
             });
             InstallLog.Write($"Scheduled deferred delete via {bat}");
+            return true;
+        }
+
+        /// <summary>
+        /// Uninstall offered from a portable copy's badge: the same routine and confirmation as
+        /// <c>/uninstall</c>, run in this process, which keeps running afterwards (it is not inside
+        /// the folder being removed). Only a per-user install — a machine-wide one is managed by the
+        /// organisation. Returns true when TDPdf was uninstalled.
+        /// </summary>
+        internal static bool UninstallFromPortable(Window owner)
+        {
+            if (DetectInstalledScope() != InstallScope.PerUser)
+            {
+                InstallLog.Write("Portable uninstall refused: no per-user install");
+                return false;
+            }
+            InstallLog.WriteHeader("UNINSTALL (from portable)", Array.Empty<string>());
+            Telemetry.TrackEvent("Uninstall.Start", InstallProps(silent: false));
+            try
+            {
+                bool done = Uninstall(silent: false, owner: owner);
+                InstallLog.Write(done ? "UNINSTALL OK" : "UNINSTALL CANCELLED");
+                if (done) Telemetry.TrackEvent("Uninstall.Success", InstallProps(silent: false));
+                return done;
+            }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError("UNINSTALL FAILED", ex);
+                Telemetry.TrackCrash(ex, "Uninstall", recoverable: true);
+                TdpDialog.Show(owner, $"Uninstall failed:\n{ex.Message}", AppName,
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
         }
     }
 }
