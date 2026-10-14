@@ -3133,13 +3133,7 @@ namespace TDPdf
             int elemObjNum = GetObjectNumber(pageRefItem);
             if (elemObjNum > 0)
             {
-                for (int i = 0; i < _doc.PageCount; i++)
-                {
-                    // PdfPage.Reference (public) gives us access to ObjectNumber
-                    var pgRef = _doc.Pages[i].Reference;
-                    if (pgRef != null && pgRef.ObjectNumber == elemObjNum)
-                        return i;
-                }
+                return PageIndexByObjectNumber(_doc).TryGetValue(elemObjNum, out int idx) ? idx : null;
             }
             else if (pageRefItem is PdfInteger pageInt)
             {
@@ -3148,6 +3142,59 @@ namespace TDPdf
             }
 
             return null;
+        }
+
+        // Page object number -> page index for _linkPageMapDoc; see PageIndexByObjectNumber.
+        // The document is held weakly: a closed tab or a replaced _doc must not be kept alive by
+        // a cache that is only ever consulted for the current one.
+        private Dictionary<int, int>? _linkPageMap;
+        private WeakReference<PdfDocument>? _linkPageMapDoc;
+        private int _linkPageMapCount;
+
+        /// <summary>
+        /// The page index each page object number lives at in <paramref name="doc"/>, built once and
+        /// reused for every link on every page. Upstream KillerPDF #438.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="ResolveDest"/> used to walk every page of the document comparing object
+        /// numbers, once per link — so drawing the links of one page cost links × pages, and a
+        /// table-of-contents page in a long document paid it on every render.
+        ///
+        /// The map is keyed on the document INSTANCE and its page count, which is what makes it
+        /// safe without a hook at every edit: a tab switch, an undo restore and every structural
+        /// edit (insert, delete, reorder, duplicate, rotate, crop, transform, merge) end by
+        /// assigning a freshly reopened <see cref="PdfDocument"/> to <c>_doc</c>, so the key no
+        /// longer matches and the map is rebuilt on next use. <see cref="InvalidateLinkPageMap"/>
+        /// is also called from SaveTempAndReload so the invalidation is explicit, not incidental.
+        /// First index wins on a duplicate object number, which is what the old forward scan
+        /// returned.
+        /// </remarks>
+        private Dictionary<int, int> PageIndexByObjectNumber(PdfDocument doc)
+        {
+            if (_linkPageMap is not null && _linkPageMapDoc is not null
+                && _linkPageMapDoc.TryGetTarget(out var cached) && ReferenceEquals(cached, doc)
+                && _linkPageMapCount == doc.PageCount)
+                return _linkPageMap;
+
+            var map = new Dictionary<int, int>(doc.PageCount);
+            for (int i = 0; i < doc.PageCount; i++)
+            {
+                // PdfPage.Reference (public) gives us access to ObjectNumber
+                var pgRef = doc.Pages[i].Reference;
+                if (pgRef != null) map.TryAdd(pgRef.ObjectNumber, i);
+            }
+            _linkPageMap = map;
+            _linkPageMapDoc = new WeakReference<PdfDocument>(doc);
+            _linkPageMapCount = doc.PageCount;
+            return map;
+        }
+
+        /// <summary>Drops the link-target page map; the next <see cref="ResolveDest"/> rebuilds it.</summary>
+        private void InvalidateLinkPageMap()
+        {
+            _linkPageMap = null;
+            _linkPageMapDoc = null;
+            _linkPageMapCount = 0;
         }
 
         /// <summary>
@@ -9848,6 +9895,9 @@ namespace TDPdf
             // cache key already changes — the working path is repointed at a fresh temp file just
             // below — but this keeps the invalidation explicit rather than incidental.)
             InvalidateTextRunCache();
+            // Same reasoning for the link-target page map (#438): keyed on the document instance,
+            // which the reload below replaces, but dropped here explicitly all the same.
+            InvalidateLinkPageMap();
             // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
             // this tab's captured scroll offset now measures against a layout that no longer
             // exists. Drop the resume point and let the next activation place the view the way it
