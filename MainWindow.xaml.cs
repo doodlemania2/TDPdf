@@ -5231,8 +5231,10 @@ namespace TDPdf
 
         // A trailing "custom color" swatch for an annotation settings bar: a rainbow "+" tile that opens
         // the picker (seeded with <paramref name="current"/>) and hands the pick to <paramref name="apply"/>
-        // exactly as clicking a fixed swatch would set the row's active color.
-        private Border MakeCustomColorSwatch(Color current, Action<Color> apply)
+        // exactly as clicking a fixed swatch would set the row's active color. The seed is read at
+        // click time, not build time: the bars restyle in place rather than rebuilding (upstream
+        // KillerPDF v1.8.80), so a color captured when the bar was built goes stale on the first pick.
+        private Border MakeCustomColorSwatch(Func<Color> current, Action<Color> apply)
         {
             var rainbow = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
             Color[] stops =
@@ -5270,10 +5272,39 @@ namespace TDPdf
             };
             swatch.MouseLeftButtonDown += (_, _) =>
             {
-                if (TryPickCustomColor(current, out var pickedColor))
+                if (TryPickCustomColor(current(), out var pickedColor))
                     apply(pickedColor);
             };
             return swatch;
+        }
+
+        // One fixed color tile for an annotation settings bar's swatch row. Its ring is drawn by
+        // MarkActiveSwatch, which the bar calls again after every pick instead of rebuilding itself.
+        private Border MakeColorSwatch(Color c, Action<Color> apply)
+        {
+            var swatch = new Border
+            {
+                Width = 18, Height = 18,
+                Background = FrozenSolidColorBrush(c),
+                CornerRadius = new CornerRadius(3),
+                Margin = new Thickness(1),
+                Cursor = Cursors.Hand,
+                Tag = c
+            };
+            swatch.MouseLeftButtonDown += (_, _) => apply(c);
+            return swatch;
+        }
+
+        // Rings the swatch in <paramref name="row"/> whose RGB matches <paramref name="active"/> (alpha
+        // is the opacity slider's business, not the swatch's) and un-rings the rest, in place.
+        private void MarkActiveSwatch(IEnumerable<Border> row, Color active)
+        {
+            foreach (var swatch in row)
+            {
+                bool on = swatch.Tag is Color c && c.R == active.R && c.G == active.G && c.B == active.B;
+                swatch.BorderBrush = on ? BrushResource("AccentGreen") : BrushResource("BorderDim");
+                swatch.BorderThickness = new Thickness(on ? 2 : 1);
+            }
         }
 
         private void ShowDrawSettings(EditTool tool)
@@ -5289,13 +5320,22 @@ namespace TDPdf
             var inkTarget = _styleTarget as InkAnnotation;
             var hlTarget = _styleTarget as HighlightAnnotation;
 
+            // The swatch row is re-ringed in place after a pick rather than the whole bar being
+            // rebuilt — a rebuild flashed the bar and dropped whatever control had the mouse.
+            var colorSwatches = new List<Border>();
+            Color ActiveColor() =>
+                inkTarget is not null ? Color.FromRgb(inkTarget.ColorR, inkTarget.ColorG, inkTarget.ColorB) :
+                hlTarget is not null ? Color.FromRgb(hlTarget.ColorR, hlTarget.ColorG, hlTarget.ColorB) :
+                tool == EditTool.Draw ? _drawColor
+                : Color.FromRgb(MarkupToolColor(tool).R, MarkupToolColor(tool).G, MarkupToolColor(tool).B);
+
             void ApplyColor(Color c)
             {
-                if (inkTarget is not null) { inkTarget.SetColor(Color.FromArgb(inkTarget.ColorA, c.R, c.G, c.B)); RestyleReselect(inkTarget); return; }
-                if (hlTarget is not null) { hlTarget.SetColor(Color.FromArgb(hlTarget.ColorA, c.R, c.G, c.B)); RestyleReselect(hlTarget); return; }
-                if (tool == EditTool.Draw) _drawColor = Color.FromArgb(_drawOpacity, c.R, c.G, c.B);
+                if (inkTarget is not null) { inkTarget.SetColor(Color.FromArgb(inkTarget.ColorA, c.R, c.G, c.B)); RestyleLive(inkTarget); }
+                else if (hlTarget is not null) { hlTarget.SetColor(Color.FromArgb(hlTarget.ColorA, c.R, c.G, c.B)); RestyleLive(hlTarget); }
+                else if (tool == EditTool.Draw) _drawColor = Color.FromArgb(_drawOpacity, c.R, c.G, c.B);
                 else SetMarkupToolColor(tool, Color.FromArgb(MarkupToolColor(tool).A, c.R, c.G, c.B));
-                ShowDrawSettings(tool);
+                MarkActiveSwatch(colorSwatches, ActiveColor());
             }
             void ApplyOpacity(byte a)
             {
@@ -5326,32 +5366,16 @@ namespace TDPdf
             });
 
             // Color swatches
-            Color activeColor =
-                inkTarget is not null ? Color.FromRgb(inkTarget.ColorR, inkTarget.ColorG, inkTarget.ColorB) :
-                hlTarget is not null ? Color.FromRgb(hlTarget.ColorR, hlTarget.ColorG, hlTarget.ColorB) :
-                tool == EditTool.Draw ? _drawColor
-                : Color.FromRgb(MarkupToolColor(tool).R, MarkupToolColor(tool).G, MarkupToolColor(tool).B);
             foreach (var color in SwatchColors)
             {
-                var swatch = new Border
-                {
-                    Width = 18, Height = 18,
-                    Background = FrozenSolidColorBrush(color),
-                    BorderBrush = color == activeColor
-                        ? (SolidColorBrush)FindResource("AccentGreen")
-                        : BrushResource("BorderDim"),
-                    BorderThickness = new Thickness(color == activeColor ? 2 : 1),
-                    CornerRadius = new CornerRadius(3),
-                    Margin = new Thickness(1),
-                    Cursor = Cursors.Hand,
-                    Tag = color
-                };
-                swatch.MouseLeftButtonDown += (s, e) => ApplyColor((Color)((Border)s!).Tag);
+                var swatch = MakeColorSwatch(color, ApplyColor);
+                colorSwatches.Add(swatch);
                 panel.Children.Add(swatch);
             }
+            MarkActiveSwatch(colorSwatches, ActiveColor());
 
             // Custom color: opens the full RGB picker, applied like a fixed swatch (opacity preserved).
-            panel.Children.Add(MakeCustomColorSwatch(activeColor, ApplyColor));
+            panel.Children.Add(MakeCustomColorSwatch(ActiveColor, ApplyColor));
 
             // Separator
             panel.Children.Add(new Rectangle
@@ -5605,26 +5629,34 @@ namespace TDPdf
                 else if (editTarget is not null) { editTarget.FontSize = v; RestyleLive(editTarget); }
                 else UpdateActiveTextBoxStyle();
             }
+            // Upstream KillerPDF v1.8.80: toggles, swatches and the fill checkbox restyle in place —
+            // RestyleLive plus a repaint of the one control that changed — instead of rebuilding
+            // the bar. A rebuild flashed it and, mid-typing, yanked the live box's bar out from
+            // under the pointer. The swatch rows are filled in further down.
+            var colorSwatches = new List<Border>();
+            var fillSwatches = new List<Border>();
+            StackPanel? fillSwatchRow = null;
             void ApplyColor(Color c)
             {
                 _textColor = c;
-                if (target is not null) { target.SetColor(c); RestyleReselect(target); }
-                else if (editTarget is not null) { editTarget.SetColor(c); RestyleReselect(editTarget); }
-                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
+                if (target is not null) { target.SetColor(c); RestyleLive(target); }
+                else if (editTarget is not null) { editTarget.SetColor(c); RestyleLive(editTarget); }
+                else UpdateActiveTextBoxStyle();
+                MarkActiveSwatch(colorSwatches, c);
             }
             void ApplyBold(bool on)
             {
                 _textBold = on;
-                if (target is not null) { target.Bold = on; RestyleReselect(target); }
-                else if (editTarget is not null) { editTarget.Bold = on; RestyleReselect(editTarget); }
-                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
+                if (target is not null) { target.Bold = on; RestyleLive(target); }
+                else if (editTarget is not null) { editTarget.Bold = on; RestyleLive(editTarget); }
+                else UpdateActiveTextBoxStyle();
             }
             void ApplyItalic(bool on)
             {
                 _textItalic = on;
-                if (target is not null) { target.Italic = on; RestyleReselect(target); }
-                else if (editTarget is not null) { editTarget.Italic = on; RestyleReselect(editTarget); }
-                else { UpdateActiveTextBoxStyle(); ShowTextSettings(); }
+                if (target is not null) { target.Italic = on; RestyleLive(target); }
+                else if (editTarget is not null) { editTarget.Italic = on; RestyleLive(editTarget); }
+                else UpdateActiveTextBoxStyle();
             }
             // #135 item 2. Live preview on the COMMITTED annotation (RestyleLive re-renders the page
             // and refreshes the selection box without rebuilding this bar, so the slider keeps its
@@ -5648,15 +5680,19 @@ namespace TDPdf
                 {
                     target.HasFill = on;
                     if (on) target.SetFillColor(_textFillColor);
-                    RestyleReselect(target);
+                    RestyleLive(target);
                 }
-                else { UpdateActiveTextBoxFill(); ShowTextSettings(); }
+                else UpdateActiveTextBoxFill();
+                // Turning fill on reveals the fill colors that were built hidden alongside it.
+                if (fillSwatchRow is not null) fillSwatchRow.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                MarkActiveSwatch(fillSwatches, _textFillColor);
             }
             void ApplyFillColor(Color c)
             {
                 _textFillColor = c;
-                if (target is not null) { target.HasFill = true; target.SetFillColor(c); RestyleReselect(target); }
-                else { _textWhiteout = true; UpdateActiveTextBoxFill(); ShowTextSettings(); }
+                if (target is not null) { target.HasFill = true; target.SetFillColor(c); RestyleLive(target); }
+                else { _textWhiteout = true; UpdateActiveTextBoxFill(); }
+                MarkActiveSwatch(fillSwatches, c);
             }
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 4) };
@@ -5664,7 +5700,19 @@ namespace TDPdf
             // Bold / italic toggle, styled like the shape-kind toggles in ShowShapeSettings.
             void AddStyleToggle(string glyph, bool active, Action<bool> apply, string tip, FontWeight fw, FontStyle fs)
             {
-                var btn = new Button
+                Button? btn = null;
+                // Repainted in place on every click — the bar is no longer rebuilt to show it.
+                void Paint()
+                {
+                    if (btn is null) return;
+                    btn.Background = active
+                        ? (SolidColorBrush)FindResource("AccentGreenDim")
+                        : (SolidColorBrush)FindResource("BgHover");
+                    btn.Foreground = active
+                        ? (SolidColorBrush)FindResource("AccentGreen")
+                        : (SolidColorBrush)FindResource("TextPrimary");
+                }
+                btn = new Button
                 {
                     // A bare Button with no Style falls back to the OS default chrome, which does
                     // not reliably respect Background/Foreground on this theme — it rendered as an
@@ -5689,17 +5737,12 @@ namespace TDPdf
                     ToolTip = tip,
                     Cursor = Cursors.Hand,
                     // BgHover, not BgPanel: the settings bar's own background is BgPanel now, so
-                    // matching it here would blend this control back into the bar.
-                    Background = active
-                        ? (SolidColorBrush)FindResource("AccentGreenDim")
-                        : (SolidColorBrush)FindResource("BgHover"),
-                    Foreground = active
-                        ? (SolidColorBrush)FindResource("AccentGreen")
-                        : (SolidColorBrush)FindResource("TextPrimary"),
+                    // matching it here would blend this control back into the bar (see Paint).
                     BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                     BorderThickness = new Thickness(1)
                 };
-                btn.Click += (_, _) => apply(!active);
+                Paint();
+                btn.Click += (_, _) => { active = !active; apply(active); Paint(); };
                 panel.Children.Add(btn);
             }
 
@@ -5848,27 +5891,18 @@ namespace TDPdf
             // Color swatches (reuse same palette as draw tool)
             foreach (var color in SwatchColors)
             {
-                var c = color;
-                var swatch = new Border
-                {
-                    Width = 18, Height = 18,
-                    Background = new SolidColorBrush(c),
-                    BorderBrush = (c.R == curColor.R && c.G == curColor.G && c.B == curColor.B)
-                        ? (SolidColorBrush)FindResource("AccentGreen")
-                        : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                    BorderThickness = new Thickness(
-                        (c.R == curColor.R && c.G == curColor.G && c.B == curColor.B) ? 2 : 1),
-                    CornerRadius = new CornerRadius(3),
-                    Margin = new Thickness(1),
-                    Cursor = Cursors.Hand
-                };
-                swatch.MouseLeftButtonDown += (_, _) => ApplyColor(c);
+                var swatch = MakeColorSwatch(color, ApplyColor);
+                colorSwatches.Add(swatch);
                 panel.Children.Add(swatch);
             }
+            MarkActiveSwatch(colorSwatches, curColor);
 
             // Custom color: opens the full RGB picker, applied like a fixed text-color swatch.
-            panel.Children.Add(MakeCustomColorSwatch(
-                Color.FromRgb(curColor.R, curColor.G, curColor.B), ApplyColor));
+            panel.Children.Add(MakeCustomColorSwatch(() =>
+            {
+                Color now = target?.GetColor() ?? editTarget?.GetColor() ?? _textColor;
+                return Color.FromRgb(now.R, now.G, now.B);
+            }, ApplyColor));
 
             if (editTarget is null)
             {
@@ -5894,30 +5928,25 @@ namespace TDPdf
                 fillToggle.Unchecked += (_, _) => ApplyFill(false);
                 panel.Children.Add(fillToggle);
 
-                if (curFill)
+                // Always built, shown only while fill is on, so the checkbox can reveal it in place.
+                fillSwatchRow = new StackPanel
                 {
-                    foreach (var color in SwatchColors)
-                    {
-                        var c = color;
-                        bool selected = c.R == curFillColor.R && c.G == curFillColor.G && c.B == curFillColor.B;
-                        var swatch = new Border
-                        {
-                            Width = 18, Height = 18,
-                            Background = new SolidColorBrush(c),
-                            BorderBrush = selected
-                                ? (SolidColorBrush)FindResource("AccentGreen")
-                                : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                            BorderThickness = new Thickness(selected ? 2 : 1),
-                            CornerRadius = new CornerRadius(3),
-                            Margin = new Thickness(1),
-                            Cursor = Cursors.Hand
-                        };
-                        swatch.MouseLeftButtonDown += (_, _) => ApplyFillColor(c);
-                        panel.Children.Add(swatch);
-                    }
-                    panel.Children.Add(MakeCustomColorSwatch(
-                        Color.FromRgb(curFillColor.R, curFillColor.G, curFillColor.B), ApplyFillColor));
+                    Orientation = Orientation.Horizontal,
+                    Visibility = curFill ? Visibility.Visible : Visibility.Collapsed
+                };
+                foreach (var color in SwatchColors)
+                {
+                    var swatch = MakeColorSwatch(color, ApplyFillColor);
+                    fillSwatches.Add(swatch);
+                    fillSwatchRow.Children.Add(swatch);
                 }
+                MarkActiveSwatch(fillSwatches, curFillColor);
+                fillSwatchRow.Children.Add(MakeCustomColorSwatch(() =>
+                {
+                    Color now = target is { HasFill: true } ? target.GetFillColor() : _textFillColor;
+                    return Color.FromRgb(now.R, now.G, now.B);
+                }, ApplyFillColor));
+                panel.Children.Add(fillSwatchRow);
             }
 
             _textSettingsBar = new Border
@@ -5975,11 +6004,31 @@ namespace TDPdf
 
             // Restyle a selected shape, or edit tool defaults when nothing is selected.
             var target = _styleTarget as ShapeAnnotation;
-            ShapeKind curKind = target?.Kind ?? _shapeKind;
             Color curStroke = target?.GetStrokeColor() ?? _shapeStrokeColor;
             bool curHasFill = target?.HasFill ?? _shapeHasFill;
             Color curFillColor = target?.GetFillColor() ?? _shapeFillColor;
             double curWidth = target?.StrokeWidth ?? _shapeStrokeWidth;
+
+            // Upstream KillerPDF v1.8.80: every control here restyles in place — RestyleLive plus a
+            // repaint of the control that changed — rather than rebuilding the bar, which flashed
+            // it. The kind toggles and swatch rows are filled in below.
+            var kindToggles = new List<(Button Btn, System.Windows.Shapes.Path Icon, ShapeKind Kind)>();
+            var strokeSwatches = new List<Border>();
+            var fillSwatches = new List<Border>();
+            StackPanel? fillSwatchRow = null;
+            // A selected shape shows ITS kind even when a click only retargeted the tool default
+            // (see ApplyKind) — exactly what rebuilding the bar used to show.
+            void PaintKindToggles()
+            {
+                ShapeKind shown = target?.Kind ?? _shapeKind;
+                foreach (var (btn, icon, kind) in kindToggles)
+                {
+                    var fg = (SolidColorBrush)FindResource(kind == shown ? "AccentGreen" : "TextPrimary");
+                    icon.Stroke = fg;
+                    btn.Foreground = fg;
+                    btn.Background = (SolidColorBrush)FindResource(kind == shown ? "AccentGreenDim" : "BgHover");
+                }
+            }
 
             void ApplyKind(ShapeKind k)
             {
@@ -5991,26 +6040,29 @@ namespace TDPdf
                 // polygon — the geometry models are different — so the kind toggles only retarget
                 // the tool default when a polygon is (or would become) involved.
                 if (target is not null && k != ShapeKind.Polygon && target.Kind != ShapeKind.Polygon)
-                { target.Kind = k; RestyleReselect(target); }
-                else ShowShapeSettings();
+                { target.Kind = k; RestyleLive(target); }
+                PaintKindToggles();
             }
             void ApplyStroke(Color c)
             {
                 _shapeStrokeColor = c;
-                if (target is not null) { target.SetStrokeColor(c); RestyleReselect(target); }
-                else ShowShapeSettings();
+                if (target is not null) { target.SetStrokeColor(c); RestyleLive(target); }
+                MarkActiveSwatch(strokeSwatches, c);
             }
             void ApplyFill(bool on)
             {
                 _shapeHasFill = on;
-                if (target is not null) { target.HasFill = on; if (on) target.SetFillColor(_shapeFillColor); RestyleReselect(target); }
-                else ShowShapeSettings();
+                if (target is not null) { target.HasFill = on; if (on) target.SetFillColor(_shapeFillColor); RestyleLive(target); }
+                // Turning fill on reveals the fill colors that were built hidden alongside it.
+                if (fillSwatchRow is not null) fillSwatchRow.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                MarkActiveSwatch(fillSwatches, _shapeFillColor);
             }
             void ApplyFillColor(Color c)
             {
                 _shapeFillColor = c;
-                if (target is not null) { target.HasFill = true; target.SetFillColor(c); RestyleReselect(target); }
-                else { _shapeHasFill = true; ShowShapeSettings(); }
+                if (target is not null) { target.HasFill = true; target.SetFillColor(c); RestyleLive(target); }
+                else _shapeHasFill = true;
+                MarkActiveSwatch(fillSwatches, c);
             }
             void ApplyWidth(double w)
             {
@@ -6056,32 +6108,27 @@ namespace TDPdf
             }
             void AddKindToggle(ShapeKind kind, string toolTip)
             {
-                var fg = curKind == kind
-                    ? (SolidColorBrush)FindResource("AccentGreen")
-                    : (SolidColorBrush)FindResource("TextPrimary");
+                // Colors come from PaintKindToggles. BgHover, not Transparent, at rest: the settings
+                // bar's own background is BgPanel, so a literal-transparent button would blend back
+                // into it (see ShowTextSettings' AddStyleToggle, which hit exactly this).
+                var icon = MakeKindIcon(kind, (SolidColorBrush)FindResource("TextPrimary"));
                 var btn = new Button
                 {
                     // See the matching comment on ShowTextSettings' AddStyleToggle: a bare Button
                     // with no Style uses the OS default chrome, not this Background/Foreground.
                     Style = (Style)FindResource("ToolbarButton"),
                     Padding = new Thickness(0),
-                    Content = MakeKindIcon(kind, fg),
+                    Content = icon,
                     Width = 26, Height = 24,
                     Margin = new Thickness(2, 0, 2, 0),
                     ToolTip = toolTip,
                     Cursor = Cursors.Hand,
-                    // BgHover, not Transparent: the settings bar's own background is BgPanel, so a
-                    // literal-transparent button would blend back into it (see ShowTextSettings'
-                    // AddStyleToggle, which hit exactly this).
-                    Background = curKind == kind
-                        ? (SolidColorBrush)FindResource("AccentGreenDim")
-                        : (SolidColorBrush)FindResource("BgHover"),
-                    Foreground = fg,
                     BorderBrush = (SolidColorBrush)FindResource("BorderDim"),
                     BorderThickness = new Thickness(1)
                 };
                 AutomationProperties.SetName(btn, toolTip);
                 btn.Click += (_, _) => ApplyKind(kind);
+                kindToggles.Add((btn, icon, kind));
                 panel.Children.Add(btn);
             }
             AddKindToggle(ShapeKind.Rectangle, "Rectangle");
@@ -6089,6 +6136,7 @@ namespace TDPdf
             AddKindToggle(ShapeKind.Line, "Line");
             AddKindToggle(ShapeKind.Polygon,
                 "Freeform polygon \u2014 click to place points, click the first point or double-click to close");
+            PaintKindToggles();
 
             panel.Children.Add(new Rectangle
             {
@@ -6100,27 +6148,18 @@ namespace TDPdf
             panel.Children.Add(MakeLabel("Stroke:"));
             foreach (var color in ShapeStrokeColors)
             {
-                var c = color;
-                bool selected = c.R == curStroke.R && c.G == curStroke.G && c.B == curStroke.B;
-                var swatch = new Border
-                {
-                    Width = 18, Height = 18,
-                    Background = new SolidColorBrush(c),
-                    BorderBrush = selected
-                        ? (SolidColorBrush)FindResource("AccentGreen")
-                        : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                    BorderThickness = new Thickness(selected ? 2 : 1),
-                    CornerRadius = new CornerRadius(3),
-                    Margin = new Thickness(1),
-                    Cursor = Cursors.Hand
-                };
-                swatch.MouseLeftButtonDown += (_, _) => ApplyStroke(c);
+                var swatch = MakeColorSwatch(color, ApplyStroke);
+                strokeSwatches.Add(swatch);
                 panel.Children.Add(swatch);
             }
+            MarkActiveSwatch(strokeSwatches, curStroke);
 
             // Custom stroke color: opens the full RGB picker, applied like a fixed stroke swatch.
-            panel.Children.Add(MakeCustomColorSwatch(
-                Color.FromRgb(curStroke.R, curStroke.G, curStroke.B), ApplyStroke));
+            panel.Children.Add(MakeCustomColorSwatch(() =>
+            {
+                Color now = target?.GetStrokeColor() ?? _shapeStrokeColor;
+                return Color.FromRgb(now.R, now.G, now.B);
+            }, ApplyStroke));
 
             panel.Children.Add(new Rectangle
             {
@@ -6142,32 +6181,27 @@ namespace TDPdf
             fillToggle.Unchecked += (_, _) => ApplyFill(false);
             panel.Children.Add(fillToggle);
 
-            if (curHasFill)
+            // Always built, shown only while fill is on, so the checkbox can reveal it in place.
+            fillSwatchRow = new StackPanel
             {
-                foreach (var color in ShapeStrokeColors)
-                {
-                    var c = color;
-                    bool selected = c.R == curFillColor.R && c.G == curFillColor.G && c.B == curFillColor.B;
-                    var swatch = new Border
-                    {
-                        Width = 18, Height = 18,
-                        Background = new SolidColorBrush(c),
-                        BorderBrush = selected
-                            ? (SolidColorBrush)FindResource("AccentGreen")
-                            : new SolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44)),
-                        BorderThickness = new Thickness(selected ? 2 : 1),
-                        CornerRadius = new CornerRadius(3),
-                        Margin = new Thickness(1),
-                        Cursor = Cursors.Hand
-                    };
-                    swatch.MouseLeftButtonDown += (_, _) => ApplyFillColor(c);
-                    panel.Children.Add(swatch);
-                }
-
-                // Custom fill color: opens the full RGB picker, applied like a fixed fill swatch.
-                panel.Children.Add(MakeCustomColorSwatch(
-                    Color.FromRgb(curFillColor.R, curFillColor.G, curFillColor.B), ApplyFillColor));
+                Orientation = Orientation.Horizontal,
+                Visibility = curHasFill ? Visibility.Visible : Visibility.Collapsed
+            };
+            foreach (var color in ShapeStrokeColors)
+            {
+                var swatch = MakeColorSwatch(color, ApplyFillColor);
+                fillSwatches.Add(swatch);
+                fillSwatchRow.Children.Add(swatch);
             }
+            MarkActiveSwatch(fillSwatches, curFillColor);
+
+            // Custom fill color: opens the full RGB picker, applied like a fixed fill swatch.
+            fillSwatchRow.Children.Add(MakeCustomColorSwatch(() =>
+            {
+                Color now = target?.GetFillColor() ?? _shapeFillColor;
+                return Color.FromRgb(now.R, now.G, now.B);
+            }, ApplyFillColor));
+            panel.Children.Add(fillSwatchRow);
 
             panel.Children.Add(new Rectangle
             {
@@ -6696,18 +6730,12 @@ namespace TDPdf
             }
         }
 
-        /// <summary>Re-render a page after a restyle and re-establish the selection visuals + bound bar.</summary>
-        private void RestyleReselect(PageAnnotation annot)
-        {
-            MarkDirty();
-            RenderAllAnnotations(annot.PageIndex);
-            if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
-                SelectAnnotation(annot, b);
-        }
-
         /// <summary>
         /// Re-render a page after a restyle and refresh the selection visuals WITHOUT rebuilding the
-        /// settings bar. Used by continuous slider drags so the slider keeps its mouse capture.
+        /// settings bar. Every style-bar control uses it: slider drags so the slider keeps its mouse
+        /// capture, and (upstream KillerPDF v1.8.80) toggles, checkboxes and swatches so the bar does
+        /// not flash — those repaint their own control in place instead. This replaced a
+        /// RestyleReselect that re-ran SelectAnnotation and so tore the bar down and rebuilt it.
         /// </summary>
         private void RestyleLive(PageAnnotation annot)
         {
@@ -9755,6 +9783,7 @@ namespace TDPdf
                                     ia.Points[i + 1].X * sx, ia.Points[i + 1].Y * sy);
                             }
                             break;
+                        }
 
                         case TextEditAnnotation tea:
                             // PdfSharpCore cannot surgically edit existing PDF content streams here.
