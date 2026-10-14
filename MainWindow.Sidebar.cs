@@ -603,14 +603,20 @@ namespace TDPdf
                 CommitActiveTextBox();
             }
 
+            // An inactive tab is asked about where it stands — it is never activated first. Its
+            // dirty flag lives on its own DocumentContext and its edits were already committed when
+            // it was switched away from, so there is nothing to capture; activating it would only
+            // tear down the tab the user is working in, and strand them on this one on Cancel.
+            // The prompt names the file because the document it is about may not be on screen.
             if (ctx.Doc is not null && ctx.IsDirty)
             {
-                if (!ReferenceEquals(_ctx, ctx)) ActivateContext(ctx);
+                string name = string.IsNullOrEmpty(ctx.DisplayName) ? "Untitled.pdf" : ctx.DisplayName;
                 var res = TdpDialog.ShowYesNo(this,
-                    "This file has unsaved changes.",
+                    $"\"{name}\" has unsaved changes.",
                     "Close Without Saving", "Cancel",
                     "TDPdf", MessageBoxImage.Warning);
                 if (res != MessageBoxResult.Yes) return;
+                if (!_tabs.Contains(ctx)) return;   // the modal pumped messages; it may be gone
             }
 
             RemoveTabSilently(ctx);

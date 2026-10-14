@@ -9229,8 +9229,8 @@ namespace TDPdf
         /// Ctrl+Shift+W / tab right-click: closes every tab except <paramref name="keep"/>.
         /// Deliberately routed through <see cref="CloseTab"/> one tab at a time rather than
         /// shortcutting the teardown, so each unsaved document still gets the same prompt — and a
-        /// "No" leaves that one tab open instead of aborting the whole sweep. CloseTab activates a
-        /// dirty tab before prompting, so the kept tab is re-activated at the end.
+        /// "No" leaves that one tab open instead of aborting the whole sweep. CloseTab prompts about
+        /// an inactive tab without activating it, so the kept tab stays on screen throughout.
         /// </summary>
         private void CloseOtherTabs(DocumentContext keep)
         {
@@ -9239,6 +9239,16 @@ namespace TDPdf
 
             var others = _tabs.Where(t => !ReferenceEquals(t, keep)).ToList();
             if (others.Count == 0) return;
+
+            // Invoked from an inactive tab's menu, the kept tab comes forward first, so that
+            // closing the active one below never flashes a neighbour on screen in between. The
+            // active tab is on its way out, so an unfinished polygon on it is dropped exactly as
+            // CloseTab would drop it, rather than committed by the switch.
+            if (!ReferenceEquals(_ctx, keep))
+            {
+                ResolveShapePolygon(commit: false);
+                ActivateContext(keep);
+            }
 
             foreach (var other in others)
             {
