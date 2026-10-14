@@ -180,6 +180,7 @@ SignatureScan.Run(Check);
 SignatureInspect.Run(Check, tmp);
 Duplicate.Run(Check, tmp);
 LetterSpacing.Run(Check);
+RtlLayout.Run(Check);
 XrefStreamSize.Run(Check);
 SelectCursor.Run(Check);
 ZoomAnchor.Run(Check);
