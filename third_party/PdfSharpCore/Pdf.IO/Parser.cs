@@ -1325,10 +1325,22 @@ namespace PdfSharpCore.Pdf.IO
             if (index == null)
             {
                 // Setup with default values.
+                // TDPdf patch (upstream KillerPDF #406): the default /Index is [0 /Size], but writers
+                // in the wild emit a /Size smaller than the entries the stream actually carries, and
+                // every entry past /Size was then dropped without a word - its object simply missing
+                // from the table, so a page or font it held vanished or the open failed outright.
+                // The decoded data says how many entries there really are (one per sum of /W
+                // widths), so cover max(/Size, that). Never fewer than /Size: a stream SHORTER than
+                // /Size keeps exactly the behaviour it had.
+                int wsumDefault = 0;
+                if (w != null && w.Elements.Count == 3)
+                    wsumDefault = w.Elements.GetInteger(0) + w.Elements.GetInteger(1) + w.Elements.GetInteger(2);
+                int dataEntryCount = wsumDefault > 0 ? bytes.Length / wsumDefault : 0;
+                int defaultCount = Math.Max(size, dataEntryCount);
                 subsectionCount = 1;
                 subsections = new int[subsectionCount][];
-                subsections[0] = new int[] { 0, size }; // HACK: What is size? Contratiction in PDF reference.
-                subsectionEntryCount = size;
+                subsections[0] = new int[] { 0, defaultCount }; // HACK: What is size? Contratiction in PDF reference.
+                subsectionEntryCount = defaultCount;
             }
             else
             {

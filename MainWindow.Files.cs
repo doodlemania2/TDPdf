@@ -52,6 +52,7 @@ namespace TDPdf
                 var result = await OpenFileCoreAsync(path, null, cancellationToken);
                 await FinishOpenFileAsync(result, cancellationToken);
                 openOp.With("Recovered", result.RecoveredFromRaster ? "true" : "false");
+                openOp.With("Repaired", result.RepairedByPdfium ? "true" : "false");
             }
             catch (OperationCanceledException)
             {
@@ -208,6 +209,10 @@ namespace TDPdf
                 // decrypted copy: editable, so it must NOT claim read-only, but say the restriction went.
                 if (result.RestrictionsRemoved)
                     readOnlySuffix = " (owner restrictions removed)";
+                // A merely malformed file PdfSharpCore refused is reopened the same way (#406). That is
+                // lossless, so it says "repaired" — never the rasterized notice below.
+                else if (result.RepairedByPdfium)
+                    readOnlySuffix = " (repaired - the file's structure was damaged)";
                 if (result.RecoveredFromRaster)
                     readOnlySuffix = " (recovered - pages rasterized, text not selectable)";
                 SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix} - {_doc.PageCount} page(s)");
