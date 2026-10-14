@@ -711,6 +711,18 @@ namespace TDPdf
             public List<Rect> Lines = new();
         }
 
+        /// <summary>
+        /// Captured geometry of an <see cref="InkAnnotation"/>: its points and its stroke width at the
+        /// start of the gesture. A resize scales the width as well as the points, and has to scale
+        /// the ORIGINAL width — scaling the live one compounded on every mouse move, so a stroke got
+        /// thicker the longer it was dragged.
+        /// </summary>
+        private sealed class InkGeom
+        {
+            public List<Point> Points = new();
+            public double StrokeWidth;
+        }
+
         private static object CaptureGeometry(PageAnnotation annot) => annot switch
         {
             ShapeAnnotation s => new ShapeGeom
@@ -721,7 +733,7 @@ namespace TDPdf
             // Markup must come before HighlightAnnotation — it is a subclass.
             MarkupAnnotation m => new MarkupGeom { Bounds = m.Bounds, Lines = new List<Rect>(m.LineRects) },
             HighlightAnnotation h => h.Bounds,
-            InkAnnotation i => new List<Point>(i.Points),
+            InkAnnotation i => new InkGeom { Points = new List<Point>(i.Points), StrokeWidth = i.StrokeWidth },
             TextAnnotation t => (Position: t.Position, Width: t.Width, Height: t.Height),
             TextEditAnnotation tea => (Position: tea.Position, Bounds: tea.OriginalBounds),
             _ => 0
@@ -752,11 +764,11 @@ namespace TDPdf
                     return m.Bounds == mo.Bounds;
                 case HighlightAnnotation h when original is Rect r:
                     return h.Bounds == r;
-                case InkAnnotation ink when original is List<Point> pts:
-                    if (ink.Points.Count != pts.Count) return false;
-                    for (int i = 0; i < pts.Count; i++)
-                        if (ink.Points[i] != pts[i]) return false;
-                    return true;
+                case InkAnnotation ink when original is InkGeom ig:
+                    if (ink.Points.Count != ig.Points.Count) return false;
+                    for (int i = 0; i < ig.Points.Count; i++)
+                        if (ink.Points[i] != ig.Points[i]) return false;
+                    return ink.StrokeWidth == ig.StrokeWidth;
                 case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
                     return t.Position == tp.Item1 && t.Width == tp.Item2 && t.Height == tp.Item3;
                 case TextEditAnnotation tea when original is ValueTuple<Point, Rect> teo:
@@ -793,9 +805,9 @@ namespace TDPdf
                 case HighlightAnnotation h when original is Rect r:
                     h.Bounds = new Rect(r.X + dx, r.Y + dy, r.Width, r.Height);
                     break;
-                case InkAnnotation ink when original is List<Point> pts:
+                case InkAnnotation ink when original is InkGeom ig:
                     ink.Points.Clear();
-                    foreach (var p in pts) ink.Points.Add(new Point(p.X + dx, p.Y + dy));
+                    foreach (var p in ig.Points) ink.Points.Add(new Point(p.X + dx, p.Y + dy));
                     break;
                 case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
                     t.Position = new Point(tp.Item1.X + dx, tp.Item1.Y + dy);
@@ -864,9 +876,14 @@ namespace TDPdf
                     h.Bounds = new Rect(r.X, r.Y, newW, newH);
                     break;
                 }
-                case InkAnnotation ink when original is List<Point> pts:
+                case InkAnnotation ink when original is InkGeom ig:
                 {
+                    var pts = ig.Points;
                     if (pts.Count == 0) break;
+                    // A dot has no extent to stretch: every scale factor below would be the 4px
+                    // floor over the 1px clamp, and the stroke width would be multiplied by it on
+                    // every mouse move. Its size is the Draw bar's Size slider instead.
+                    if (InkDot.TryGetDot(pts.Select(p => (p.X, p.Y)), out _, out _)) break;
                     double minX = pts.Min(p => p.X), minY = pts.Min(p => p.Y);
                     double maxX = pts.Max(p => p.X), maxY = pts.Max(p => p.Y);
                     double origW = Math.Max(1, maxX - minX), origH = Math.Max(1, maxY - minY);
@@ -877,7 +894,7 @@ namespace TDPdf
                     foreach (var p in pts)
                         ink.Points.Add(new Point(minX + (p.X - minX) * sx, minY + (p.Y - minY) * sy));
                     double uniform = (sx + sy) * 0.5;
-                    ink.StrokeWidth = Math.Max(0.5, ink.StrokeWidth * uniform);
+                    ink.StrokeWidth = Math.Max(0.5, ig.StrokeWidth * uniform);
                     break;
                 }
                 case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
@@ -1472,9 +1489,19 @@ namespace TDPdf
                     break;
 
                 case EditTool.Draw when _activeInk is not null:
-                    if (_activeInk.Points.Count > 2)
+                    // Every stroke is kept, down to a single click (upstream KillerPDF v1.8.72). This
+                    // used to discard anything of two points or fewer, which swallowed a deliberate
+                    // dot — and a quick flick that only ever reported one move. A stroke that never
+                    // left InkDot.MaxExtent becomes a round dot; the preview polyline cannot show one
+                    // (WPF draws nothing for a single point), so it is swapped for the dot itself.
+                    if (_activeInk.Points.Count > 0)
                     {
                         AddAnnotation(_activeInk);
+                        if (MakeInkDotVisual(_activeInk) is { } dot)
+                        {
+                            _annotationCanvas.Children.Remove(_activePreview);
+                            _annotationCanvas.Children.Add(dot);
+                        }
                     }
                     else
                     {

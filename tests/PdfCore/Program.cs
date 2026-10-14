@@ -184,6 +184,7 @@ RtlLayout.Run(Check);
 XrefStreamSize.Run(Check);
 SelectCursor.Run(Check);
 ZoomAnchor.Run(Check);
+InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);
 NightModeImages.Run(Check, tmp);

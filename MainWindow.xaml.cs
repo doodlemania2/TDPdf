@@ -6485,6 +6485,13 @@ namespace TDPdf
                 case InkAnnotation ia when ia.Points.Count > 0:
                     bool near = ia.Points.Any(p =>
                         Math.Sqrt((p.X - pos.X) * (p.X - pos.X) + (p.Y - pos.Y) * (p.Y - pos.Y)) < 15);
+                    if (near && InkDot.TryGetDot(ia.Points.Select(p => (p.X, p.Y)), out double dotX, out double dotY))
+                    {
+                        // A dot's box is the dot, centred — not a zero-size box hung off its one point.
+                        double side = Math.Max(ia.StrokeWidth, 4);
+                        bounds = new Rect(dotX - side / 2, dotY - side / 2, side, side);
+                        return true;
+                    }
                     if (near)
                     {
                         double minX = ia.Points.Min(p => p.X);
@@ -8250,6 +8257,27 @@ namespace TDPdf
             return IsFinitePositive(width) && IsFinitePositive(height);
         }
 
+        /// <summary>
+        /// The on-screen form of a pen dot (see <see cref="InkDot"/>): a filled circle one stroke
+        /// width across. Null when the stroke is not a dot, or its width is unusable as a size.
+        /// </summary>
+        private static Ellipse? MakeInkDotVisual(InkAnnotation ia)
+        {
+            if (!InkDot.TryGetDot(ia.Points.Select(p => (p.X, p.Y)), out double cx, out double cy)) return null;
+            double d = ia.StrokeWidth;
+            if (!IsFinitePositive(d)) return null;
+            var dot = new Ellipse
+            {
+                Fill = FrozenSolidColorBrush(ia.GetColor()),
+                Width = d,
+                Height = d,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(dot, cx - d / 2);
+            Canvas.SetTop(dot, cy - d / 2);
+            return dot;
+        }
+
         private void RenderAllAnnotations(int pageIndex)
         {
             _annotationCanvas.Children.Clear();
@@ -8311,6 +8339,7 @@ namespace TDPdf
                         RenderShapeAnnotation(shp);
                         break;
                     case InkAnnotation ia:
+                        if (MakeInkDotVisual(ia) is { } inkDot) { _annotationCanvas.Children.Add(inkDot); break; }
                         if (ia.Points.Count < 2) continue;
                         var poly = new Polyline
                         {
@@ -9703,8 +9732,17 @@ namespace TDPdf
                         }
 
                         case InkAnnotation ia:
-                            if (ia.Points.Count < 2) break;
+                        {
                             var ic = ia.GetColor();
+                            // A pen dot is a filled circle, never a zero-length stroke — see InkDot.
+                            // Its diameter scales with sx, exactly as the pen width below does.
+                            if (InkDot.TryGetDot(ia.Points.Select(p => (p.X, p.Y)), out double dotX, out double dotY))
+                            {
+                                InkDot.Burn(gfx, XColor.FromArgb(ic.A, ic.R, ic.G, ic.B),
+                                    dotX * sx, dotY * sy, ia.StrokeWidth * sx);
+                                break;
+                            }
+                            if (ia.Points.Count < 2) break;
                             var pen = new XPen(XColor.FromArgb(ic.A, ic.R, ic.G, ic.B), ia.StrokeWidth * sx)
                             {
                                 LineJoin = XLineJoin.Round,
