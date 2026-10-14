@@ -700,6 +700,7 @@ namespace TDPdf
                 Padding = new Thickness(8, 6, 8, 6),
                 Margin = new Thickness(12, 0, 12, 8)
             };
+            TdpDialog.UseThemedTextMenu(nameBox);
             contentArea.Children.Add(nameBox);
 
             // Live preview

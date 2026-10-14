@@ -997,7 +997,7 @@ namespace TDPdf.Services
             Height = 1, Background = R("BorderDim"), Margin = new Thickness(0, 14, 0, 12)
         };
 
-        private TextBox MakeTextBox(string text) => new()
+        private TextBox MakeTextBox(string text) => TdpDialog.UseThemedTextMenu(new()
         {
             Text        = text,
             Background  = R("BgPanel"),
@@ -1005,7 +1005,7 @@ namespace TDPdf.Services
             BorderBrush = R("BorderDim"),
             CaretBrush  = R("TextPrimary"),
             Padding     = new Thickness(6, 3, 6, 3)
-        };
+        });
 
         private RadioButton MakeRadio(string text, bool isChecked)
         {

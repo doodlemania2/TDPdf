@@ -722,7 +722,7 @@ namespace TDPdf.Services
             return column;
         }
 
-        private TextBox MakeTextBox(string text) => new()
+        private TextBox MakeTextBox(string text) => TdpDialog.UseThemedTextMenu(new()
         {
             Text        = text,
             Margin      = new Thickness(0, 4, 0, 12),
@@ -731,7 +731,7 @@ namespace TDPdf.Services
             BorderBrush = R("BorderDim"),
             CaretBrush  = R("TextPrimary"),
             Padding     = new Thickness(6, 4, 6, 4)
-        };
+        });
 
         private UIElement BuildPreviewColumn()
         {

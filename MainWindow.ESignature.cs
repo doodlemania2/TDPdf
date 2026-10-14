@@ -473,6 +473,7 @@ namespace TDPdf
                 Margin = new Thickness(0, 0, 0, 4),
                 ToolTip = "The Documenso signing service TDPdf sends documents to."
             };
+            TdpDialog.UseThemedTextMenu(urlBox);   // the Settings window is not MainWindow
             AutomationProperties.SetName(urlBox, "Signing service address");
             section.Children.Add(urlBox);
 

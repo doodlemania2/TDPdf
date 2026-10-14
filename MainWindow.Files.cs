@@ -1733,6 +1733,8 @@ namespace TDPdf
                     MaxHeight = tall ? 110 : 72,
                     Margin = new Thickness(0, 0, 0, 12)
                 };
+                // This is its own Window, out of reach of MainWindow's implicit menu styles.
+                TdpDialog.UseThemedTextMenu(box);
                 root.Children.Add(box);
                 return box;
             }

@@ -67,6 +67,41 @@ namespace TDPdf
         }
 
         /// <summary>
+        /// Gives a text box in a code-built window the app's themed Cut / Copy / Paste / Select All
+        /// menu in place of WPF's stock one (upstream KillerPDF v1.8.80 did this for Document Info).
+        /// </summary>
+        /// <remarks>
+        /// The ContextMenu / MenuItem / Separator styles are implicit styles in MainWindow.xaml's
+        /// resources, not the application's, so a box in any other window — whose resource lookup
+        /// never passes through MainWindow — gets the light system menu. The styles are therefore
+        /// fetched from the main window and set explicitly; the brushes inside them are
+        /// DynamicResources on the app-level theme dictionary, so they follow a theme switch.
+        /// No-ops (leaving the stock menu) when no main window is up, e.g. very early or in a crash.
+        /// Returns <paramref name="box"/> so a box-building expression can be wrapped in place.
+        /// </remarks>
+        internal static TextBox UseThemedTextMenu(TextBox box)
+        {
+            var host = Application.Current?.Windows.OfType<MainWindow>().FirstOrDefault();
+            if (host?.TryFindResource(typeof(ContextMenu)) is not Style menuStyle) return box;
+            var itemStyle = host.TryFindResource(typeof(MenuItem)) as Style;
+            var separatorStyle = host.TryFindResource(typeof(Separator)) as Style;
+
+            // CommandTarget pins every command to this box, so Cut / Paste grey out by themselves on a
+            // read-only box and Cut / Copy with nothing selected — the stock menu's behaviour.
+            MenuItem Item(string header, RoutedUICommand command) =>
+                new MenuItem { Header = header, Command = command, CommandTarget = box, Style = itemStyle };
+
+            var menu = new ContextMenu { Style = menuStyle };
+            menu.Items.Add(Item("Cu_t", ApplicationCommands.Cut));
+            menu.Items.Add(Item("_Copy", ApplicationCommands.Copy));
+            menu.Items.Add(Item("_Paste", ApplicationCommands.Paste));
+            menu.Items.Add(new Separator { Style = separatorStyle });
+            menu.Items.Add(Item("Select _All", ApplicationCommands.SelectAll));
+            box.ContextMenu = menu;
+            return box;
+        }
+
+        /// <summary>
         /// The shared TDPdf dialog shell: a borderless, transparent-background window (no OS title
         /// bar) holding a rounded panel with an accent border and a draggable Consolas wordmark
         /// title bar. Returns the window plus the vertical stack each dialog fills with its body.
@@ -223,6 +258,7 @@ namespace TDPdf
                 CaretBrush      = text,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             };
+            UseThemedTextMenu(box);
             AutomationProperties.SetName(box, prompt);
             root.Children.Add(new Border { Padding = new Thickness(20, 0, 20, 4), Child = box });
 

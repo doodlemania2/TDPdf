@@ -426,14 +426,14 @@ namespace TDPdf
             return b;
         }
 
-        private TextBox MakeTextBox(double width) => new()
+        private TextBox MakeTextBox(double width) => TdpDialog.UseThemedTextMenu(new()
         {
             Width = width, Height = 22, VerticalContentAlignment = VerticalAlignment.Center,
             Background = Brush("BgPanel"), Foreground = Brush("TextPrimary"),
             BorderBrush = Brush("BorderDim"), BorderThickness = new Thickness(1),
             CaretBrush = Brush("TextPrimary"), SelectionBrush = Brush("AccentGreen"),
             Padding = new Thickness(4, 0, 4, 0), Template = MakeTextBoxTemplate()
-        };
+        });
 
         // Vector crosshair, drawn in the current text color so it reads in every theme.
         private UIElement CrosshairIcon()

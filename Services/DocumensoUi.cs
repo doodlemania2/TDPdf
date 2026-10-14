@@ -191,7 +191,7 @@ namespace TDPdf.Services
                 VerticalContentAlignment = VerticalAlignment.Center,
             };
             System.Windows.Automation.AutomationProperties.SetName(t, accessibleName);
-            return t;
+            return TdpDialog.UseThemedTextMenu(t);
         }
 
         internal static ComboBox MakeCombo(Window? owner, string accessibleName)
