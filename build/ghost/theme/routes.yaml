@@ -6,13 +6,23 @@
 #
 #   Ghost admin -> Settings -> Advanced -> Labs -> Routes -> Upload routes file
 #
+# Uploaded to tdpdf.com 2026-10-15 (the previous file, which served posts at /{slug}/,
+# was kept as a rollback copy). The Admin API takes it too: POST it as multipart field
+# `routes` to /ghost/api/admin/settings/routes/yaml/ with a staff access token.
+#
 # Without it, Ghost serves its post index at / and the home page lives at /home/.
 # The four other pages are already at their own URLs either way, so the site works
 # before this is uploaded; it is just not pointing at the right front door.
 
 routes:
-  # The home page is a static page, not the post index.
-  /: page-home
+  # The home page is a static page, not the post index. `data: page.home` feeds the page
+  # whose slug is `home` to the theme's ordinary `page` template. The shorthand
+  # `/: page-home` names a TEMPLATE, page-home.hbs, which the stock Source theme does not
+  # have: uploading that form took the front page down with HTTP 400 "Missing template
+  # page-home.hbs" (2026-10-15).
+  /:
+    data: page.home
+    template: page
 
 collections:
   # Keep a post index, but off the root. TDPdf has no blog yet; when it gets one,

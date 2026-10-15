@@ -1,7 +1,8 @@
 # TDPdf
 
 A PDF editor for Windows that you install without an administrator, that keeps quiet
-on the network, and that will not let you ship a redaction it cannot prove worked.
+on the network, that will not let you ship a redaction it cannot prove worked — and,
+new in 2.0, that sends documents for legally binding electronic signature.
 
 It is a single self-contained `TDPdf.exe`. There is no installer to run as admin, no
 runtime to install first, no subscription, and no account.
@@ -40,6 +41,30 @@ Two other things fall out of doing it this way:
   which pages those are and offers to rasterise them, because that costs the page its
   text layer and that is your decision to make, not the program's.
 
+## Electronic signatures
+
+**File ▸ Electronic Signature** connects TDPdf to its own signing service,
+[sign.tdpdf.com](https://sign.tdpdf.com). Signed documents are sealed with a certificate
+on Adobe's Approved Trust List — the one Acrobat shows a green check for — whose key
+lives in a hardware security module, and every seal is timestamped so the signature
+outlives the certificate.
+
+- **Send for Signature** — add signers, approvers, viewers and CCs, optionally in order,
+  then drag a box on the page for each field: signature, initials, name, email, date,
+  text. Documents that already carry `{{signature, r1}}`-style placeholders are picked
+  up automatically. TDPdf checks what the service would refuse before anything goes
+  out, and refuses to send a document with redaction marks you have not applied.
+- **Sign This Document** — sign something yourself. TDPdf opens the signing page in
+  your browser and picks up the sealed copy when you are done.
+- **Signature Requests** — everything you have sent, with each person's progress. Download
+  the signed copy, the certificate of completion and the audit log.
+- **Verify Signatures** — for any signed PDF, from anywhere, Document Info shows who
+  signed, when, and whether anything was added afterwards.
+
+The older tool that stamps a drawn or imported *picture* of your signature is now called
+**Signature Picture**, because a picture of a signature is not a digital signature and
+the two should not share a name.
+
 ## One file, no administrator
 
 `TDPdf.exe` is the whole application: WPF, the PDF engines, the native `pdfium.dll`,
@@ -70,6 +95,11 @@ and field that can be sent. If you want a destination of your own, the
 [telemetry page](/telemetry/) explains how. The maintainers of this project receive
 nothing either way.
 
+Electronic Signature talks to sign.tdpdf.com, because that is what it is for: the
+document, the recipients you enter and your account go there **when you send or sign
+something**, and not before. Organisations can point it at their own signing server or
+switch it off by policy.
+
 The one thing that reaches the network regardless is a twice-daily check of the public
 GitHub releases listing. It carries no identifier — not even which version you are
 running, because the comparison happens on your machine.
@@ -80,7 +110,7 @@ running, because the comparison happens on your machine.
 - **Inline text editing** with font matching against the fonts already in the document
 - **Annotations** — text boxes, freehand ink, highlights, images, with adjustable
   colour, size and opacity
-- **Signatures** — draw one and reuse it, or import a PNG/JPG/BMP, then click to place
+- **Signature Picture** — draw one and reuse it, or import a PNG/JPG/BMP, then click to place
 - **Forms** — fill interactive AcroForm fields, and author new ones
 - **Merge and split**, with drag-and-drop page reordering and a right-click page
   sidebar (insert, rotate, move, extract, delete, across multi-page selections)

@@ -52,7 +52,7 @@ Each stage is gated on its secret being present, so a missing or rotated secret 
 - `workflow_dispatch` accepts `skip_intune: true` to cut a GitHub Release without touching the fleet.
 - The signing and Intune steps only work off Windows — do not "fix" them back to `signtool`/`IntuneWinAppUtil` unless the runner becomes Windows.
 - Signing is **Azure Artifact Signing** (account `tdp`, profile `TDPCertProfile`, endpoint `https://eus.codesigning.azure.net`), reached with Jsign 7.5 pinned by SHA-256. The private key lives in Microsoft's HSMs and never touches the runner. Its certificates last **three days**, so the service timestamps every signature itself — do not add a `--tsaurl`. The private-PFX step remains only as a one-release fallback; retire it, and both `CODESIGN_PFX_*` secrets, once a release has shipped through Artifact Signing.
-- `pdf-landing/` is not part of this ritual — it has been stale for many versions and no workflow deploys it. Leave it alone unless asked.
+- The public site is **tdpdf.com** (Ghost on Cloudron), published from `build/ghost/` by `build/ghost/publish-site.ps1` with `$env:GHOST_ADMIN_KEY` (a staff access token works and can also write site settings; an integration key cannot). Re-run it after a release so the version and download links move. The old `pdf-landing/` static page was deleted in its favour.
 
 ## Architecture
 

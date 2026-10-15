@@ -96,8 +96,9 @@ Edit `TDPdf.csproj` and bump **all three** version properties together:
   EXE file metadata and used by Intune's detection rule. **These drive
   fleet updates** — if you don't bump them, Intune will not push.
 
-Then add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md` and
-update the version badge in `pdf-landing/index.html`.
+Then add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md`. After the
+release is out, re-run `build/ghost/publish-site.ps1` so tdpdf.com shows the
+new version and download links.
 
 ### 2. Run `release.ps1`
 

@@ -8,7 +8,7 @@ TDPdf is a Windows-only WPF PDF editor distributed as a single, portable, self-c
 - Publish (single-EXE bundle): `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true` → output in `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`.
   - Publish triggers the `BundleSource` MSBuild target which runs `build/bundle-source.ps1` to produce `TDPdf-<Version>-src.zip` (GPLv3 corresponding source) next to the EXE. It uses `git ls-files`, so an unstaged file will not be included.
   - Publish uses SDK single-file properties in `TDPdf.csproj` (`PublishSingleFile`, `SelfContained`, `IncludeNativeLibrariesForSelfExtract`, and compression enabled); do not reintroduce Costura/Fody bundling.
-- Full release (Windows only, requires Certum cert + Windows SDK signtool): `./release.ps1` (or `./release.ps1 -SkipSign` for a test run). Publishes with `dotnet publish`, signs and verifies `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`, prints SHA256, and reminds you to paste it into `pdf-landing/index.html`.
+- Full release (Windows only, requires Certum cert + Windows SDK signtool): `./release.ps1` (or `./release.ps1 -SkipSign` for a test run). Publishes with `dotnet publish`, signs and verifies `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`, prints SHA256, and reminds you to refresh tdpdf.com with `build/ghost/publish-site.ps1`.
 - No test suite or linter is configured. `dotnet build` warnings are the only lint signal — do not introduce new warnings (nullable reference types are enabled).
 
 ## Cross-platform caveat
