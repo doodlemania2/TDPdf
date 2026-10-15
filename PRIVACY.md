@@ -217,9 +217,3 @@ nothing.
 - **Whole device, permanently:** `TDPdf.exe /clear-telemetry`. This writes an opt-out marker that
   outranks every destination above, including one pushed by an administrator, and survives
   reinstalls.
-
-## Changing this file
-
-If you change what `Diagnostics/` collects, or what Electronic Signature sends, change this
-document in the same pull request. A
-privacy notice that has drifted from the code is worse than none, because people rely on it.
