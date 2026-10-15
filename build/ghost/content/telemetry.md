@@ -1,63 +1,58 @@
 # Telemetry
 
-TDPdf can report usage and crash information to **an OpenTelemetry collector you
-choose**. This page is about how to point it at one of yours.
+TDPdf can report usage and crash information to **an OpenTelemetry collector you choose**. This
+page explains how to point it at yours.
 
-If you never do this, TDPdf sends nothing. That is not a promise about intent — there
-is nowhere for it to send anything to. Read on for why that is structural rather than
-a setting.
+If you don't, TDPdf sends nothing. No destination is built into it, so there is nowhere for
+reports to go.
 
-For the exhaustive list of every field and event name, see [privacy](/privacy/). This
-page is the operator's view: how to turn it on, and what you get when you do.
+The [privacy](/privacy/) page lists every field and event name. This page covers the setup: how to
+turn reporting on, and what your collector receives.
 
-## Nothing is compiled in
+## No built-in destination
 
-There is **no destination inside the binary**. Not an endpoint, not a key, not an
-obfuscated one.
+The binary contains **no destination**: no endpoint and no key, obfuscated or otherwise.
 
-That is deliberate. A secret embedded in a binary handed to end-user laptops is
-obfuscated at best, and rotating it would mean shipping a whole new signed release.
-Instead the destination is looked up at runtime, and reporting requires **two
-independent things** — either alone sends nothing:
+A key embedded in software installed on many laptops can be extracted, and changing it would mean
+shipping a new signed release. So TDPdf looks the destination up when it runs, and reporting
+needs **two separate things**. Either one alone sends nothing:
 
 | | What it is | Default |
 |---|---|---|
 | **Consent** | A per-user setting: Settings → Privacy → *Send anonymous usage and crash reports*. | On |
 | **Destination** | An OTLP endpoint and a token. | **Absent** |
 
-Consent defaults to on, and that is safe precisely because it is useless by itself.
-A build from a public checkout of this repository has no destination, so the consent
-setting has nothing to act on whichever way it is set. The Settings dialog tells you
-which of the two states you are in rather than leaving you to infer it.
+Consent is on by default, but it does nothing without a destination. A build from a public
+checkout of this repository has no destination, so the consent setting makes no difference either
+way. The Settings dialog shows which state you are in.
 
 ## Pointing TDPdf at your collector
 
-A destination is **an endpoint and a token together**. Supplying one without the other
-is treated as no destination at all — an endpoint with no token would produce a stream
-of 401s from every machine, which is worse than staying quiet.
+A destination is **an endpoint and a token together**. If only one is set, TDPdf treats it as no
+destination, so an endpoint without a token doesn't produce a stream of 401 errors from every
+machine.
 
-There are two ways to supply them, and the first one that yields *both* values wins.
+There are two ways to set them. TDPdf uses the first source that supplies both values.
 
-### 1. Environment variables — for one machine
+### 1. Environment variables, for one machine
 
 ```
 TDPDF_OTLP_ENDPOINT   https://otlp.example.com
 TDPDF_OTLP_TOKEN      <your collector's bearer token>
 ```
 
-This is the route for a developer, or for anyone self-hosting who wants their own
-build reporting to their own collector without administrative rights.
+Use these as a developer, or to send your own build's reports to your own collector without admin
+rights.
 
-These are deliberately **not** registry values under `HKCU`. A user-writable production
-path is a redirection surface, and an environment variable is obviously session-scoped
-to anyone reading it.
+They are environment variables, not registry values under `HKCU`. Any user can write to `HKCU`, so
+a production setting there could be used to redirect reports. An environment variable is clearly
+limited to the session that sets it.
 
-Optionally, `TDPDF_DEPLOYMENT_ENVIRONMENT` overrides the `deployment.environment`
-resource attribute. A Release build reports `production` and a Debug build reports
-`development`, which is what keeps a contributor's local runs out of a production
-stream if they point one at a collector.
+`TDPDF_DEPLOYMENT_ENVIRONMENT` (optional) overrides the `deployment.environment` resource
+attribute. A Release build reports `production` and a Debug build reports `development`, so a
+contributor's local runs stay out of the production data if they point one at a collector.
 
-### 2. Administrator-pushed policy — for a fleet
+### 2. Administrator policy, for a fleet
 
 ```
 HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Telemetry
@@ -65,152 +60,140 @@ HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Telemetry
     OtlpToken     (REG_SZ)  <your collector's bearer token>
 ```
 
-`HKLM`, under `SOFTWARE\Policies\`, for two reasons that are both load-bearing.
+These live in `HKLM` under `SOFTWARE\Policies\` for two reasons.
 
-It is the Windows convention for administrator-pushed policy, so an admin reading the
-hive can tell at a glance this is managed configuration rather than something the
-application wrote about itself.
+That is where Windows expects administrator policy, so an admin looking at the registry can see
+it is managed configuration and not something TDPdf wrote for itself.
 
-More concretely: uninstalling TDPdf deletes `Software\TDPdf` from both hives. Putting
-the destination under `SOFTWARE\TDPdf\` would mean an uninstall silently destroyed
-your pushed configuration along with the app's own keys. The policy profile would
-eventually re-apply and reporting would be dark until it did, with nothing to say why.
-Policy is not the application's to delete.
+Also, uninstalling TDPdf deletes `Software\TDPdf` from both hives. If the destination lived under
+`SOFTWARE\TDPdf\`, an uninstall would delete your pushed configuration along with TDPdf's own
+keys. Reporting would then stop, with no explanation, until the policy was applied again.
+Uninstalling TDPdf leaves `SOFTWARE\Policies\` alone.
 
-The practical payoff of the policy route is that **rotating the token is a policy push,
-not a signed release of the whole application.**
+With this route, **rotating the token is a policy push.** You don't need a new release of TDPdf.
 
-Provisioning this through Intune is documented in
+Setting this up through Intune is covered in
 [`docs/intune-distribution.md`]({{REPO_URL}}/blob/main/docs/intune-distribution.md).
 
 ## What your collector needs to accept
 
-TDPdf exports over **OTLP/HTTP with protobuf encoding**, not gRPC. The reference
-deployment reaches its collector through a Cloudflare Tunnel, which carries HTTP only;
-with the exporter's default gRPC protocol it fails silently and simply never arrives.
+TDPdf exports over **OTLP/HTTP with protobuf encoding**. It does not use gRPC. The reference
+deployment reaches its collector through a Cloudflare Tunnel, which carries only HTTP; with the
+exporter's default gRPC protocol, nothing would arrive and no error would show.
 
-Given `OtlpEndpoint` = `https://otlp.example.com`, TDPdf posts to:
+With `OtlpEndpoint` set to `https://otlp.example.com`, TDPdf posts to:
 
 | Signal | Path |
 |---|---|
 | Logs (events and crashes) | `https://otlp.example.com/v1/logs` |
 | Traces (operation timings) | `https://otlp.example.com/v1/traces` |
 
-A trailing slash on the configured endpoint is trimmed, so both spellings work.
+A trailing slash on the endpoint is removed, so either form works.
 
-Every request carries `Authorization: Bearer <OtlpToken>`. Any collector that accepts
-a static bearer token will do — the reference deployment is a self-hosted
-[SigNoz](https://signoz.io/), but nothing in TDPdf is SigNoz-specific.
+Every request carries `Authorization: Bearer <OtlpToken>`. Any collector that accepts a static
+bearer token works. The reference deployment uses a self-hosted [SigNoz](https://signoz.io/), but
+nothing in TDPdf depends on SigNoz.
 
 ### Resource attributes
 
-These identify the stream and are constant for the life of the process:
+These identify the stream and stay the same for the life of the process:
 
 | Attribute | Value |
 |---|---|
-| `service.name` | `tdpdf` — fixed, and never changes |
+| `service.name` | `tdpdf` (fixed) |
 | `service.version` | The application version |
 | `service.namespace` | `stfoa` |
-| `deployment.environment` and `deployment.environment.name` | `production`, `development`, or your override. Both spellings are set on purpose — one is the current OpenTelemetry semantic convention, the other is what some tools' environment filters read. |
-| `session.id` | A random identifier generated fresh at every launch, never written to disk, never reused |
+| `deployment.environment` and `deployment.environment.name` | `production`, `development`, or your override. Both names are set because the second is the current OpenTelemetry semantic convention and some tools' environment filters read the first. |
+| `session.id` | A random identifier created at every launch, never written to disk, never reused |
 | `host.name` | The machine name |
 
-If a machine goes quiet and you cannot tell whether it stopped crashing or stopped
-running, `session.id` is the attribute that tells the two apart — and it is why a
-hundred crashes from one unlucky laptop can be distinguished from a hundred crashes
-across a fleet, which need very different responses.
+If a machine goes quiet, `session.id` tells you whether it stopped crashing or stopped running. It
+also lets you tell a hundred crashes on one laptop from a hundred crashes across the fleet.
 
-## What actually arrives
+## What arrives
 
-**Event names.** `App.Startup`, `App.Heartbeat` (every 15 minutes, saying only that it
-is still running and for how long), `App.SessionEnd`, `File.Open`, `File.Merge`,
-`File.Print`, `Tool.Selected`, `Install.Success`, the `Update.*` family, and the rest —
-[privacy](/privacy/) lists them all. Operation timings arrive as `Op.*`.
+**Event names.** `App.Startup`, `App.Heartbeat` (every 15 minutes, with only how long TDPdf has
+been running), `App.SessionEnd`, `File.Open`, `File.Merge`, `File.Print`, `Tool.Selected`,
+`Install.Success`, the `Update.*` events, and others. [Privacy](/privacy/) lists them all.
+Operation timings arrive as `Op.*`.
 
-The absence of `App.SessionEnd` after a `App.Startup` is how crash rate is measured,
-without anything having to track a user.
+An `App.Startup` with no matching `App.SessionEnd` is counted as a crash. That is how the crash
+rate is measured without tracking anyone.
 
-**Technical context.** Application version, Windows version, 64-bit or not, .NET runtime
-version, processor count, and whether the install is per-user or machine-wide.
+**Technical context.** Application version, Windows version, 64-bit or not, .NET runtime version,
+processor count, and whether the install is per-user or machine-wide.
 
-**Crash reports.** Exception type, message, stack trace, and a derived grouping key —
-a short hash of the exception type and first stack frame, so crashes bin together
-without the message text being the key.
+**Crash reports.** Exception type, message, stack trace, and a grouping key. The key is a short
+hash of the exception type and the first stack frame, so similar crashes group together without
+using the message text.
 
-## What does not arrive, and why it can't
+## What doesn't arrive
 
-No document contents. No file names, paths, or folder names. No text you typed, no form
-field values, no search terms. No signature data. No username or account identifier. No
-persistent user or device identifier beyond the machine name.
+No document contents. No file names, paths or folder names. No text you typed, form field values
+or search terms. No signature data. No username or account identifier. No persistent user or device
+identifier apart from the machine name.
 
-Two mechanisms rather than one policy:
+Two things keep it that way:
 
-- **Events carry no document identity to begin with.** `File.Open` records that an open
-  happened, how long it took and whether it succeeded — not which file. `Tool.Selected`
-  records which tool you chose, never what you did with it. The annotation events record
-  that placement started and how it ended, never the text.
-- **Everything else goes through `Diagnostics/Sanitizer.cs`**, which scrubs UNC and
-  drive-rooted Windows paths, POSIX paths, stack-trace `in /…:line N` frames, and
-  anything shaped like `password=` or `passphrase=` before it leaves the process.
-  Exception text routinely contains the path of the document being worked on, so this
-  is not theoretical.
+- **Events don't include document details.** `File.Open` records that a file was opened, how long
+  it took and whether it succeeded. It doesn't record which file. `Tool.Selected` records which
+  tool you chose but not what you did with it. The annotation events record that placement
+  started and how it ended, but not the text.
+- **Everything else passes through `Diagnostics/Sanitizer.cs`**, which removes UNC and
+  drive-letter Windows paths, POSIX paths, stack-trace `in /…:line N` frames, and anything shaped
+  like `password=` or `passphrase=` before it leaves the process. Exception text often contains
+  the path of the open document, so this matters.
 
-The sanitiser is described in its own source as a pragmatic last line of defence rather
-than a security boundary, and that is the honest framing. The real guarantee is the
-first mechanism: the fields are not collected. **TDPdf deliberately exposes no way to
-report a raw, unscrubbed exception** — there is no `TrackException(Exception)` overload
-for a future contributor to reach for by accident.
+The sanitiser's own source describes it as a last line of defence, not a security boundary. The
+main protection is the first point: those fields are never collected. **TDPdf has no way to report
+an exception without sanitising it.** There is no `TrackException(Exception)` overload for a
+contributor to call by mistake.
 
 ### The machine name is the one identifying field
 
-Reports carry `host.name` — for example `L-JSMITH`. It is there because it is what
-makes a report actionable: it separates one machine with a fault from a fleet-wide
-regression.
+Reports carry `host.name`, for example `L-JSMITH`. It shows whether a problem is on one machine or
+across the fleet.
 
-On a corporate machine that name is often derived from the user's name, so treat it as
-identifying the device and, indirectly, its user. This is the only identifying field in
-the payload, and it is the one to weigh when deciding whether to enable reporting.
+On a work computer that name is often based on the user's name, so treat it as identifying the
+device and, indirectly, its user. It is the only identifying field in a report, and the one to
+consider when deciding whether to enable reporting.
 
 ## Local queues
 
-A report raised without a network connection is not thrown away. Two small queues live
-under the user's own profile and hold only the sanitised data above:
+A report raised while offline isn't discarded. Two small queues in the user's own profile hold it,
+containing only the sanitised data above:
 
 | Location | Contents | Lifetime |
 |---|---|---|
 | `%LOCALAPPDATA%\TDPdf\telemetry-spool` | Batches whose upload failed | Deleted once sent |
 | `%LOCALAPPDATA%\TDPdf\pending-crashes` | Crash records the app died before it could send | Deleted on replay; dropped unsent after 14 days, capped at 50 |
 
-The second exists because a crash that kills the process takes its in-memory report with
-it. Both are safe to delete by hand; you lose unsent reports and nothing else. With
+The second queue exists because a crash that ends the process also loses any report still in
+memory. You can delete either folder by hand; you lose unsent reports and nothing else. With
 reporting off, nothing new is written to either.
 
 ## Turning it off
 
-- **One user, this machine** — Settings → Privacy, untick *Send anonymous usage and
-  crash reports*. Effective immediately, and persists.
-- **The whole device, permanently** — `TDPdf.exe /clear-telemetry`. This writes an
-  opt-out marker that is checked **before any destination is read at all**, so it
-  outranks both the environment variables and administrator-pushed policy, and it
-  survives reinstalls.
+- **One user on this computer:** Settings → Privacy, untick *Send anonymous usage and crash
+  reports*. This takes effect immediately and stays off.
+- **The whole device, permanently:** `TDPdf.exe /clear-telemetry`. This writes an opt-out marker
+  that TDPdf checks **before it reads any destination**. It overrides both the environment
+  variables and administrator policy, and it survives reinstalls.
 
-That ordering is deliberate. A device-level opt-out that policy could override would not
-be an opt-out.
+Policy can't override the device opt-out.
 
-## Updates are separate
+## Update checks are separate
 
-The twice-daily check against the public GitHub releases listing happens regardless of
-your reporting setting, and is the only thing TDPdf does that reaches the network
-unconditionally. It carries no identifier and not even your version number — the
-comparison runs on your machine against a public page.
+The twice-daily check against the public GitHub releases listing runs whatever your reporting
+setting is. It is the only network request TDPdf always makes. It carries no identifier and not
+even your version number; the comparison happens on your computer against a public page.
 
 An administrator can disable it for an organisation by setting `Enabled` to `0` under
 `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Update`.
 
-## If this page and the code disagree
+## Source
 
-The code wins, and this page is the bug. Everything here is drawn from
-`Diagnostics/TelemetryConfig.cs`, `Diagnostics/OtlpTelemetry.cs`,
-`Diagnostics/Telemetry.cs` and `Diagnostics/Sanitizer.cs`, which you can read
-yourself — [the source is published]({{REPO_URL}}/tree/main/Diagnostics) and the
-corresponding source for every released binary ships beside it.
+This page is based on `Diagnostics/TelemetryConfig.cs`, `Diagnostics/OtlpTelemetry.cs`,
+`Diagnostics/Telemetry.cs` and `Diagnostics/Sanitizer.cs`. If the page and the source disagree, the
+source describes what TDPdf does. [The source is published]({{REPO_URL}}/tree/main/Diagnostics),
+and each release ships with the source for that exact binary.

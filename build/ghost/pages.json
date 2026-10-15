@@ -17,7 +17,7 @@
   "site": {
     "url": "https://tdpdf.com",
     "title": "TDPdf",
-    "description": "A PDF editor for Windows that installs without an administrator, verifies its own redactions, sends documents for electronic signature, and reports to nobody by default.",
+    "description": "A free PDF editor for Windows. Edit text, redact, fill and create forms, and send documents for electronic signature.",
     "accentColor": "#1a8f48",
     "navigation": [
       { "label": "Home", "url": "/" },
@@ -36,28 +36,28 @@
       "slug": "home",
       "title": "TDPdf",
       "source": "content/home.md",
-      "metaTitle": "TDPdf — a PDF editor for Windows that keeps quiet",
-      "metaDescription": "Redaction that verifies itself on the finished file and refuses to save if marked text survived. One self-contained exe, installed per user with no admin rights. Nothing phones home by default. GPLv3.",
+      "metaTitle": "TDPdf: free PDF editor for Windows with electronic signatures",
+      "metaDescription": "Edit PDF text, redact names and numbers for real, build forms, and send documents for signature. Free and open source, installs without admin rights, no tracking.",
       "note": "Served at /home/ until routes.yaml is uploaded once — see build/ghost/theme/routes.yaml."
     },
     {
       "slug": "download",
       "title": "Download",
       "source": "content/download.md",
-      "metaDescription": "Download TDPdf for Windows 10 and 11, verify the SHA256 checksum, and get the GPLv3 corresponding source for the exact binary you ran."
+      "metaDescription": "Download TDPdf for Windows 10 and 11. Includes the SHA-256 checksum, the source code and silent-install switches for IT."
     },
     {
       "slug": "privacy",
       "title": "Privacy",
       "source": "../../PRIVACY.md",
-      "metaDescription": "Exactly what TDPdf sends, when, and to whom — enumerated from the source in Diagnostics/. With no destination configured, nothing leaves your machine.",
+      "metaDescription": "What TDPdf can send, when, and to whom, field by field. Unless an organisation sets up a collector, it sends no usage data.",
       "generatedFrom": "PRIVACY.md"
     },
     {
       "slug": "third-party-licenses",
       "title": "Third-party licences",
       "source": "../../THIRD-PARTY-NOTICES.md",
-      "metaDescription": "Every third-party component inside the TDPdf executable, with its copyright notice and licence text, including the native payloads no licence scanner can see.",
+      "metaDescription": "The third-party components in TDPdf, with their copyright notices and licence texts.",
       "generatedFrom": "THIRD-PARTY-NOTICES.md",
       "regenerate": "../generate-third-party-notices.ps1"
     },
@@ -65,7 +65,7 @@
       "slug": "telemetry",
       "title": "Telemetry",
       "source": "content/telemetry.md",
-      "metaDescription": "How to point TDPdf at your own OTLP collector, what it sends when you do, and why a build with no policy configured reports to nobody."
+      "metaDescription": "How to send TDPdf usage and crash data to your own OpenTelemetry collector, and what it sends when you do."
     }
   ]
 }
