@@ -445,6 +445,62 @@ function Expand-Token {
     return $out
 }
 
+function Expand-Shot {
+    <#
+        Screenshot slots. A page marks one as
+            <!--shot:NAME--> ...{{SHOT}}... <!--/shot:NAME-->
+        with an optional fallback
+            <!--noshot:NAME--> ... <!--/noshot:NAME-->
+        The shot is used only when build/ghost/screenshots/NAME.png is on origin/main, because
+        the image is served from raw.githubusercontent.com off main. A PNG that exists only
+        locally would publish as a broken image, so until it lands the fallback (an illustration)
+        is shown instead and the slot is reported. ?v= is the file's blob id, so a replaced
+        screenshot is not served stale from GitHub's cache.
+    #>
+    param([string]$Text)
+    $names = [regex]::Matches($Text, '<!--(?:no)?shot:([a-z0-9-]+)-->') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+    foreach ($n in $names) {
+        $rel  = "build/ghost/screenshots/$n.png"
+        $blob = (& git -C $repoRoot rev-parse --verify --quiet "origin/main:$rel" 2>$null)
+        $have = ($LASTEXITCODE -eq 0 -and $blob)
+        $shotRx   = "(?s)<!--shot:$n-->(.*?)<!--/shot:$n-->"
+        $noshotRx = "(?s)<!--noshot:$n-->(.*?)<!--/noshot:$n-->"
+        if ($have) {
+            $url  = "https://raw.githubusercontent.com/$($repoUrl -replace '^https://github.com/','')/main/$rel" + "?v=$($blob.Substring(0,10))"
+            $Text = [regex]::Replace($Text, $shotRx, { param($m) $m.Groups[1].Value.Replace('{{SHOT}}', $url) })
+            $Text = [regex]::Replace($Text, $noshotRx, '')
+            Write-Note "screenshot $n : $rel"
+        } else {
+            $Text = [regex]::Replace($Text, $shotRx, '')
+            $Text = [regex]::Replace($Text, $noshotRx, { param($m) $m.Groups[1].Value })
+            if (Test-Path (Join-Path $repoRoot $rel)) { Write-Warn2 "screenshot $n : $rel exists locally but not on origin/main yet - fallback used" }
+            else { Write-Note "screenshot $n : none yet - fallback used" }
+        }
+    }
+    return $Text
+}
+
+function Get-ReleaseFacts {
+    # Size and SHA-256 of the published exe, so the download button can state them. Read
+    # from the public release, never computed locally: the page must describe the file
+    # people actually get.
+    param([string]$Tag, [string]$Asset)
+    $api = "https://api.github.com/repos/$($repoUrl -replace '^https://github.com/','')/releases/tags/$Tag"
+    try {
+        $rel  = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'tdpdf-publish-site' }
+        $a    = $rel.assets | Where-Object name -eq $Asset | Select-Object -First 1
+        $sums = (Invoke-WebRequest -Uri "$repoUrl/releases/download/$Tag/SHA256SUMS.txt" -Headers @{ 'User-Agent' = 'tdpdf-publish-site' }).Content
+        if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
+        $line = ($sums -split "`n") | Where-Object { $_ -match [regex]::Escape($Asset) } | Select-Object -First 1
+        return [pscustomobject]@{
+            SizeMb = if ($a) { [math]::Round($a.size / 1MB) } else { $null }
+            Sha256 = if ($line) { ($line -split '\s+')[0].ToLowerInvariant() } else { $null }
+        }
+    } catch {
+        Stop-WithMessage "Could not read release $Tag from GitHub ($($_.Exception.Message)). The download page states the exe's size and SHA-256, so it is not published without them."
+    }
+}
+
 # ── Load manifest ──────────────────────────────────────────────────────────────────────
 
 Write-Step 'Reading manifest'
@@ -473,6 +529,10 @@ $tokens = @{
     RELEASE_PAGE     = "$repoUrl/releases/tag/$tag"
     RELEASE_PAGE_ALL = "$repoUrl/releases"
 }
+$facts = Get-ReleaseFacts -Tag $tag -Asset $tokens.EXE_ASSET
+if (-not $facts.SizeMb -or -not $facts.Sha256) { Stop-WithMessage "Release $tag has no $($tokens.EXE_ASSET) or no checksum line for it." }
+$tokens.EXE_SIZE_MB = [string]$facts.SizeMb
+$tokens.EXE_SHA256  = $facts.Sha256
 
 Write-Note "Site      : $SiteUrl"
 Write-Note "Version   : $version (tag $tag)"
@@ -557,6 +617,8 @@ foreach ($page in $selected) {
     $sourcePath = (Resolve-Path $sourcePath).Path
 
     $markdown = Get-Content -Raw -LiteralPath $sourcePath
+    # Shots first: {{SHOT}} is resolved or dropped there, and Expand-Token rejects leftovers.
+    $markdown = Expand-Shot -Text $markdown
     $markdown = Expand-Token -Text $markdown -Tokens $tokens
 
     $html    = ConvertTo-GhostHtml -Markdown $markdown

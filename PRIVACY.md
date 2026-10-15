@@ -44,9 +44,8 @@ If you are running a build you compiled yourself and have done none of the above
 destination and reports nothing. The Settings dialog tells you which of these two states you are
 in rather than leaving you to guess.
 
-Reports go to an OpenTelemetry collector operated by the deploying organisation. As of version
-1.24.0.0 that is the only destination TDPdf can send to; earlier versions could also report to
-Azure Application Insights, and that path has been removed from the application entirely.
+Reports go to an OpenTelemetry collector operated by the deploying organisation. That is the
+only destination TDPdf can send to.
 
 ## What is sent, when reporting is on
 
@@ -76,7 +75,7 @@ records the typed text. These events never record text, signature data, a page n
 details. `File.Open` records that an open happened, its duration and whether it succeeded — not
 which file.
 
-`Zoom.Churn` is a self-diagnostic added in 1.24.1.0: if the view re-applies its zoom 8 or more
+`Zoom.Churn` is a self-diagnostic: if the view re-applies its zoom 8 or more
 times a second and keeps doing so for at least two seconds, it reports how many, for how long, the
 name of the method in TDPdf's own source that asked for most of them, how many of them that method
 accounted for, and the zoom fit mode and view mode in force. Method names are fixed at compile time and the two modes are names of settings you chose,
@@ -85,9 +84,8 @@ document, a page, or anything you typed. It is rate-limited to one report every 
 
 `Annotation.TextEditorCommitDeferred` records that TDPdf declined to close a text box you had not
 typed into yet, and which part of the program asked it to. `Annotation.TextEditorClosed` carries
-that same "which part of the program" name alongside the outcome described above. Both were added
-in 1.23.7.0 and should have been described here then; the omission is corrected in 1.24.1.0. Like
-the rest of the annotation events, they record no text and no document detail.
+that same "which part of the program" name alongside the outcome described above. Like the rest
+of the annotation events, they record no text and no document detail.
 
 **Technical context.** Application version, Windows version, 64-bit or not, .NET runtime version,
 processor count, and whether the install is per-user or machine-wide.

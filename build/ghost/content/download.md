@@ -1,19 +1,27 @@
 # Download
 
-The current release is **{{VERSION}}**. It runs on Windows 10 and 11, 64-bit. There is
-no macOS or Linux build, and there will not be one — the app is WPF on top of a native
-`pdfium.dll`.
-
-## Direct download
-
-| | |
-|---|---|
-| **[{{EXE_ASSET}}]({{RELEASE_DOWNLOAD}}/{{EXE_ASSET}})** | The application. One self-contained executable — no runtime to install first. |
-| **[SHA256SUMS.txt]({{RELEASE_DOWNLOAD}}/SHA256SUMS.txt)** | Checksums for every file in this release. |
-| **[{{SRC_ASSET}}]({{RELEASE_DOWNLOAD}}/{{SRC_ASSET}})** | GPLv3 corresponding source for this exact binary. |
-
-All three, plus the release notes, are on the
-[GitHub releases page]({{RELEASE_PAGE}}).
+<section class="tdp tdp-band tdp-hero" style="padding-bottom:2rem">
+<div class="tdp-wrap">
+<span class="tdp-eyebrow">Free · Windows 10 &amp; 11 · 64-bit</span>
+<h1>Download TDPdf <em>{{VERSION}}</em></h1>
+<p class="tdp-lead">One signed file, about {{EXE_SIZE_MB}}&nbsp;MB. Run it straight away, or click <i>Install TDPdf…</i> in the status bar to install it for your account — no administrator needed.</p>
+<div class="tdp-dl" style="margin-top:1.8rem">
+<img class="tdp-dl-mark" src="https://raw.githubusercontent.com/doodlemania2/TDPdf/main/Resources/splash-logo.png" alt="" width="88" height="88">
+<div>
+<h2 style="font-size:1.35rem">TDPdf for Windows</h2>
+<p class="tdp-muted" style="margin:0">Version {{VERSION}} · {{EXE_SIZE_MB}} MB · signed by The Doodle Project</p>
+<div class="tdp-ctas" style="margin:1rem 0 .4rem"><a class="tdp-btn primary" href="{{RELEASE_DOWNLOAD}}/{{EXE_ASSET}}">Download {{EXE_ASSET}}</a><a class="tdp-btn ghost" href="{{RELEASE_PAGE}}">Release notes</a></div>
+<div class="tdp-hash">SHA-256 {{EXE_SHA256}}</div>
+</div>
+</div>
+<div class="tdp-strip" style="margin-top:1.2rem">
+<div><b>Microsoft Store</b><span>Coming soon — in certification now</span></div>
+<div><b>Source code</b><span><a href="{{RELEASE_DOWNLOAD}}/{{SRC_ASSET}}">{{SRC_ASSET}}</a></span></div>
+<div><b>Checksums</b><span><a href="{{RELEASE_DOWNLOAD}}/SHA256SUMS.txt">SHA256SUMS.txt</a></span></div>
+<div><b>Every release</b><span><a href="{{RELEASE_PAGE_ALL}}">on GitHub</a></span></div>
+</div>
+</div>
+</section>
 
 ### Verify what you downloaded
 
@@ -31,13 +39,6 @@ The executable is also Authenticode-signed by **The Doodle Project**, through
 Microsoft's Artifact Signing service, so it chains to a root Windows already trusts.
 Right-click ▸ Properties ▸ Digital Signatures shows the signer, and Windows will tell
 you itself if the signature is missing or broken.
-
-## Microsoft Store
-
-> **Coming soon.** TDPdf {{VERSION}} has been submitted to the Microsoft Store and is in
-> certification. When the listing goes live, the link will appear here, and the Store
-> will keep TDPdf updated for you. Until then, the direct download above is the same
-> signed file.
 
 ## Running it
 
