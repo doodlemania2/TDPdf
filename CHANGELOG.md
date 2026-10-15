@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
-## [2.0.0.0] - 2026-09-15
+## [2.0.0.0] - 2026-10-14
 
 **Electronic signatures, natively.** Send a document for signature, place the fields where people sign, sign it yourself, follow every request through to completion and download the sealed copy — all from inside TDPdf, through TDPdf's own signing service at [sign.tdpdf.com](https://sign.tdpdf.com). Completed documents are sealed with a certificate on Adobe's Approved Trust List, held in a hardware security module, and timestamped so the signature outlives the certificate.
 
