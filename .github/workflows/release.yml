@@ -316,7 +316,13 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Update Microsoft Store listing
+        id: store
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true'
+        # The Store must never cost the fleet its update: this step runs before Intune, and the
+        # Store API answers 404 "No Product Found" for an EXE app until its first, hand-made
+        # submission has been published (Microsoft's documented prerequisite). A failure here
+        # is reported in the summary and the run goes on to Intune.
+        continue-on-error: true
         env:
           TAG: ${{ steps.tag.outputs.name }}
           PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
@@ -390,5 +396,5 @@ jobs:
             echo "| Version (from csproj) | ${{ steps.ver.outputs.version }} |"
             echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes — Azure Artifact Signing (publicly trusted)' || (steps.sign_pfx.outputs.signed == 'true' && 'yes — private PFX (fleet only, not Store-eligible)' || 'NO — unsigned') }} |"
             echo "| Intune | ${{ (env.HAS_INTUNE == 'true' && github.event.inputs.skip_intune != 'true') && 'updated' || 'skipped' }} |"
-            echo "| Store | ${{ (env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true') && 'submitted' || 'skipped' }} |"
+            echo "| Store | ${{ steps.store.outcome == 'success' && 'submitted' || (steps.store.outcome == 'failure' && 'FAILED — see the Store step log; the release and Intune were not affected' || 'skipped') }} |"
           } >> "$GITHUB_STEP_SUMMARY"
