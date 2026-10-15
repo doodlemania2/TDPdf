@@ -27,19 +27,17 @@ Get-FileHash .\{{EXE_ASSET}} -Algorithm SHA256
 Compare the hash against the line for `{{EXE_ASSET}}` in `SHA256SUMS.txt`. If they
 differ, the file you have is not the file that was published — delete it.
 
-The executable is also Authenticode-signed. Right-click ▸ Properties ▸ Digital
-Signatures shows the signer, and Windows will tell you itself if the signature is
-missing or broken.
+The executable is also Authenticode-signed by **The Doodle Project**, through
+Microsoft's Artifact Signing service, so it chains to a root Windows already trusts.
+Right-click ▸ Properties ▸ Digital Signatures shows the signer, and Windows will tell
+you itself if the signature is missing or broken.
 
 ## Microsoft Store
 
-> **Not yet available.** TDPdf's Store listing is gated on a publicly trusted code
-> signing certificate, and that is not in place. Until it is, the direct download above
-> is the only consumer channel, and this section is a placeholder. When the Store
-> listing goes live, the link will appear here.
->
-> If you are reading this and the Store link is still absent, nothing has gone wrong —
-> the channel simply is not open yet.
+> **Coming soon.** TDPdf {{VERSION}} has been submitted to the Microsoft Store and is in
+> certification. When the listing goes live, the link will appear here, and the Store
+> will keep TDPdf updated for you. Until then, the direct download above is the same
+> signed file.
 
 ## Running it
 

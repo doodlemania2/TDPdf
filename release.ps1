@@ -292,8 +292,7 @@ try {
         if ($intunewin) { Write-Host "  WIN32: $intunewin" -ForegroundColor Green }
         Write-Host   "  SHA256: $hash" -ForegroundColor Green
         Write-Host   ""
-        Write-Host   "  Paste SHA256 into:"
-        Write-Host   "    pdf-landing\index.html (search for SHA256)"
+        Write-Host   "  Then refresh tdpdf.com: build/ghost/publish-site.ps1 (reads the version and links itself)"
 
         if ($intunewin) {
             Write-Host ""

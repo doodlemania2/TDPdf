@@ -17,7 +17,7 @@
   "site": {
     "url": "https://tdpdf.com",
     "title": "TDPdf",
-    "description": "A PDF editor for Windows that installs without an administrator, verifies its own redactions, and reports to nobody by default.",
+    "description": "A PDF editor for Windows that installs without an administrator, verifies its own redactions, sends documents for electronic signature, and reports to nobody by default.",
     "accentColor": "#1a8f48",
     "navigation": [
       { "label": "Home", "url": "/" },
