@@ -44,7 +44,7 @@ jobs:
       HAS_AZSIGN:    ${{ secrets.SIGN_CLIENT_SECRET != '' }}
       HAS_PFX:       ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
       HAS_INTUNE:    ${{ secrets.INTUNE_APP_ID != '' }}
-      HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' }}
+      HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -271,20 +271,59 @@ jobs:
       # MSIX would have forked every one of them. The trade is that the Store does NOT re-sign
       # our binary, so the exe must already carry a publicly-trusted signature.
       #
-      # There is therefore no upload here. The whole submission is "here is a new immutable
-      # URL", which GitHub release assets already are.
+      # The whole submission is "here is a new installer URL". It cannot be the GitHub release
+      # asset: Partner Center refuses any URL that redirects ("Provide a download URL without
+      # redirection"), and GitHub assets always 302 to a short-lived signed URL. So the signed
+      # exe is first copied to a public-read blob, which answers 200 directly:
+      #   https://tdpdfreleases.blob.core.windows.net/releases/<tag>/TDPdf-<tag>-win-x64.exe
+      # Storage account `tdpdfreleases` (RG `personal`, The Doodle Project tenant) has shared-key
+      # access disabled; the SIGN_* identity holds Storage Blob Data Contributor on the
+      # `releases` container only, so no storage key exists anywhere.
       #
       # Gated on its secret like every other optional stage, so a missing or rotated credential
       # degrades to build-and-release rather than failing the run. Skipped entirely for an
       # unsigned build: submitting one would be rejected at certification, and burning a
       # submission on a guaranteed rejection is worse than not submitting.
+      - name: Copy the installer to a direct-download URL for the Store
+        id: storeurl
+        if: env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+          AZURE_TENANT_ID: ${{ secrets.SIGN_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.SIGN_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.SIGN_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          FILE="dist/TDPdf-${TAG}-win-x64.exe"
+          URL="https://tdpdfreleases.blob.core.windows.net/releases/${TAG}/TDPdf-${TAG}-win-x64.exe"
+          TOKEN="$(pwsh -NoProfile -Command '(Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$env:AZURE_TENANT_ID/oauth2/v2.0/token" -Body @{ client_id = $env:AZURE_CLIENT_ID; client_secret = $env:AZURE_CLIENT_SECRET; scope = "https://storage.azure.com/.default"; grant_type = "client_credentials" }).access_token')"
+          : "${TOKEN:?could not get a storage token for SIGN_CLIENT_ID}"
+          echo "::add-mask::$TOKEN"
+          # One Put Blob (allowed up to 5000 MiB on this API version). A workflow_dispatch re-run
+          # overwrites the blob, matching how it replaces the GitHub release assets.
+          curl -sSf --max-time 600 -X PUT "$URL" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "x-ms-version: 2023-11-03" \
+            -H "x-ms-blob-type: BlockBlob" \
+            -H "x-ms-blob-content-type: application/vnd.microsoft.portable-executable" \
+            --upload-file "$FILE" >/dev/null
+          # Prove it is what the Store will see: 200 with no redirect, and the same bytes.
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -I "$URL")"
+          [ "$code" = "200" ] || { echo "::error::$URL answered $code, not 200"; exit 1; }
+          want="$(sha256sum "$FILE" | cut -d' ' -f1)"
+          got="$(curl -sSf --max-time 600 "$URL" | sha256sum | cut -d' ' -f1)"
+          [ "$want" = "$got" ] || { echo "::error::blob bytes differ from the signed exe"; exit 1; }
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
       - name: Update Microsoft Store listing
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true'
         env:
           TAG: ${{ steps.tag.outputs.name }}
           PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
+          ASSET: ${{ steps.storeurl.outputs.url }}
         run: |
           set -euo pipefail
+          : "${PRODUCT_ID:?MSSTORE_PRODUCT_ID is not set — copy it from the Partner Center product page URL}"
           # The CLI is a .NET tool and cross-platform, which is why this can live on the Linux
           # runner alongside everything else.
           dotnet tool install --global MSStore.CLI >/dev/null 2>&1 || dotnet tool update --global MSStore.CLI >/dev/null 2>&1
@@ -296,12 +335,7 @@ jobs:
             --clientSecret "${{ secrets.MSSTORE_CLIENT_SECRET }}" \
             --sellerId "${{ secrets.MSSTORE_SELLER_ID }}"
 
-          ASSET="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/TDPdf-${TAG}-win-x64.exe"
           echo "Installer URL: $ASSET"
-          # Fail here rather than at certification if the asset is not actually reachable:
-          # the Store downloads and re-scans this URL, and a 404 wastes a submission.
-          curl -sfIL --max-time 60 "$ASSET" >/dev/null || {
-            echo "::error::Release asset not reachable at $ASSET"; exit 1; }
 
           # Read the current submission, swap only the installer URL, and send it back. Editing
           # the live shape rather than posting a hand-written one means listing copy, screenshots
