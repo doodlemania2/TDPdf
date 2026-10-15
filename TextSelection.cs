@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using TDPdf.Services;
 
 namespace TDPdf
@@ -96,6 +98,103 @@ namespace TDPdf
         /// </summary>
         private static (double X, double Y) CanvasToPdf(Point pos, double renderW, double renderH, PageTextRuns runs)
             => (pos.X * runs.PdfWidth / renderW, runs.PdfHeight - pos.Y * runs.PdfHeight / renderH);
+
+        // ── Select-tool hover affordance (#135 item 5, from upstream KillerPDF #221) ──────────
+        //
+        // The page this handler last asked to have its text geometry built, so a sweep across a
+        // cold page queues exactly one warm-up instead of one per mouse-move. Keyed by file as
+        // well as page: switching tabs must not suppress the new document's warm.
+        private (string? File, int Page) _hoverWarmRequested = (null, -1);
+
+        /// <summary>
+        /// Sets the annotation canvas's cursor to reflect what the Select tool would actually do at
+        /// <paramref name="pos"/>: the hand over a link, an I-beam over selectable text, the arrow
+        /// over empty page (where a drag lays down the rectangle marquee instead). Priority and the
+        /// reasoning behind it live in <see cref="SelectCursorPolicy"/>.
+        ///
+        /// PERFORMANCE — this runs on every mouse-move over the page, so nothing here may parse:
+        ///   * the link test is the caller's existing bounds sweep over <c>_linkOverlays</c>, whose
+        ///     result is passed in, so links cost nothing extra at all;
+        ///   * the text test reads the character cache through <see cref="TextRunService.TryGetCached"/>,
+        ///     which never opens or even stats the file, then runs <see cref="TextRunService.IsOverText"/>
+        ///     — a walk over the page's LINE boxes (tens to a couple of hundred), not its characters;
+        ///   * a cold cache leaves the cursor exactly as it was and queues the (expensive, PdfPig)
+        ///     build at <see cref="DispatcherPriority.Background"/>, so it lands in an idle moment
+        ///     rather than stalling the gesture. The cursor corrects itself on the next move.
+        /// </summary>
+        private void UpdateSelectHoverCursor(Point pos, bool overLink)
+        {
+            if (_annotationCanvas is null) return;
+
+            int pageIdx = PageList.SelectedIndex;
+            bool geometryKnown = false;
+            bool overText = false;
+
+            // Skipped entirely when a link already owns the point — links win outright, so there is
+            // no reason to touch the text geometry (or queue a warm) to answer a question whose
+            // answer cannot change the outcome.
+            if (!overLink && _currentFile is not null && pageIdx >= 0 &&
+                _renderDims.TryGetValue(pageIdx, out var rd) && rd.w > 0 && rd.h > 0)
+            {
+                if (_textRuns.TryGetCached(_currentFile, pageIdx, out var runs))
+                {
+                    geometryKnown = true;
+                    // A null entry is a page PdfPig could not read and a zero-character page is a
+                    // scan: both are genuinely "known, and not over text", so they settle on the
+                    // arrow rather than sitting Unchanged and re-queueing a warm forever.
+                    if (runs is not null && runs.Chars.Count > 0)
+                    {
+                        var (px, py) = CanvasToPdf(pos, rd.w, rd.h, runs);
+                        overText = TextRunService.IsOverText(runs, px, py);
+                    }
+                }
+                else
+                {
+                    QueueTextRunWarm(_currentFile, pageIdx);
+                }
+            }
+
+            var want = SelectCursorPolicy.Resolve(overLink, geometryKnown, overText);
+            var cursor = want switch
+            {
+                SelectHoverCursor.Hand  => Cursors.Hand,
+                SelectHoverCursor.IBeam => Cursors.IBeam,
+                SelectHoverCursor.Arrow => Cursors.Arrow,
+                _ => null                                  // Unchanged — leave what the tool set
+            };
+            // Reference-compare before assigning: WPF re-evaluates the cursor on every set, and this
+            // runs at mouse-move rates.
+            if (cursor is not null && !ReferenceEquals(_annotationCanvas.Cursor, cursor))
+                _annotationCanvas.Cursor = cursor;
+        }
+
+        /// <summary>
+        /// Asks for one page's character geometry to be built when the UI thread next goes idle.
+        /// The build itself is <see cref="TextRunService.GetPage"/> — a full PdfPig parse, which is
+        /// why it is never called inline from the move handler. Deferred rather than threaded on
+        /// purpose: <see cref="TextRunService"/>'s cache is a plain dictionary owned by the UI
+        /// thread, and this is the same parse the very next press would have done anyway.
+        /// </summary>
+        private void QueueTextRunWarm(string file, int pageIdx)
+        {
+            if (_hoverWarmRequested == (file, pageIdx)) return;
+            _hoverWarmRequested = (file, pageIdx);
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                // The tool, tab or page can all have moved on while this sat in the queue; the
+                // parse is only worth doing for what is still on screen. Clearing the guard on the
+                // way out matters: leaving it set would mark a page as "already warmed" that never
+                // was, and the I-beam would then never appear on it again for the rest of the
+                // session.
+                if (_currentTool != EditTool.Select || _currentFile != file ||
+                    PageList.SelectedIndex != pageIdx)
+                {
+                    if (_hoverWarmRequested == (file, pageIdx)) _hoverWarmRequested = (null, -1);
+                    return;
+                }
+                _textRuns.GetPage(file, pageIdx);
+            }));
+        }
 
         /// <summary>
         /// Arms a flowing selection when the press lands ON text. Returns false for empty page,
@@ -451,6 +550,10 @@ namespace TDPdf
         {
             _textRuns.Clear();
             ClearTextSelection();
+            // The hover cursor's warm-up guard remembers what it already asked for; without this a
+            // page invalidated while the pointer sits over it would never be rebuilt and the
+            // I-beam would stop appearing there for the rest of the session.
+            _hoverWarmRequested = (null, -1);
         }
     }
 }

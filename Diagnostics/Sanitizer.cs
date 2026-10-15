@@ -34,6 +34,12 @@ namespace TDPdf.Diagnostics
                 @"(?i)(InstrumentationKey|IngestionEndpoint|ConnectionString)\s*=\s*[^;\s""]+",
                 "$1=[redacted]");
 
+            // Documenso API tokens (Electronic Signature). The real protection is that the token
+            // never enters a message at all — DocumensoClient keeps it out of URLs and exceptions —
+            // and this is the second line: a token is not path-shaped, so nothing below would
+            // catch one that slipped through.
+            sanitized = Regex.Replace(sanitized, @"api_[A-Za-z0-9_-]{16,}", "api_[redacted]");
+
             // Windows paths (UNC, drive-rooted, and bare backslash chains).
             sanitized = Regex.Replace(sanitized, @"\\[^\s:;]+(?:\\[^\s:;]+)+", "[path redacted]");
             sanitized = Regex.Replace(sanitized, @"[A-Za-z]:\\[^\r\n:;]+", "[path redacted]");

@@ -25,3 +25,15 @@ namespace TDPdf.Diagnostics
         public static void TrackEvent(string name, IDictionary<string, string>? props = null) { }
     }
 }
+
+// DocumensoConfig reads the user's own instance URL from Settings.Default. The real class is an
+// ApplicationSettingsBase backed by user.config; this stand-in is a plain property the Documenso
+// suite sets and restores around each resolution check.
+namespace TDPdf.Properties
+{
+    internal sealed class Settings
+    {
+        public static Settings Default { get; } = new();
+        public string DocumensoBaseUrl { get; set; } = "";
+    }
+}

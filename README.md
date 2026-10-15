@@ -23,7 +23,7 @@ PDF editor for Windows. View, annotate, merge, split, edit text, draw, sign, pri
 - Print with annotations flattened into the output
 - Save Flattened PDF: rasterizes every page at 150 DPI via PDFium into a fully uneditable document
 - Password-protected PDF support: prompts for password instead of erroring, decrypted copy held in temp for the session
-- Self-installing EXE: running from outside the install path shows an Install / Run Portable dialog; running a newer version shows an Update prompt instead. Installs per-user to %LOCALAPPDATA% (no UAC), registers as PDF file handler, adds Start Menu and optional Desktop shortcuts, uninstalls cleanly via Add/Remove Programs
+- Self-installing EXE: running from outside the install path runs portable, with an "Install TDPdf..." button in the status bar; when TDPdf is already installed for the user, that button names the installed version and offers Upgrade / Reinstall / Uninstall instead (a machine-wide, organisation-managed install is left alone). Installs per-user to %LOCALAPPDATA% (no UAC), registers as PDF file handler, adds Start Menu and optional Desktop shortcuts, uninstalls cleanly via Add/Remove Programs
 
 ## Screenshots
 
@@ -43,7 +43,7 @@ Grab the latest signed `TDPdf.exe` from the [Releases page](https://github.com/d
 ## Unattended install
 
 TDPdf installs itself — there is no separate installer. Running `TDPdf.exe` from outside the
-install location offers Install or Run Portable; for scripted deployment, skip that prompt:
+install location runs portable and offers to install from the status bar; for scripted deployment:
 
 ```
 TDPdf.exe /install /silent      # install, no UI

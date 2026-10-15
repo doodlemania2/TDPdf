@@ -125,6 +125,7 @@ namespace TDPdf.Services
                 BorderThickness = new Thickness(1),
                 Padding = new Thickness(8),
             };
+            TdpDialog.UseThemedTextMenu(body);
             Grid.SetRow(body, 1);
             grid.Children.Add(body);
 

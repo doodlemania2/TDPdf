@@ -37,17 +37,46 @@
     <PackageReference Include="bblanchon.PDFium.Linux" Version="154.0.8035" />
     <PackageReference Include="bblanchon.PDFium.Win32" Version="154.0.8035" />
     <PackageReference Include="PdfPig" Version="0.1.14" />
+    <!-- Test runner only: the app gets System.Security.Cryptography.Pkcs from the WindowsDesktop
+         shared framework (net10.0-windows), which this plain net10.0 console does not reference.
+         Nothing here ships, so it needs no THIRD-PARTY-NOTICES entry. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.0" />
     <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
     <Compile Include="..\..\Services\PdfiumInterop.cs" />
     <Compile Include="..\..\Services\CmapCoverage.cs" />
     <Compile Include="..\..\Services\PdfPageGeometry.cs" />
+    <Compile Include="..\..\Services\MeasureGeometry.cs" />
+    <Compile Include="..\..\Services\PdfSignatureScan.cs" />
+    <Compile Include="..\..\Services\PdfSignatureInspector.cs" />
     <Compile Include="..\..\Services\PdfPageImageEncoder.cs" />
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
     <Compile Include="..\..\Services\PdfTextEdit.cs" />
     <Compile Include="..\..\Services\PdfContentInspector.cs" />
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
+    <Compile Include="..\..\Services\PageBlockMove.cs" />
+    <Compile Include="..\..\Services\PageIndexRemap.cs" />
+    <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
+    <Compile Include="..\..\Services\TextLetterSpacing.cs" />
+    <Compile Include="..\..\Services\RtlTextLayout.cs" />
+    <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
+    <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
+    <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
+    <Compile Include="..\..\Services\PdfImages.cs" />
+    <Compile Include="..\..\Services\InkDot.cs" />
+    <!-- Electronic Signature: the WPF-free parts. The registry reads in DocumensoConfig are
+         guarded by OperatingSystem.IsWindows(), and Settings.Default is shimmed in Shims.cs. -->
+    <Compile Include="..\..\Services\DocumensoConfig.cs" />
+    <Compile Include="..\..\Services\DocumensoModels.cs" />
+    <Compile Include="..\..\Services\DocumensoClient.cs" />
+    <Compile Include="..\..\Services\DocumensoFieldGeometry.cs" />
+    <Compile Include="..\..\Services\DocumensoPlaceholders.cs" />
+    <Compile Include="..\..\Services\DocumensoSend.cs" />
+    <Compile Include="..\..\Services\DocumensoRequestStore.cs" />
+    <Compile Include="..\..\Services\DocumensoRequests.cs" />
+    <Compile Include="..\..\Services\DocumensoSelfSign.cs" />
+    <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
   </ItemGroup>
 
 </Project>

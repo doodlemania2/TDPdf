@@ -869,12 +869,18 @@ namespace TDPdf
                 if (result.Words.Count == 0) continue;
 
                 var page = outDoc.Pages[i];
-                using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
 
-                // OCR boxes are top-left pixel space; XGraphics is top-left point space. Same convention,
-                // so mapping is a straight scale.
-                double sx = page.Width.Point / w;
-                double sy = page.Height.Point / h;
+                // OCR boxes are top-left pixel positions on the bitmap PDFium just rendered, and PDFium
+                // renders the VISIBLE box (/CropBox, inheritance-aware) with /Rotate applied. Scaling by
+                // page.Width/Height instead — MediaBox-derived, (0,0) origin, own-dictionary /Rotate only
+                // — put the invisible layer off by the crop inset on a cropped or offset-origin page and
+                // a quarter turn out on a rotated one, so search and select hit empty space (#418 class).
+                // Same mapping the annotation bake uses: scale pixels to the visual frame, then prepend
+                // the visual → XGraphics matrix so every DrawString below stays in visual coordinates.
+                var (sx, sy, visualToPage) = PdfPageGeometry.RasterToXGraphics(page, w, h);
+                using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
+                if (visualToPage is XMatrix m)
+                    gfx.MultiplyTransform(m, XMatrixOrder.Prepend);
 
                 // The OCR layer is written in text rendering mode 3 (neither fill nor stroke) AND
                 // with a zero-alpha brush. Belt and braces is deliberate - if either mechanism is

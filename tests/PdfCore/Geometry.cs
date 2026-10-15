@@ -281,5 +281,69 @@ internal static class Geometry
             Check("offset CropBox: mapped rect lands on the object", inside,
                   inside ? "" : "the crop origin was not accounted for");
         }
+
+        // ── Drawing INTO a page at raster coordinates (OCR text layer, annotation bake) ──────
+        // The OCR pass renders each page through PDFium, recognises words in THAT bitmap, and
+        // writes an invisible text layer at the word positions via XGraphics. It used to scale by
+        // page.Width/Height, which put the layer off by the crop inset on a cropped page and a
+        // quarter turn out on a rotated one. So: draw a box through RasterToXGraphics at a known
+        // raster position on every quarter turn of an offset-CropBox page, render the result, and
+        // require the ink to come back at that position. The "raster" is 2 px/pt, as the OCR one
+        // is never 1:1, and it is checked against a 1 px/pt render.
+        Console.WriteLine("\nRaster position -> XGraphics draw, checked against PDFium's rendering");
+        foreach (int rotate in new[] { 0, 90, 180, 270 })
+        {
+            string src = Path.Combine(tmp, $"ocrmap-src-{rotate}.pdf");
+            string outPath = Path.Combine(tmp, $"ocrmap-out-{rotate}.pdf");
+            {
+                var d = new PdfSharpCore.Pdf.PdfDocument();
+                var p = d.AddPage();
+                var crop = new PdfSharpCore.Pdf.PdfArray();
+                foreach (double v in new[] { 60.0, 90.0, 520.0, 700.0 })
+                    crop.Elements.Add(new PdfSharpCore.Pdf.PdfReal(v));
+                p.Elements["/CropBox"] = crop;
+                p.Rotate = rotate;
+                d.Save(src);
+            }
+
+            double rx = 0, ry = 0, rwPx = 0, rhPx = 0;
+            {
+                // Reopened, as the OCR pass does: PdfSharpCore's reader is what swaps the reported
+                // page dimensions for a quarter-turned page, and the matrix has to survive that.
+                using var doc = PdfSharpCore.Pdf.IO.PdfReader.Open(src, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.Modify);
+                var page = doc.Pages[0];
+                var (dw, dh) = PdfPageGeometry.DisplaySize(page);
+                rwPx = dw * 2; rhPx = dh * 2;
+                // Off-centre in both axes, so every wrong turn or missing offset lands elsewhere.
+                rx = rwPx * 0.15; ry = rhPx * 0.25;
+                const double bw = 120, bh = 50;                  // raster pixels
+                var (sx, sy, m) = PdfPageGeometry.RasterToXGraphics(page, rwPx, rhPx);
+                using (var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append))
+                {
+                    if (m is XMatrix mm) gfx.MultiplyTransform(mm, XMatrixOrder.Prepend);
+                    gfx.DrawRectangle(XBrushes.Black, rx * sx, ry * sy, bw * sx, bh * sy);
+                }
+                doc.Save(outPath);
+            }
+
+            IntPtr pdoc = FPDF_LoadDocument(outPath, null);
+            (double X, double Y, double W, double H, int RW, int RH) ink;
+            try
+            {
+                IntPtr pg = FPDF_LoadPage(pdoc, 0);
+                try { ink = InkBox(pg); }
+                finally { FPDF_ClosePage(pg); }
+            }
+            finally { FPDF_CloseDocument(pdoc); }
+
+            // Expected, in the 1 px/pt render: half of every raster-pixel quantity.
+            double ex = rx / 2, ey = ry / 2, ew = 60, eh = 25;
+            double drift = Math.Max(Math.Max(Math.Abs(ink.X - ex), Math.Abs(ink.Y - ey)),
+                                    Math.Max(Math.Abs(ink.W - ew), Math.Abs(ink.H - eh)));
+            Console.WriteLine($"  /Rotate {rotate,3}: render {ink.RW}x{ink.RH}, want ({ex:F0},{ey:F0}) {ew:F0}x{eh:F0}, " +
+                              $"got ({ink.X:F0},{ink.Y:F0}) {ink.W:F0}x{ink.H:F0}");
+            Check($"/Rotate {rotate} + offset CropBox: raster-space draw lands where it was aimed", drift <= 1.5,
+                  $"worst drift {drift:F1}px");
+        }
     }
 }

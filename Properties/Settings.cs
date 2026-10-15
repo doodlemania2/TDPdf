@@ -146,15 +146,6 @@ namespace TDPdf.Properties
             set => this[nameof(PrintPrinter)] = value;
         }
 
-        // Last print orientation: "Portrait" or "Landscape".
-        [UserScopedSetting]
-        [DefaultSettingValue("Portrait")]
-        public string PrintOrientation
-        {
-            get => (string)this[nameof(PrintOrientation)];
-            set => this[nameof(PrintOrientation)] = value;
-        }
-
         // Last color mode: "Color" or "Grayscale".
         [UserScopedSetting]
         [DefaultSettingValue("Color")]
@@ -323,5 +314,46 @@ namespace TDPdf.Properties
             get => (string)this[nameof(OcrHqLanguages)];
             set => this[nameof(OcrHqLanguages)] = value;
         }
+
+        // --- Electronic Signature (Documenso) ---
+        //
+        // None of these is a secret: the API token lives in DPAPI (Services/DocumensoCredentialStore),
+        // never here. All three must survive App.EnsureSettingsHealthy resetting user.config without
+        // warning, which their defaults do — a reset only forgets a typed URL and two preferences.
+
+        // The instance URL the user typed in Settings. "" means "not set here": Services/DocumensoConfig
+        // then falls back to the policy URL or the built-in default. Honoured only when no policy URL
+        // is pushed or the policy allows overriding it.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string DocumensoBaseUrl
+        {
+            get => (string)this[nameof(DocumensoBaseUrl)];
+            set => this[nameof(DocumensoBaseUrl)] = value;
+        }
+
+        // Send for Signature: whether "Sign in order" starts ticked (sequential rather than parallel).
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool DocumensoDefaultSigningOrder
+        {
+            get => (bool)this[nameof(DocumensoDefaultSigningOrder)];
+            set => this[nameof(DocumensoDefaultSigningOrder)] = value;
+        }
+
+        // Send for Signature: the remembered "Include me as a signer" checkbox.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool DocumensoIncludeSelfAsSigner
+        {
+            get => (bool)this[nameof(DocumensoIncludeSelfAsSigner)];
+            set => this[nameof(DocumensoIncludeSelfAsSigner)] = value;
+        }
+
+        // There is deliberately no "don't ask again" for the warning before a save strips a digital
+        // signature (MainWindow.ConfirmSaveOverDigitalSignature). Design §5.5 sketched one
+        // (DocumensoWarnOnSignedSave); it was removed unread in 2.0.0 because ticking it would bring
+        // back exactly the silent, irreversible loss commit 76aa9a1a fixed, and the warning only
+        // ever fires on a file that really is signed, so it cannot become noise.
     }
 }

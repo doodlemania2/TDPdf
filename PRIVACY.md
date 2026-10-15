@@ -1,14 +1,18 @@
 # Privacy
 
-TDPdf can report anonymous usage and crash information. This document describes exactly what
-that means. It is accurate against the source in `Diagnostics/`, and it is the source — not this
-document — that decides behaviour, so if the two ever disagree, the code wins and this file is a
-bug.
+TDPdf can report anonymous usage and crash information, and it can send a document you choose
+to an electronic-signature service. This document describes exactly what each of those means. It
+is accurate against the source in `Diagnostics/` and `Services/Documenso*.cs`, and it is the
+source — not this document — that decides behaviour, so if the two ever disagree, the code wins
+and this file is a bug.
 
 ## The short version
 
-- **Your documents never leave your machine.** TDPdf sends no PDF content, no file names and no
-  file paths. Nothing you open, type, sign or annotate is transmitted.
+- **Your documents never leave your machine unless you send one for electronic signature.**
+  Reporting sends no PDF content, no file names and no file paths, and nothing you open, type,
+  annotate or place a signature picture on is transmitted. The one exception is a document you
+  explicitly send with **File → Electronic Signature** — see
+  *[Electronic Signature](#electronic-signature)*.
 - **A build with no reporting destination configured sends nothing at all**, to anyone. That is
   the state of any build compiled from a public checkout of this repository.
 - **You can turn reporting off** in **Settings → Privacy → "Send anonymous usage and crash
@@ -109,7 +113,8 @@ is the one to weigh if you are deciding whether to enable reporting.
 
 Twice a day, TDPdf asks GitHub whether a newer version of TDPdf has been released. It is a plain
 HTTPS request to the public releases listing for this project, and it is the **only** thing TDPdf
-does that reaches the network regardless of your reporting setting.
+does on its own, without you asking, that reaches the network regardless of your reporting
+setting.
 
 **The request says nothing about you.** It carries no identifier, no document state, no machine
 name — and not even which version you are running, because TDPdf downloads the public version
@@ -129,7 +134,52 @@ and whether the check-in request succeeded — nothing else.
 `Enabled` to `0` under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Update`. With no network
 access the check simply fails quietly and TDPdf carries on.
 
+## Electronic Signature
+
+**File → Electronic Signature** sends documents to a signing service so that other people — or you
+— can sign them with a digital signature. Unlike everything else in this file, this feature sends
+your document itself. That is what it is for, so it is stated plainly here.
+
+**Where it goes.** By default, to `https://sign.tdpdf.com`, a Documenso signing service operated by
+The Doodle Project. Your organisation can point TDPdf at its own Documenso service instead (the
+`BaseUrl` value under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Documenso`), and you can enter
+a different address yourself in **Settings → Electronic signature** unless your organisation has
+fixed it. Settings always shows which service is in use.
+
+**What is sent, when you use it:**
+
+- **The whole document** you send for signature or choose to sign — every page, as it is saved on
+  disk — and its title.
+- **The names and email addresses of the recipients you type in**, and their signing order. The
+  signing service emails them a link to sign.
+- **Your account identity on that service.** The service knows which account the request comes
+  from, because TDPdf connects with an API token from your account there.
+
+The signing service keeps the documents, the recipients and an audit trail of who signed what and
+when, under its own policies; that is how a signature can be checked later. Documents you ask
+TDPdf to download back from it (a signed copy, a certificate of completion, an audit log) are
+saved where you choose.
+
+**Nothing is sent unless you act.** TDPdf contacts the signing service only when you choose Send
+for Signature, Sign This Document, Signature Requests, Verify Signatures, Connect, or Test
+connection. It never contacts it at startup or in the background, and it never sends a document
+you have not chosen to send.
+
+**Your token.** Connecting stores the API token you paste, encrypted with Windows' data
+protection so that only your Windows account on this computer can read it, in
+`%LOCALAPPDATA%\TDPdf\documenso.cred`. It is never sent anywhere except to the signing service it
+was created for, never included in usage or crash reports, and not copied to other computers.
+**Disconnect** in Settings deletes it from this computer; to revoke it completely, delete it in your
+account on the signing service as well.
+
+**Turning it off.** An administrator can remove the feature entirely by setting `Enabled` to `0`
+under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Documenso`. It then does not appear in the menu
+at all.
+
 ## What is never sent
+
+Everything in this section is about usage and crash reporting. The only feature that sends a
+document or a person's details anywhere is Electronic Signature, above, and only when you use it.
 
 - Document contents, in whole or in part.
 - File names, file paths, or folder names.
@@ -172,5 +222,6 @@ nothing.
 
 ## Changing this file
 
-If you change what `Diagnostics/` collects, change this document in the same pull request. A
+If you change what `Diagnostics/` collects, or what Electronic Signature sends, change this
+document in the same pull request. A
 privacy notice that has drifted from the code is worse than none, because people rely on it.

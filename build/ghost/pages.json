@@ -1,0 +1,71 @@
+{
+  "$comment": [
+    "Declarative manifest for www.tdpdf.com. build/ghost/publish-site.ps1 reads this and",
+    "nothing else decides what the site contains.",
+    "",
+    "'source' is relative to this file. A source that points OUTSIDE build/ghost/ is a",
+    "repository document being published verbatim: it is read at publish time, every time,",
+    "so the page cannot drift from the file the application actually ships. Do not",
+    "'fix' such a page by editing it in the Ghost editor — the next publish overwrites it.",
+    "",
+    "'regenerate' names a script that must run before the source is read, so a generated",
+    "source file cannot be published stale. It runs only under -Regenerate (it needs a",
+    "restored NuGet cache), and the script warns when a page that declares one is published",
+    "without it."
+  ],
+
+  "site": {
+    "url": "https://tdpdf.com",
+    "title": "TDPdf",
+    "description": "A PDF editor for Windows that installs without an administrator, verifies its own redactions, and reports to nobody by default.",
+    "accentColor": "#1a8f48",
+    "navigation": [
+      { "label": "Home", "url": "/" },
+      { "label": "Download", "url": "/download/" },
+      { "label": "Privacy", "url": "/privacy/" },
+      { "label": "Telemetry", "url": "/telemetry/" }
+    ],
+    "secondaryNavigation": [
+      { "label": "Third-party licences", "url": "/third-party-licenses/" },
+      { "label": "GitHub", "url": "https://github.com/doodlemania2/TDPdf" }
+    ]
+  },
+
+  "pages": [
+    {
+      "slug": "home",
+      "title": "TDPdf",
+      "source": "content/home.md",
+      "metaTitle": "TDPdf — a PDF editor for Windows that keeps quiet",
+      "metaDescription": "Redaction that verifies itself on the finished file and refuses to save if marked text survived. One self-contained exe, installed per user with no admin rights. Nothing phones home by default. GPLv3.",
+      "note": "Served at /home/ until routes.yaml is uploaded once — see build/ghost/theme/routes.yaml."
+    },
+    {
+      "slug": "download",
+      "title": "Download",
+      "source": "content/download.md",
+      "metaDescription": "Download TDPdf for Windows 10 and 11, verify the SHA256 checksum, and get the GPLv3 corresponding source for the exact binary you ran."
+    },
+    {
+      "slug": "privacy",
+      "title": "Privacy",
+      "source": "../../PRIVACY.md",
+      "metaDescription": "Exactly what TDPdf sends, when, and to whom — enumerated from the source in Diagnostics/. With no destination configured, nothing leaves your machine.",
+      "generatedFrom": "PRIVACY.md"
+    },
+    {
+      "slug": "third-party-licenses",
+      "title": "Third-party licences",
+      "source": "../../THIRD-PARTY-NOTICES.md",
+      "metaDescription": "Every third-party component inside the TDPdf executable, with its copyright notice and licence text, including the native payloads no licence scanner can see.",
+      "generatedFrom": "THIRD-PARTY-NOTICES.md",
+      "regenerate": "../generate-third-party-notices.ps1"
+    },
+    {
+      "slug": "telemetry",
+      "title": "Telemetry",
+      "source": "content/telemetry.md",
+      "metaDescription": "How to point TDPdf at your own OTLP collector, what it sends when you do, and why a build with no policy configured reports to nobody."
+    }
+  ]
+}

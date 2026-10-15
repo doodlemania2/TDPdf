@@ -356,7 +356,7 @@ namespace TDPdf.Services
                         // PDFium's tolerant parser can rewrite the file, repairing the tables
                         // PdfSharpCore choked on. That copy is necessarily DECRYPTED, so it is reported
                         // as editable rather than read-only — see TryOpenViaPdfiumRepair.
-                        PdfOpenResult? unlocked = TryOpenViaPdfiumRepair(path, cancellationToken);
+                        PdfOpenResult? unlocked = TryOpenViaPdfiumRepair(path, ownerRestricted: true, cancellationToken);
                         if (unlocked is not null)
                             return unlocked;
 
@@ -373,13 +373,23 @@ namespace TDPdf.Services
                         // that PDFium can still render — typically scanner /
                         // MFP output with minor spec deviations. Rather than
                         // hard-failing with "not a valid PDF document", try to
-                        // recover by rasterizing every page through PDFium into
-                        // a fresh, well-formed document the user can view, print
-                        // and annotate. Re-throw the original error if PDFium
-                        // can't read it either (genuinely corrupt / not a PDF).
+                        // recover through PDFium. Re-throw the original error if
+                        // PDFium can't read it either (genuinely corrupt / not a PDF).
                         document?.Close();
                         document = null;
 
+                        // Lossless first (upstream KillerPDF #406): PDFium's tolerant parser
+                        // rebuilds a damaged cross-reference table — an undersized /Size, bad
+                        // offsets — and rewrites a well-formed copy, keeping text, vectors and
+                        // fonts. This used to be offered only to owner-restricted files, so a
+                        // merely malformed one went straight to the raster net below and lost
+                        // its text layer when nothing but its bookkeeping was wrong.
+                        PdfOpenResult? repaired = TryOpenViaPdfiumRepair(path, ownerRestricted: false, cancellationToken);
+                        if (repaired is not null)
+                            return repaired;
+
+                        // Lossy last resort: rasterize every page through PDFium into a fresh,
+                        // well-formed document the user can view, print and annotate.
                         PdfOpenResult? recovered = TryRecoverByRaster(path, ex, cancellationToken);
                         if (recovered is not null)
                             return recovered;
@@ -440,22 +450,34 @@ namespace TDPdf.Services
             ex.Message.IndexOf("encrypted", StringComparison.OrdinalIgnoreCase) >= 0;
 
         /// <summary>
-        /// Opens an owner-restricted file that PdfSharpCore cannot parse, by way of a PDFium-rewritten
-        /// working copy in %TEMP% (<see cref="PdfiumInterop.TryPdfiumRepair"/> — <c>FPDF_SaveWithVersion</c> with
+        /// Opens a file that PdfSharpCore cannot parse, by way of a PDFium-rewritten working copy in
+        /// %TEMP% (<see cref="PdfiumInterop.TryPdfiumRepair"/> — <c>FPDF_SaveWithVersion</c> with
         /// <c>FPDF_REMOVE_SECURITY</c>, the same path CLI <c>--decrypt</c> and the post-save xref
         /// repair use). Unlike the raster fallback this is lossless: text stays selectable.
         /// </summary>
+        /// <param name="path">The file the user opened.</param>
+        /// <param name="ownerRestricted">
+        /// True when PdfSharpCore refused the file over its owner password; false when it simply
+        /// could not parse it (upstream KillerPDF #406 — a damaged xref, an undersized /Size).
+        /// </param>
+        /// <param name="cancellationToken">Cancels the open.</param>
         /// <remarks>
         /// The rewritten copy carries no <c>/Encrypt</c>, so the document really is editable and is
         /// reported that way — <c>OpenedReadOnly: false</c>. Claiming read-only here would be a lie the
-        /// save path would immediately contradict. <c>WasProtected</c> and <c>RestrictionsRemoved</c>
-        /// are both true so the UI can say the protection is gone rather than dropping it silently.
+        /// save path would immediately contradict. For an owner-restricted source <c>WasProtected</c>
+        /// and <c>RestrictionsRemoved</c> are both true so the UI can say the protection is gone
+        /// rather than dropping it silently; for a merely malformed one they are true only if the
+        /// source carried an <c>/Encrypt</c> entry, which the rewrite has just removed.
+        /// <c>RepairedByPdfium</c> is set either way, and <c>RecoveredFromRaster</c> never is — the
+        /// pages are the source's own content, not pictures of it.
         /// Returns <c>null</c> — never throws, except on cancellation — when PDFium cannot help either,
         /// leaving the caller to try the raster net and then surface the original error.
         /// </remarks>
-        private static PdfOpenResult? TryOpenViaPdfiumRepair(string path, CancellationToken cancellationToken)
+        private static PdfOpenResult? TryOpenViaPdfiumRepair(string path, bool ownerRestricted,
+                                                             CancellationToken cancellationToken)
         {
-            string repairedPath = Path.Combine(Path.GetTempPath(), $"tdpdf_unlock_{Guid.NewGuid():N}.pdf");
+            string prefix = ownerRestricted ? "tdpdf_unlock_" : "tdpdf_repair_";
+            string repairedPath = Path.Combine(Path.GetTempPath(), $"{prefix}{Guid.NewGuid():N}.pdf");
             PdfDocument? document = null;
             try
             {
@@ -470,10 +492,12 @@ namespace TDPdf.Services
                 document = PdfReader.Open(repairedPath, PdfDocumentOpenMode.Modify);
                 PreloadDocnet(repairedPath, cancellationToken);
 
-                Telemetry.TrackEvent("File.OpenUnlockedByPdfium");
+                Telemetry.TrackEvent(ownerRestricted ? "File.OpenUnlockedByPdfium" : "File.OpenRepairedByPdfium");
 
+                bool wasProtected = ownerRestricted || FileHasEncryption(path);
                 return new PdfOpenResult(document, path, repairedPath, openedReadOnly: false,
-                    wasProtected: true, restrictionsRemoved: true);
+                    wasProtected: wasProtected, restrictionsRemoved: wasProtected,
+                    repairedByPdfium: true);
             }
             catch (OperationCanceledException)
             {
@@ -733,7 +757,8 @@ namespace TDPdf.Services
     internal sealed class PdfOpenResult
     {
         public PdfOpenResult(PdfDocument document, string displayPath, string workingPath, bool openedReadOnly,
-            bool recoveredFromRaster = false, bool wasProtected = false, bool restrictionsRemoved = false)
+            bool recoveredFromRaster = false, bool wasProtected = false, bool restrictionsRemoved = false,
+            bool repairedByPdfium = false)
         {
             Document = document;
             DisplayPath = displayPath;
@@ -742,6 +767,7 @@ namespace TDPdf.Services
             RecoveredFromRaster = recoveredFromRaster;
             WasProtected = wasProtected;
             RestrictionsRemoved = restrictionsRemoved;
+            RepairedByPdfium = repairedByPdfium;
         }
 
         public PdfDocument Document { get; }
@@ -773,6 +799,14 @@ namespace TDPdf.Services
         /// Lossless, unlike <see cref="RecoveredFromRaster"/>: the text layer survives.
         /// </summary>
         public bool RestrictionsRemoved { get; }
+
+        /// <summary>
+        /// True when PdfSharpCore could not parse the original and the document was opened from a
+        /// PDFium-rewritten copy instead (upstream KillerPDF #406). Lossless — the text layer, vectors
+        /// and fonts are the source's own — so it must never be reported as rasterized; the UI only
+        /// says the file was repaired.
+        /// </summary>
+        public bool RepairedByPdfium { get; }
     }
 
     internal sealed class PdfPageSize
