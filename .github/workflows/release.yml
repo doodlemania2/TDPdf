@@ -124,10 +124,12 @@ jobs:
           # so this value is as permanent as the account itself.
           AZSIGN_ENDPOINT: https://eus.codesigning.azure.net
           AZSIGN_ALIAS: tdp/TDPCertProfile
-          # Jsign reads exactly these three variable names when --storepass is omitted, which
-          # keeps the client secret off the command line and out of `ps`. They are fed from the
-          # SIGN_* secrets rather than the AZURE_* trio the Intune step uses, so the signing
-          # identity and the fleet-management identity rotate independently.
+          # Fed from the SIGN_* secrets rather than the AZURE_* trio the Intune step uses, so the
+          # signing identity and the fleet-management identity rotate independently. Jsign 7.5
+          # does NOT read these itself for TRUSTEDSIGNING: it refuses with "storepass option must
+          # specify the Azure API access token". So the step trades them for a token below and
+          # hands Jsign `--storepass env:AZSIGN_TOKEN`, which keeps both the secret and the token
+          # off the command line and out of `ps`.
           AZURE_TENANT_ID: ${{ secrets.SIGN_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.SIGN_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.SIGN_CLIENT_SECRET }}
@@ -147,13 +149,23 @@ jobs:
             echo "::error::jsign-${JSIGN_VERSION}.jar does not match its pinned SHA-256. Refusing to run it."
             exit 1
           }
-          # No --tsaurl: the service timestamps every signature itself, and it must — the
-          # certificates it issues live three days, so an untimestamped signature would expire
-          # before most people had downloaded the release.
+          : "${AZURE_CLIENT_SECRET:?SIGN_CLIENT_SECRET is not set}"
+          # pwsh is preinstalled on the runner; jq is not guaranteed. The token lives ~1 hour,
+          # far longer than one signature takes.
+          AZSIGN_TOKEN="$(pwsh -NoProfile -Command '(Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$env:AZURE_TENANT_ID/oauth2/v2.0/token" -Body @{ client_id = $env:AZURE_CLIENT_ID; client_secret = $env:AZURE_CLIENT_SECRET; scope = "https://codesigning.azure.net/.default"; grant_type = "client_credentials" }).access_token')"
+          : "${AZSIGN_TOKEN:?could not get an Artifact Signing token for SIGN_CLIENT_ID}"
+          echo "::add-mask::$AZSIGN_TOKEN"
+          export AZSIGN_TOKEN
+          # No --tsaurl: Jsign's TRUSTEDSIGNING keystore timestamps against Microsoft's own TSA
+          # by default (verified 2026-10-15: the signature carries the 1.3.6.1.4.1.311.3.3.1
+          # RFC 3161 counter-signature), and it must — the certificates the service issues live
+          # three days, so an untimestamped signature would expire before most people had
+          # downloaded the release.
           java -jar /tmp/jsign.jar \
             --storetype TRUSTEDSIGNING \
             --keystore "$AZSIGN_ENDPOINT" \
             --alias "$AZSIGN_ALIAS" \
+            --storepass env:AZSIGN_TOKEN \
             --alg SHA-256 \
             --name "TDPdf" \
             --url "https://thedoodleproject.com/tdpdf" \
