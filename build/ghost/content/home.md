@@ -1,142 +1,207 @@
 # TDPdf
 
-A PDF editor for Windows that you install without an administrator, that keeps quiet
-on the network, that will not let you ship a redaction it cannot prove worked — and,
-new in 2.0, that sends documents for legally binding electronic signature.
+<!--
+  Product page. Written as HTML blocks because it is a layout, not a document; the classes
+  are defined in build/ghost/theme/code-injection-head.html under "Product pages".
+  Markdown rules that matter here: no blank line INSIDE a section (a blank line ends a raw
+  HTML block and the next indented line would turn into a code block), and every section is
+  a top-level element so Ghost's grid lets it run full width.
+  Screenshot slots and their fallbacks are explained at Expand-Shot in publish-site.ps1;
+  the shot list is build/ghost/screenshots/README.md.
+-->
 
-It is a single self-contained `TDPdf.exe`. There is no installer to run as admin, no
-runtime to install first, no subscription, and no account.
+<section class="tdp tdp-band tdp-hero">
+<div class="tdp-wrap tdp-hero-grid">
+<div>
+<span class="tdp-eyebrow">New in 2.0 · Electronic signatures</span>
+<h1>The PDF editor that <em>proves</em> its redactions — and gets your documents signed.</h1>
+<p class="tdp-lead">Edit, redact, fill, build forms and collect legally binding signatures in one fast Windows app. No subscription. No account to open a file. No admin rights to install.</p>
+<div class="tdp-ctas">
+<a class="tdp-btn primary" href="/download/">Download for Windows <small>{{VERSION}} · free</small></a>
+<a class="tdp-btn ghost" href="#esign">See what's new</a>
+</div>
+<ul class="tdp-facts"><li>Free &amp; open source</li><li>Windows 10 &amp; 11</li><li>One signed file</li><li>Nothing phones home</li></ul>
+</div>
+<div>
+<!--shot:hero-->
+<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>TDPdf</span></div><img src="{{SHOT}}" alt="TDPdf with a contract open: page thumbnails on the left, the document in the centre, the editing toolbar along the top." loading="eager"></figure>
+<!--/shot:hero-->
+<!--noshot:hero-->
+<figure class="tdp-frame" aria-label="Illustration of TDPdf: a document with one redaction applied, one pending, and a signature field"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Illustration</span></div>
+<svg viewBox="0 0 560 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true"><rect width="560" height="380" fill="#151515"/><rect x="0" y="0" width="560" height="34" fill="#1d1d1d"/><g fill="#3a3a3a"><rect x="14" y="11" width="14" height="12" rx="2"/><rect x="38" y="11" width="14" height="12" rx="2"/><rect x="62" y="11" width="14" height="12" rx="2"/><rect x="96" y="11" width="14" height="12" rx="2"/><rect x="120" y="11" width="14" height="12" rx="2"/></g><rect x="452" y="9" width="94" height="16" rx="4" fill="#22543d"/><text x="499" y="21" text-anchor="middle" font-family="Segoe UI,Arial" font-size="10" fill="#4ade80">Redact ▸ Apply</text><rect x="0" y="34" width="92" height="346" fill="#1a1a1a"/><g fill="#d9d9d9"><rect x="14" y="48" width="64" height="84" rx="2"/><rect x="14" y="144" width="64" height="84" rx="2" opacity=".55"/><rect x="14" y="240" width="64" height="84" rx="2" opacity=".55"/></g><rect x="12" y="46" width="68" height="88" rx="3" fill="none" stroke="#4ade80" stroke-width="2"/><rect x="128" y="50" width="400" height="320" rx="3" fill="#f2f2ee"/><rect x="128" y="50" width="400" height="44" fill="#2d4a6b"/><text x="148" y="78" font-family="Segoe UI,Arial" font-size="15" font-weight="700" fill="#fff">Services Agreement</text><g fill="#bdbdb6"><rect x="148" y="112" width="340" height="7" rx="2"/><rect x="148" y="128" width="310" height="7" rx="2"/><rect x="148" y="144" width="80" height="7" rx="2"/><rect x="322" y="144" width="150" height="7" rx="2"/><rect x="148" y="176" width="330" height="7" rx="2"/><rect x="148" y="192" width="90" height="7" rx="2"/><rect x="148" y="208" width="300" height="7" rx="2"/></g><rect x="232" y="140" width="86" height="15" fill="#111"/><rect x="244" y="188" width="120" height="15" fill="rgba(239,68,68,.12)" stroke="#ef4444" stroke-width="1.6" stroke-dasharray="5 3"/><text x="370" y="200" font-family="Segoe UI,Arial" font-size="9.5" fill="#c0392b">pending</text><rect x="148" y="262" width="170" height="54" rx="4" fill="rgba(232,207,99,.18)" stroke="#c9a92c" stroke-width="1.6"/><text x="160" y="282" font-family="Segoe UI,Arial" font-size="10" fill="#8a6d0b">Signature · Signer 1</text><path d="M162 302 c 14 -16 22 6 34 -6 s 16 -10 26 4 s 18 -6 30 -2" fill="none" stroke="#2d4a6b" stroke-width="2.2" stroke-linecap="round"/><rect x="342" y="262" width="150" height="24" rx="4" fill="rgba(232,207,99,.18)" stroke="#c9a92c" stroke-width="1.6"/><text x="352" y="278" font-family="Segoe UI,Arial" font-size="10" fill="#8a6d0b">Date signed</text><rect x="300" y="334" width="214" height="26" rx="13" fill="#123222" stroke="#4ade80"/><text x="407" y="351" text-anchor="middle" font-family="Segoe UI,Arial" font-size="10.5" fill="#4ade80">✓ Verified: nothing left under redactions</text></svg>
+<figcaption>Illustration — a redaction applied, one still pending, and signature fields placed for a signer.</figcaption></figure>
+<!--/noshot:hero-->
+</div>
+</div>
+</section>
 
-[Download TDPdf {{VERSION}}](/download/)
+<section class="tdp tdp-band" style="padding-top:0">
+<div class="tdp-wrap tdp-strip">
+<div><b>Adobe-trusted seals</b><span>Signed documents show Acrobat's green check</span></div>
+<div><b>Redaction you can prove</b><span>Every save is re-read and verified</span></div>
+<div><b>Installs in seconds</b><span>Per user, no admin, no UAC prompt</span></div>
+<div><b>Yours to inspect</b><span>GPLv3 — source ships with every release</span></div>
+</div>
+</section>
 
----
+<section class="tdp tdp-band alt" id="esign">
+<div class="tdp-wrap">
+<div class="tdp-row">
+<div>
+<span class="tdp-tag">New in 2.0</span>
+<h2>Send it. Get it signed. Get it back sealed.</h2>
+<p class="tdp-lead">Electronic Signature is built right into TDPdf. Place the fields, add the people, press send — then watch the signatures come in from the same window.</p>
+<ul class="tdp-checks">
+<li><b>Drag to place</b> signature, initials, name, date and text fields — or let TDPdf pick up <code>{{signature, r1}}</code> placeholders already in the document.</li>
+<li><b>Signing order</b> for signers, approvers, viewers and CCs, with your own subject and message.</li>
+<li><b>Sign it yourself</b> in a couple of clicks; the sealed copy comes straight back into TDPdf.</li>
+<li><b>Track every request</b>: who has signed, who hasn't, and one click for the signed PDF, certificate of completion and audit log.</li>
+<li><b>Checks before it sends</b> — a signer with nothing to sign, or a redaction you forgot to apply, stops the send instead of leaking.</li>
+</ul>
+<p class="tdp-muted">Documents are sealed with a certificate on Adobe's Approved Trust List, held in a hardware security module and timestamped. Create a free account at <a href="https://sign.tdpdf.com/signup">sign.tdpdf.com</a> and connect it once — or point TDPdf at your organisation's own Documenso server.</p>
+</div>
+<div>
+<!--shot:esign-send-->
+<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Send for Signature</span></div><img src="{{SHOT}}" alt="The Send for Signature window: recipients in signing order on one side, signature and date fields placed on the page on the other." loading="lazy"></figure>
+<!--/shot:esign-send-->
+<!--noshot:esign-send-->
+<figure class="tdp-frame" aria-label="Diagram of the electronic signature flow"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>How it works</span></div>
+<svg viewBox="0 0 560 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true"><rect width="560" height="330" fill="#141414"/><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#4ade80"/></marker></defs><g font-family="Segoe UI,Arial"><rect x="24" y="96" width="120" height="140" rx="10" fill="#1f1f1f" stroke="#333"/><rect x="44" y="114" width="80" height="96" rx="3" fill="#f2f2ee"/><g fill="#bdbdb6"><rect x="54" y="128" width="60" height="5"/><rect x="54" y="140" width="52" height="5"/><rect x="54" y="152" width="58" height="5"/></g><rect x="54" y="174" width="50" height="22" rx="3" fill="rgba(232,207,99,.25)" stroke="#c9a92c"/><text x="84" y="256" text-anchor="middle" font-size="12" fill="#e0e0e0">TDPdf</text><text x="84" y="272" text-anchor="middle" font-size="10" fill="#888">place fields · send</text><line x1="150" y1="166" x2="214" y2="166" stroke="#4ade80" stroke-width="2" marker-end="url(#ah)"/><rect x="220" y="116" width="128" height="100" rx="12" fill="#17311f" stroke="#4ade80"/><text x="284" y="160" text-anchor="middle" font-size="13" font-weight="700" fill="#4ade80">sign.tdpdf.com</text><text x="284" y="180" text-anchor="middle" font-size="10" fill="#9fd9b2">emails each signer</text><line x1="352" y1="140" x2="402" y2="96" stroke="#4ade80" stroke-width="1.6" marker-end="url(#ah)"/><line x1="352" y1="166" x2="402" y2="166" stroke="#4ade80" stroke-width="1.6" marker-end="url(#ah)"/><line x1="352" y1="192" x2="402" y2="236" stroke="#4ade80" stroke-width="1.6" marker-end="url(#ah)"/><g fill="#2a2a2a" stroke="#555"><circle cx="424" cy="86" r="16"/><circle cx="424" cy="166" r="16"/><circle cx="424" cy="246" r="16"/></g><g font-size="10" fill="#cfcfcf"><text x="448" y="90">Signer 1 ✓</text><text x="448" y="170">Signer 2 ✓</text><text x="448" y="250">Approver ✓</text></g><rect x="200" y="262" width="168" height="44" rx="10" fill="#101d14" stroke="#4ade80" stroke-dasharray="4 3"/><text x="284" y="281" text-anchor="middle" font-size="11" font-weight="700" fill="#4ade80">✓ Sealed PDF + audit log</text><text x="284" y="296" text-anchor="middle" font-size="9.5" fill="#9fd9b2">back in TDPdf · green check in Acrobat</text></g></svg>
+<figcaption>Diagram — TDPdf prepares the document, the signing service collects the signatures, the sealed copy comes back.</figcaption></figure>
+<!--/noshot:esign-send-->
+<!--shot:esign-requests-->
+<figure class="tdp-frame" style="margin-top:1.2rem"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Signature Requests</span></div><img src="{{SHOT}}" alt="Signature Requests: each document with every recipient's progress and buttons to download the signed copy and audit log." loading="lazy"></figure>
+<!--/shot:esign-requests-->
+</div>
+</div>
+</div>
+</section>
 
-## Redaction that checks its own work
+<section class="tdp tdp-band">
+<div class="tdp-wrap">
+<div class="tdp-row flip">
+<div>
+<span class="tdp-tag">Redaction</span>
+<h2>Black boxes lie. TDPdf deletes — then checks.</h2>
+<p class="tdp-lead">In most tools a redaction is a rectangle drawn on top. The text is still underneath, one copy-paste away. TDPdf removes what's under your mark, rewrites the page, then <b>re-opens the finished file and looks</b>.</p>
+<ul class="tdp-checks">
+<li><b>If anything survived, the file is never written.</b> You get an error naming what was found — never a document that only looks safe.</li>
+<li><b>Redact every match</b> of a search in one go, including pages you've never scrolled to. Untick any you want to keep.</li>
+<li><b>Scanned pages too.</b> The hidden OCR text goes with the image, and TDPdf tells you before a page loses its text layer.</li>
+<li><b>Metadata is scrubbed</b> — title, author and the XMP copy most tools forget.</li>
+</ul>
+</div>
+<div>
+<!--shot:redact-->
+<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Redact</span></div><img src="{{SHOT}}" alt="Pending redaction marks shown as dashed red outlines over names, with the Redact Permanently button." loading="lazy"></figure>
+<!--/shot:redact-->
+<!--noshot:redact-->
+<figure class="tdp-frame" aria-label="Diagram of the redaction pipeline"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>How it works</span></div>
+<svg viewBox="0 0 560 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true"><rect width="560" height="300" fill="#141414"/><defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#666"/></marker></defs><g font-family="Segoe UI,Arial" text-anchor="middle"><g><rect x="20" y="70" width="112" height="120" rx="10" fill="#1f1f1f" stroke="#333"/><rect x="40" y="96" width="72" height="16" fill="rgba(239,68,68,.15)" stroke="#ef4444" stroke-dasharray="4 3"/><text x="76" y="140" font-size="12.5" font-weight="700" fill="#fff">1 · Mark</text><text x="76" y="158" font-size="9.5" fill="#888">drag, or a search</text></g><line x1="136" y1="130" x2="156" y2="130" stroke="#666" stroke-width="2" marker-end="url(#ar)"/><g><rect x="160" y="70" width="112" height="120" rx="10" fill="#1f1f1f" stroke="#333"/><rect x="180" y="96" width="72" height="16" fill="#111" stroke="#444"/><text x="216" y="140" font-size="12.5" font-weight="700" fill="#fff">2 · Remove</text><text x="216" y="158" font-size="9.5" fill="#888">text, images, metadata</text></g><line x1="276" y1="130" x2="296" y2="130" stroke="#666" stroke-width="2" marker-end="url(#ar)"/><g><rect x="300" y="70" width="112" height="120" rx="10" fill="#1f1f1f" stroke="#4ade80"/><circle cx="356" cy="104" r="13" fill="none" stroke="#4ade80" stroke-width="2.4"/><line x1="365" y1="113" x2="374" y2="122" stroke="#4ade80" stroke-width="2.4"/><text x="356" y="140" font-size="12.5" font-weight="700" fill="#4ade80">3 · Re-read</text><text x="356" y="158" font-size="9.5" fill="#9fd9b2">the finished file</text></g><line x1="416" y1="110" x2="436" y2="96" stroke="#666" stroke-width="2" marker-end="url(#ar)"/><line x1="416" y1="150" x2="436" y2="166" stroke="#666" stroke-width="2" marker-end="url(#ar)"/><g><rect x="440" y="58" width="104" height="58" rx="10" fill="#123222" stroke="#4ade80"/><text x="492" y="84" font-size="12" font-weight="700" fill="#4ade80">✓ Saved</text><text x="492" y="100" font-size="9" fill="#9fd9b2">area proven empty</text></g><g><rect x="440" y="144" width="104" height="58" rx="10" fill="#2a1414" stroke="#ef4444"/><text x="492" y="170" font-size="12" font-weight="700" fill="#ef4444">✕ Refused</text><text x="492" y="186" font-size="9" fill="#e7a3a3">nothing written</text></g><text x="280" y="250" font-size="11" fill="#888">Fail-closed: the only way to get a file is for the check to pass.</text></g></svg>
+<figcaption>Diagram — every redaction is verified on the output before the output exists.</figcaption></figure>
+<!--/noshot:redact-->
+</div>
+</div>
+</div>
+</section>
 
-Most tools treat redaction as a drawing operation. You place a black box, the box is
-saved into the file, and the text underneath is still there — selectable, searchable,
-recoverable by anyone who opens the file in something other than the viewer you used.
-A redaction that leaves the bytes in the file is worse than no redaction at all,
-because it looks finished.
+<section class="tdp tdp-band alt">
+<div class="tdp-wrap">
+<div class="tdp-row">
+<div>
+<span class="tdp-tag">Editing</span>
+<h2>Change the words, not a picture of them.</h2>
+<p class="tdp-lead">Double-click any text and type. TDPdf replaces the text in the document itself, in the same font, size and colour — so the old wording is really gone, not hiding under a white box.</p>
+<ul class="tdp-checks">
+<li><b>Honest when it can't.</b> If the embedded font has no "Z" to draw with, TDPdf names the missing characters instead of leaving blanks.</li>
+<li><b>Build forms, not just fill them</b> — text boxes, checkboxes, radio groups, dropdowns and signature fields.</li>
+<li><b>Annotate</b> with text boxes, highlights, freehand ink, shapes, images and a reusable Signature Picture.</li>
+</ul>
+</div>
+<div>
+<!--shot:edit-text-->
+<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Edit text</span></div><img src="{{SHOT}}" alt="Inline text editing: a line of a document being retyped in its own font." loading="lazy"></figure>
+<!--/shot:edit-text-->
+<!--noshot:edit-text-->
+<figure class="tdp-frame" aria-label="Illustration of text editing before and after"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Illustration</span></div>
+<svg viewBox="0 0 560 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true"><rect width="560" height="280" fill="#141414"/><g font-family="Georgia,Times New Roman,serif"><rect x="30" y="30" width="230" height="200" rx="4" fill="#f2f2ee"/><text x="48" y="64" font-size="13" fill="#333">Payment terms</text><text x="48" y="96" font-size="12" fill="#555">Invoices are due within</text><text x="48" y="116" font-size="12" fill="#555">30 days. Late fee:</text><rect x="152" y="104" width="44" height="16" fill="#fff"/><text x="154" y="116" font-size="12" fill="#555">5%</text><rect x="148" y="102" width="52" height="20" fill="none" stroke="#ef4444" stroke-dasharray="3 2"/><text x="48" y="160" font-family="Segoe UI,Arial" font-size="10" fill="#b03a2e">The usual way: a white box over "1.5%"</text><text x="48" y="176" font-family="Segoe UI,Arial" font-size="10" fill="#b03a2e">— the old text is still in the file.</text><rect x="300" y="30" width="230" height="200" rx="4" fill="#f2f2ee"/><text x="318" y="64" font-size="13" fill="#333">Payment terms</text><text x="318" y="96" font-size="12" fill="#555">Invoices are due within</text><text x="318" y="116" font-size="12" fill="#555">30 days. Late fee: 5%</text><rect x="420" y="102" width="26" height="20" fill="none" stroke="#2f9e5a"/><text x="318" y="160" font-family="Segoe UI,Arial" font-size="10" fill="#1d7a43">TDPdf: the text object itself is changed,</text><text x="318" y="176" font-family="Segoe UI,Arial" font-size="10" fill="#1d7a43">in the document's own font. "1.5%" is gone.</text></g></svg>
+<figcaption>Illustration — what "edit text" means in TDPdf.</figcaption></figure>
+<!--/noshot:edit-text-->
+</div>
+</div>
+</div>
+</section>
 
-TDPdf removes the content objects, then **re-opens the file it just produced and reads
-it back** to check the marked areas are actually empty. The check is positional, not a
-string search: it asks whether any glyph still has its centre inside a rectangle you
-redacted. A word that legitimately appears elsewhere in the document cannot trigger a
-false alarm, and a letter merely clipping the edge of your box cannot either.
+<section class="tdp tdp-band">
+<div class="tdp-wrap tdp-center">
+<span class="tdp-eyebrow">Everything else you reach for</span>
+<h2>A complete PDF toolkit, in one {{EXE_SIZE_MB}}&nbsp;MB file.</h2>
+<div class="tdp-grid" style="text-align:left">
+<div class="tdp-card"><div class="tdp-ico">⧉</div><h3>Merge, split &amp; reorder</h3><p>Drag pages around the sidebar; insert, rotate, extract and delete across a selection.</p></div>
+<div class="tdp-card"><div class="tdp-ico">☰</div><h3>Fill any form</h3><p>Type straight into AcroForm fields, then save or flatten so nothing can be changed.</p></div>
+<div class="tdp-card"><div class="tdp-ico">⌕</div><h3>Search &amp; OCR</h3><p>Search the whole document, copy text out, and make scanned pages searchable.</p></div>
+<div class="tdp-card"><div class="tdp-ico">▤</div><h3>Tabs</h3><p>Several PDFs in one window, each with its own unsaved-changes tracking.</p></div>
+<div class="tdp-card"><div class="tdp-ico">✓</div><h3>Verify signatures</h3><p>See who signed any PDF, when, and whether anything was added afterwards.</p></div>
+<div class="tdp-card"><div class="tdp-ico">⎙</div><h3>Print &amp; flatten</h3><p>Print with annotations, or flatten every page into something genuinely uneditable.</p></div>
+<div class="tdp-card"><div class="tdp-ico">⚿</div><h3>Locked PDFs</h3><p>Password-protected files open with a prompt — and damaged ones are repaired on open.</p></div>
+<div class="tdp-card"><div class="tdp-ico">✎</div><h3>Bookmarks &amp; measure</h3><p>Edit the outline, measure distances and areas, export pages as images.</p></div>
+<div class="tdp-card"><div class="tdp-ico">◐</div><h3>Light, dark &amp; night</h3><p>Follows your Windows theme, with high contrast and a night mode for reading in the dark.</p></div>
+</div>
+</div>
+</section>
 
-**If anything survived, the output file is never written.** You get an error naming
-what was found, not a document you would reasonably believe was safe. The pipeline is
-fail-closed on purpose — the one failure mode that must not exist here is a silent one.
+<section class="tdp tdp-band alt">
+<div class="tdp-wrap">
+<div class="tdp-row flip">
+<div>
+<span class="tdp-tag">For IT</span>
+<h2>Deploys like a file, because it is one.</h2>
+<p class="tdp-lead"><code>TDPdf.exe</code> is the whole application — no runtime to install first, nothing unpacked into Program Files, no admin prompt.</p>
+<ul class="tdp-checks">
+<li><b>Run it from anywhere</b> — a USB stick works. Click <i>Install TDPdf…</i> to install per user in seconds, with a Start Menu entry and a clean uninstall.</li>
+<li><b>Silent and Intune-ready:</b> <code>TDPdf.exe /install /silent</code>; run as SYSTEM it installs for the whole machine.</li>
+<li><b>Signed by The Doodle Project</b> through Microsoft's Artifact Signing, so SmartScreen and your allow-lists know who made it.</li>
+<li><b>Policy controls</b> for telemetry, update checks and the signing server — all in the registry, none required.</li>
+</ul>
+</div>
+<div>
+<!--shot:install-->
+<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Install</span></div><img src="{{SHOT}}" alt="The install dialog offering to upgrade an existing per-user install of TDPdf." loading="lazy"></figure>
+<!--/shot:install-->
+<!--noshot:install-->
+<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>PowerShell</span></div>
+<pre style="margin:0;border:0;border-radius:0;background:#0f0f0f;padding:1.3rem 1.4rem;font-size:.86rem;line-height:1.7"><code><span style="color:#888"># install — per user, or per machine when run as SYSTEM (Intune)</span>
+.\TDPdf.exe /install /silent
+<span style="color:#888"># remove</span>
+.\TDPdf.exe /uninstall /silent
+<span style="color:#888"># verify the publisher</span>
+(Get-AuthenticodeSignature .\TDPdf.exe).SignerCertificate.Subject
+<span style="color:#4ade80">CN=The Doodle Project, O=The Doodle Project, …</span></code></pre>
+<figcaption>One exe, three switches.</figcaption></figure>
+<!--/noshot:install-->
+</div>
+</div>
+</div>
+</section>
 
-Two other things fall out of doing it this way:
+<section class="tdp tdp-band">
+<div class="tdp-wrap tdp-center">
+<span class="tdp-eyebrow">Private by default</span>
+<h2>Your documents stay yours.</h2>
+<p class="tdp-lead">There is no destination for usage data compiled into TDPdf — it reports to nobody unless your organisation deliberately points it at its own collector. Documents only leave your machine when you send them for signature.</p>
+<div class="tdp-vs" style="text-align:left">
+<div class="yes"><h3>With TDPdf</h3><ul><li>Free, with every feature — no tiers</li><li>Open a file without an account</li><li>Install without an administrator</li><li>Redactions verified before they're saved</li><li>Source code shipped with every release</li></ul></div>
+<div class="no"><h3>What you won't find</h3><ul><li>Subscriptions or per-seat licences</li><li>Upsell banners and "Pro" locks</li><li>Uploading your files to edit them</li><li>Usage tracking by default</li><li>A black box you're asked to trust</li></ul></div>
+</div>
+<p class="tdp-muted" style="margin-top:1.4rem">Read exactly what can be sent, field by field: <a href="/privacy/">privacy</a> · <a href="/telemetry/">telemetry</a></p>
+</div>
+</section>
 
-- **Metadata goes too.** The Info dictionary *and* the XMP packet are cleared, because
-  they are two independent copies of much the same thing and clearing one leaves the
-  other to be found. The file is rewritten in full rather than saved incrementally, so
-  the pre-redaction revision is not left sitting earlier in the file.
-- **Scanned pages are reported, not guessed at.** If your mark falls inside an image —
-  the signature of a scanned document, where the whole page is one picture — removing
-  objects cannot clear it, and deleting the image would blank the page. TDPdf tells you
-  which pages those are and offers to rasterise them, because that costs the page its
-  text layer and that is your decision to make, not the program's.
-
-## Electronic signatures
-
-**File ▸ Electronic Signature** connects TDPdf to its own signing service,
-[sign.tdpdf.com](https://sign.tdpdf.com). Signed documents are sealed with a certificate
-on Adobe's Approved Trust List — the one Acrobat shows a green check for — whose key
-lives in a hardware security module, and every seal is timestamped so the signature
-outlives the certificate.
-
-- **Send for Signature** — add signers, approvers, viewers and CCs, optionally in order,
-  then drag a box on the page for each field: signature, initials, name, email, date,
-  text. Documents that already carry `{{signature, r1}}`-style placeholders are picked
-  up automatically. TDPdf checks what the service would refuse before anything goes
-  out, and refuses to send a document with redaction marks you have not applied.
-- **Sign This Document** — sign something yourself. TDPdf opens the signing page in
-  your browser and picks up the sealed copy when you are done.
-- **Signature Requests** — everything you have sent, with each person's progress. Download
-  the signed copy, the certificate of completion and the audit log.
-- **Verify Signatures** — for any signed PDF, from anywhere, Document Info shows who
-  signed, when, and whether anything was added afterwards.
-
-The older tool that stamps a drawn or imported *picture* of your signature is now called
-**Signature Picture**, because a picture of a signature is not a digital signature and
-the two should not share a name.
-
-## One file, no administrator
-
-`TDPdf.exe` is the whole application: WPF, the PDF engines, the native `pdfium.dll`,
-the OCR engine, all inside one signed executable. Nothing is unpacked into
-`Program Files`, and nothing asks for elevation.
-
-Run it from a USB stick and it works. Run it from your Downloads folder and it offers
-to install itself, per user, into `%LOCALAPPDATA%\Programs\TDPdf\` — Start Menu entry,
-`.pdf` file association, a single Add/Remove Programs entry, and a clean uninstall. No
-UAC prompt at any point, because nothing outside your own profile is touched.
-
-For scripted deployment there is `TDPdf.exe /install /silent`, and when it runs as
-SYSTEM it installs per machine instead, which is how it deploys through Intune.
-
-## Nothing phones home by default
-
-TDPdf reports to nobody unless somebody deliberately gives it somewhere to report to.
-
-There is **no destination compiled into the binary**. The last one — an Azure
-Application Insights key embedded at build time — was removed in 1.24.0.0 and is not
-coming back. Reporting needs two independent things: your consent, *and* a destination
-supplied at runtime by an environment variable or by administrator-pushed policy. A
-build with no destination is inert whichever way the consent setting is set.
-
-If your organisation deploys TDPdf and points it at their collector, reporting is on
-until you turn it off, and the [privacy page](/privacy/) enumerates every event name
-and field that can be sent. If you want a destination of your own, the
-[telemetry page](/telemetry/) explains how. The maintainers of this project receive
-nothing either way.
-
-Electronic Signature talks to sign.tdpdf.com, because that is what it is for: the
-document, the recipients you enter and your account go there **when you send or sign
-something**, and not before. Organisations can point it at their own signing server or
-switch it off by policy.
-
-The one thing that reaches the network regardless is a twice-daily check of the public
-GitHub releases listing. It carries no identifier — not even which version you are
-running, because the comparison happens on your machine.
-
-## What else it does
-
-- **Rendering** through PDFium, the engine in Chrome's PDF viewer
-- **Inline text editing** with font matching against the fonts already in the document
-- **Annotations** — text boxes, freehand ink, highlights, images, with adjustable
-  colour, size and opacity
-- **Signature Picture** — draw one and reuse it, or import a PNG/JPG/BMP, then click to place
-- **Forms** — fill interactive AcroForm fields, and author new ones
-- **Merge and split**, with drag-and-drop page reordering and a right-click page
-  sidebar (insert, rotate, move, extract, delete, across multi-page selections)
-- **OCR** for scanned documents
-- **Search** across the whole document, drag-select to copy text
-- **Tabs** — several PDFs open in one window, with per-tab dirty tracking
-- **Password-protected PDFs** open with a prompt instead of an error
-- **Print** with annotations flattened, or **Save Flattened** to rasterise every page
-  at 150 DPI into something genuinely uneditable
-- **Bookmarks**, measurement tools, image export, and a keyboard map overlay
-
-![TDPdf image annotation](https://raw.githubusercontent.com/doodlemania2/TDPdf/main/screenshots/add_image.png)
-
-![TDPdf right-click page sidebar](https://raw.githubusercontent.com/doodlemania2/TDPdf/main/screenshots/right_click_sidebar.png)
-
-## Free software, and the source to prove it
-
-TDPdf is **GPLv3**. It is a fork of [KillerPDF](https://github.com/SteveTheKiller/KillerPDF)
-by Steve, who wrote the original, and it is maintained by The Doodle Project, LLC.
-
-Every release ships the corresponding source for that exact binary as a zip alongside
-it, because GPLv3 §6 requires it and because "trust us, it's the same code" is not a
-claim anyone should accept. The [third-party licences](/third-party-licenses/) page
-lists every component inside the executable, down to the native ones no licence scanner
-can see.
-
-Requires Windows 10 or 11, 64-bit. There is no macOS or Linux build.
-
-[Download TDPdf {{VERSION}}](/download/) · [Source on GitHub]({{REPO_URL}})
+<section class="tdp tdp-band tdp-final alt">
+<div class="tdp-wrap">
+<h2>Get TDPdf {{VERSION}}</h2>
+<p class="tdp-lead" style="margin:0 auto">Free for Windows 10 and 11. One signed download, about {{EXE_SIZE_MB}}&nbsp;MB.</p>
+<div class="tdp-ctas"><a class="tdp-btn primary" href="/download/">Download for Windows</a><a class="tdp-btn ghost" href="{{REPO_URL}}">Source on GitHub</a></div>
+<p class="tdp-muted">TDPdf is GPLv3 software from The Doodle Project, LLC, built on <a href="https://github.com/SteveTheKiller/KillerPDF">KillerPDF</a>. <a href="/third-party-licenses/">Third-party licences</a>.</p>
+</div>
+</section>

@@ -15,14 +15,10 @@ page is the operator's view: how to turn it on, and what you get when you do.
 There is **no destination inside the binary**. Not an endpoint, not a key, not an
 obfuscated one.
 
-An earlier version had one — an Azure Application Insights key embedded at build time.
-It was removed in **1.24.0.0**, along with the DPAPI provisioning file that could also
-supply a destination, and it is not coming back. Embedding a secret in a binary handed
-to end-user laptops obfuscates it at best, and rotating it meant shipping a whole new
-signed release.
-
-What replaced it is a runtime lookup. Reporting requires **two independent things**,
-and either alone sends nothing:
+That is deliberate. A secret embedded in a binary handed to end-user laptops is
+obfuscated at best, and rotating it would mean shipping a whole new signed release.
+Instead the destination is looked up at runtime, and reporting requires **two
+independent things** — either alone sends nothing:
 
 | | What it is | Default |
 |---|---|---|
