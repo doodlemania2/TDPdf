@@ -4,7 +4,7 @@
 <div class="tdp-wrap">
 <span class="tdp-eyebrow">Free · Windows 10 &amp; 11 · 64-bit</span>
 <h1>Download TDPdf <em>{{VERSION}}</em></h1>
-<p class="tdp-lead">One signed file, about {{EXE_SIZE_MB}}&nbsp;MB. Run it straight away, or click <i>Install TDPdf…</i> in the status bar to install it for your account — no administrator needed.</p>
+<p class="tdp-lead">One signed file, about {{EXE_SIZE_MB}}&nbsp;MB. Run it straight away, or click <i>Install TDPdf…</i> in the status bar to install it for your account. You don't need to be an administrator.</p>
 <div class="tdp-dl" style="margin-top:1.8rem">
 <img class="tdp-dl-mark" src="https://raw.githubusercontent.com/doodlemania2/TDPdf/main/Resources/splash-logo.png" alt="" width="88" height="88">
 <div>
@@ -15,7 +15,7 @@
 </div>
 </div>
 <div class="tdp-strip" style="margin-top:1.2rem">
-<div><b>Microsoft Store</b><span>Coming soon — in certification now</span></div>
+<div><b>Microsoft Store</b><span>Coming soon</span></div>
 <div><b>Source code</b><span><a href="{{RELEASE_DOWNLOAD}}/{{SRC_ASSET}}">{{SRC_ASSET}}</a></span></div>
 <div><b>Checksums</b><span><a href="{{RELEASE_DOWNLOAD}}/SHA256SUMS.txt">SHA256SUMS.txt</a></span></div>
 <div><b>Every release</b><span><a href="{{RELEASE_PAGE_ALL}}">on GitHub</a></span></div>
@@ -23,59 +23,52 @@
 </div>
 </section>
 
-### Verify what you downloaded
+### Check the download
 
-`SHA256SUMS.txt` is generated from the files in the release, in the same job that
-signs them. Check yours matches before you run it:
+Each release includes `SHA256SUMS.txt`. To check your copy, run:
 
 ```powershell
 Get-FileHash .\{{EXE_ASSET}} -Algorithm SHA256
 ```
 
-Compare the hash against the line for `{{EXE_ASSET}}` in `SHA256SUMS.txt`. If they
-differ, the file you have is not the file that was published — delete it.
+The result should match the line for `{{EXE_ASSET}}` in `SHA256SUMS.txt` (and the
+SHA-256 shown above). If it doesn't, delete the file.
 
-The executable is also Authenticode-signed by **The Doodle Project**, through
-Microsoft's Artifact Signing service, so it chains to a root Windows already trusts.
-Right-click ▸ Properties ▸ Digital Signatures shows the signer, and Windows will tell
-you itself if the signature is missing or broken.
+The exe is code-signed by **The Doodle Project** through Microsoft Artifact Signing. To
+see the signature, right-click the file and choose Properties ▸ Digital Signatures.
 
 ## Running it
 
-Double-click the executable. Run from anywhere other than its install location, it simply
-**runs portable** — from where it is, installing nothing. Fine from a USB stick.
+Double-click `{{EXE_ASSET}}`. It runs from wherever it is without installing anything,
+so it works from a USB stick too.
 
-When you want it installed, click **Install TDPdf…** in the status bar. It copies itself to
-`%LOCALAPPDATA%\Programs\TDPdf\`, adds a Start Menu entry, registers as a handler for
-`.pdf`, and creates one Add/Remove Programs entry. **No administrator rights, and no UAC
-prompt** — nothing outside your own profile is written.
+To install it, click **Install TDPdf…** in the status bar. It copies itself to
+`%LOCALAPPDATA%\Programs\TDPdf\`, adds a Start Menu entry, becomes an option for
+opening `.pdf` files, and adds an entry to Add/Remove Programs. It only writes to your
+own user profile, so there's no admin prompt.
 
-If TDPdf is already installed, the same button shows the installed version and offers to
-**upgrade** (or reinstall) it from the copy you are running, or to **uninstall** it. On a
-machine where your organisation installed TDPdf for everyone, it says so and leaves that
-install alone.
+If TDPdf is already installed, the same button shows the installed version and lets you
+upgrade, reinstall or uninstall it. If your organisation installed it for everyone on the
+machine, TDPdf says so and leaves that install alone.
 
-To open a file straight away: `TDPdf.exe "C:\path\to\file.pdf"`.
+To open a file from the command line: `TDPdf.exe "C:\path\to\file.pdf"`.
 
-## Unattended and managed deployment
+## Silent install and Intune
 
 ```
 TDPdf.exe /install /silent      # install, no UI
 TDPdf.exe /uninstall /silent    # remove, no UI
 ```
 
-`/S`, `/quiet`, `/verysilent` and `--silent` are accepted as synonyms for
-`/install /silent`, so whichever switch your deployment tooling reaches for by habit
-works.
+`/S`, `/quiet`, `/verysilent` and `--silent` also work as `/install /silent`.
 
-Run as SYSTEM — which is what Intune does — it installs per machine into
-`%ProgramFiles%\TDPdf\` instead. Either way it registers the `.pdf` handler, adds a
-Start Menu entry and exactly one Add/Remove Programs entry, and uninstalls cleanly.
-
-Deploying it across a fleet, including detection rules and telemetry provisioning, is
-documented in [`docs/intune-distribution.md`]({{REPO_URL}}/blob/main/docs/intune-distribution.md).
+When it runs as SYSTEM, as it does under Intune, TDPdf installs to
+`%ProgramFiles%\TDPdf\` for every user on the machine. Detection rules and telemetry
+settings for Intune are in [`docs/intune-distribution.md`]({{REPO_URL}}/blob/main/docs/intune-distribution.md).
 
 ## Building it yourself
+
+You need Windows and the .NET 10 SDK.
 
 ```powershell
 git clone {{REPO_URL}}.git
@@ -83,19 +76,11 @@ cd TDPdf
 dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true
 ```
 
-Output lands in `bin/Release/net10.0-windows/win-x64/publish/`, and the publish step
-also produces the versioned source zip.
-
-A build from a public checkout of this repository **has no telemetry destination in it**
-and reports to nobody — see [privacy](/privacy/) and [telemetry](/telemetry/). That is
-not a build flag you have to remember to set; there is nowhere for a destination to be
-compiled in from.
-
-Building requires Windows and the .NET 10 SDK.
+The exe ends up in `bin/Release/net10.0-windows/win-x64/publish/`, next to a zip of the
+source. A build like this has no telemetry destination, so it sends nothing. See
+[privacy](/privacy/) and [telemetry](/telemetry/) for details.
 
 ## Earlier releases
 
-Every previous release, with its own source zip and checksums, stays on the
-[releases page]({{RELEASE_PAGE_ALL}}). Nothing is removed — GPLv3 §6 obliges the
-corresponding source to remain available for the binaries that were distributed, not
-just the current one.
+Every past release, with its source and checksums, is on the
+[releases page]({{RELEASE_PAGE_ALL}}).
