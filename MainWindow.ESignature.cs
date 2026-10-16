@@ -471,7 +471,7 @@ namespace TDPdf
                 CaretBrush = BrushResource("TextPrimary"),
                 Padding = new Thickness(4, 3, 4, 3),
                 Margin = new Thickness(0, 0, 0, 4),
-                ToolTip = "The Documenso signing service TDPdf sends documents to."
+                ToolTip = "The signing service TDPdf sends documents to."
             };
             TdpDialog.UseThemedTextMenu(urlBox);   // the Settings window is not MainWindow
             AutomationProperties.SetName(urlBox, "Signing service address");
@@ -483,7 +483,7 @@ namespace TDPdf
                 DocumensoConfig.Source.Policy when locked => "Managed by your organisation.",
                 DocumensoConfig.Source.Policy => "Set by your organisation. You can change it.",
                 DocumensoConfig.Source.User => "Your own setting. Clear it to go back to the default.",
-                DocumensoConfig.Source.Default => "The Doodle Project's signing service. Enter your organisation's Documenso address to use that instead.",
+                DocumensoConfig.Source.Default => "TDPdf Signing, The Doodle Project's signing service. Enter your organisation's signing service address to use that instead.",
                 _ => "The signing service address configured on this device is not valid, so electronic signature is unavailable."
             };
             section.Children.Add(ESignSettingsNote(sourceNote));

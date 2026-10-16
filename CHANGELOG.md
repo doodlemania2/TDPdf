@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+### Added
+
+- **Sign in with your browser.** Connecting Electronic Signature no longer means making an API token by hand and pasting it: **Connect** opens the TDPdf Signing sign-in page (where anyone can also create an account), you choose **Allow**, and TDPdf is connected. Under the hood it is the standard way desktop apps sign in — a one-time code returned to TDPdf on your own computer and exchanged with a PKCE proof — so nothing secret passes through the browser's address bar in a usable form, a response TDPdf did not ask for is ignored, and the sign-in is checked before it is kept. Pasting a token is still there under **Advanced**, and is offered automatically by a signing service that has no sign-in page.
+- **Sign inside TDPdf.** Signing pages now open in a TDPdf window instead of your browser — for Sign This Document, and for anyone signing at your computer via the new **Sign on this computer** in Signature Requests. TDPdf notices when the document has been signed and sealed and offers **Download signed copy** and **Open it** right there. The window only shows the signing service; any other link opens in your browser. It needs the Microsoft Edge WebView2 Runtime, which Windows 11 includes; without it, pages open in your browser as before and the status bar says how to get it.
+- **Signature Requests:** **Open** shows the request inside TDPdf, **Audit log & certificate** shows who did what and when (and offers the certificate of completion), and **Resend reminder** emails the people who still have to sign — only those whose turn it is, so a signing order is never jumped.
+- **A "Signed" chip** on a document's tab, and **Signed · TDPdf Signing** in the footer, when the file is exactly the signed copy you downloaded from a completed request. It tells you where the file came from; it is not a check of the signature.
+
+### Changed
+
+- The in-app signing window keeps a small browser profile in `%LOCALAPPDATA%\TDPdf\WebView2` so you stay signed in to the signing service's website between sessions. `PRIVACY.md` describes it, and the short-lived local sign-in listener.
+- New third-party component: the Microsoft Edge WebView2 SDK (BSD-3-Clause), listed in Help ▸ Third-Party Licenses.
+
 ## [2.0.0.0] - 2026-10-14
 
 **Electronic signatures, natively.** Send a document for signature, place the fields where people sign, sign it yourself, follow every request through to completion and download the sealed copy — all from inside TDPdf, through TDPdf's own signing service at [sign.tdpdf.com](https://sign.tdpdf.com). Completed documents are sealed with a certificate on Adobe's Approved Trust List, held in a hardware security module, and timestamped so the signature outlives the certificate.

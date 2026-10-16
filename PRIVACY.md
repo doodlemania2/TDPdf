@@ -142,7 +142,7 @@ Settings always shows which service is in use.
   and its title.
 - **The names and email addresses of the recipients you enter**, and their signing order. The
   signing service emails each of them a link to sign.
-- **Your account on that service.** TDPdf connects with an API token from your account, so the
+- **Your account on that service.** TDPdf connects with an API token for your account, so the
   service knows which account sent the request.
 
 The signing service keeps the documents, the recipients and an audit trail of who signed what and
@@ -152,15 +152,34 @@ where you choose.
 
 **Nothing is sent unless you use it.** TDPdf contacts the signing service only when you choose Send
 for Signature, Sign This Document, Signature Requests, Verify Signatures, Connect, or Test
-connection. It does not contact it at startup or in the background, and it does not send a
-document you haven't chosen to send.
+connection, and while a signing page you opened is showing in TDPdf. It does not contact it at
+startup or in the background, and it does not send a document you haven't chosen to send.
 
-**Your token.** When you connect, TDPdf stores the API token you paste in
-`%LOCALAPPDATA%\TDPdf\documenso.cred`, encrypted with Windows data protection so that only your
-Windows account on this computer can read it. It is sent only to the signing service it was
+**Signing inside TDPdf.** Signing pages, and the pages for your requests and their audit logs,
+open in a TDPdf window that shows the signing service's own web pages. That window only loads
+pages from the signing service; any other link opens in your normal web browser. Like a browser,
+it keeps cookies and site data for the signing service — for example, staying signed in to its
+website — in `%LOCALAPPDATA%\TDPdf\WebView2`, for your Windows account on this computer only.
+That data is not sent anywhere by TDPdf and is not part of usage or crash reports; deleting the
+folder signs you out of the signing service's website inside TDPdf. While one of your requests is
+open in that window, TDPdf checks its status with the signing service every few seconds, and
+stops when you close the window. The window uses the Microsoft Edge WebView2 Runtime that is part
+of Windows; if it is not installed, these pages open in your web browser instead.
+
+**Connecting.** **Connect** opens the signing service's sign-in page in your web browser. After
+you sign in and choose **Allow**, the service sends your browser back to TDPdf on your own computer
+(an address starting `http://127.0.0.1`, which only this computer can reach). TDPdf listens there
+only while it is waiting for you, for at most five minutes, and stops as soon as the sign-in
+arrives or you cancel. What comes back is a one-time code that TDPdf exchanges with the signing
+service for an API token for your account; the service names that token "TDPdf" and you can
+revoke it on the service at any time. You can also paste an API token yourself, under
+**Advanced**.
+
+**Your token.** TDPdf stores the API token in `%LOCALAPPDATA%\TDPdf\documenso.cred`, encrypted
+with Windows data protection so that only your Windows account on this computer can read it. It is sent only to the signing service it was
 created for. It is never included in usage or crash reports and is not copied to other computers.
 **Disconnect** in Settings deletes it from this computer. To revoke it, also delete it from your
-account on the signing service.
+account on the signing service, under your team's API tokens.
 
 **Turning it off.** An administrator can remove the feature by setting `Enabled` to `0` under
 `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\TDPdf\Documenso`. It then disappears from the menu.
