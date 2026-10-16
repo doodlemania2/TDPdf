@@ -17,6 +17,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
+# The "signed copy" served for downloads: any real PDF (the workflow passes a demo file).
+SIGNED_PDF = sys.argv[2] if len(sys.argv) > 2 else None
 TOKEN = "api_SMOKEtoken0123456789abcdef"
 CODE = "smoke-one-time-code"
 ENV_ID = "envelope_smoke"
@@ -130,6 +132,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"data": [envelope()], "count": 1, "currentPage": 1, "perPage": 20, "totalPages": 1})
             if p == f"/api/v2/envelope/{ENV_ID}":
                 return self._json(200, envelope())
+            if p == "/api/v2/envelope/item/item_smoke/download" and SIGNED_PDF:
+                with lock:
+                    state["downloads"] = state.get("downloads", 0) + 1
+                with open(SIGNED_PDF, "rb") as f:
+                    return self._send(200, f.read(), "application/pdf")
             return self._json(404, {"code": "NOT_FOUND"})
 
         # ── Web pages the in-app window shows ────────────────────────────────────────────

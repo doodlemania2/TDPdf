@@ -303,7 +303,7 @@ Start-Sleep -Seconds 2
 
 # ── B. The stand-in service: everything an account would unlock ─────────────────────────
 # Started here, not in an earlier workflow step: Actions kills a step's processes when it ends.
-$mock = Start-Process python -ArgumentList (Join-Path $PSScriptRoot 'mock_server.py'), "$MockPort" -PassThru `
+$mock = Start-Process python -ArgumentList (Join-Path $PSScriptRoot 'mock_server.py'), "$MockPort", "`"$pdf`"" -PassThru `
     -RedirectStandardError (Join-Path $Out 'mock.err.txt') -RedirectStandardOutput (Join-Path $Out 'mock.out.txt')
 for ($i = 0; $i -lt 30; $i++) { try { Invoke-RestMethod "http://127.0.0.1:$MockPort/api/health" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 } }
 $base = "http://127.0.0.1:$MockPort"
@@ -368,7 +368,7 @@ Attempt 'signin-hold' {
 
     [W]::SetForegroundWindow([IntPtr]$dlg.Current.NativeWindowHandle) | Out-Null
     Step '04-signin-waiting'
-    Check 'sign-in: the dialog says it is waiting for the browser' ($null -ne (FindIn $dlg 'Waiting for you to finish signing in in your browser…  (Stop to cancel)' 3))
+    Check 'sign-in: the dialog says it is waiting for the browser' ($null -ne (FindIn $dlg 'Waiting for you to sign in with your browser…  (Stop to cancel)' 3))
 
     InvokeEl (FindIn $dlg 'Stop' 5)
     Start-Sleep -Seconds 2
@@ -479,6 +479,35 @@ Attempt 'webview-sign' {
     for ($i = 0; $i -lt 40 -and -not $dl; $i++) { Start-Sleep -Milliseconds 500; $dl = FindIn $sw 'Download signed copy…' 0 }
     Check 'completion detected (/complete page + status) → Download signed copy offered' ($null -ne $dl)
     Step '13-webview-completed'
+}
+
+Attempt 'download' {
+    $sw = WindowNamed 'Sign —*' 5
+    Press $sw 'Download signed copy…'
+    $save = $null
+    for ($i = 0; $i -lt 20 -and -not $save; $i++) {
+        Start-Sleep -Milliseconds 500
+        $save = TopWindows $app | Where-Object { $_.Current.Name -eq 'Save signed copy' } | Select-Object -First 1
+    }
+    Check 'Download signed copy opens the Save dialog' ($null -ne $save)
+    Step '14-save-dialog'
+    $dest = Join-Path $env:TEMP 'smoke-signed.pdf'
+    Remove-Item $dest -ErrorAction SilentlyContinue
+    $nameBox = $save.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1001')))
+    $nameBox.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($dest)
+    InvokeEl ($save.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1'))))
+    for ($i = 0; $i -lt 20 -and -not (Test-Path $dest); $i++) { Start-Sleep -Milliseconds 500 }
+    Start-Sleep -Seconds 1
+    $ok = (Test-Path $dest) -and ([System.Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dest), 0, 5) -eq '%PDF-')
+    Check 'the signed copy was downloaded through the existing downloader (.part → move, %PDF- checked)' $ok $dest
+    Check 'no .part file was left behind' (-not (Test-Path "$dest.part"))
+    Check 'the window says it was saved' ($null -ne (FindIn $sw 'Saved smoke-signed.pdf.' 5))
+    Step '15-downloaded'
+    Press $sw 'Open it'
+    Start-Sleep -Seconds 6
+    $app.Refresh()
+    Check 'Open it opens the download in a TDPdf tab and closes the window' ((Get-Process -Id $app.Id).MainWindowTitle -match 'smoke-signed\.pdf' -and $null -eq (WindowNamed 'Sign —*' 2)) (Get-Process -Id $app.Id).MainWindowTitle
+    Step '16-opened'
 }
 
 Attempt 'shutdown' {
