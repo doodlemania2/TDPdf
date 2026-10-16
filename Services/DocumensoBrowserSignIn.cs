@@ -325,7 +325,7 @@ namespace TDPdf.Services
 
                 if (!_openBrowser(AuthorizeUrl))
                     return new(DocumensoSignInOutcome.BrowserFailed);
-                progress?.Report("Waiting for you to finish signing in in your browser…");
+                progress?.Report("Waiting for you to sign in with your browser…");
 
                 DocumensoCallback callback;
                 while (true)
