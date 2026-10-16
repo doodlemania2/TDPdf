@@ -30,6 +30,7 @@ Bumping the version touches **four** files. They must all land in the **same PR*
 Then, to actually cut a release:
 
 - Merging to `main` builds **nothing**. The only CI on push is `codeql.yml` (required check `Analyze (csharp)`, ~6 min).
+- **Runner rule.** Anything triggered by `pull_request` runs on a GitHub-hosted runner (`codeql.yml` is on `ubuntu-latest`). The self-hosted `tdpdf` runner is on the internal network with passwordless sudo, so it only takes triggers outside contributors cannot reach: tag pushes and `workflow_dispatch`. The fork-PR approval policy is `all_external_contributors`.
 - A binary is produced only by `.github/workflows/release.yml`, which is **tag-triggered** (`push: tags: [v*]`) and runs on the self-hosted **`tdpdf`** runner. Tag style is annotated: `git tag -a v1.21.0.0 -m "TDPdf 1.21.0.0"`.
 - **Pushing the tag now does the whole thing.** `release.yml` signs the EXE, publishes the GitHub Release (exe + GPLv3 source zip + `SHA256SUMS.txt`), and updates the existing Intune app — see *Automated release pipeline* below. `./release.ps1` remains the manual Windows path (Certum via SimplySign, `-SkipSign` for a dry run) and is still the way to produce a real `.intunewin` for portal work.
 
