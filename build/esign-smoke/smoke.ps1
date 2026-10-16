@@ -503,7 +503,11 @@ Attempt 'download' {
         $vp.SetValue($dest)
         InvokeEl ($save.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1'))))
     } else {
-        $nameBox.SetFocus()
+        # Not focusable through UIA: bring the dialog forward, Alt+N to the File name box.
+        [W]::SetForegroundWindow([IntPtr]$save.Current.NativeWindowHandle) | Out-Null
+        Start-Sleep -Milliseconds 500
+        ClickEl $nameBox
+        [System.Windows.Forms.SendKeys]::SendWait('%n')
         [System.Windows.Forms.SendKeys]::SendWait('^a')
         [System.Windows.Forms.SendKeys]::SendWait($dest)
         [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
