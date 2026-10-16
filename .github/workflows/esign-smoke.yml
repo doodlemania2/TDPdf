@@ -10,7 +10,7 @@ name: Electronic Signature smoke
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/tdpdf-signing-in-app', 'smoke/esign-**']
+    branches: ['feat/tdpdf-signing-in-app']
     paths:
       - '**.cs'
       - '**.xaml'

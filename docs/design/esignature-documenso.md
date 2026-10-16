@@ -80,6 +80,8 @@ Supersedes §2.1's paste-token Connect flow and §1.6's "self-signing = browser 
 | Audit log & certificate | Download buttons only. | Also the `/t/{team}/documents/{id}/logs` page in the in-app window (it offers both downloads). Offered once sent; needs the team URL. |
 | "Signed" chip | Footer "Digitally signed". | When the open file's SHA-256 equals a recorded signed-copy fingerprint (`DocumensoRequestView.SignedCopyOf`, exact only), the tab gets a **Signed** chip and the footer reads **Signed · TDPdf Signing**. Only files that already carry a signature are hashed, off the UI thread. Provenance, not validity. |
 
+| Windows smoke test | — | `.github/workflows/esign-smoke.yml` (hosted `windows-2022`, never the Linux `tdpdf` runner) publishes the single-file EXE and drives it with `build/esign-smoke/smoke.ps1` through UI Automation. Leg A runs against **live sign.tdpdf.com** up to its sign-in page (no account). Leg B runs everything an account unlocks against `build/esign-smoke/mock_server.py` on 127.0.0.1, selected with the ordinary `TDPDF_DOCUMENSO_BASEURL` — no test-only code in the product. Screenshots, UIA dumps and a PASS/FAIL log are uploaded as the `esign-smoke` artifact. |
+
 ### The connect contract (server: fork patch `0004-tdpdf-browser-sign-in.patch`)
 
 TDPdf is built against the fork's implementation as merged to `doodlemania2/documenso` `main` (b602ebb, 2026-10-16), not against an independent sketch:
