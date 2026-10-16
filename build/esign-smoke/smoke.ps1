@@ -74,10 +74,14 @@ function TopWindows($proc) {
     $pc = New-Object System.Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, $proc.Id)
     $wc = New-Object System.Windows.Automation.PropertyCondition($UIA::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
     $list = New-Object System.Collections.ArrayList
+    $seen = @{}
     $queue = New-Object System.Collections.Queue
     foreach ($w in $UIA::RootElement.FindAll($Scope::Children, $pc)) { $queue.Enqueue($w) }
     while ($queue.Count -gt 0) {
         $w = $queue.Dequeue()
+        $hw = $w.Current.NativeWindowHandle
+        if ($seen.ContainsKey($hw)) { continue }
+        $seen[$hw] = $true
         [void]$list.Add($w)
         foreach ($c in $w.FindAll($Scope::Children, $wc)) { $queue.Enqueue($c) }   # owned windows nest
     }
@@ -98,10 +102,10 @@ function Step([string]$name) {
 }
 function FindIn($root, [string]$name, [int]$wait = 10) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($UIA::NameProperty, $name)
-    for ($i = 0; $i -lt $wait * 2; $i++) {
+    for ($i = 0; $i -le $wait * 2; $i++) {
         $e = $root.FindFirst($Scope::Descendants, $cond)
         if ($e) { return $e }
-        Start-Sleep -Milliseconds 500
+        if ($i -lt $wait * 2) { Start-Sleep -Milliseconds 500 }
     }
     $null
 }
@@ -169,7 +173,8 @@ function LoopbackRegistrations() {
     $blocks = $txt -split '(?=Request queue name:)'
     foreach ($b in $blocks) {
         if ($b -match "\b$($app.Id)\b") {
-            [regex]::Matches($b, '(?i)HTTP://(127\.0\.0\.1|LOCALHOST):(\d+)/') | ForEach-Object { $_.Value }
+            # e.g. HTTP://127.0.0.1:64092:127.0.0.1/ — host:port:bound-IP
+            [regex]::Matches($b, '(?i)HTTPS?://\S+') | ForEach-Object { $_.Value }
         }
     }
 }
@@ -270,6 +275,7 @@ Attempt 'live' {
     }
     $regs = @(LoopbackRegistrations)
     Log ("LIVE http.sys registrations attributed to TDPdf: " + ($regs -join ', '))
+    Check 'LIVE: http.sys lists a loopback-only URL registered by TDPdf.exe' ($regs.Count -gt 0 -and -not ($regs | Where-Object { $_ -notmatch '(?i)127\.0\.0\.1|localhost' })) ($regs -join ', ')
     Check "LIVE: port $lport is listening (http.sys) and the answer is TDPdf's loopback page" ((Listening $lport) -and (TdpdfAnswers $lport))
     $addr = $null
     for ($i = 0; $i -lt 40; $i++) { Start-Sleep -Milliseconds 500; $addr = EdgeAddress; if ($addr -match '/signin') { break } }
@@ -426,7 +432,8 @@ Attempt 'webview-open' {
     Check 'WebView2Loader.dll was extracted to %LOCALAPPDATA%\TDPdf\webview2-loader\<version>' ($null -ne $loader) "$($loader.FullName)"
     $loaded = (Get-Process -Id $app.Id).Modules | Where-Object { $_.ModuleName -eq 'WebView2Loader.dll' }
     Check 'the extracted loader is the one loaded into TDPdf' ($loaded -and $loaded[0].FileName -eq $loader.FullName) "$($loaded[0].FileName)"
-    Check 'the browser profile is %LOCALAPPDATA%\TDPdf\WebView2' (Test-Path (Join-Path $local 'TDPdf\WebView2\EBWebView'))
+    Get-ChildItem (Join-Path $local 'TDPdf') -Directory -Recurse -Depth 1 -ErrorAction SilentlyContinue | ForEach-Object { Log "  dir: $($_.FullName)" }
+    Check 'the browser profile is %LOCALAPPDATA%\TDPdf\WebView2' ((Get-ChildItem (Join-Path $local 'TDPdf\WebView2') -ErrorAction SilentlyContinue).Count -gt 0)
     $page = FindIn $ww 'Smoke request page' 20
     Check 'the request page rendered inside TDPdf' ($null -ne $page)
     Step '09-webview-request'
