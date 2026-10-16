@@ -436,8 +436,13 @@ Attempt 'webview-open' {
     foreach ($root in (Join-Path $local 'TDPdf'), (Split-Path $Exe), $env:TEMP) {
         Get-ChildItem $root -Directory -Recurse -Depth 3 -Filter EBWebView -ErrorAction SilentlyContinue | ForEach-Object { Log "  EBWebView at: $($_.FullName)" }
     }
-    Get-ChildItem (Split-Path $Exe) -ErrorAction SilentlyContinue | ForEach-Object { Log "  beside exe: $($_.Name)" }
-    Check 'the browser profile is %LOCALAPPDATA%\TDPdf\WebView2' ((Get-ChildItem (Join-Path $local 'TDPdf\WebView2') -ErrorAction SilentlyContinue).Count -gt 0)
+    Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | ForEach-Object {
+        $m = [regex]::Match("$($_.CommandLine)", '--user-data-dir="?([^"]+?)"?(\s--|$)')
+        if ($m.Success) { $m.Groups[1].Value }
+    } | Sort-Object -Unique | ForEach-Object { Log "  msedgewebview2 --user-data-dir: $_" }
+    cmd /c dir /a /s /b (Join-Path $local 'TDPdf\WebView2') 2>&1 | Select-Object -First 5 | ForEach-Object { Log "  WebView2 dir: $_" }
+    $udd = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -match [regex]::Escape((Join-Path $local 'TDPdf\WebView2')) })
+    Check 'the browser profile is %LOCALAPPDATA%\TDPdf\WebView2 (msedgewebview2 --user-data-dir)' ($udd.Count -gt 0)
     $page = FindIn $ww 'Smoke request page' 20
     Check 'the request page rendered inside TDPdf' ($null -ne $page)
     Step '09-webview-request'
