@@ -493,13 +493,21 @@ Attempt 'download' {
     Step '14-save-dialog'
     $dest = Join-Path $env:TEMP 'smoke-signed.pdf'
     Remove-Item $dest -ErrorAction SilentlyContinue
-    # The file-name field is an Edit with AutomationId 1001 (inside a ComboBox that shares the id).
+    # The file-name field: AutomationId 1001, Win32 class Edit (UIA reports it as a Pane).
     $nameCond = New-Object System.Windows.Automation.AndCondition(
         (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1001')),
-        (New-Object System.Windows.Automation.PropertyCondition($UIA::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)))
+        (New-Object System.Windows.Automation.PropertyCondition($UIA::ClassNameProperty, 'Edit')))
     $nameBox = $save.FindFirst($Scope::Descendants, $nameCond)
-    $nameBox.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($dest)
-    InvokeEl ($save.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1'))))
+    $vp = $null
+    if ($nameBox.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
+        $vp.SetValue($dest)
+        InvokeEl ($save.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1'))))
+    } else {
+        $nameBox.SetFocus()
+        [System.Windows.Forms.SendKeys]::SendWait('^a')
+        [System.Windows.Forms.SendKeys]::SendWait($dest)
+        [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    }
     for ($i = 0; $i -lt 20 -and -not (Test-Path $dest); $i++) { Start-Sleep -Milliseconds 500 }
     Start-Sleep -Seconds 1
     $ok = (Test-Path $dest) -and ([System.Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dest), 0, 5) -eq '%PDF-')
