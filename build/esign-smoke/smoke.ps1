@@ -170,7 +170,7 @@ function Attempt([string]$what, [scriptblock]$b) {
 function LoopbackRegistrations() {
     $txt = (netsh http show servicestate view=requestq verbose=no) -join "`n"
     Set-Content (Join-Path $Out ("netsh-" + (Get-Date -Format 'HHmmss') + ".txt")) $txt
-    $blocks = $txt -split '(?=Request queue name:)'
+    $blocks = $txt -split '(?m)(?=^Request queue name:)'   # top-level queues only, not the nested line
     foreach ($b in $blocks) {
         if ($b -match "\b$($app.Id)\b") {
             # e.g. HTTP://127.0.0.1:64092:127.0.0.1/ — host:port:bound-IP
@@ -433,6 +433,10 @@ Attempt 'webview-open' {
     $loaded = (Get-Process -Id $app.Id).Modules | Where-Object { $_.ModuleName -eq 'WebView2Loader.dll' }
     Check 'the extracted loader is the one loaded into TDPdf' ($loaded -and $loaded[0].FileName -eq $loader.FullName) "$($loaded[0].FileName)"
     Get-ChildItem (Join-Path $local 'TDPdf') -Directory -Recurse -Depth 1 -ErrorAction SilentlyContinue | ForEach-Object { Log "  dir: $($_.FullName)" }
+    foreach ($root in (Join-Path $local 'TDPdf'), (Split-Path $Exe), $env:TEMP) {
+        Get-ChildItem $root -Directory -Recurse -Depth 3 -Filter EBWebView -ErrorAction SilentlyContinue | ForEach-Object { Log "  EBWebView at: $($_.FullName)" }
+    }
+    Get-ChildItem (Split-Path $Exe) -ErrorAction SilentlyContinue | ForEach-Object { Log "  beside exe: $($_.Name)" }
     Check 'the browser profile is %LOCALAPPDATA%\TDPdf\WebView2' ((Get-ChildItem (Join-Path $local 'TDPdf\WebView2') -ErrorAction SilentlyContinue).Count -gt 0)
     $page = FindIn $ww 'Smoke request page' 20
     Check 'the request page rendered inside TDPdf' ($null -ne $page)
