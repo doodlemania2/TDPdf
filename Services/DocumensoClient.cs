@@ -338,6 +338,22 @@ namespace TDPdf.Services
             => DownloadAsync("/envelope/{envelopeId}/audit-log/download",
                 $"/envelope/{Uri.EscapeDataString(envelopeId)}/audit-log/download", destFile, ct);
 
+        // ── Reminders ──────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// <c>POST /envelope/redistribute</c> — "Resend reminder". Documenso emails the listed
+        /// recipients again (only those who have not acted and are not CC; it filters server-side
+        /// too) and renews any expired signing links. <paramref name="recipientIds"/> must not be
+        /// empty: the API's <c>minItems</c> is 1. Checked against the live OpenAPI, 2026-10-16.
+        /// </summary>
+        internal async Task RedistributeAsync(string envelopeId, IReadOnlyList<long> recipientIds, CancellationToken ct)
+        {
+            if (recipientIds.Count == 0)
+                throw new ArgumentException("At least one recipient is required.", nameof(recipientIds));
+            await PostJsonAsync<RedistributeResponse>("/envelope/redistribute",
+                new { envelopeId, recipients = recipientIds }, ct).ConfigureAwait(false);
+        }
+
         // ── Browser sign-in (TDPdf Signing connect contract) ──────────────────────────────
 
         /// <summary>
@@ -671,6 +687,7 @@ namespace TDPdf.Services
         private sealed class IdResponse { public string Id { get; set; } = ""; }
         private sealed class SuccessResponse { public bool Success { get; set; } }
         private sealed class DataList<T> { public List<T> Data { get; set; } = new(); }
+        private sealed class RedistributeResponse { public bool Success { get; set; } }
         private sealed class ConnectTokenResponse
         {
             public string? Token { get; set; }

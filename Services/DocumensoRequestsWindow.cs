@@ -13,8 +13,9 @@ namespace TDPdf.Services
 {
     /// <summary>
     /// File ▸ Electronic Signature ▸ Signature Requests: what this account has out for signature,
-    /// this device's sends first, with per-row Open (inside TDPdf since Phase 6), Sign on this
-    /// computer, Copy signing link, the three downloads, Cancel and Delete. Design §5.4(c).
+    /// this device's sends first, with per-row Open and Audit log &amp; certificate (inside TDPdf
+    /// since Phase 6), Sign on this computer, Copy signing link, Resend reminder, the three
+    /// downloads, Cancel and Delete. Design §5.4(c).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -351,6 +352,37 @@ namespace TDPdf.Services
                         Say($"Could not open the page. The document is at {url}");
                 };
                 actions.Children.Add(open);
+
+                if (can.AuditLogPage
+                    && DocumensoRequestView.LogsUrl(inputs.BaseUrl, env.Team?.Url ?? inputs.StoredTeamUrl, env.Id) is { } logsUrl)
+                {
+                    var logs = SmallButton(owner, "Audit log & certificate", $"Show the audit log and certificate for {title}");
+                    logs.ToolTip = $"Who did what and when, from {inputs.Host}. The certificate of completion can be downloaded there once everyone has signed.";
+                    logs.Click += (_, _) =>
+                    {
+                        if (client is null) { Expired(); return; }
+                        if (!ShowPage(client, new DocumensoWebRequest(logsUrl, $"Audit log — {title}", DocumensoWebPurpose.AuditLog, env.Id)))
+                            Say($"Could not open the page. The audit log is at {logsUrl}");
+                    };
+                    actions.Children.Add(logs);
+                }
+
+                var remindIds = can.Remind ? DocumensoRequestView.ReminderRecipientIds(env) : Array.Empty<long>();
+                if (remindIds.Count > 0)
+                {
+                    int n = remindIds.Count;
+                    var remind = SmallButton(owner, "Resend reminder", $"Resend the signing email for {title}");
+                    remind.ToolTip = $"{inputs.Host} emails the {n} recipient{(n == 1 ? "" : "s")} who still have to act, and renews any expired signing link.";
+                    remind.Click += async (_, _) =>
+                    {
+                        await ActAsync(async c =>
+                        {
+                            await c.RedistributeAsync(env.Id, remindIds, CancellationToken.None);
+                            Say($"Reminder sent to {n} recipient{(n == 1 ? "" : "s")} for “{title}”.", "AccentGreen");
+                        });
+                    };
+                    actions.Children.Add(remind);
+                }
 
                 if (can.DownloadSignedCopy) actions.Children.Add(DownloadButton("Download signed copy…", env, DocumensoArtifact.SignedCopy));
                 if (can.DownloadCertificate) actions.Children.Add(DownloadButton("Download certificate…", env, DocumensoArtifact.Certificate));

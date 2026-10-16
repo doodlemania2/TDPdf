@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using TDPdf.Services;
 
@@ -25,6 +26,75 @@ internal static class DocumensoRequests
         Wire(Check);
         Store(Check, tmp);
         Matching(Check);
+        Phase6(Check).GetAwaiter().GetResult();
+    }
+
+    // ── Phase 6: Resend reminder, Audit log & certificate, the "Signed" chip ─────────────────
+
+    private static async Task Phase6(Action<string, bool, string> Check)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Electronic Signature — reminders, audit log page, signed chip");
+
+        DocumensoRecipient R(long id, DocumensoRecipientRole role, DocumensoSigningStatus st, DocumensoSendStatus send) =>
+            new() { Id = id, Role = role, SigningStatus = st, SendStatus = send, Email = $"r{id}@example.com" };
+        var env = new DocumensoEnvelope
+        {
+            Id = "envelope_p", Status = DocumensoEnvelopeStatus.Pending,
+            Recipients =
+            {
+                R(1, DocumensoRecipientRole.Signer, DocumensoSigningStatus.Signed, DocumensoSendStatus.Sent),
+                R(2, DocumensoRecipientRole.Signer, DocumensoSigningStatus.NotSigned, DocumensoSendStatus.Sent),
+                R(3, DocumensoRecipientRole.Approver, DocumensoSigningStatus.NotSigned, DocumensoSendStatus.Sent),
+                R(4, DocumensoRecipientRole.Cc, DocumensoSigningStatus.NotSigned, DocumensoSendStatus.Sent),
+                R(5, DocumensoRecipientRole.Signer, DocumensoSigningStatus.NotSigned, DocumensoSendStatus.NotSent),
+                R(6, DocumensoRecipientRole.Signer, DocumensoSigningStatus.Rejected, DocumensoSendStatus.Sent),
+            },
+        };
+        var ids = DocumensoRequestView.ReminderRecipientIds(env);
+        Check("reminders go to sent, unsigned, non-CC recipients only (2 and 3)", ids.SequenceEqual(new long[] { 2, 3 }), string.Join(",", ids));
+        Check("…never to a later signer not yet sent (sequential order kept)", !ids.Contains(5), "");
+        env.Status = DocumensoEnvelopeStatus.Completed;
+        Check("a completed request has nobody to remind", DocumensoRequestView.ReminderRecipientIds(env).Count == 0, "");
+
+        var pend = DocumensoRequestView.Actions(DocumensoEnvelopeStatus.Pending);
+        var draft = DocumensoRequestView.Actions(DocumensoEnvelopeStatus.Draft);
+        var done = DocumensoRequestView.Actions(DocumensoEnvelopeStatus.Completed);
+        Check("Resend reminder: pending only", pend.Remind && !draft.Remind && !done.Remind, "");
+        Check("Audit log page: once sent (pending, completed, rejected, cancelled), never a draft",
+              pend.AuditLogPage && done.AuditLogPage && DocumensoRequestView.Actions(DocumensoEnvelopeStatus.Cancelled).AuditLogPage
+              && DocumensoRequestView.Actions(DocumensoEnvelopeStatus.Rejected).AuditLogPage && !draft.AuditLogPage
+              && !DocumensoRequestView.Actions(DocumensoEnvelopeStatus.Unknown).AuditLogPage, "");
+
+        string? logs = DocumensoRequestView.LogsUrl(Base + "/", "personal_x", "envelope_p");
+        Check("audit log page is /t/{team}/documents/{envelopeId}/logs", logs == Base + "/t/personal_x/documents/envelope_p/logs", logs ?? "null");
+        Check("no team, no audit log page", DocumensoRequestView.LogsUrl(Base, null, "envelope_p") is null, "");
+
+        string sha = new string('d', 64);
+        var t0 = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc);
+        var entries = new List<DocumensoRequestStore.Entry> { new("e1", "Lease", t0, 1, sha), new("e2", "NDA", t0, 1) };
+        Check("Signed chip: an exact fingerprint matches, case-insensitively", DocumensoRequestView.SignedCopyOf(entries, sha.ToUpperInvariant())?.EnvelopeId == "e1", "");
+        Check("Signed chip: any other file does not", DocumensoRequestView.SignedCopyOf(entries, new string('e', 64)) is null, "");
+        Check("Signed chip: no fingerprint, no match (never by name)", DocumensoRequestView.SignedCopyOf(entries, null) is null
+              && DocumensoRequestView.SignedCopyOf(entries, "Lease") is null, "");
+
+        // Wire: POST /envelope/redistribute {envelopeId, recipients:[ids]} — the live OpenAPI shape.
+        var h = new Documenso.Recorder();
+        h.Respond(System.Net.HttpStatusCode.OK, """{"success":true,"id":"envelope_p","recipients":[]}""");
+        var client = new DocumensoClient(Base, "api_TESTtoken0123456789abcdef", () => h);
+        await client.RedistributeAsync("envelope_p", ids, CancellationToken.None);
+        var sent = h.Last;
+        using var doc = JsonDocument.Parse(sent.Body);
+        Check("redistribute: POST /api/v2/envelope/redistribute, authenticated",
+              sent.Method == "POST" && sent.Url == Base + "/api/v2/envelope/redistribute" && sent.Authorization == "api_TESTtoken0123456789abcdef", sent.Url);
+        Check("redistribute: body is {envelopeId, recipients:[numbers]}",
+              doc.RootElement.GetProperty("envelopeId").GetString() == "envelope_p"
+              && doc.RootElement.GetProperty("recipients").EnumerateArray().Select(x => x.GetInt64()).SequenceEqual(new long[] { 2, 3 }),
+              Encoding.UTF8.GetString(sent.Body));
+        bool threw = false;
+        try { await client.RedistributeAsync("envelope_p", Array.Empty<long>(), CancellationToken.None); }
+        catch (ArgumentException) { threw = true; }
+        Check("redistribute refuses an empty list (the API's minItems is 1) without a call", threw && h.All.Count == 1, "");
     }
 
     private static void Matching(Action<string, bool, string> Check)

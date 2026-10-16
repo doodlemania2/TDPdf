@@ -1487,6 +1487,12 @@ namespace TDPdf
             // "Digitally signed" indicator (MainWindow.ESignatureRequests.cs).
             public bool HasDigitalSignature;
 
+            // True when this tab's file is, byte for byte, the signed copy TDPdf downloaded for a
+            // completed signature request (SHA-256 against documenso-requests.json). Drives the
+            // tab's "Signed" chip and the footer's "Signed · TDPdf Signing". Where the file came
+            // from, never a validity claim. Cleared whenever HasDigitalSignature is recomputed.
+            public bool ESignSignedCopy;
+
             // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
             // by widget object number, checkboxes by widget object number, radios by field
             // name (shared across the widgets in a group). Persisted into the PDF on save.

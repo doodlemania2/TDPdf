@@ -23,12 +23,16 @@ namespace TDPdf.Services
     }
 
     /// <summary>What a row in Signature Requests offers. Computed from the status alone.</summary>
+    /// <param name="Remind">Resend reminder: PENDING only; the row also needs someone to remind (<see cref="DocumensoRequestView.ReminderRecipientIds"/>).</param>
+    /// <param name="AuditLogPage">The audit log page (with the certificate on it): once the request has been sent.</param>
     internal readonly record struct DocumensoRowActions(
         bool DownloadSignedCopy,
         bool DownloadCertificate,
         bool DownloadAuditLog,
         bool Cancel,
-        bool Delete);
+        bool Delete,
+        bool Remind = false,
+        bool AuditLogPage = false);
 
     /// <summary>One envelope as Signature Requests lists it.</summary>
     /// <param name="FromThisComputer">Sent from this device (it is in <see cref="DocumensoRequestStore"/>).</param>
@@ -90,7 +94,55 @@ namespace TDPdf.Services
                 DownloadCertificate: completed,
                 DownloadAuditLog: completed,
                 Cancel: s == DocumensoEnvelopeStatus.Pending,
-                Delete: s is DocumensoEnvelopeStatus.Draft or DocumensoEnvelopeStatus.Cancelled or DocumensoEnvelopeStatus.Rejected);
+                Delete: s is DocumensoEnvelopeStatus.Draft or DocumensoEnvelopeStatus.Cancelled or DocumensoEnvelopeStatus.Rejected,
+                Remind: s == DocumensoEnvelopeStatus.Pending,
+                AuditLogPage: s is DocumensoEnvelopeStatus.Pending or DocumensoEnvelopeStatus.Completed
+                    or DocumensoEnvelopeStatus.Rejected or DocumensoEnvelopeStatus.Cancelled);
+        }
+
+        /// <summary>
+        /// Who "Resend reminder" emails: recipients who still have something to do — not CC, not
+        /// yet signed (or approved, or viewed), not rejected — <b>and already sent</b>. The last
+        /// condition is what keeps sequential signing in order: a later signer is NOT_SENT until it
+        /// is their turn, and Documenso's redistribute does not check the order itself
+        /// (resend-document.ts, v2.18.0, filters only NOT_SIGNED and non-CC), so reminding them
+        /// would hand them the link early. Empty when there is nobody to remind.
+        /// </summary>
+        internal static IReadOnlyList<long> ReminderRecipientIds(DocumensoEnvelope env)
+        {
+            if (env.Status != DocumensoEnvelopeStatus.Pending) return Array.Empty<long>();
+            return env.Recipients
+                .Where(r => r.Id > 0
+                            && r.Role != DocumensoRecipientRole.Cc
+                            && r.SigningStatus == DocumensoSigningStatus.NotSigned
+                            && r.SendStatus == DocumensoSendStatus.Sent)
+                .Select(r => r.Id)
+                .Distinct()
+                .ToList();
+        }
+
+        /// <summary>
+        /// The request's audit log page, <c>/t/{teamUrl}/documents/{envelopeId}/logs</c>
+        /// (apps/remix/app/routes/_authenticated+/t.$teamUrl+/documents.$id.logs.tsx, v2.18.0, which
+        /// loads the envelope by its envelope id and offers both the audit log and the certificate
+        /// downloads). Null without a team URL — there is then no page to name.
+        /// </summary>
+        internal static string? LogsUrl(string baseUrl, string? teamUrl, string envelopeId)
+        {
+            if (string.IsNullOrWhiteSpace(teamUrl) || string.IsNullOrWhiteSpace(envelopeId)) return null;
+            return WebUrl(baseUrl, teamUrl, envelopeId) + "/logs";
+        }
+
+        /// <summary>
+        /// The tracked request whose signed copy, as TDPdf downloaded it, is byte-for-byte the file
+        /// with this SHA-256 — the "Signed" chip on a tab. Exact match only: the fingerprint is
+        /// recorded only for a COMPLETED request's signed copy, so a match means "this is that
+        /// sealed file, unchanged". Never a guess by name; null when nothing matches.
+        /// </summary>
+        internal static DocumensoRequestStore.Entry? SignedCopyOf(IReadOnlyList<DocumensoRequestStore.Entry> entries, string? fileSha256)
+        {
+            if (!DocumensoRequestStore.IsSha256Hex(fileSha256)) return null;
+            return entries.FirstOrDefault(e => string.Equals(e.SignedSha256, fileSha256, StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>

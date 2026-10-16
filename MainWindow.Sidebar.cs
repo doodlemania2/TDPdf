@@ -387,6 +387,8 @@ namespace TDPdf
             menu.IsOpen = true;
         }
 
+        private const string TabSignedChipTag = "esign-signed";
+
         /// <summary>Rebuilds every tab chip and toggles strip visibility.</summary>
         private void RebuildTabStrip()
         {
@@ -432,8 +434,33 @@ namespace TDPdf
             };
             close.Click += (_, e) => CloseTab(ctx);
 
+            // Electronic Signature's "Signed" chip (MainWindow.ESignatureRequests.cs): shown by
+            // UpdateTabChrome when this file is the signed copy of a completed request.
+            var signedChip = new Border
+            {
+                Tag = TabSignedChipTag,
+                Visibility = Visibility.Collapsed,
+                Background = BrushResource("AccentGreenDim"),
+                BorderBrush = BrushResource("AccentGreen"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(4, 0, 4, 0),
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                ToolTip = "The signed copy of a completed signature request, unchanged since it was downloaded. Saving it in TDPdf removes the signature.",
+                Child = new TextBlock
+                {
+                    Text = "Signed",
+                    FontSize = 10,
+                    FontFamily = new FontFamily("Consolas"),
+                    Foreground = BrushResource("AccentGreen"),
+                },
+            };
+            System.Windows.Automation.AutomationProperties.SetName(signedChip, "Signed");
+
             var panel = new StackPanel { Orientation = Orientation.Horizontal };
             panel.Children.Add(text);
+            panel.Children.Add(signedChip);
             panel.Children.Add(close);
 
             var chip = new Border
@@ -572,6 +599,9 @@ namespace TDPdf
                     // so a long filename needs a hover to read in full — this is the only place that
                     // ever refreshes, so it also picks up a rename (e.g. Save As) after tab creation.
                     ctx.Chip.ToolTip = ctx.OriginalPath ?? name;
+                    foreach (var child in sp.Children)
+                        if (child is Border b && ReferenceEquals(b.Tag, TabSignedChipTag))
+                            b.Visibility = ctx.Doc is not null && ctx.HasDigitalSignature && ctx.ESignSignedCopy ? Visibility.Visible : Visibility.Collapsed;
                 }
             }
         }
