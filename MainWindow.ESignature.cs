@@ -593,13 +593,13 @@ namespace TDPdf
                 {
                     var answer = TdpDialog.ShowYesNo(owner,
                         $"Disconnect from {host}?\n\n" +
-                        $"This removes the token from this computer. It stays valid on {host} until you " +
-                        "delete it there, under Settings → API Tokens.",
+                        "This removes the sign-in from this computer. If you connected with an API token, it " +
+                        $"stays valid on {host} until you delete it there, under Settings → API Tokens.",
                         "Disconnect", "Cancel", "Electronic Signature", MessageBoxImage.Question);
                     if (answer == MessageBoxResult.Yes)
                         SetStatus(DocumensoCredentialStore.Delete()
                             ? $"Disconnected from {host}."
-                            : "TDPdf could not remove the stored token.");
+                            : "TDPdf could not remove the stored sign-in.");
                 }
                 BuildESignatureSettings(section);
             };

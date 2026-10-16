@@ -338,6 +338,52 @@ namespace TDPdf.Services
             => DownloadAsync("/envelope/{envelopeId}/audit-log/download",
                 $"/envelope/{Uri.EscapeDataString(envelopeId)}/audit-log/download", destFile, ct);
 
+        // ── Browser sign-in (TDPdf Signing connect contract) ──────────────────────────────
+
+        /// <summary>
+        /// Whether this instance offers browser sign-in at all: <c>GET {BaseUrl}/api/connect/token</c>.
+        /// The contract (design doc, "Phase 6 as built") says that route answers a GET with
+        /// <b>405</b>; an instance without it answers <b>404</b>. So 404 is "no", any other HTTP
+        /// answer is "yes", and an unreachable service throws as every other call does.
+        /// Unauthenticated: nothing about the user is sent.
+        /// </summary>
+        internal async Task<bool> IsBrowserSignInSupportedAsync(CancellationToken ct)
+        {
+            try
+            {
+                await SendForJsonAsync<JsonElement>(HttpMethod.Get, DocumensoConnectContract.TokenPath,
+                    _baseUrl + DocumensoConnectContract.TokenPath, null, authenticated: false, MetadataTimeout, ct).ConfigureAwait(false);
+                return true;
+            }
+            catch (DocumensoApiException ex) when (ex.StatusCode is int status)
+            {
+                return status != 404;
+            }
+        }
+
+        /// <summary>
+        /// Trades the one-time sign-in <paramref name="code"/> and its PKCE
+        /// <paramref name="codeVerifier"/> for an API token: <c>POST {BaseUrl}/api/connect/token</c>.
+        /// Unauthenticated — the code and verifier are the credential. A refusal (wrong verifier,
+        /// expired or reused code, mismatched redirect) is a 400 <c>INVALID_GRANT</c> and surfaces
+        /// as <see cref="DocumensoFailure.Rejected"/> like any other 4xx. The returned token has not
+        /// been validated yet; the caller probes it before storing it.
+        /// </summary>
+        internal async Task<DocumensoConnectGrant> ExchangeConnectCodeAsync(string code, string codeVerifier,
+            string redirectUri, CancellationToken ct)
+        {
+            var body = new { grantType = "authorization_code", code, codeVerifier, redirectUri };
+            var content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8, "application/json");
+            var r = await SendForJsonAsync<ConnectTokenResponse>(HttpMethod.Post, DocumensoConnectContract.TokenPath,
+                _baseUrl + DocumensoConnectContract.TokenPath, content, authenticated: false, MetadataTimeout, ct).ConfigureAwait(false);
+            string token = (r.Token ?? "").Trim();
+            if (token.Length == 0 || !IsHeaderSafe(token))
+                throw new DocumensoApiException(DocumensoFailure.UnexpectedResponse, 200, null, "POST", DocumensoConnectContract.TokenPath);
+            static string? Clean(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+            return new DocumensoConnectGrant(token, Clean(r.Email), Clean(r.Name), Clean(r.TeamUrl),
+                DocumensoRequestView.ParseApiDate(r.ExpiresAt));
+        }
+
         // ── Destructive ────────────────────────────────────────────────────────────────────
 
         /// <summary><c>POST /envelope/cancel</c>. Recipients mid-signature lose access; confirm first.</summary>
@@ -606,6 +652,14 @@ namespace TDPdf.Services
         private sealed class IdResponse { public string Id { get; set; } = ""; }
         private sealed class SuccessResponse { public bool Success { get; set; } }
         private sealed class DataList<T> { public List<T> Data { get; set; } = new(); }
+        private sealed class ConnectTokenResponse
+        {
+            public string? Token { get; set; }
+            public string? ExpiresAt { get; set; }
+            public string? Email { get; set; }
+            public string? Name { get; set; }
+            public string? TeamUrl { get; set; }
+        }
         private sealed class DistributeResponse
         {
             public bool Success { get; set; }
