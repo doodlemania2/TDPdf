@@ -491,7 +491,8 @@ Attempt 'download' {
     }
     Check 'Download signed copy opens the Save dialog' ($null -ne $save)
     Step '14-save-dialog'
-    $dest = Join-Path $env:TEMP 'smoke-signed.pdf'
+    # Not %TEMP%: on the runner that is an 8.3 path (RUNNER~1), and SendKeys reads ~ as Enter.
+    $dest = Join-Path (Resolve-Path $Out).Path 'smoke-signed.pdf'
     Remove-Item $dest -ErrorAction SilentlyContinue
     # The file-name field: AutomationId 1001, Win32 class Edit (UIA reports it as a Pane).
     $nameCond = New-Object System.Windows.Automation.AndCondition(
