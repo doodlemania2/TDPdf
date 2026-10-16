@@ -189,18 +189,38 @@ Start-Sleep -Seconds 8
 [W]::SetForegroundWindow($app.H) | Out-Null
 Start-Sleep -Seconds 2
 
-# ── redact: search "Jordan Ellis", Redact matches ───────────────────────────────────
+# ── redact: the Redact tool, dragged over the names and phone numbers ─────────────
+# Boxes are fractions of the page image, measured on an earlier capture of incident-report.pdf.
+# ("Redact matches" is not used here: on this file it marks whole lines, filed as an issue.)
+function Drag([int]$x1, [int]$y1, [int]$x2, [int]$y2) {
+    [W]::SetCursorPos($x1, $y1) | Out-Null
+    Start-Sleep -Milliseconds 120
+    [W]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero)
+    for ($s = 1; $s -le 12; $s++) {
+        [W]::SetCursorPos([int]($x1 + ($x2 - $x1) * $s / 12), [int]($y1 + ($y2 - $y1) * $s / 12)) | Out-Null
+        Start-Sleep -Milliseconds 25
+    }
+    [W]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+}
 Attempt 'redact' {
-    Keys '^f'
-    $box = Find $app.Root 'Search text'
-    $box.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('Jordan Ellis')
-    Start-Sleep -Seconds 2
-    Keys '{ENTER}'
+    InvokeEl (FindId $app.Root 'ToolRedactBtn')
     Start-Sleep -Seconds 1
-    InvokeEl (Find $app.Root 'Redact matches')
-    Start-Sleep -Seconds 3
-    Full 'redact-full'
-    DumpProcess 'redact' $app.P
+    $boxes = @(
+        @(0.2970, 0.1853, 0.5022, 0.2011),   # "Jordan Ellis. Jordan Ellis" in the first paragraph
+        @(0.1224, 0.2725, 0.2178, 0.2907),   # table: Jordan Ellis
+        @(0.5990, 0.2725, 0.7236, 0.2907),   # table: phone
+        @(0.5990, 0.3008, 0.7236, 0.3178),   # table: phone
+        @(0.5990, 0.3280, 0.7236, 0.3450),   # table: phone
+        @(0.7544, 0.3688, 0.8556, 0.3830)    # "Jordan Ellis" in the last paragraph
+    )
+    foreach ($b in $boxes) {
+        $a = PagePoint $app.Root $b[0] $b[1]
+        $z = PagePoint $app.Root $b[2] $b[3]
+        Drag $a[0] $a[1] $z[0] $z[1]
+    }
+    [W]::SetCursorPos(1900, 1070) | Out-Null
+    Start-Sleep -Seconds 2
     Shot 'redact' $app.H
 }
 
