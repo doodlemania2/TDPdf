@@ -88,6 +88,22 @@
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.0" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
+    <!-- Electronic Signature signs inside TDPdf: the signing service's own pages, hosted in a
+         WebView2 window (Services/DocumensoWebWindow.cs) as top-level navigations - never the
+         Enterprise-licensed iframe embed. Managed wrappers only; the browser engine is the
+         Evergreen WebView2 Runtime already on Windows 10/11, detected at run time with a
+         default-browser fallback.
+
+         ExcludeAssets="native": the package's runtimes/win-x64/native/WebView2Loader.dll is NOT
+         taken as a native runtime asset. Microsoft.Web.WebView2.Core.dll finds its loader by
+         asking Windows for its OWN file path and looking under runtimes\win-x64\native beside it,
+         and in a single-file EXE the managed wrapper is loaded from memory and has no file path,
+         so a host-extracted copy in the bundle's temp folder is not where it looks. Instead the
+         loader is embedded below and placed by Services/WebView2Bootstrap.cs, which tells WebView2
+         where it is (CoreWebView2Environment.SetLoaderDllFolderPath) - one copy, found
+         deterministically. "build" must stay included: the package's targets choose the
+         .NET reference assemblies. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" GeneratePathProperty="true" ExcludeAssets="native" />
   </ItemGroup>
 
   <ItemGroup>
@@ -115,6 +131,21 @@
     </EmbeddedResource>
     <EmbeddedResource Include="$(PkgTesseract)\x64\leptonica-1.82.0.dll" Condition="'$(PkgTesseract)' != ''">
       <LogicalName>TDPdf.OcrNative.leptonica-1.82.0.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- WebView2's native loader, the OCR way: embedded as a resource and extracted on first use
+       (Services/WebView2Bootstrap.cs), which then calls CoreWebView2Environment.SetLoaderDllFolderPath.
+       WebView2NeverCopyLoaderDllToOutputDirectory switches off the package's loose
+       runtimes\win-*\native\WebView2Loader.dll Content items (its build targets add all three
+       architectures for "AnyCPU" managed projects), so the single EXE carries exactly one copy.
+       x64 only, like the app. -->
+  <PropertyGroup>
+    <WebView2NeverCopyLoaderDllToOutputDirectory>true</WebView2NeverCopyLoaderDllToOutputDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll" Condition="'$(PkgMicrosoft_Web_WebView2)' != ''">
+      <LogicalName>TDPdf.WebView2.WebView2Loader.dll</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

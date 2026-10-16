@@ -35,6 +35,7 @@ namespace TDPdf
                 TryClient = () => client,
                 Connect = ESignReconnect,
                 DownloadAsync = async (owner, c, env, what) => (await ESignDownloadArtifactAsync(owner, c, env, what, openAfter: true))?.Message,
+                OpenPage = (owner, c, request) => ESignOpenWeb(owner, c, request),
             });
             return Task.CompletedTask;
         }

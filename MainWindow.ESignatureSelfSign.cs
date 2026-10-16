@@ -1,6 +1,7 @@
 // MainWindow — Electronic Signature: Sign This Document (design §5.4b).
 // Send for Signature with exactly one recipient — you, as Signer — and one signature field,
-// followed by a handoff to your signing page in the default browser. TDPdf never signs:
+// followed by your signing page: inside TDPdf (MainWindow.ESignatureWeb.cs) when the WebView2
+// Runtime is present, else in the default browser. TDPdf never signs:
 // Documenso has no public signing endpoint (design §1.6), so the signature is made on the
 // signing service's page and sealed by the signing service. The window that waits for it is
 // Services/DocumensoSelfSignWindow; the pipeline is the one Send for Signature runs
@@ -133,6 +134,9 @@ namespace TDPdf
                     return r is null ? (null, "") : (r.Path, r.Message);
                 },
                 OpenAsync = OpenInTabAsync,
+                InApp = WebView2Bootstrap.RuntimeVersion() is not null,
+                OpenSigningPage = (url, envelopeId, completed) => ESignOpenWeb(null, client,
+                    new DocumensoWebRequest(url, $"Sign — {ctx.DisplayName}", DocumensoWebPurpose.Sign, envelopeId), completed),
             });
         }
     }

@@ -13,8 +13,8 @@ namespace TDPdf.Services
 {
     /// <summary>
     /// File ▸ Electronic Signature ▸ Signature Requests: what this account has out for signature,
-    /// this device's sends first, with per-row Open in browser, Copy signing link, the three
-    /// downloads, Cancel and Delete. Design §5.4(c).
+    /// this device's sends first, with per-row Open (inside TDPdf since Phase 6), Sign on this
+    /// computer, Copy signing link, the three downloads, Cancel and Delete. Design §5.4(c).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -58,6 +58,12 @@ namespace TDPdf.Services
             /// </summary>
             public Func<Window, DocumensoClient, DocumensoEnvelope, DocumensoArtifact, Task<string?>> DownloadAsync { get; init; }
                 = (_, _, _, _) => Task.FromResult<string?>(null);
+            /// <summary>
+            /// Shows a page of the service — inside TDPdf when it can, else in the browser (the
+            /// caller decides and explains). False when it could not be shown anywhere. Null: the
+            /// default browser, as before Phase 6.
+            /// </summary>
+            public Func<Window, DocumensoClient, DocumensoWebRequest, bool>? OpenPage { get; init; }
         }
 
         private static Window? _open;
@@ -298,6 +304,19 @@ namespace TDPdf.Services
                         && DocumensoRequestView.SigningUrl(inputs.BaseUrl, r.Token) is { } link)
                     {
                         string label = DocumensoRequestView.RecipientLabel(r);
+                        var linkButtons = new StackPanel { Orientation = Orientation.Horizontal };
+                        // For a recipient sitting at this computer — the sender's colleague at the
+                        // same desk, or the sender signing their own part.
+                        var signHere = SmallButton(owner, "Sign on this computer", $"Sign on this computer as {label}");
+                        signHere.Margin = new Thickness(6, 0, 0, 2);
+                        signHere.ToolTip = $"Opens {label}'s signing page here. Only for {label} — whoever uses it signs as them.";
+                        signHere.Click += (_, _) =>
+                        {
+                            if (client is null) { Expired(); return; }
+                            var req = new DocumensoWebRequest(link, $"Sign — {title}", DocumensoWebPurpose.Sign, env.Id);
+                            if (!ShowPage(client, req)) Say("Could not open the signing page.");
+                        };
+                        linkButtons.Children.Add(signHere);
                         var copy = SmallButton(owner, "Copy signing link", $"Copy signing link for {label}");
                         copy.Margin = new Thickness(6, 0, 0, 2);
                         copy.ToolTip = "Whoever has this link can sign as this person — give it only to them.";
@@ -313,8 +332,9 @@ namespace TDPdf.Services
                                 Say("The clipboard is busy. Try again.");
                             }
                         };
-                        Grid.SetColumn(copy, 1);
-                        line.Children.Add(copy);
+                        linkButtons.Children.Add(copy);
+                        Grid.SetColumn(linkButtons, 1);
+                        line.Children.Add(linkButtons);
                     }
                     stack.Children.Add(line);
                 }
@@ -322,11 +342,13 @@ namespace TDPdf.Services
                 var actions = new WrapPanel { Margin = new Thickness(0, 5, 0, 0) };
                 var can = DocumensoRequestView.Actions(env.Status);
 
-                var open = SmallButton(owner, "Open in browser", $"Open {title} in the browser");
+                var open = SmallButton(owner, "Open", $"Open {title} on {inputs.Host}");
+                open.ToolTip = $"Shows this request's page on {inputs.Host}";
                 open.Click += (_, _) =>
                 {
                     string url = DocumensoRequestView.WebUrl(inputs.BaseUrl, env.Team?.Url ?? inputs.StoredTeamUrl, env.Id);
-                    if (!OpenInBrowser(url)) Say($"Could not open a browser. The document is at {url}");
+                    if (client is null || !ShowPage(client, new DocumensoWebRequest(url, title, DocumensoWebPurpose.Document, env.Id)))
+                        Say($"Could not open the page. The document is at {url}");
                 };
                 actions.Children.Add(open);
 
@@ -351,6 +373,10 @@ namespace TDPdf.Services
                 stack.Children.Add(actions);
                 return box;
             }
+
+            // In TDPdf's signing window when the caller can, else the default browser.
+            bool ShowPage(DocumensoClient c, DocumensoWebRequest req)
+                => inputs.OpenPage is { } show ? show(win, c, req) : OpenInBrowser(req.Url);
 
             Button DownloadButton(string text, DocumensoEnvelope env, DocumensoArtifact what)
             {
