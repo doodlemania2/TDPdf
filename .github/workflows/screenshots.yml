@@ -1,0 +1,51 @@
+name: Screenshots
+
+# Captures real screenshots of a released TDPdf build for the Microsoft Store listing and
+# tdpdf.com. Runs on a GitHub-hosted Windows runner because the app is WPF and the
+# self-hosted runner is Linux.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to capture
+        default: v2.0.0.0
+  push:
+    branches: ['screenshots/**']
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      TAG: ${{ inputs.tag || 'v2.0.0.0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Screen resolution
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+
+      - name: Download release exe
+        shell: pwsh
+        run: |
+          $u = "https://tdpdfreleases.blob.core.windows.net/releases/$env:TAG/TDPdf-$env:TAG-win-x64.exe"
+          Invoke-WebRequest $u -OutFile "$env:RUNNER_TEMP\TDPdf.exe"
+          (Get-AuthenticodeSignature "$env:RUNNER_TEMP\TDPdf.exe").SignerCertificate.Subject
+
+      - name: Capture
+        shell: pwsh
+        run: |
+          ./build/screenshots/capture.ps1 -Exe "$env:RUNNER_TEMP\TDPdf.exe" `
+            -Demo "$PWD\build\ghost\screenshots\demo" -Out "$env:RUNNER_TEMP\shots"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/shots
