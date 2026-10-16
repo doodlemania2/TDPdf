@@ -166,7 +166,7 @@
 </div>
 <div>
 <!--shot:install-->
-<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Install</span></div><img src="{{SHOT}}" alt="The install dialog offering to upgrade an existing per-user install of TDPdf." loading="lazy"></figure>
+<figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>Install</span></div><img src="{{SHOT}}" alt="Running a downloaded copy where TDPdf is already installed: it offers to reinstall or uninstall the existing install." loading="lazy"></figure>
 <!--/shot:install-->
 <!--noshot:install-->
 <figure class="tdp-frame"><div class="tdp-frame-bar"><i></i><i></i><i></i><span>PowerShell</span></div>
