@@ -493,7 +493,11 @@ Attempt 'download' {
     Step '14-save-dialog'
     $dest = Join-Path $env:TEMP 'smoke-signed.pdf'
     Remove-Item $dest -ErrorAction SilentlyContinue
-    $nameBox = $save.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1001')))
+    # The file-name field is an Edit with AutomationId 1001 (inside a ComboBox that shares the id).
+    $nameCond = New-Object System.Windows.Automation.AndCondition(
+        (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1001')),
+        (New-Object System.Windows.Automation.PropertyCondition($UIA::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)))
+    $nameBox = $save.FindFirst($Scope::Descendants, $nameCond)
     $nameBox.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($dest)
     InvokeEl ($save.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, '1'))))
     for ($i = 0; $i -lt 20 -and -not (Test-Path $dest); $i++) { Start-Sleep -Milliseconds 500 }
