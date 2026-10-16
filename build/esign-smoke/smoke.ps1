@@ -74,9 +74,12 @@ function TopWindows($proc) {
     $pc = New-Object System.Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, $proc.Id)
     $wc = New-Object System.Windows.Automation.PropertyCondition($UIA::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
     $list = New-Object System.Collections.ArrayList
-    foreach ($w in $UIA::RootElement.FindAll($Scope::Children, $pc)) {
+    $queue = New-Object System.Collections.Queue
+    foreach ($w in $UIA::RootElement.FindAll($Scope::Children, $pc)) { $queue.Enqueue($w) }
+    while ($queue.Count -gt 0) {
+        $w = $queue.Dequeue()
         [void]$list.Add($w)
-        foreach ($c in $w.FindAll($Scope::Children, $wc)) { [void]$list.Add($c) }
+        foreach ($c in $w.FindAll($Scope::Children, $wc)) { $queue.Enqueue($c) }   # owned windows nest
     }
     @($list)
 }
@@ -134,6 +137,25 @@ function InvokeEl($el) {
     $p = $null
     if ($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$p)) { $p.Invoke() } else { ClickEl $el }
 }
+# A button by its visible caption: TDPdf gives row buttons a longer accessible name, so find the
+# caption TextBlock and walk up to the Button, then Invoke it (no mouse, so nothing on top of the
+# window — a browser the sign-in opened — can swallow the click).
+function Button($root, [string]$caption, [int]$wait = 10) {
+    $t = FindIn $root $caption $wait
+    if (-not $t) { return $null }
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $e = $t
+    for ($i = 0; $i -lt 4 -and $e; $i++) {
+        if ($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { return $e }
+        $e = $walker.GetParent($e)
+    }
+    $t
+}
+function Press($root, [string]$caption, [int]$wait = 10) {
+    $b = Button $root $caption $wait
+    if (-not $b) { throw "button '$caption' not found" }
+    InvokeEl $b
+}
 function Expand($el) { $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand() }
 function Mock([string]$path) { Invoke-RestMethod "http://127.0.0.1:$MockPort$path" -TimeoutSec 10 }
 function Attempt([string]$what, [scriptblock]$b) {
@@ -143,12 +165,28 @@ function Attempt([string]$what, [scriptblock]$b) {
 # TDPdf; `netsh http show servicestate` lists each registered URL with the process that owns it.
 function LoopbackRegistrations() {
     $txt = (netsh http show servicestate view=requestq verbose=no) -join "`n"
+    Set-Content (Join-Path $Out ("netsh-" + (Get-Date -Format 'HHmmss') + ".txt")) $txt
     $blocks = $txt -split '(?=Request queue name:)'
     foreach ($b in $blocks) {
-        if ($b -match "(?m)^\s+$($app.Id)\s*$") {
-            [regex]::Matches($b, 'HTTP://(127\.0\.0\.1|LOCALHOST):(\d+)/') | ForEach-Object { $_.Value }
+        if ($b -match "\b$($app.Id)\b") {
+            [regex]::Matches($b, '(?i)HTTP://(127\.0\.0\.1|LOCALHOST):(\d+)/') | ForEach-Object { $_.Value }
         }
     }
+}
+# Proof that TDPdf itself is listening on $port: our loopback page answers a stray path with 404
+# and the fixed text "There is nothing here." (http.sys's own 404 says "Not Found" from HTTPAPI).
+function TdpdfAnswers([int]$port) {
+    try {
+        $r = Invoke-WebRequest "http://127.0.0.1:$port/favicon.ico" -TimeoutSec 5 -SkipHttpErrorCheck
+        return ($r.StatusCode -eq 404 -and $r.Content -match 'There is nothing here')
+    } catch { return $false }
+}
+function Listening([int]$port) {
+    [bool](Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+}
+function PortOf([string]$redirect) {
+    $m = [regex]::Match([Uri]::UnescapeDataString("$redirect"), 'http://(127\.0\.0\.1|localhost):(\d+)/cb')
+    if ($m.Success) { [int]$m.Groups[2].Value } else { 0 }
 }
 function BrowserCommandLines() {
     Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'msedge.exe', 'chrome.exe', 'firefox.exe' } |
@@ -217,21 +255,22 @@ Attempt 'live' {
     Step 'L01-connect-dialog'
     Check 'LIVE: Connect dialog names sign.tdpdf.com' ($null -ne (FindIn $d 'Electronic Signature uses TDPdf Signing at sign.tdpdf.com. Sign in once and TDPdf can send documents for signature and let you sign them here.' 3))
     InvokeEl (FindIn $d 'Sign in with your browser' 5)
-    $regs = @()
-    for ($i = 0; $i -lt 40 -and $regs.Count -eq 0; $i++) { Start-Sleep -Milliseconds 500; $regs = @(LoopbackRegistrations) }
-    Check 'LIVE: the capability probe saw sign-in as supported (the listener started; no "does not offer" fallback)' (
-        $regs.Count -gt 0 -and $null -eq (FindIn $d 'sign.tdpdf.com does not offer browser sign-in. Use an API token instead (below).' 1)) ($regs -join ', ')
-    $lport = if ($regs.Count -gt 0) { [int]([regex]::Match($regs[0], ':(\d+)/').Groups[1].Value) } else { 0 }
     $cl = @()
-    for ($i = 0; $i -lt 30 -and $cl.Count -eq 0; $i++) { Start-Sleep -Milliseconds 500; $cl = @(BrowserCommandLines | Where-Object { $_ -match 'sign\.tdpdf\.com/connect/tdpdf' }) }
+    for ($i = 0; $i -lt 40 -and $cl.Count -eq 0; $i++) { Start-Sleep -Milliseconds 500; $cl = @(BrowserCommandLines | Where-Object { $_ -match 'sign\.tdpdf\.com/connect/tdpdf' }) }
     if ($cl.Count -gt 0) { Log ("LIVE browser command line: " + $cl[0]) }
+    Check 'LIVE: the capability probe saw sign-in as supported (browser opened; no "does not offer" fallback)' (
+        $cl.Count -gt 0 -and $null -eq (FindIn $d 'sign.tdpdf.com does not offer browser sign-in. Use an API token instead (below).' 1))
     Check 'LIVE: the default browser was started at https://sign.tdpdf.com/connect/tdpdf?...' ($cl.Count -gt 0)
+    $lport = 0
     if ($cl.Count -gt 0) {
         $u = [regex]::Match($cl[0], 'https://sign\.tdpdf\.com/connect/tdpdf\?[^\s"]+').Value
-        Check 'LIVE: that URL carries code_challenge, S256, state and the loopback redirect_uri' (
-            $u -match 'code_challenge=[A-Za-z0-9_-]{43}' -and $u -match 'code_challenge_method=S256' -and $u -match 'state=[A-Za-z0-9_-]{43}' -and
-            $u -match ('redirect_uri=http%3A%2F%2F(127\.0\.0\.1|localhost)%3A' + $lport + '%2Fcb')) $u
+        $lport = PortOf ([regex]::Match($u, 'redirect_uri=([^&]+)').Groups[1].Value)
+        Check 'LIVE: that URL carries code_challenge, S256, state and a loopback redirect_uri' (
+            $u -match 'code_challenge=[A-Za-z0-9_-]{43}' -and $u -match 'code_challenge_method=S256' -and $u -match 'state=[A-Za-z0-9_-]{43}' -and $lport -gt 0) $u
     }
+    $regs = @(LoopbackRegistrations)
+    Log ("LIVE http.sys registrations attributed to TDPdf: " + ($regs -join ', '))
+    Check "LIVE: port $lport is listening (http.sys) and the answer is TDPdf's loopback page" ((Listening $lport) -and (TdpdfAnswers $lport))
     $addr = $null
     for ($i = 0; $i -lt 40; $i++) { Start-Sleep -Milliseconds 500; $addr = EdgeAddress; if ($addr -match '/signin') { break } }
     Log "LIVE Edge address bar: $addr"
@@ -248,8 +287,7 @@ Attempt 'live' {
     Step 'L03-live-waiting'
     InvokeEl (FindIn $d 'Stop' 5)
     Start-Sleep -Seconds 2
-    $after = @(LoopbackRegistrations)
-    Check 'LIVE: Stop removes the listener' ($after.Count -eq 0) ($after -join ', ')
+    Check 'LIVE: Stop closes the listener (TDPdf no longer answers on that port)' (-not (TdpdfAnswers $lport)) "listening=$(Listening $lport)"
     Step 'L04-live-stopped'
     Check 'LIVE: nothing was stored' (-not (Test-Path (Join-Path $local 'TDPdf\documenso.cred')))
 }
@@ -298,17 +336,18 @@ Attempt 'open-connect' {
 Attempt 'signin-hold' {
     Mock '/_mode?m=hold' | Out-Null
     InvokeEl (FindIn $dlg 'Sign in with your browser' 5)
-    $regs = @()
-    for ($i = 0; $i -lt 30 -and $regs.Count -eq 0; $i++) { Start-Sleep -Milliseconds 500; $regs = @(LoopbackRegistrations) }
-    Log ("http.sys registrations for TDPdf: " + ($regs -join ', '))
-    Check 'sign-in: TDPdf registered a loopback listener with http.sys' ($regs.Count -gt 0) ($regs -join ', ')
-    $script:port = if ($regs.Count -gt 0) { [int]([regex]::Match($regs[0], ':(\d+)/').Groups[1].Value) } else { 0 }
-    Check 'sign-in: the listener is loopback-only (127.0.0.1 or localhost, never + or *)' (
-        $regs.Count -gt 0 -and -not ($regs | Where-Object { $_ -notmatch '127\.0\.0\.1|LOCALHOST' })) ($regs -join ', ')
 
     $auth = $null
     for ($i = 0; $i -lt 40 -and -not $auth; $i++) { Start-Sleep -Milliseconds 500; $s = Mock '/_state'; if ($s.authorize.Count -gt 0) { $auth = $s.authorize[-1] } }
     Check 'sign-in: the default browser opened /connect/tdpdf' ($null -ne $auth)
+    $script:port = if ($auth) { PortOf $auth.redirect_uri } else { 0 }
+    Check "sign-in: port $port is listening and answers as TDPdf's loopback page" ((Listening $port) -and (TdpdfAnswers $port))
+    $bound = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalAddress })
+    Log ("listen addresses on port ${port}: " + ($bound -join ', '))
+    $regs = @(LoopbackRegistrations)
+    Log ("http.sys registrations attributed to TDPdf: " + ($regs -join ', '))
+    Check 'sign-in: the http.sys URL registration is loopback-only (127.0.0.1/localhost, never + or *)' (
+        $regs.Count -gt 0 -and -not ($regs | Where-Object { $_ -notmatch '(?i)127\.0\.0\.1|localhost' })) ($regs -join ', ')
     if ($auth) {
         Log ("authorize query: " + ($auth | ConvertTo-Json -Compress))
         Check 'authorize URL: code_challenge is 43 base64url chars, S256' ($auth.code_challenge -match '^[A-Za-z0-9_-]{43}$' -and $auth.code_challenge_method -eq 'S256')
@@ -321,27 +360,15 @@ Attempt 'signin-hold' {
     if ($cl.Count -gt 0) { Log ("  " + $cl[0]) }
     Check 'sign-in: a browser process was started with the /connect/tdpdf URL' ($cl.Count -gt 0)
 
-    try {
-        $r = Invoke-WebRequest "http://127.0.0.1:$port/favicon.ico" -TimeoutSec 5 -SkipHttpErrorCheck
-        Check 'sign-in: the listener answers on Windows (stray path → 404, wait continues)' ($r.StatusCode -eq 404) "HTTP $($r.StatusCode)"
-    } catch { Fail 'sign-in: the listener answers on Windows' $_.Exception.Message }
     [W]::SetForegroundWindow([IntPtr]$dlg.Current.NativeWindowHandle) | Out-Null
     Step '04-signin-waiting'
     Check 'sign-in: the dialog says it is waiting for the browser' ($null -ne (FindIn $dlg 'Waiting for you to finish signing in in your browser…  (Stop to cancel)' 3))
 
     InvokeEl (FindIn $dlg 'Stop' 5)
     Start-Sleep -Seconds 2
+    Check 'Stop: TDPdf no longer answers on that port' (-not (TdpdfAnswers $port)) "listening=$(Listening $port)"
     $after = @(LoopbackRegistrations)
-    Check 'Stop: the http.sys registration is gone' ($after.Count -eq 0) ($after -join ', ')
-    $refused = $false
-    try { Invoke-WebRequest "http://127.0.0.1:$port/cb" -TimeoutSec 5 -SkipHttpErrorCheck | Out-Null } catch { $refused = $true }
-    if (-not $refused) {
-        # http.sys answers 404/503 itself for an unregistered URL on a port it still listens on.
-        $r = Invoke-WebRequest "http://127.0.0.1:$port/cb" -TimeoutSec 5 -SkipHttpErrorCheck
-        $refused = $r.StatusCode -in 404, 503 -and $r.Headers['Server'] -match 'HTTPAPI'
-        Log "after Stop: HTTP $($r.StatusCode) from $($r.Headers['Server'])"
-    }
-    Check 'Stop: TDPdf no longer receives on that port' $refused
+    Check 'Stop: no http.sys registration attributed to TDPdf remains' ($after.Count -eq 0) ($after -join ', ')
     Step '05-signin-stopped'
     Check 'Stop: the dialog says nothing was stored' ($null -ne (FindIn $dlg 'Sign-in stopped. Nothing was stored.' 3))
     Check 'Stop: no credential file was written' (-not (Test-Path (Join-Path $local 'TDPdf\documenso.cred')))
@@ -365,6 +392,7 @@ Attempt 'signin-allow' {
         $txt = Get-Content -Raw $cred
         Check 'the stored file does not contain the token in clear' (-not $txt.Contains('api_SMOKEtoken'))
     }
+    Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Step '06-connected'
 }
 
@@ -381,7 +409,7 @@ Attempt 'requests' {
 }
 
 Attempt 'reminder' {
-    InvokeEl (FindIn $rw 'Resend reminder' 5)
+    Press $rw 'Resend reminder'
     Start-Sleep -Seconds 3
     $s = Mock '/_state'
     Log ("redistribute: " + ($s.redistribute | ConvertTo-Json -Compress))
@@ -391,7 +419,7 @@ Attempt 'reminder' {
 }
 
 Attempt 'webview-open' {
-    InvokeEl (FindIn $rw 'Open' 5)
+    Press $rw 'Open'
     $script:ww = WindowNamed 'Smoke test agreement' 20
     Check 'Open: the in-app signing window opens (WebView2 Runtime detected)' ($null -ne $ww)
     $loader = Get-ChildItem (Join-Path $local 'TDPdf\webview2-loader') -Recurse -Filter WebView2Loader.dll -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -415,7 +443,7 @@ Attempt 'webview-open' {
 
 Attempt 'webview-logs' {
     [W]::SetForegroundWindow([IntPtr]$rw.Current.NativeWindowHandle) | Out-Null
-    InvokeEl (FindIn $rw 'Audit log & certificate' 5)
+    Press $rw 'Audit log & certificate'
     Start-Sleep -Seconds 4
     $lw = WindowNamed 'Audit log*' 10
     Check 'Audit log & certificate reuses the single window and shows the logs page' ($null -ne $lw -and $null -ne (FindIn $lw 'Audit log page' 15))
@@ -425,7 +453,7 @@ Attempt 'webview-logs' {
 
 Attempt 'webview-sign' {
     [W]::SetForegroundWindow([IntPtr]$rw.Current.NativeWindowHandle) | Out-Null
-    InvokeEl (FindIn $rw 'Sign on this computer' 5)
+    Press $rw 'Sign on this computer'
     $sw = WindowNamed 'Sign —*' 10
     Check 'Sign on this computer opens the signing page in the window' ($null -ne $sw -and $null -ne (FindIn $sw 'Smoke signing page' 15))
     $addrOk = $null -ne (FindIn $sw "127.0.0.1:$MockPort/sign/…" 5)
