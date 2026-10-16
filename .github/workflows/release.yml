@@ -1,14 +1,13 @@
 name: release
 
 # Publishes a self-contained single-file Windows x64 build of TDPdf whenever a
-# tag matching v* is pushed: embeds the telemetry key, signs the EXE, attaches
-# it to a GitHub Release, and updates the existing Intune Win32 app.
+# tag matching v* is pushed: signs the EXE (Azure Artifact Signing), attaches it
+# to a GitHub Release, updates the Microsoft Store listing, and tells the private
+# doodlemania2/tdpdf-fleet repo to deploy it to Intune.
 #
-# The runner is LINUX (self-hosted ARC, label `tdpdf`), which is why signing
-# signs with Jsign rather than signtool.exe, and why the Intune step talks to
-# Microsoft Graph directly instead of building a .intunewin with the
-# Windows-only IntuneWinAppUtil.exe. A .intunewin is only a transport container
-# for the portal UI; Graph takes the encrypted payload plus fileEncryptionInfo.
+# The runner is LINUX (self-hosted ARC, label `tdpdf`), which is why it signs
+# with Jsign rather than signtool.exe. It only runs on tag pushes and
+# workflow_dispatch, never on pull_request, so outside code never reaches it.
 #
 # Every optional stage is gated on its secrets being present, so the workflow
 # degrades to exactly its previous behaviour (build + release, unsigned) rather
@@ -23,7 +22,7 @@ on:
         description: "Tag to release (e.g. v1.0.0)"
         required: true
       skip_intune:
-        description: "Build and release, but do not touch Intune"
+        description: "Build and release, but do not tell tdpdf-fleet to deploy to Intune"
         type: boolean
         default: false
       skip_store:
@@ -42,8 +41,7 @@ jobs:
     # and the steps gate on those.
     env:
       HAS_AZSIGN:    ${{ secrets.SIGN_CLIENT_SECRET != '' }}
-      HAS_PFX:       ${{ secrets.CODESIGN_PFX_BASE64 != '' }}
-      HAS_INTUNE:    ${{ secrets.INTUNE_APP_ID != '' }}
+      HAS_FLEET:     ${{ secrets.FLEET_DISPATCH_TOKEN != '' }}
       HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' }}
     steps:
       - uses: actions/checkout@v4
@@ -57,8 +55,8 @@ jobs:
             echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
-      # The version Intune displays comes from the csproj, not the tag, so a
-      # mistyped tag can never silently ship a mislabelled app version.
+      # The release version comes from the csproj, not the tag. tdpdf-fleet then refuses to
+      # deploy a binary whose file version does not match the tag.
       - name: Read project version
         id: ver
         run: |
@@ -112,8 +110,8 @@ jobs:
       # or anywhere we could leak one.
       #
       # This is the signature the Microsoft Store requires — it chains to a CA in the Microsoft
-      # Trusted Root Program, which the private PFX below does not. The Store step is gated on
-      # `steps.sign` specifically, so a fallback-signed build can never reach certification.
+      # Trusted Root Program. The Store step and the fleet dispatch are both gated on
+      # `steps.sign`, so an unsigned build reaches neither.
       - name: Sign (Azure Artifact Signing)
         id: sign
         if: env.HAS_AZSIGN == 'true'
@@ -124,7 +122,7 @@ jobs:
           # so this value is as permanent as the account itself.
           AZSIGN_ENDPOINT: https://eus.codesigning.azure.net
           AZSIGN_ALIAS: tdp/TDPCertProfile
-          # Fed from the SIGN_* secrets rather than the AZURE_* trio the Intune step uses, so the
+          # Fed from the SIGN_* secrets rather than a shared AZURE_* trio, so the
           # signing identity and the fleet-management identity rotate independently. Jsign 7.5
           # does NOT read these itself for TRUSTEDSIGNING: it refuses with "storepass option must
           # specify the Azure API access token". So the step trades them for a token below and
@@ -177,62 +175,9 @@ jobs:
             echo "::warning::Signature present; chain not verifiable on a Linux CA bundle, which does not carry the Microsoft Trusted Root Program roots. Verify on Windows."
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
-      # Transitional fallback, kept for exactly one release cycle: if Artifact Signing is not
-      # configured or its credential has been rotated out, the fleet still gets a build signed
-      # with the private PFX rather than an unsigned one. It deliberately cannot satisfy the
-      # Store, whose step reads `steps.sign` only.
-      #
-      # RETIRE once a release has gone out through Artifact Signing: delete this step, the
-      # HAS_PFX flag, and the CODESIGN_PFX_BASE64 / CODESIGN_PFX_PASSWORD secrets.
-      - name: Sign (private PFX — fallback)
-        id: sign_pfx
-        if: env.HAS_AZSIGN != 'true' && env.HAS_PFX == 'true'
-        env:
-          PFX_B64: ${{ secrets.CODESIGN_PFX_BASE64 }}
-          PFX_PASS: ${{ secrets.CODESIGN_PFX_PASSWORD }}
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq osslsigncode
-          umask 077
-          PFX="$(mktemp)"
-          # tr -d strips any newlines/spaces the secret picked up on the way in:
-          # PowerShell's pipeline appends a newline, and a pasted value can carry
-          # wrapping. Base64 itself contains no whitespace, so this is lossless.
-          printf '%s' "$PFX_B64" | tr -d '[:space:]' | base64 -d > "$PFX"
-          [ -s "$PFX" ] || { echo "::error::CODESIGN_PFX_BASE64 did not decode to anything. Re-run the base64 step and set the secret again."; exit 1; }
-          # Verify the password up front: osslsigncode's failure for a bad password
-          # is cryptic, and this says plainly which of the two secrets is wrong.
-          if ! openssl pkcs12 -in "$PFX" -passin pass:"$PFX_PASS" -nokeys -clcerts -noout 2>/tmp/pfxerr; then
-            echo "::error::Could not open the PFX with CODESIGN_PFX_PASSWORD. Either the password is wrong or the file is not a valid PKCS#12."
-            sed -e 's/^/  /' /tmp/pfxerr | head -5
-            exit 1
-          fi
-          echo "PFX opened OK; subject: $(openssl pkcs12 -in "$PFX" -passin pass:"$PFX_PASS" -nokeys -clcerts 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null | tr '\n' ' ')"
-          # Timestamping matters: without it the signature dies with the cert.
-          # Try several authorities, as release.ps1 does.
-          SIGNED=0
-          for TS in http://timestamp.digicert.com http://timestamp.sectigo.com http://ts.ssl.com; do
-            echo "Timestamp authority: $TS"
-            if osslsigncode sign \
-                 -pkcs12 "$PFX" -pass "$PFX_PASS" \
-                 -h sha256 -ts "$TS" \
-                 -n "TDPdf" -i "https://thedoodleproject.com/tdpdf" \
-                 -in publish/TDPdf.exe -out publish/TDPdf.signed.exe; then
-              SIGNED=1; break
-            fi
-            echo "Failed with $TS, trying next."
-          done
-          shred -u "$PFX" 2>/dev/null || rm -f "$PFX"
-          [ "$SIGNED" = "1" ] || { echo "::error::Signing failed with every timestamp authority."; exit 1; }
-          mv publish/TDPdf.signed.exe publish/TDPdf.exe
-          osslsigncode verify -in publish/TDPdf.exe || \
-            echo "::warning::Signature present but not chain-verifiable on this runner — expected for a self-signed cert whose root is trusted only on managed devices."
-          echo "signed=true" >> "$GITHUB_OUTPUT"
-
       - name: Warn if unsigned
-        if: env.HAS_AZSIGN != 'true' && env.HAS_PFX != 'true'
-        run: echo "::warning::Neither SIGN_CLIENT_SECRET nor CODESIGN_PFX_BASE64 is set — shipping an UNSIGNED exe."
+        if: env.HAS_AZSIGN != 'true'
+        run: echo "::warning::SIGN_CLIENT_SECRET is not set — shipping an UNSIGNED exe."
 
       - name: Stage release assets
         id: asset
@@ -318,10 +263,10 @@ jobs:
       - name: Update Microsoft Store listing
         id: store
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true'
-        # The Store must never cost the fleet its update: this step runs before Intune, and the
+        # The Store must never cost the fleet its update: this step runs before the fleet dispatch, and the
         # Store API answers 404 "No Product Found" for an EXE app until its first, hand-made
         # submission has been published (Microsoft's documented prerequisite). A failure here
-        # is reported in the summary and the run goes on to Intune.
+        # is reported in the summary and the run goes on to the fleet dispatch.
         continue-on-error: true
         env:
           TAG: ${{ steps.tag.outputs.name }}
@@ -367,23 +312,27 @@ jobs:
 
       - name: Note why the Store step was skipped
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed != 'true'
-        run: echo "::warning::Store submission skipped — this build is not signed by Azure Artifact Signing, and the Store requires a publicly-trusted signature for EXE/MSI listings. A PFX-signed build does not qualify."
+        run: echo "::warning::Store submission skipped — this build is not signed by Azure Artifact Signing, and the Store requires a publicly-trusted signature for EXE/MSI listings."
 
-      # Updates the EXISTING app: adds a content version and repoints
-      # committedContentVersion. Assignments live on the app, not on the content
-      # version, so the current targeting is untouched.
-      - name: Update Intune app
-        if: env.HAS_INTUNE == 'true' && github.event.inputs.skip_intune != 'true'
+      # Intune deployment lives in the private repo doodlemania2/tdpdf-fleet (#178). This
+      # tells it a signed release is out; it downloads the exe from the release, verifies hash,
+      # signature and version, and updates the Intune app. FLEET_DISPATCH_TOKEN is a
+      # fine-grained token with Contents: write on tdpdf-fleet only. Secrets are not passed
+      # to workflows from forks, and this workflow only runs on tags and workflow_dispatch.
+      - name: Tell tdpdf-fleet to deploy
+        id: fleet
+        if: env.HAS_FLEET == 'true' && github.event.inputs.skip_intune != 'true' && steps.sign.outputs.signed == 'true'
         env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          GH_TOKEN: ${{ secrets.FLEET_DISPATCH_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
         run: |
-          pwsh -NoProfile -File build/intune/Deploy-IntuneUpdate.ps1 \
-            -AppId "${{ secrets.INTUNE_APP_ID }}" \
-            -ExePath publish/TDPdf.exe \
-            -DetectionScriptPath build/intune/Detect-TDPdf.ps1 \
-            -DisplayVersion "${{ steps.ver.outputs.version }}"
+          gh api repos/doodlemania2/tdpdf-fleet/dispatches \
+            -f event_type=tdpdf-released -f "client_payload[tag]=$TAG"
+          echo "Dispatched tdpdf-released for $TAG. Follow it at https://github.com/doodlemania2/tdpdf-fleet/actions"
+
+      - name: Note why Intune was not dispatched
+        if: env.HAS_FLEET == 'true' && github.event.inputs.skip_intune != 'true' && steps.fleet.outcome == 'skipped'
+        run: echo "::warning::tdpdf-fleet was not told to deploy — this build is not signed by Azure Artifact Signing, and the fleet only deploys binaries whose signature validates against public roots."
 
       - name: Summary
         if: always()
@@ -394,7 +343,7 @@ jobs:
             echo "| Stage | Result |"
             echo "|---|---|"
             echo "| Version (from csproj) | ${{ steps.ver.outputs.version }} |"
-            echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes — Azure Artifact Signing (publicly trusted)' || (steps.sign_pfx.outputs.signed == 'true' && 'yes — private PFX (fleet only, not Store-eligible)' || 'NO — unsigned') }} |"
-            echo "| Intune | ${{ (env.HAS_INTUNE == 'true' && github.event.inputs.skip_intune != 'true') && 'updated' || 'skipped' }} |"
+            echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes — Azure Artifact Signing (publicly trusted)' || 'NO — unsigned' }} |"
+            echo "| Intune | ${{ steps.fleet.outcome == 'success' && 'dispatched to tdpdf-fleet' || 'not dispatched' }} |"
             echo "| Store | ${{ steps.store.outcome == 'success' && 'submitted' || (steps.store.outcome == 'failure' && 'FAILED — see the Store step log; the release and Intune were not affected' || 'skipped') }} |"
           } >> "$GITHUB_STEP_SUMMARY"

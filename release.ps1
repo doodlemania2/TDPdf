@@ -305,7 +305,7 @@ try {
             Write-Host   ""
             Write-Host   "    Detection rule (recommended - PowerShell script):"
             Write-Host   "      Rules format    : Use a custom detection script"
-            Write-Host   "      Script file     : build\intune\Detect-TDPdf.ps1"
+            Write-Host   "      Script          : the one in docs\intune-distribution.md"
             Write-Host   "      Run as 32-bit   : No"
             Write-Host   "      Signature check : No"
             Write-Host   "      (Edit `$MinVersion in the script to $assemblyVersion)"
