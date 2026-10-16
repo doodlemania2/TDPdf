@@ -1,0 +1,78 @@
+name: Electronic Signature smoke
+
+# Builds and single-file publishes THIS branch's TDPdf.exe on a GitHub-hosted Windows runner and
+# drives it through the Electronic Signature flows that cannot run anywhere else: the browser
+# sign-in's loopback listener under http.sys, the default-browser hand-off, the WebView2 signing
+# window (loader extraction, runtime detection, rendering, the navigation fence) and completion.
+# The signing service is build/esign-smoke/mock_server.py on 127.0.0.1, selected with TDPdf's
+# ordinary TDPDF_DOCUMENSO_BASEURL variable; nothing in the product is test-only.
+# Hosted runner on purpose: the self-hosted `tdpdf` runner is Linux and is for releases.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/tdpdf-signing-in-app', 'smoke/esign-**']
+    paths:
+      - '**.cs'
+      - '**.xaml'
+      - 'TDPdf.csproj'
+      - 'build/esign-smoke/**'
+      - '.github/workflows/esign-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: esign-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish (Release, win-x64, single-file, self-contained)
+        shell: pwsh
+        run: |
+          dotnet publish TDPdf.csproj -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true -o "$env:RUNNER_TEMP\publish"
+          Get-ChildItem "$env:RUNNER_TEMP\publish" | Format-Table Name, Length
+
+      - name: Screen resolution
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+
+      - name: Start the stand-in signing service
+        shell: pwsh
+        run: |
+          $p = Start-Process python -ArgumentList 'build/esign-smoke/mock_server.py', '8899' -PassThru `
+            -RedirectStandardError "$env:RUNNER_TEMP\mock.err.txt" -RedirectStandardOutput "$env:RUNNER_TEMP\mock.out.txt"
+          for ($i = 0; $i -lt 30; $i++) {
+            try { Invoke-RestMethod http://127.0.0.1:8899/api/health -TimeoutSec 2; break } catch { Start-Sleep 1 }
+          }
+
+      - name: Smoke
+        shell: pwsh
+        run: |
+          ./build/esign-smoke/smoke.ps1 -Exe "$env:RUNNER_TEMP\publish\TDPdf.exe" `
+            -Demo "$PWD\build\ghost\screenshots\demo" -Out "$env:RUNNER_TEMP\smoke"
+
+      - name: Collect mock log
+        if: always()
+        shell: pwsh
+        run: Copy-Item "$env:RUNNER_TEMP\mock.*.txt" "$env:RUNNER_TEMP\smoke\" -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: esign-smoke
+          path: ${{ runner.temp }}/smoke
