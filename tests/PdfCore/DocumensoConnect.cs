@@ -269,6 +269,11 @@ internal static class DocumensoConnect
 
     // ── The real exchange over HTTP, against a stub of the server contract ───────────────────
 
+    /// <summary>
+    /// The fork's patch 0004, as a handler: <c>GET /connect/tdpdf</c> is a page (here 200 HTML; live it
+    /// redirects to /signin), <c>POST /api/connect/token</c> takes <c>{"code","code_verifier"}</c> and
+    /// answers <c>{"token"}</c>, or 400 <c>{"error":"invalid_grant"}</c> for every refusal.
+    /// </summary>
     private sealed class ContractHandler : HttpMessageHandler
     {
         public string? Challenge;
@@ -283,16 +288,16 @@ internal static class DocumensoConnect
             Seen.Add((request.Method.Method, request.RequestUri!.AbsoluteUri,
                 request.Headers.TryGetValues("Authorization", out var a) ? string.Join(",", a) : null, body));
             if (Override is { } o) return o(request);
-            if (request.RequestUri.AbsolutePath != "/api/connect/token") return Json(HttpStatusCode.NotFound, "{}");
-            if (request.Method == HttpMethod.Get) return Json(HttpStatusCode.MethodNotAllowed, "{}");
+            if (request.Method == HttpMethod.Get && request.RequestUri.AbsolutePath == "/connect/tdpdf")
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<!doctype html><title>Sign in</title>", Encoding.UTF8, "text/html") };
+            if (request.Method != HttpMethod.Post || request.RequestUri.AbsolutePath != "/api/connect/token") return Json(HttpStatusCode.NotFound, "{}");
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
             string? Str(string n) => root.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-            bool ok = Str("grantType") == "authorization_code" && Str("code") == Code && Str("redirectUri") == ExpectedRedirect
-                      && DocumensoPkce.Verify(Str("codeVerifier"), Challenge);
+            bool ok = Str("code") == Code && DocumensoPkce.Verify(Str("code_verifier"), Challenge);
             return ok
-                ? Json(HttpStatusCode.OK, $"{{\"token\":\"{Token}\",\"expiresAt\":\"2027-01-01T00:00:00.000Z\",\"email\":\"me@example.com\",\"name\":\"Me\",\"teamUrl\":\"personal_abc\"}}")
-                : Json(HttpStatusCode.BadRequest, "{\"code\":\"INVALID_GRANT\",\"message\":\"The sign-in code is invalid or expired.\"}");
+                ? Json(HttpStatusCode.OK, $"{{\"token\":\"{Token}\"}}")
+                : Json(HttpStatusCode.BadRequest, "{\"error\":\"invalid_grant\"}");
         }
 
         public static HttpResponseMessage Json(HttpStatusCode code, string json)
@@ -306,7 +311,8 @@ internal static class DocumensoConnect
         var h = new ContractHandler();
         var client = new DocumensoClient(Base, "", () => h);
 
-        Check("browser sign-in is detected when the token route answers GET with 405", await client.IsBrowserSignInSupportedAsync(CancellationToken.None), "");
+        Check("browser sign-in is detected when GET /connect/tdpdf is a page", await client.IsBrowserSignInSupportedAsync(CancellationToken.None), "");
+        Check("…probed at {BaseUrl}/connect/tdpdf, unauthenticated", h.Seen[^1].Url == Base + "/connect/tdpdf" && h.Seen[^1].Auth is null, h.Seen[^1].Url);
         h.Override = _ => ContractHandler.Json(HttpStatusCode.NotFound, "{}");
         Check("…and reported absent on a 404 (an instance without the fork's endpoint)", !await client.IsBrowserSignInSupportedAsync(CancellationToken.None), "");
         h.Override = null;
@@ -319,11 +325,16 @@ internal static class DocumensoConnect
         var sent = h.Seen.Single();
         Check("exchange: POST {BaseUrl}/api/connect/token", sent.Method == "POST" && sent.Url == Base + "/api/connect/token", sent.Url);
         Check("exchange: unauthenticated — no Authorization header", sent.Auth is null, sent.Auth ?? "");
-        Check("exchange: body is {grantType, code, codeVerifier, redirectUri}",
-              sent.Body.Contains("\"grantType\":\"authorization_code\"") && sent.Body.Contains("\"codeVerifier\":\"" + verifier + "\"")
-              && sent.Body.Contains("\"redirectUri\":\"http://127.0.0.1:50000/cb\""), sent.Body);
-        Check("exchange: the grant carries the token, account and expiry",
-              grant.Token == Token && grant.Email == "me@example.com" && grant.TeamUrl == "personal_abc" && grant.ExpiresUtc?.Year == 2027, grant.ToString());
+        using (var sentDoc = JsonDocument.Parse(sent.Body))
+        {
+            var props = sentDoc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToList();
+            Check("exchange: body is exactly the fork's {code, code_verifier}",
+                  props.SequenceEqual(new[] { "code", "code_verifier" })
+                  && sentDoc.RootElement.GetProperty("code_verifier").GetString() == verifier
+                  && sentDoc.RootElement.GetProperty("code").GetString() == h.Code, sent.Body);
+        }
+        Check("exchange: the grant carries the token (the fork returns only that)",
+              grant.Token == Token && grant.Email is null && grant.TeamUrl is null, grant.ToString());
         Check("exchange: the grant's text never shows the token", !grant.ToString().Contains(Token), grant.ToString());
 
         // Verifier mismatch, over HTTP.
@@ -334,9 +345,8 @@ internal static class DocumensoConnect
         }
         catch (DocumensoApiException ex)
         {
-            Check("VERIFIER MISMATCH over HTTP: 400 INVALID_GRANT → Rejected", ex.Failure == DocumensoFailure.Rejected && ex.StatusCode == 400 && ex.ErrorCode == "INVALID_GRANT", ex.Message);
-            Check("…and the exception names no code, verifier or body text",
-                  !ex.Message.Contains(h.Code) && !ex.Message.Contains("invalid or expired"), ex.Message);
+            Check("VERIFIER MISMATCH over HTTP: 400 {error:invalid_grant} → Rejected, INVALID_GRANT", ex.Failure == DocumensoFailure.Rejected && ex.StatusCode == 400 && ex.ErrorCode == "INVALID_GRANT", ex.Message);
+            Check("…and the exception names no code or verifier", !ex.Message.Contains(h.Code), ex.Message);
         }
 
         // A 200 whose token is unusable is not a sign-in.

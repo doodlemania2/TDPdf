@@ -20,11 +20,13 @@ namespace TDPdf.Services
     //      &redirect_uri=http://127.0.0.1:{port}/cb in the default browser. The user signs in (or
     //      signs up — sign.tdpdf.com is open to anyone) and approves TDPdf.
     //   3. The service redirects to the loopback address with ?code=…&state=….
-    //   4. TDPdf checks the state, then POSTs the code and the verifier to
-    //      {BaseUrl}/api/connect/token and gets an API token back.
+    //   4. TDPdf checks the state, then POSTs {"code","code_verifier"} to
+    //      {BaseUrl}/api/connect/token and gets {"token"} back — an ordinary API token for the team
+    //      the user picked, named "TDPdf (date)" and valid for a year.
     //
-    // The server half lives in our Documenso fork, not here; the exact contract it must implement
-    // is written down in docs/design/esignature-documenso.md ("Phase 6 as built"). Everything in
+    // The server half is our Documenso fork's patch 0004 (fork/patches/0004-tdpdf-browser-sign-in.patch
+    // in the documenso repo: /connect/tdpdf and /api/connect/token); this client is built against
+    // that, and docs/design/esignature-documenso.md ("Phase 6 as built") records the contract. Everything in
     // this file is WPF-free so tests/PdfCore can drive the whole flow, including a real loopback
     // listener, against a stub of that contract.
     //
@@ -107,10 +109,13 @@ namespace TDPdf.Services
     /// </summary>
     internal static class DocumensoConnectContract
     {
-        /// <summary>The page the browser is sent to. A web page of the service, not an API route.</summary>
+        /// <summary>
+        /// The page the browser is sent to. A web page of the service, not an API route. Also the
+        /// support probe: without parameters it answers non-404 exactly when the fork's patch is in.
+        /// </summary>
         internal const string AuthorizePath = "/connect/tdpdf";
 
-        /// <summary>The code-for-token exchange. Answers GET with 405, which is how support is detected.</summary>
+        /// <summary>The code-for-token exchange: POST <c>{"code","code_verifier"}</c> → <c>{"token"}</c>.</summary>
         internal const string TokenPath = "/api/connect/token";
 
         /// <summary>The loopback path the service redirects to.</summary>

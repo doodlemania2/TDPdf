@@ -341,44 +341,58 @@ namespace TDPdf.Services
         // ── Browser sign-in (TDPdf Signing connect contract) ──────────────────────────────
 
         /// <summary>
-        /// Whether this instance offers browser sign-in at all: <c>GET {BaseUrl}/api/connect/token</c>.
-        /// The contract (design doc, "Phase 6 as built") says that route answers a GET with
-        /// <b>405</b>; an instance without it answers <b>404</b>. So 404 is "no", any other HTTP
-        /// answer is "yes", and an unreachable service throws as every other call does.
-        /// Unauthenticated: nothing about the user is sent.
+        /// Whether this instance offers browser sign-in at all: an unauthenticated
+        /// <c>GET {BaseUrl}/connect/tdpdf</c> with no parameters. The fork's page answers that with
+        /// a redirect to its sign-in page (or, signed in, "this link is not valid"); an instance
+        /// without the page answers <b>404</b>. So 404 is "no", any other HTTP answer is "yes", and
+        /// an unreachable service throws as every other call does. Redirects are followed by the
+        /// handler, which is harmless — nothing about the user is sent and nothing is changed.
         /// </summary>
         internal async Task<bool> IsBrowserSignInSupportedAsync(CancellationToken ct)
         {
             try
             {
-                await SendForJsonAsync<JsonElement>(HttpMethod.Get, DocumensoConnectContract.TokenPath,
-                    _baseUrl + DocumensoConnectContract.TokenPath, null, authenticated: false, MetadataTimeout, ct).ConfigureAwait(false);
+                await SendForJsonAsync<JsonElement>(HttpMethod.Get, DocumensoConnectContract.AuthorizePath,
+                    _baseUrl + DocumensoConnectContract.AuthorizePath, null, authenticated: false, MetadataTimeout, ct).ConfigureAwait(false);
                 return true;
             }
             catch (DocumensoApiException ex) when (ex.StatusCode is int status)
             {
+                // A 200 HTML page lands here too, as UnexpectedResponse (it is not JSON).
                 return status != 404;
             }
         }
 
         /// <summary>
         /// Trades the one-time sign-in <paramref name="code"/> and its PKCE
-        /// <paramref name="codeVerifier"/> for an API token: <c>POST {BaseUrl}/api/connect/token</c>.
-        /// Unauthenticated — the code and verifier are the credential. A refusal (wrong verifier,
-        /// expired or reused code, mismatched redirect) is a 400 <c>INVALID_GRANT</c> and surfaces
-        /// as <see cref="DocumensoFailure.Rejected"/> like any other 4xx. The returned token has not
-        /// been validated yet; the caller probes it before storing it.
+        /// <paramref name="codeVerifier"/> for an API token: <c>POST {BaseUrl}/api/connect/token</c>
+        /// with <c>{"code","code_verifier"}</c>, answered <c>{"token"}</c> — the contract of our
+        /// Documenso fork's patch 0004 (<c>apps/remix/server/api/connect/connect.ts</c>).
+        /// Unauthenticated — the code and verifier are the credential. Every refusal (wrong
+        /// verifier, expired, tampered or reused code) is one answer, 400
+        /// <c>{"error":"invalid_grant"}</c>, which surfaces as <see cref="DocumensoFailure.Rejected"/>
+        /// with <see cref="DocumensoApiException.ErrorCode"/> <c>INVALID_GRANT</c>. The returned token
+        /// has not been validated yet; the caller probes it before storing it.
         /// </summary>
+        /// <param name="redirectUri">
+        /// Not sent: the fork binds the redirect into the code itself when it issues it, and its
+        /// token endpoint takes only the code and the verifier. Kept in the signature so the flow
+        /// (and a stricter server later) has it.
+        /// </param>
         internal async Task<DocumensoConnectGrant> ExchangeConnectCodeAsync(string code, string codeVerifier,
             string redirectUri, CancellationToken ct)
         {
-            var body = new { grantType = "authorization_code", code, codeVerifier, redirectUri };
+            _ = redirectUri;
+            var body = new Dictionary<string, string> { ["code"] = code, ["code_verifier"] = codeVerifier };
             var content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8, "application/json");
             var r = await SendForJsonAsync<ConnectTokenResponse>(HttpMethod.Post, DocumensoConnectContract.TokenPath,
                 _baseUrl + DocumensoConnectContract.TokenPath, content, authenticated: false, MetadataTimeout, ct).ConfigureAwait(false);
             string token = (r.Token ?? "").Trim();
             if (token.Length == 0 || !IsHeaderSafe(token))
                 throw new DocumensoApiException(DocumensoFailure.UnexpectedResponse, 200, null, "POST", DocumensoConnectContract.TokenPath);
+            // The fork returns the token alone; the account's team comes from the probe that
+            // follows, and its email from the first request sent (as with a pasted token). Extra
+            // fields are read if a later server adds them.
             static string? Clean(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
             return new DocumensoConnectGrant(token, Clean(r.Email), Clean(r.Name), Clean(r.TeamUrl),
                 DocumensoRequestView.ParseApiDate(r.ExpiresAt));
@@ -568,7 +582,8 @@ namespace TDPdf.Services
         /// <summary>
         /// Documenso's machine-readable error code, and only that. The live instance wraps a 401
         /// as <c>{"code":"INTERNAL_SERVER_ERROR","data":{"code":"UNAUTHORIZED",…}}</c>, so the
-        /// nested <c>data.code</c> is the truthful one and wins. Anything that is not a short
+        /// nested <c>data.code</c> is the truthful one and wins; an OAuth-style <c>error</c> is the
+        /// last resort. Anything that is not a short
         /// UPPER_SNAKE identifier is discarded, which is what guarantees no body text can ride out
         /// in an exception.
         /// </summary>
@@ -602,7 +617,11 @@ namespace TDPdf.Services
                     ? dc.GetString() : null;
                 string? top = root.TryGetProperty("code", out var tc) && tc.ValueKind == JsonValueKind.String
                     ? tc.GetString() : null;
-                return SafeCode(nested) ?? SafeCode(top);
+                // OAuth-style {"error":"invalid_grant"}, which the fork's sign-in token endpoint
+                // answers with; upper-cased into the same UPPER_SNAKE vocabulary.
+                string? oauth = root.TryGetProperty("error", out var te) && te.ValueKind == JsonValueKind.String
+                    ? te.GetString()?.ToUpperInvariant() : null;
+                return SafeCode(nested) ?? SafeCode(top) ?? SafeCode(oauth);
             }
             catch
             {
