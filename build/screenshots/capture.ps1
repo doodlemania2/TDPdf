@@ -89,7 +89,7 @@ function MainWindow($proc) {
     throw "TDPdf main window never appeared"
 }
 
-function Try([string]$what, [scriptblock]$b) {
+function Attempt([string]$what, [scriptblock]$b) {
     try { & $b } catch { Write-Host "FAILED $what : $($_.Exception.Message)" }
 }
 
@@ -103,7 +103,7 @@ $h = MainWindow $p
 Start-Sleep -Seconds 10
 $root = $UIA::FromHandle($h)
 Shot 'hero-1doc' $h
-Try 'dump main' { Dump 'main' $root }
+Attempt 'dump main' { Dump 'main' $root }
 
 # Second document: does a second launch become a tab in the same window?
 Start-Process -FilePath $Exe -ArgumentList "`"$incident`"" | Out-Null
@@ -116,7 +116,7 @@ Get-Process TDPdf -ErrorAction SilentlyContinue | Select-Object Id, MainWindowTi
 
 # Menus: dump File and Tools so the next pass can script the e-sign and tool shots.
 foreach ($m in 'File', 'Edit', 'Tools') {
-    Try "menu $m" {
+    Attempt "menu $m" {
         [W]::SetForegroundWindow($h) | Out-Null
         Expand (Find $root $m)
         Start-Sleep -Seconds 1
