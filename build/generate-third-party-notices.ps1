@@ -21,6 +21,8 @@
         lcms, OpenJPEG, zlib, libjpeg-turbo, IJG and ICU. No scanner will find it.
       * leptonica and the tesseract engine are EmbeddedResource blobs in TDPdf.csproj,
         extracted at runtime. They have no package metadata at all.
+      * WebView2Loader.dll is likewise an EmbeddedResource (TDPdf.csproj excludes it as a
+        package asset); its licence is the Microsoft.Web.WebView2 package's own BSD-3-Clause.
 
     So the native section is curated below and the managed section is generated.
 
@@ -92,6 +94,13 @@ $pdfiumText = Get-PackageFile -Package 'docnet.core' -Version '2.6.0' -RelativeP
 # Carried forward from packages that ship their own downstream notices.
 $otelThirdParty = Get-PackageFile -Package 'opentelemetry' -Version '1.17.0' -RelativePath 'THIRD-PARTY-NOTICES.TXT'
 $mvvmThirdParty = Get-PackageFile -Package 'communitytoolkit.mvvm' -Version '8.4.2' -RelativePath 'ThirdPartyNotices.txt'
+
+# Microsoft Edge WebView2 SDK: the managed wrappers (Microsoft.Web.WebView2.Core/.Wpf/.WinForms)
+# and the embedded native WebView2Loader.dll. BSD-3-Clause, read verbatim from the package, plus
+# the package's own notices file. The WebView2 Runtime (the browser engine) is NOT distributed.
+$webView2Version = '1.0.4191.47'
+$webView2Text = Get-PackageFile -Package 'microsoft.web.webview2' -Version $webView2Version -RelativePath 'LICENSE.txt'
+$webView2ThirdParty = Get-PackageFile -Package 'microsoft.web.webview2' -Version $webView2Version -RelativePath 'NOTICE.txt'
 
 $mitText = @'
 Permission is hereby granted, free of charge, to any person obtaining a copy of this
@@ -190,6 +199,7 @@ Add-Line '|---|---|---|---|'
 Add-Line '| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 154.0.8035 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |'
 Add-Line '| Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |'
 Add-Line '| Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |'
+Add-Line ('| Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | {0} | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |' -f $webView2Version)
 Add-Line ''
 Add-Line '### 1.1 PDFium'
 Add-Line ''
@@ -205,6 +215,18 @@ Add-Line '### 1.2 Leptonica'
 Add-Line ''
 Add-Line '```'
 Add-Line $leptonicaText.TrimEnd()
+Add-Line '```'
+Add-Line ''
+Add-Line '### 1.3 Microsoft Edge WebView2 SDK'
+Add-Line ''
+Add-Line ('Microsoft.Web.WebView2 {0}: the native `WebView2Loader.dll` and the managed wrappers' -f $webView2Version)
+Add-Line '`Microsoft.Web.WebView2.Core`, `.Wpf` and `.WinForms`, which host the signing service''s'
+Add-Line 'pages inside TDPdf. The browser engine itself — the Microsoft Edge WebView2 Runtime — is'
+Add-Line 'part of Windows and is **not** distributed with TDPdf. The package''s own third-party'
+Add-Line 'notices are carried forward in section 4.'
+Add-Line ''
+Add-Line '```'
+Add-Line $webView2Text.TrimEnd()
 Add-Line '```'
 Add-Line ''
 Add-Line '---'
@@ -264,10 +286,16 @@ Add-Line ''
 Add-Line '```'
 Add-Line $mvvmThirdParty.TrimEnd()
 Add-Line '```'
+Add-Line ''
+Add-Line '### Microsoft Edge WebView2 SDK'
+Add-Line ''
+Add-Line '```'
+Add-Line $webView2ThirdParty.TrimEnd()
+Add-Line '```'
 
 # LF endings so the file is stable across the Linux CI runner and Windows dev boxes.
 $text = $sb.ToString() -replace "`r`n", "`n"
 [System.IO.File]::WriteAllText($OutputPath, $text, [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "Wrote $OutputPath ($([math]::Round((Get-Item $OutputPath).Length / 1KB, 1)) KB)"
-Write-Host ("Components: {0} native, {1} Apache-2.0, {2} MIT groups" -f 3, $apacheComponents.Count, $mitComponents.Count)
+Write-Host ("Components: {0} native, {1} Apache-2.0, {2} MIT groups" -f 4, $apacheComponents.Count, $mitComponents.Count)

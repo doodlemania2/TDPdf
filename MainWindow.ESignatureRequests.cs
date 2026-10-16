@@ -35,6 +35,7 @@ namespace TDPdf
                 TryClient = () => client,
                 Connect = ESignReconnect,
                 DownloadAsync = async (owner, c, env, what) => (await ESignDownloadArtifactAsync(owner, c, env, what, openAfter: true))?.Message,
+                OpenPage = (owner, c, request) => ESignOpenWeb(owner, c, request),
             });
             return Task.CompletedTask;
         }
@@ -161,15 +162,59 @@ namespace TDPdf
         /// </summary>
         private void ESignRefreshSignedState()
         {
-            _ctx.HasDigitalSignature = _doc is not null && PdfSignatureScan.SignedFields(_doc).Count > 0;
+            var ctx = _ctx;
+            ctx.HasDigitalSignature = _doc is not null && PdfSignatureScan.SignedFields(_doc).Count > 0;
+            ctx.ESignSignedCopy = false;
             ESignUpdateSignedBadge();
+            if (ctx.HasDigitalSignature) _ = ESignMatchSignedCopyAsync(ctx);
+            else UpdateTabChrome();
         }
 
-        /// <summary>Shows or hides the footer's "Digitally signed" indicator for the active tab.</summary>
+        /// <summary>
+        /// Phase 6's "Signed" chip: is this file, byte for byte, a signed copy TDPdf downloaded for a
+        /// completed request? Only for a file that carries a signature at all (so ordinary documents
+        /// are never hashed), off the UI thread, and matched by SHA-256 against the fingerprints in
+        /// the request store (<see cref="DocumensoRequestView.SignedCopyOf"/>) — never by name. Says
+        /// where the file came from, not that its signature is valid; TDPdf does not check that.
+        /// </summary>
+        private async System.Threading.Tasks.Task ESignMatchSignedCopyAsync(DocumentContext ctx)
+        {
+            string? path = ctx.OriginalPath ?? ctx.CurrentFile;
+            if (string.IsNullOrEmpty(path) || !DocumensoConfig.HasEndpoint()) return;
+            DocumensoRequestStore.Entry? match = null;
+            try
+            {
+                match = await System.Threading.Tasks.Task.Run(() =>
+                {
+                    var entries = DocumensoRequestStore.Load();
+                    if (!entries.Exists(e => e.SignedSha256 is not null)) return null;   // nothing to match: skip the hash
+                    using var f = File.OpenRead(path);
+                    string sha = System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(f)).ToLowerInvariant();
+                    return DocumensoRequestView.SignedCopyOf(entries, sha);
+                });
+            }
+            catch { /* unreadable now: no chip, which is the truthful default */ }
+            // The tab may have closed, reloaded or been saved (which strips the signature) meanwhile.
+            if (!_tabs.Contains(ctx) && !ReferenceEquals(ctx, _ctx)) return;
+            if (!ctx.HasDigitalSignature || (ctx.OriginalPath ?? ctx.CurrentFile) != path) return;
+            ctx.ESignSignedCopy = match is not null;
+            if (ReferenceEquals(ctx, _ctx)) ESignUpdateSignedBadge();
+            UpdateTabChrome();
+        }
+
+        /// <summary>
+        /// Shows or hides the footer's "Digitally signed" indicator for the active tab; it reads
+        /// "Signed · TDPdf Signing" when the file is a signed copy downloaded from a request.
+        /// </summary>
         private void ESignUpdateSignedBadge()
         {
             if (_eSignSignedBadge is null) return;   // before the constructor's FindName pass
             _eSignSignedBadge.Visibility = _doc is not null && _ctx.HasDigitalSignature ? Visibility.Visible : Visibility.Collapsed;
+            bool viaService = _doc is not null && _ctx.ESignSignedCopy;
+            _eSignSignedBadge.Content = viaService ? "Signed · TDPdf Signing" : "Digitally signed";
+            _eSignSignedBadge.ToolTip = viaService
+                ? "This is the signed copy of a completed signature request, downloaded unchanged from TDPdf Signing. Saving it in TDPdf removes the signature. Click for details (F12)."
+                : "This file carries a digital signature. TDPdf has not checked it, and saving in TDPdf removes it. Click for details (F12).";
         }
 
         private void ESignSignedBadge_Click(object sender, RoutedEventArgs e) => ShowDocumentInfoDialog();

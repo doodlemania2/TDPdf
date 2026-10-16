@@ -9,22 +9,28 @@ using static TDPdf.Services.DocumensoUi;
 namespace TDPdf.Services
 {
     /// <summary>
-    /// File ▸ Electronic Signature ▸ Sign This Document: the browser handoff (design §5.4b).
-    /// Confirm → upload and send to yourself → open your signing page in the default browser →
-    /// wait, with Refresh → on completion, Download signed copy and Open it.
+    /// File ▸ Electronic Signature ▸ Sign This Document (design §5.4b, Phase 6).
+    /// Confirm → upload and send to yourself → open your signing page — inside TDPdf
+    /// (<see cref="DocumensoWebWindow"/>) when the WebView2 Runtime is present, else in the default
+    /// browser → wait, with Refresh → on completion, Download signed copy and Open it.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>The copy is honest about who signs.</b> TDPdf never signs: Documenso has no public signing
-    /// endpoint, so the signature is made on the signing service's own page in the browser and the
-    /// signing service seals the result. Every sentence here says so.
+    /// endpoint, so the signature is made on the signing service's own page (shown in TDPdf's
+    /// signing window, or the browser) and the signing service seals the result. Every sentence here
+    /// says so.
     /// </para>
     /// <para>
     /// <b>Modeless, one at a time</b>, like Signature Requests: the user's attention is in the
     /// browser for as long as this is open, and TDPdf should stay usable meanwhile. Closing it never
     /// loses anything — the request is tracked and Signature Requests picks it up.
     /// </para>
-    /// <para>No polling: Refresh is pressed by the person who just signed (design §7.3).</para>
+    /// <para>
+    /// No polling of its own: Refresh is pressed by the person who just signed (design §7.3). When
+    /// the page is shown in TDPdf's signing window, that window notices completion and refreshes
+    /// this one.
+    /// </para>
     /// </remarks>
     internal static class DocumensoSelfSignWindow
     {
@@ -49,6 +55,16 @@ namespace TDPdf.Services
                 = (_, _) => Task.FromResult<(string?, string)>((null, ""));
             /// <summary>Opens a saved file in a new tab.</summary>
             public Func<string, Task> OpenAsync { get; init; } = _ => Task.CompletedTask;
+            /// <summary>
+            /// True when the signing page will open inside TDPdf (the WebView2 Runtime is present);
+            /// only changes what the window says.
+            /// </summary>
+            public bool InApp { get; init; }
+            /// <summary>
+            /// Shows the signing page: (signing URL, envelope id, called-when-completed) → whether it
+            /// is showing anywhere. Null: the default browser, as before Phase 6.
+            /// </summary>
+            public Func<string, string, Action, bool>? OpenSigningPage { get; init; }
         }
 
         private static Window? _open;
@@ -172,11 +188,13 @@ namespace TDPdf.Services
             {
                 Body($"Sign “{inputs.DocumentName}” electronically on {inputs.Host}.",
                     $"TDPdf uploads this document to {inputs.Host}, sends it for signature to you alone ({inputs.Email}), " +
-                    "and opens the signing page in your browser. You sign there, and the signing service seals the signed copy — " +
+                    (inputs.InApp
+                        ? "and opens the signing page here in TDPdf. You sign on that page, and the signing service seals the signed copy — "
+                        : "and opens the signing page in your browser. You sign there, and the signing service seals the signed copy — ") +
                     "TDPdf does not sign anything itself.",
                     inputs.FieldNote);
                 footer.Children.Clear();
-                var go = Add("Continue in browser", primary: true, async () => await StartAsync());
+                var go = Add(inputs.InApp ? "Continue to sign" : "Continue in browser", primary: true, async () => await StartAsync());
                 go.IsDefault = true;
                 Add("Cancel", primary: false, () => win.Close());
             }
@@ -220,9 +238,9 @@ namespace TDPdf.Services
 
             void ShowWaiting(bool openBrowser)
             {
-                Body($"Signing happens on {inputs.Host} in your browser.",
-                    "When you're done, press Refresh. You can also close this window and pick the document up later " +
-                    "from Signature Requests.");
+                Body(inputs.InApp ? $"Sign on the {inputs.Host} page that opened in TDPdf." : $"Signing happens on {inputs.Host} in your browser.",
+                    (inputs.InApp ? "TDPdf notices when you're done; you can also press Refresh. " : "When you're done, press Refresh. ") +
+                    "You can close this window and pick the document up later from Signature Requests.");
                 footer.Children.Clear();
                 if (signingUrl is not null)
                     Add("Open signing page again", primary: false, () => OpenSigningPage());
@@ -237,6 +255,14 @@ namespace TDPdf.Services
                 if (signingUrl is null)
                 {
                     Say($"{inputs.Host} did not return a signing link. Open the document from Signature Requests or from your email.", "WarningOrange");
+                    return;
+                }
+                if (inputs.OpenSigningPage is { } open && envelopeId is not null)
+                {
+                    // TDPdf's signing window, or — when it cannot run — the browser, as decided by
+                    // the caller, which also puts any explanation in the status bar.
+                    if (open(signingUrl, envelopeId, () => _ = RefreshAsync())) Say("Opened the signing page.");
+                    else Say("Could not open the signing page. Open the document from your email from the signing service instead.", "DangerRed");
                     return;
                 }
                 if (OpenInBrowser(signingUrl)) Say($"Opened the signing page in your browser.");

@@ -58,6 +58,49 @@ Checked against the live OpenAPI document and the Documenso **v2.18.0** source, 
 | Local read | CN/email, claimed time, coverage, appended update. | Also issuer, an embedded RFC 3161 time and authority, reason/location as stated, updates-after count, and whether an appended update carries `/DSS`. A Documenso B-LTA file is reported honestly as "updates were added after the last signature" — its final DSS update follows the document timestamp. `SignedCms.Decode` only; the Pkcs assembly is in the WindowsDesktop framework (no package, notices unchanged). |
 | Open in PDF reader | Process.Start the file. | When TDPdf is the default `.pdf` app, Acrobat/Reader is launched directly from App Paths if installed; otherwise the user is told to use Acrobat Reader instead of reopening the file in TDPdf. |
 
+## Phase 6 as built (2026-10-16) — "signing feels like part of TDPdf"
+
+Supersedes §2.1's paste-token Connect flow and §1.6's "self-signing = browser handoff" where they differ. The service is branded **TDPdf Signing** (fork patch 0003); user-facing text never says "Documenso".
+
+| Topic | Before | What TDPdf does now |
+|---|---|---|
+| Connect | Paste an API token made by hand in the web UI. | **Sign in with your browser**: loopback redirect + PKCE (RFC 8252 / RFC 7636), `Services/DocumensoBrowserSignIn.cs`, against the fork's patch 0004 (contract below). The returned token is probed with `GET /envelope` and only then stored with DPAPI — the "never store an unvalidated token" rule holds for both paths (the brief said store-then-validate; validating first keeps that invariant). Pasting stays under **Advanced**, and opens automatically when the service has no sign-in page. |
+| Loopback listener | — | `HttpListener` on `http://127.0.0.1:{random port}/` (never `+`/`*`), falling back to `http://localhost:{port}/` where http.sys refuses the loopback IP for a non-admin. Other paths get 404 and are ignored; the callback path ends the wait. Closed on every way out — success, refusal, Stop, 5-minute timeout, exception — in one `finally`. The page served back is fixed text with a strict CSP and never echoes the code. |
+| State / PKCE | — | 32 random bytes each, base64url (43 chars). State compared in fixed time **before** anything in the callback is believed; a wrong or missing state ends the attempt as `StateMismatch` and the code is never exchanged. One attempt per instance — state and verifier are never reused. |
+| Token secrecy | — | The token lives only in `DocumensoConnectGrant` (redacted `ToString`). Progress sentences are fixed text; results, callbacks and requests redact the code/token/URL. Telemetry `DocumensoConnect` carries `method` and `outcome` only. Pinned in `tests/PdfCore/DocumensoConnect.cs`. |
+| Where signing happens | Default browser. | **In TDPdf**: `Services/DocumensoWebWindow.cs`, a modeless single-instance WebView2 window showing the service's *normal* pages as top-level navigations — `/sign/{token}`, `/t/{team}/documents/{id}`, `…/logs`. **Not** the iframe embed (Enterprise-licensed); no Documenso code in TDPdf; no host objects, web messages or dev tools. |
+| Navigation fence | — | `DocumensoWebNavigation.Decide`: same scheme + host + port + base path → load here; other `http(s)`/`mailto:` → system browser/mail; everything else (`file:`, `javascript:`, `data:`, custom schemes) refused. `NewWindowRequested` goes through the same rule, so there is never a second browser window. `blob:` is judged by its origin. The address line hides `/sign/{token}` as `/sign/…`. |
+| Browser profile | — | Persistent, per user: `%LOCALAPPDATA%\TDPdf\WebView2`. Signing links need no web sign-in; the owner pages (request page, audit log) need one, made once inside the window and remembered. The browser sign-in of Connect happens in the *default* browser, so it does not sign the in-app profile in — a known seam, see "Open" below. |
+| Completion | Refresh button. | Documenso's `/sign/{token}/complete` page triggers an immediate `GET /envelope/{id}`, and the envelope is polled every 10 s **only while the window is open** (429 backs off). COMPLETED → **Download signed copy…** (the existing downloader, `.part` + move, SHA-256 recorded) → **Open it**. Sign This Document's own window refreshes when the in-app window sees completion. `/rejected`, `/expired`, `/waiting` each get one plain sentence. |
+| WebView2 Runtime | — | Detected with `CoreWebView2Environment.GetAvailableBrowserVersionString()` (`Services/WebView2Bootstrap.cs`). Missing → the page opens in the default browser and the status bar gives the Evergreen bootstrapper link (`https://go.microsoft.com/fwlink/p/?LinkId=2124703`). A runtime that fails at start-up (profile unwritable, browser process exits) closes the window and falls back the same way. Telemetry `DocumensoWebView`: `purpose` + `outcome` (`inapp`/`noruntime`/`failed`). |
+| Single-file loader | — | `Microsoft.Web.WebView2.Core.dll` locates `WebView2Loader.dll` from its **own file path** (`GetModuleHandle` + `GetModuleFileName` + `runtimes\win-x64\native`), and inside a single-file bundle the managed wrapper is loaded from memory and has none. So the package's native asset is excluded (`ExcludeAssets="native"`, `WebView2NeverCopyLoaderDllToOutputDirectory`), the x64 loader is embedded and self-extracted to `%LOCALAPPDATA%\TDPdf\webview2-loader\{version}` with the OCR natives' hash check, and `SetLoaderDllFolderPath` is called before any other WebView2 API. One copy in the EXE. |
+| Opaque window | — | Every other TDPdf dialog is a layered (`AllowsTransparency`) window, which an HWND-hosted WebView2 cannot render into. This one keeps the dark chrome on an opaque borderless window with `WindowChrome` for resizing. |
+| Open (Signature Requests) | `Process.Start` to the browser. | The request page in the in-app window. **Sign on this computer** opens a pending recipient's `/sign/{token}` there (offered where Copy signing link is). |
+| Resend reminder | — | `POST /envelope/redistribute {envelopeId, recipients:[ids]}` (live OpenAPI, 2026-10-16). Only recipients with `sendStatus = SENT`, not signed/rejected, not CC: upstream `resend-document.ts` checks neither signing order nor send status, so a later sequential signer would otherwise get the link early. |
+| Audit log & certificate | Download buttons only. | Also the `/t/{team}/documents/{id}/logs` page in the in-app window (it offers both downloads). Offered once sent; needs the team URL. |
+| "Signed" chip | Footer "Digitally signed". | When the open file's SHA-256 equals a recorded signed-copy fingerprint (`DocumensoRequestView.SignedCopyOf`, exact only), the tab gets a **Signed** chip and the footer reads **Signed · TDPdf Signing**. Only files that already carry a signature are hashed, off the UI thread. Provenance, not validity. |
+
+| Windows smoke test | — | `.github/workflows/esign-smoke.yml` (hosted `windows-2022`, never the Linux `tdpdf` runner) publishes the single-file EXE and drives it with `build/esign-smoke/smoke.ps1` through UI Automation. Leg A runs against **live sign.tdpdf.com** up to its sign-in page (no account). Leg B runs everything an account unlocks against `build/esign-smoke/mock_server.py` on 127.0.0.1, selected with the ordinary `TDPDF_DOCUMENSO_BASEURL` — no test-only code in the product. Screenshots, UIA dumps and a PASS/FAIL log are uploaded as the `esign-smoke` artifact. |
+
+### The connect contract (server: fork patch `0004-tdpdf-browser-sign-in.patch`)
+
+TDPdf is built against the fork's implementation as merged to `doodlemania2/documenso` `main` (b602ebb, 2026-10-16), not against an independent sketch:
+
+1. **Authorize page** — the browser opens
+   `GET {BaseUrl}/connect/tdpdf?code_challenge={43-char base64url SHA-256}&code_challenge_method=S256&state={≤256 chars}&redirect_uri=http://127.0.0.1:{port}/cb`.
+   Signed out → redirect to `/signin?returnTo=…`. The signed-in user picks a team they can manage and presses **Allow** or **Cancel**. `redirect_uri` must be `http:` to `127.0.0.1`, `localhost` or `[::1]` with an explicit port and no credentials or fragment.
+2. **Redirect** — Allow: `{redirect_uri}?state={state}&code={code}`; Cancel: `{redirect_uri}?state={state}&error=access_denied`. The code is an HS256 JWT bound to user, team, challenge and redirect URI, valid **120 s**, single use (burned before the verifier is checked, so a wrong guess cannot be retried).
+3. **Token** — `POST {BaseUrl}/api/connect/token`, `Content-Type: application/json`, no `Authorization`:
+   ```json
+   { "code": "<code>", "code_verifier": "<43-128 chars [A-Za-z0-9._~-]>" }
+   ```
+   → `200 {"token": "api_…"}` with `Cache-Control: no-store` — an ordinary team API token named `TDPdf (yyyy-mm-dd)`, valid one year, revocable under the team's API tokens. Every refusal is `400 {"error":"invalid_grant"}` (read by TDPdf as `INVALID_GRANT`); an internal failure is `500 {"error":"server_error"}`. Rate-limited like `/api/v2`.
+4. **Support probe** — TDPdf sends an unauthenticated `GET {BaseUrl}/connect/tdpdf` with no parameters before opening the browser: `404` means the instance does not have the page (TDPdf opens the paste-a-token path); anything else means it does. The token route has no `GET` handler, so it cannot serve as the probe.
+
+The response carries no email, name or team: the team URL comes from the `GET /envelope` probe, the email from the first request sent (as with a pasted token). TDPdf reads `email`, `name`, `teamUrl` and `expiresAt` if a later server adds them.
+
+---
+
 ## What blocked the build (historical)
 
 1. The hosted Documenso instance must be deployed and configured.

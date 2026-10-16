@@ -156,6 +156,39 @@ they send or sign a document. Control it with `HKLM\SOFTWARE\Policies\TDPdf\Docu
 | `BaseUrl` (REG_SZ) | Points TDPdf at your own signing server instead of sign.tdpdf.com. |
 | `AllowUserOverride` (DWORD) | With `BaseUrl` set, `0` stops people changing the server in Settings. |
 
+### Signing inside TDPdf: the WebView2 Runtime
+
+TDPdf shows the signing service's pages (a signing page, a request, its audit log) in a window
+of its own, built on the **Microsoft Edge WebView2 Runtime**. It uses the Evergreen runtime
+already on the device rather than bundling one:
+
+- **Windows 11** includes it.
+- **Windows 10** gets it through Windows Update or Microsoft 365 Apps on almost every managed
+  device. Where it is missing, deploy Microsoft's Evergreen Standalone Installer
+  (`MicrosoftEdgeWebView2RuntimeInstallerX64.exe` from
+  https://developer.microsoft.com/microsoft-edge/webview2/) as a separate Win32 app: install
+  command `MicrosoftEdgeWebView2RuntimeInstallerX64.exe /silent /install`, detected by the
+  registry value `pv` under
+  `HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`
+  being present and not `0.0.0.0`. Don't make it a dependency of the TDPdf app.
+
+Without the runtime nothing breaks: TDPdf opens the same page in the default browser instead and
+says so in the status bar, with Microsoft's download link.
+
+It writes a per-user browser profile to `%LOCALAPPDATA%\TDPdf\WebView2` (cookies and site data
+for the signing service only) and extracts `WebView2Loader.dll` once per version to
+`%LOCALAPPDATA%\TDPdf\webview2-loader\<version>\`. Neither is under `Program Files`, so a
+machine-wide install needs no extra permissions.
+
+### Sign-in
+
+**Connect** opens the signing service's sign-in page in the default browser and receives the
+token on a loopback address (`http://127.0.0.1:<random port>/cb`, or `http://localhost:<port>/cb`)
+for at most five minutes. Nothing listens on a network interface, so no firewall rule is needed
+and Windows Defender Firewall does not prompt. If Windows refuses both addresses, Connect says so
+and offers pasting a token instead. `Enabled = 0` above removes all of this along with the rest
+of the feature.
+
 ## Defender, SmartScreen and ASR
 
 - **SmartScreen** checks reputation on downloaded files. Deployment through Intune does not apply
