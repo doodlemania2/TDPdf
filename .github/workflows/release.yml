@@ -42,7 +42,9 @@ jobs:
     env:
       HAS_AZSIGN:    ${{ secrets.SIGN_CLIENT_SECRET != '' }}
       HAS_FLEET:     ${{ secrets.FLEET_DISPATCH_TOKEN != '' }}
-      HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' }}
+      # vars.MSSTORE_ENABLED stays unset until the first, hand-made Store submission is
+      # published: while that one is in certification, the API must not touch the product.
+      HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' && vars.MSSTORE_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v4
 

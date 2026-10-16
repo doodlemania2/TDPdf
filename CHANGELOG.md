@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.0.1.0] - 2026-10-16
+
 ### Added
 
 - **Sign in with your browser.** Connecting Electronic Signature no longer means making an API token by hand and pasting it: **Connect** opens the TDPdf Signing sign-in page (where anyone can also create an account), you choose **Allow**, and TDPdf is connected. Under the hood it is the standard way desktop apps sign in — a one-time code returned to TDPdf on your own computer and exchanged with a PKCE proof — so nothing secret passes through the browser's address bar in a usable form, a response TDPdf did not ask for is ignored, and the sign-in is checked before it is kept. Pasting a token is still there under **Advanced**, and is offered automatically by a signing service that has no sign-in page.
@@ -1250,7 +1252,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.0.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.0.1.0...HEAD
+[2.0.1.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.0.0...v2.0.1.0
 [2.0.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.31.0.0...v2.0.0.0
 [1.31.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.2.0...v1.31.0.0
 [1.30.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.1.0...v1.30.2.0
