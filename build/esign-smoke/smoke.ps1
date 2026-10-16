@@ -68,9 +68,17 @@ function Dump([string]$name, $root) {
     }
     $lines | Set-Content (Join-Path $Out "$name.uia.txt")
 }
+# Top-level windows of a process, including OWNED windows (a WPF dialog with an Owner shows up in
+# UIA as a child of its owner, not of the desktop).
 function TopWindows($proc) {
     $pc = New-Object System.Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, $proc.Id)
-    @($UIA::RootElement.FindAll($Scope::Children, $pc))
+    $wc = New-Object System.Windows.Automation.PropertyCondition($UIA::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+    $list = New-Object System.Collections.ArrayList
+    foreach ($w in $UIA::RootElement.FindAll($Scope::Children, $pc)) {
+        [void]$list.Add($w)
+        foreach ($c in $w.FindAll($Scope::Children, $wc)) { [void]$list.Add($c) }
+    }
+    @($list)
 }
 # A screenshot of the whole screen plus every top-level TDPdf window, and a UIA dump of each.
 function Step([string]$name) {
@@ -148,10 +156,114 @@ function BrowserCommandLines() {
 }
 
 # ── Environment ─────────────────────────────────────────────────────────────────────────
-$base = "http://127.0.0.1:$MockPort"
-$env:TDPDF_DOCUMENSO_BASEURL = $base
 $local = [Environment]::GetFolderPath('LocalApplicationData')
 Remove-Item -Recurse -Force (Join-Path $local 'TDPdf') -ErrorAction SilentlyContinue
+$pdf = Join-Path $Demo 'services-agreement.pdf'
+
+function LaunchApp() {
+    $p = Start-Process -FilePath $Exe -ArgumentList "`"$pdf`"" -PassThru
+    $hw = [IntPtr]::Zero
+    for ($i = 0; $i -lt 90 -and $hw -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 500; $p.Refresh(); $hw = $p.MainWindowHandle }
+    if ($hw -ne [IntPtr]::Zero) {
+        [W]::MoveWindow($hw, 40, 30, 1500, 950, $true) | Out-Null
+        [W]::SetForegroundWindow($hw) | Out-Null
+        Start-Sleep -Seconds 8
+    }
+    @{ P = $p; H = $hw }
+}
+
+function OpenConnectDialog([string]$prefix) {
+    $m = $UIA::FromHandle($script:h)
+    [W]::SetForegroundWindow($script:h) | Out-Null
+    Expand (FindIn $m 'File')
+    Start-Sleep -Seconds 1
+    $es = FindIn $UIA::RootElement 'Electronic Signature' 5
+    Check "$prefix File menu has Electronic Signature" ($null -ne $es)
+    Expand $es
+    Start-Sleep -Seconds 1
+    Full "$prefix-esign-menu"
+    InvokeEl (FindIn $UIA::RootElement 'Signature Requests…' 5)
+    Start-Sleep -Seconds 3
+    $d = WindowNamed 'Electronic Signature' 10
+    Check "$prefix not connected → the Connect dialog opens" ($null -ne $d)
+    $d
+}
+
+# Edge's address bar, read through UIA.
+function EdgeAddress() {
+    foreach ($e in Get-Process msedge -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }) {
+        $root = $UIA::FromHandle($e.MainWindowHandle)
+        $ec = New-Object System.Windows.Automation.PropertyCondition($UIA::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+        foreach ($ed in $root.FindAll($Scope::Descendants, $ec)) {
+            $vp = $null
+            if ($ed.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
+                $v = $vp.Current.Value
+                if ($v -match 'tdpdf\.com|127\.0\.0\.1') { return $v }
+            }
+        }
+    }
+    $null
+}
+
+# ── A. The LIVE service: sign.tdpdf.com, no account, stop at its sign-in page ───────────
+Remove-Item Env:TDPDF_DOCUMENSO_BASEURL -ErrorAction SilentlyContinue
+$script:failuresBeforeLive = $script:failures
+$la = LaunchApp
+$app = $la.P
+$script:h = $la.H
+Check 'LIVE: app launches with the demo PDF (default service sign.tdpdf.com)' ($h -ne [IntPtr]::Zero) "pid $($app.Id)"
+Attempt 'live' {
+    $d = OpenConnectDialog 'L01'
+    Step 'L01-connect-dialog'
+    Check 'LIVE: Connect dialog names sign.tdpdf.com' ($null -ne (FindIn $d 'Electronic Signature uses TDPdf Signing at sign.tdpdf.com. Sign in once and TDPdf can send documents for signature and let you sign them here.' 3))
+    InvokeEl (FindIn $d 'Sign in with your browser' 5)
+    $regs = @()
+    for ($i = 0; $i -lt 40 -and $regs.Count -eq 0; $i++) { Start-Sleep -Milliseconds 500; $regs = @(LoopbackRegistrations) }
+    Check 'LIVE: the capability probe saw sign-in as supported (the listener started; no "does not offer" fallback)' (
+        $regs.Count -gt 0 -and $null -eq (FindIn $d 'sign.tdpdf.com does not offer browser sign-in. Use an API token instead (below).' 1)) ($regs -join ', ')
+    $lport = if ($regs.Count -gt 0) { [int]([regex]::Match($regs[0], ':(\d+)/').Groups[1].Value) } else { 0 }
+    $cl = @()
+    for ($i = 0; $i -lt 30 -and $cl.Count -eq 0; $i++) { Start-Sleep -Milliseconds 500; $cl = @(BrowserCommandLines | Where-Object { $_ -match 'sign\.tdpdf\.com/connect/tdpdf' }) }
+    if ($cl.Count -gt 0) { Log ("LIVE browser command line: " + $cl[0]) }
+    Check 'LIVE: the default browser was started at https://sign.tdpdf.com/connect/tdpdf?...' ($cl.Count -gt 0)
+    if ($cl.Count -gt 0) {
+        $u = [regex]::Match($cl[0], 'https://sign\.tdpdf\.com/connect/tdpdf\?[^\s"]+').Value
+        Check 'LIVE: that URL carries code_challenge, S256, state and the loopback redirect_uri' (
+            $u -match 'code_challenge=[A-Za-z0-9_-]{43}' -and $u -match 'code_challenge_method=S256' -and $u -match 'state=[A-Za-z0-9_-]{43}' -and
+            $u -match ('redirect_uri=http%3A%2F%2F(127\.0\.0\.1|localhost)%3A' + $lport + '%2Fcb')) $u
+    }
+    $addr = $null
+    for ($i = 0; $i -lt 40; $i++) { Start-Sleep -Milliseconds 500; $addr = EdgeAddress; if ($addr -match '/signin') { break } }
+    Log "LIVE Edge address bar: $addr"
+    Full 'L02-live-browser-signin'
+    Check 'LIVE: the browser landed on sign.tdpdf.com/signin' ($addr -match 'sign\.tdpdf\.com/signin')
+    if ($addr -match 'returnTo=([^&]+)') {
+        $rt = [Uri]::UnescapeDataString($Matches[1])
+        Log "LIVE returnTo (decoded): $rt"
+        Check 'LIVE: returnTo preserves /connect/tdpdf with state, code_challenge and redirect_uri' (
+            $rt -match '^/connect/tdpdf\?' -and $rt -match 'state=' -and $rt -match 'code_challenge=' -and $rt -match 'redirect_uri=')
+    } else { Fail 'LIVE: returnTo present in the sign-in URL' "$addr" }
+
+    [W]::SetForegroundWindow([IntPtr]$d.Current.NativeWindowHandle) | Out-Null
+    Step 'L03-live-waiting'
+    InvokeEl (FindIn $d 'Stop' 5)
+    Start-Sleep -Seconds 2
+    $after = @(LoopbackRegistrations)
+    Check 'LIVE: Stop removes the listener' ($after.Count -eq 0) ($after -join ', ')
+    Step 'L04-live-stopped'
+    Check 'LIVE: nothing was stored' (-not (Test-Path (Join-Path $local 'TDPdf\documenso.cred')))
+}
+Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process TDPdf -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
+
+# ── B. The stand-in service: everything an account would unlock ─────────────────────────
+# Started here, not in an earlier workflow step: Actions kills a step's processes when it ends.
+$mock = Start-Process python -ArgumentList (Join-Path $PSScriptRoot 'mock_server.py'), "$MockPort" -PassThru `
+    -RedirectStandardError (Join-Path $Out 'mock.err.txt') -RedirectStandardOutput (Join-Path $Out 'mock.out.txt')
+for ($i = 0; $i -lt 30; $i++) { try { Invoke-RestMethod "http://127.0.0.1:$MockPort/api/health" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 } }
+$base = "http://127.0.0.1:$MockPort"
+$env:TDPDF_DOCUMENSO_BASEURL = $base
 
 $assoc = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice' -ErrorAction SilentlyContinue).ProgId
 Log "default https handler: $assoc"
@@ -159,32 +271,16 @@ $wv = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\
 Log "WebView2 Runtime on runner: $($wv.pv)"
 
 # ── 1. Launch ───────────────────────────────────────────────────────────────────────────
-$pdf = Join-Path $Demo 'services-agreement.pdf'
-$app = Start-Process -FilePath $Exe -ArgumentList "`"$pdf`"" -PassThru
-$h = [IntPtr]::Zero
-for ($i = 0; $i -lt 90 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 500; $app.Refresh(); $h = $app.MainWindowHandle }
+$la = LaunchApp
+$app = $la.P
+$script:h = $la.H
 Check 'app launches with the demo PDF' ($h -ne [IntPtr]::Zero) "pid $($app.Id)"
 if ($h -eq [IntPtr]::Zero) { exit 1 }
-[W]::MoveWindow($h, 40, 30, 1500, 950, $true) | Out-Null
-[W]::SetForegroundWindow($h) | Out-Null
-Start-Sleep -Seconds 8
-$main = $UIA::FromHandle($h)
 Step '01-launched'
 
 # ── 2. File ▸ Electronic Signature ▸ Signature Requests… → Connect ─────────────────────
 Attempt 'open-connect' {
-    Expand (FindIn $main 'File')
-    Start-Sleep -Seconds 1
-    $es = FindIn $UIA::RootElement 'Electronic Signature' 5
-    Check 'File menu has Electronic Signature (env-var endpoint resolves)' ($null -ne $es)
-    Expand $es
-    Start-Sleep -Seconds 1
-    Full '02-esign-menu'
-    $req = FindIn $UIA::RootElement 'Signature Requests…' 5
-    InvokeEl $req
-    Start-Sleep -Seconds 3
-    $script:dlg = WindowNamed 'Electronic Signature' 10
-    Check 'not connected → the Connect dialog opens' ($null -ne $dlg)
+    $script:dlg = OpenConnectDialog '02'
     Step '02-connect-dialog'
     Check 'Connect dialog: "Sign in with your browser" button' ($null -ne (FindIn $dlg 'Sign in with your browser' 2))
     $adv = FindIn $dlg 'Advanced: use an API token instead  ▸' 2
@@ -353,6 +449,7 @@ Attempt 'shutdown' {
 }
 
 Get-Process TDPdf -ErrorAction SilentlyContinue | Stop-Process -Force
+if ($mock) { Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue }
 Log ""
 Log $(if ($failures -eq 0) { 'SMOKE: ALL PASS' } else { "SMOKE: $failures FAILURE(S)" })
 exit $(if ($failures -eq 0) { 0 } else { 1 })
