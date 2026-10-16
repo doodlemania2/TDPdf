@@ -665,7 +665,7 @@ Drag-a-rectangle placement (§5.4a) is the better UX and reuses `MainWindow.Canv
 - [ ] New glyphs from `Segoe MDL2 Assets` with `Style="{StaticResource MenuGlyph}"`.
 - [ ] All product strings say "TDPdf"; GPLv3 headers and `NOTICE`/`LICENSE` untouched.
 - [ ] If `System.Security.Cryptography.ProtectedData` is added as a `PackageReference`, **regenerate `THIRD-PARTY-NOTICES.md`**.
-- [ ] Release checklist if this ships a version bump: `TDPdf.csproj` (×3 version fields), `CHANGELOG.md` (+ compare links), `build/intune/Detect-TDPdf.ps1` `$MinVersion`, `.github/release-notes/v<x.y.z.w>.md` — **all in the same PR**.
+- [ ] Release checklist if this ships a version bump: `TDPdf.csproj` (×3 version fields), `CHANGELOG.md` (+ compare links), `.github/release-notes/v<x.y.z.w>.md` — **all in the same PR**.
 - [ ] One branch, one PR, commit per phase, push once.
 
 ---
