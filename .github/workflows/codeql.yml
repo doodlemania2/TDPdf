@@ -6,11 +6,13 @@ name: CodeQL
 # results before merge). net10.0-windows cross-targeting from Linux requires
 # EnableWindowsTargeting=true.
 #
-# Runs on a GitHub-hosted runner, never the self-hosted `tdpdf` one. This workflow
-# triggers on pull_request, so it executes code from forks; the self-hosted runner sits
-# on the internal network with passwordless sudo. GitHub-hosted minutes are free for
-# public repos. Keep self-hosted runners to triggers outside contributors cannot reach
-# (tag pushes, workflow_dispatch).
+# Runs on `tdpdf-pr`, never `tdpdf`. This workflow triggers on pull_request, so it executes
+# code from forks. `tdpdf-pr` is an ephemeral ARC scale set built for exactly that: no sudo
+# (no_new_privs, all caps dropped), no docker, no Kubernetes token, no secrets, and a
+# NetworkPolicy that allows DNS and the public internet only (no cluster, LAN or tailnet).
+# `tdpdf` has sudo and the internal network, so it only takes triggers outside contributors
+# cannot reach (tag pushes, workflow_dispatch, push to main). Never give this workflow a
+# secret: the kernel is shared, so the pool is isolation, not a hard sandbox.
 
 on:
   push:
@@ -32,7 +34,7 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (csharp)
-    runs-on: ubuntu-latest
+    runs-on: tdpdf-pr
 
     steps:
       - uses: actions/checkout@v4
