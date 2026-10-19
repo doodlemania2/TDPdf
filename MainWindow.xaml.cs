@@ -4838,7 +4838,8 @@ namespace TDPdf
         ///
         /// Two things make it more than a loop over the hits:
         ///
-        ///   * The hits are PdfPig word boxes and a mark is a canvas rectangle. PdfPig's boxes are
+        ///   * The hits are PdfPig glyph boxes (one per matched line, from
+        ///     <see cref="Services.PdfTextSearch"/>; #187) and a mark is a canvas rectangle. PdfPig's boxes are
         ///     NOT user space: they are the page as displayed, crop origin subtracted and /Rotate
         ///     applied. Each hit is carried into user space by
         ///     <see cref="Services.PdfPageGeometry.TextFrameToPdf(PdfSharpCore.Pdf.PdfPage, Services.PdfiumInterop.PdfRect)"/>
@@ -7395,12 +7396,14 @@ namespace TDPdf
                 for (int pi = 0; pi < pigDoc.NumberOfPages; pi++)
                 {
                     var page = pigDoc.GetPage(pi + 1);
-                    var hits = FindMatchesOnPage(page, lowerQuery);
-                    if (hits.Count > 0)
+                    // One box per matched line of glyphs, never the words around them (#187).
+                    // A match that wraps is one match but two boxes, so count the matches.
+                    var matches = TDPdf.Services.PdfTextSearch.FindMatches(page, lowerQuery);
+                    if (matches.Count > 0)
                     {
-                        _allSearchRects[pi] = hits;
+                        _allSearchRects[pi] = TDPdf.Services.PdfTextSearch.Flatten(matches);
                         _searchResultPages.Add(pi);
-                        totalHits += hits.Count;
+                        totalHits += matches.Count;
                     }
                 }
 
@@ -7433,46 +7436,6 @@ namespace TDPdf
                 if (_searchStatus != null) _searchStatus.Text = "Search error";
                 UpdateSearchRedactState();
             }
-        }
-
-        private static List<(double left, double bottom, double right, double top)> FindMatchesOnPage(
-            UglyToad.PdfPig.Content.Page page, string lowerQuery)
-        {
-            var result = new List<(double left, double bottom, double right, double top)>();
-            var words = page.GetWords().ToList();
-
-            for (int i = 0; i < words.Count; i++)
-            {
-                if (words[i].Text.ToLowerInvariant().Contains(lowerQuery))
-                {
-                    var bb = words[i].BoundingBox;
-                    result.Add((bb.Left, bb.Bottom, bb.Right, bb.Top));
-                    continue;
-                }
-
-                // Multi-word match
-                string combined = words[i].Text;
-                for (int j = i + 1; j < words.Count && combined.Length < lowerQuery.Length + 20; j++)
-                {
-                    combined += " " + words[j].Text;
-                    if (combined.ToLowerInvariant().Contains(lowerQuery))
-                    {
-                        double minX = double.MaxValue, minY = double.MaxValue;
-                        double maxX = double.MinValue, maxY = double.MinValue;
-                        for (int k = i; k <= j; k++)
-                        {
-                            var wbb = words[k].BoundingBox;
-                            minX = Math.Min(minX, wbb.Left);
-                            minY = Math.Min(minY, wbb.Bottom);
-                            maxX = Math.Max(maxX, wbb.Right);
-                            maxY = Math.Max(maxY, wbb.Top);
-                        }
-                        result.Add((minX, minY, maxX, maxY));
-                        break;
-                    }
-                }
-            }
-            return result;
         }
 
         private void HighlightSearchResultsOnCurrentPage()
