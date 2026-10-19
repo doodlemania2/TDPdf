@@ -271,46 +271,14 @@ jobs:
         # is reported in the summary and the run goes on to the fleet dispatch.
         continue-on-error: true
         env:
-          TAG: ${{ steps.tag.outputs.name }}
-          PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
-          ASSET: ${{ steps.storeurl.outputs.url }}
-        run: |
-          set -euo pipefail
-          : "${PRODUCT_ID:?MSSTORE_PRODUCT_ID is not set — copy it from the Partner Center product page URL}"
-          # The CLI is a .NET tool and cross-platform, which is why this can live on the Linux
-          # runner alongside everything else.
-          dotnet tool install --global MSStore.CLI >/dev/null 2>&1 || dotnet tool update --global MSStore.CLI >/dev/null 2>&1
-          export PATH="$PATH:$HOME/.dotnet/tools"
-
-          msstore reconfigure \
-            --tenantId "${{ secrets.MSSTORE_TENANT_ID }}" \
-            --clientId "${{ secrets.MSSTORE_CLIENT_ID }}" \
-            --clientSecret "${{ secrets.MSSTORE_CLIENT_SECRET }}" \
-            --sellerId "${{ secrets.MSSTORE_SELLER_ID }}"
-
-          echo "Installer URL: $ASSET"
-
-          # Read the current submission, swap only the installer URL, and send it back. Editing
-          # the live shape rather than posting a hand-written one means listing copy, screenshots
-          # and the GPLv3 licence terms are carried forward untouched.
-          msstore submission get "$PRODUCT_ID" > submission.json
-          python3 - "$ASSET" <<'PY'
-          import json, sys
-          url = sys.argv[1]
-          d = json.load(open('submission.json'))
-          pkgs = d.get('packages') or []
-          if not pkgs:
-              print("::error::No packages array in the current submission — check MSSTORE_PRODUCT_ID.")
-              raise SystemExit(1)
-          for p in pkgs:
-              p['packageUrl'] = url
-          json.dump(d, open('submission.json', 'w'), indent=2)
-          print(f"Repointed {len(pkgs)} package entr{'y' if len(pkgs)==1 else 'ies'} at {url}")
-          PY
-
-          msstore submission update "$PRODUCT_ID" "$(cat submission.json)"
-          msstore submission publish "$PRODUCT_ID"
-          echo "Submitted. Certification is typically up to three business days."
+          MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+          MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          MSSTORE_PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
+        # Repoints the existing package's installer URL, commits, waits for readiness, submits.
+        # Calls the Store submission API directly; see the script for why not the msstore CLI.
+        run: python3 build/store/publish-store.py "${{ steps.storeurl.outputs.url }}"
 
       - name: Note why the Store step was skipped
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed != 'true'
