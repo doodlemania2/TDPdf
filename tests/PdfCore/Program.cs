@@ -188,6 +188,7 @@ ZoomAnchor.Run(Check);
 InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);
+TextSearch.Run(Check, tmp);
 NightModeImages.Run(Check, tmp);
 Documenso.Run(Check, tmp);
 DocumensoSend.Run(Check, tmp);
