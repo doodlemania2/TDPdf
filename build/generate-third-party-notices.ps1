@@ -69,7 +69,7 @@ $apacheComponents = @(
     @{ Name = 'PdfPig';                    Version = '0.1.14';        Url = 'https://github.com/UglyToad/PdfPig' }
     @{ Name = 'Tesseract (.NET wrapper)';  Version = '5.2.0';         Url = 'https://github.com/charlesw/tesseract' }
     @{ Name = 'Tesseract OCR engine (tesseract50.dll, embedded)'; Version = '5.0';  Url = 'https://github.com/tesseract-ocr/tesseract' }
-    @{ Name = 'SixLabors.ImageSharp';      Version = '2.1.13';        Url = 'https://github.com/SixLabors/ImageSharp' }
+    @{ Name = 'SixLabors.ImageSharp';      Version = '4.1.3';         Url = 'https://github.com/SixLabors/ImageSharp' }
     @{ Name = 'SixLabors.Fonts';           Version = '1.0.0-beta17';  Url = 'https://github.com/SixLabors/Fonts' }
     @{ Name = 'OpenTelemetry .NET';        Version = '1.17.0';        Url = 'https://github.com/open-telemetry/opentelemetry-dotnet' }
     @{ Name = 'bblanchon.PDFium.Win32 (PDFium build and packaging)'; Version = '154.0.8035'; Url = 'https://github.com/bblanchon/pdfium-binaries' }

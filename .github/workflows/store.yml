@@ -9,7 +9,8 @@ name: Publish a release to the Microsoft Store
 # release.yml does the same for a new tag when vars.MSSTORE_ENABLED is 'true'. Use this one
 # for a release that went out while the Store step was off, or to resubmit.
 #
-# workflow_dispatch only, on a GitHub-hosted runner: outside contributors cannot trigger it.
+# workflow_dispatch only, so it runs on the self-hosted `tdpdf` runner: outside contributors
+# cannot trigger it.
 
 on:
   workflow_dispatch:
@@ -27,7 +28,7 @@ concurrency:
 
 jobs:
   store:
-    runs-on: ubuntu-latest
+    runs-on: tdpdf
     timeout-minutes: 30
     env:
       TAG: ${{ inputs.tag }}

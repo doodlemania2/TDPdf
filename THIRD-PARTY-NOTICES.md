@@ -1444,7 +1444,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 | PdfPig | 0.1.14 | https://github.com/UglyToad/PdfPig |
 | Tesseract (.NET wrapper) | 5.2.0 | https://github.com/charlesw/tesseract |
 | Tesseract OCR engine (tesseract50.dll, embedded) | 5.0 | https://github.com/tesseract-ocr/tesseract |
-| SixLabors.ImageSharp | 2.1.13 | https://github.com/SixLabors/ImageSharp |
+| SixLabors.ImageSharp | 4.1.3 | https://github.com/SixLabors/ImageSharp |
 | SixLabors.Fonts | 1.0.0-beta17 | https://github.com/SixLabors/Fonts |
 | OpenTelemetry .NET | 1.17.0 | https://github.com/open-telemetry/opentelemetry-dotnet |
 | bblanchon.PDFium.Win32 (PDFium build and packaging) | 154.0.8035 | https://github.com/bblanchon/pdfium-binaries |
