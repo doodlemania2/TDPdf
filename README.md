@@ -38,7 +38,7 @@ PDF editor for Windows. View, annotate, merge, split, edit text, draw, sign, pri
 
 ## Download
 
-Grab the latest signed `TDPdf.exe` from the [Releases page](https://github.com/doodlemania2/TDPdf/releases/latest).
+Get TDPdf from the [Microsoft Store](https://apps.microsoft.com/detail/XPDLZDWVQV3W5W), or download the latest signed `TDPdf.exe` from the [Releases page](https://github.com/doodlemania2/TDPdf/releases/latest).
 
 ## Unattended install
 

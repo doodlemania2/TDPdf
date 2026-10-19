@@ -18,6 +18,7 @@
 <p class="tdp-lead">TDPdf handles the everyday PDF jobs: fixing a typo, filling a form, blacking out a name, getting a contract signed. It costs nothing, needs no account, and installs without an administrator.</p>
 <div class="tdp-ctas">
 <a class="tdp-btn primary" href="/download/">Download for Windows <small>{{VERSION}} · free</small></a>
+<a class="tdp-btn ghost" href="https://apps.microsoft.com/detail/XPDLZDWVQV3W5W">Microsoft Store</a>
 <a class="tdp-btn ghost" href="#esign">See what's new</a>
 </div>
 <ul class="tdp-facts"><li>Free &amp; open source</li><li>Windows 10 &amp; 11</li><li>One signed file</li><li>No tracking</li></ul>
@@ -201,7 +202,7 @@
 <div class="tdp-wrap">
 <h2>Get TDPdf {{VERSION}}</h2>
 <p class="tdp-lead" style="margin:0 auto">Free for Windows 10 and 11. One {{EXE_SIZE_MB}}&nbsp;MB download.</p>
-<div class="tdp-ctas"><a class="tdp-btn primary" href="/download/">Download for Windows</a><a class="tdp-btn ghost" href="{{REPO_URL}}">Source on GitHub</a></div>
+<div class="tdp-ctas"><a class="tdp-btn primary" href="/download/">Download for Windows</a><a class="tdp-btn ghost" href="https://apps.microsoft.com/detail/XPDLZDWVQV3W5W">Microsoft Store</a><a class="tdp-btn ghost" href="{{REPO_URL}}">Source on GitHub</a></div>
 <p class="tdp-muted">TDPdf is GPLv3 software from The Doodle Project, LLC, built on <a href="https://github.com/SteveTheKiller/KillerPDF">KillerPDF</a>. <a href="/third-party-licenses/">Third-party licences</a>.</p>
 </div>
 </section>

@@ -10,12 +10,12 @@
 <div>
 <h2 style="font-size:1.35rem">TDPdf for Windows</h2>
 <p class="tdp-muted" style="margin:0">Version {{VERSION}} · {{EXE_SIZE_MB}} MB · signed by The Doodle Project</p>
-<div class="tdp-ctas" style="margin:1rem 0 .4rem"><a class="tdp-btn primary" href="{{RELEASE_DOWNLOAD}}/{{EXE_ASSET}}">Download {{EXE_ASSET}}</a><a class="tdp-btn ghost" href="{{RELEASE_PAGE}}">Release notes</a></div>
+<div class="tdp-ctas" style="margin:1rem 0 .4rem"><a class="tdp-btn primary" href="{{RELEASE_DOWNLOAD}}/{{EXE_ASSET}}">Download {{EXE_ASSET}}</a><a class="tdp-btn ghost" href="https://apps.microsoft.com/detail/XPDLZDWVQV3W5W">Get it from the Microsoft Store</a><a class="tdp-btn ghost" href="{{RELEASE_PAGE}}">Release notes</a></div>
 <div class="tdp-hash">SHA-256 {{EXE_SHA256}}</div>
 </div>
 </div>
 <div class="tdp-strip" style="margin-top:1.2rem">
-<div><b>Microsoft Store</b><span>Coming soon</span></div>
+<div><b>Microsoft Store</b><span><a href="https://apps.microsoft.com/detail/XPDLZDWVQV3W5W">TDPdf on the Store</a></span></div>
 <div><b>Source code</b><span><a href="{{RELEASE_DOWNLOAD}}/{{SRC_ASSET}}">{{SRC_ASSET}}</a></span></div>
 <div><b>Checksums</b><span><a href="{{RELEASE_DOWNLOAD}}/SHA256SUMS.txt">SHA256SUMS.txt</a></span></div>
 <div><b>Every release</b><span><a href="{{RELEASE_PAGE_ALL}}">on GitHub</a></span></div>
