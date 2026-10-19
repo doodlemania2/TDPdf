@@ -1,9 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- KillerPDF patch: vendored copy builds ONLY the netstandard2.0 target the app consumes,
+    <!-- KillerPDF patch: vendored copy builds ONLY the one target the app consumes (net8.0 since
+         ImageSharp 4; it was netstandard2.0),
          and never auto-packs a NuGet. -->
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <!-- TDPdf: the consuming app builds x64. Declare matching platforms so MSBuild's dynamic
          platform resolution picks x64 cleanly instead of falling back (which silently dropped
          Configuration to Debug for this ProjectReference). -->
@@ -71,9 +72,13 @@ PdfSharpCore is a partial port of PdfSharp.Xamarin for .NET Core Additionally Mi
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="SharpZipLib" Version="1.4.2" />
-    <!-- KillerPDF patch: 1.0.4 -> 2.1.13, clearing all published security advisories
-         (crafted-image DoS / OOB class). 2.1.x is the last line supporting netstandard2.0. -->
-    <PackageReference Include="SixLabors.ImageSharp" Version="2.1.13" />
+    <!-- TDPdf: 2.1.13 -> 4.1.3 for GHSA-gwg2/j3p4/j9gm/wmxv/jjfr, which no 2.x or 3.x release
+         fixes. 4.x needs net8.0 (hence the TargetFramework above) and checks for a Six Labors
+         licence at build time: Release fails without one. TDPdf's free, assembly-scoped
+         community licence is sixlabors.lic beside this file (Six Labors permits committing it
+         to a public repo); the build finds it by searching this folder. Used under Apache-2.0
+         per the Six Labors Split License's open-source clause. -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="4.1.3" />
     <PackageReference Include="SixLabors.Fonts" Version="1.0.0-beta17" />
   </ItemGroup>
 
