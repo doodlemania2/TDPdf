@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{PAGE_TITLE}}</title>
+<meta name="description" content="{{PAGE_DESCRIPTION}}">
+<link rel="canonical" href="{{CANONICAL}}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="{{SITE_TITLE}}">
+<meta property="og:title" content="{{PAGE_TITLE}}">
+<meta property="og:description" content="{{PAGE_DESCRIPTION}}">
+<meta property="og:url" content="{{CANONICAL}}">
+<meta name="theme-color" content="#1a1a1a">
+<link rel="icon" href="{{LOGO}}" type="image/png">
+<link rel="stylesheet" href="{{CSS}}">
+</head>
+<body class="{{BODY_CLASS}}">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+<div class="site-head-inner">
+<a class="site-logo" href="/"><img src="{{LOGO}}" alt="" width="32" height="32">{{SITE_TITLE}}</a>
+<nav class="site-nav" aria-label="Main"><ul>{{NAV}}</ul></nav>
+</div>
+</header>
+<main id="main" class="site-main">
+{{MAIN}}
+</main>
+<footer class="site-foot">
+<div class="site-foot-inner">
+<span><span class="site-foot-brand">{{SITE_TITLE}}</span> · free software under the GPLv3 · © {{YEAR}} The Doodle Project</span>
+<nav class="site-nav" aria-label="Footer"><ul>{{FOOTER_NAV}}</ul></nav>
+</div>
+</footer>
+</body>
+</html>
