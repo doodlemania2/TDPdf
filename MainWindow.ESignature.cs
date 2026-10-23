@@ -239,7 +239,7 @@ namespace TDPdf
                 return false;
             }
             if (!ConfirmSaveWithPendingRedactions()) return false;
-            if (!ConfirmSaveOverDigitalSignature()) return false;
+            if (!ConfirmSaveOverDigitalSignature(inPlace: true)) return false;
             await SaveInPlaceAsync();
             if (_isDirty)
             {

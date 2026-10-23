@@ -1487,6 +1487,13 @@ namespace TDPdf
             // "Digitally signed" indicator (MainWindow.ESignatureRequests.cs).
             public bool HasDigitalSignature;
 
+            // True when a tool has already stripped this tab's digital signature from the LIVE
+            // document (Redact and in-place text edit normalize _doc before running) while the file
+            // on disk still carries it. The save warning counts signatures in the live document, so
+            // without this Ctrl+S would overwrite the signed original without a word. Cleared by a
+            // successful save, after which the file on disk is unsigned too.
+            public bool SignatureStrippedSinceSave;
+
             // True when this tab's file is, byte for byte, the signed copy TDPdf downloaded for a
             // completed signature request (SHA-256 against documenso-requests.json). Drives the
             // tab's "Signed" chip and the footer's "Signed · TDPdf Signing". Where the file came
@@ -5110,7 +5117,7 @@ namespace TDPdf
             {
                 // Redact the CURRENT document, structural edits and all — not the file on disk,
                 // which may be several rotations and page deletions behind what is on screen.
-                NormalizeDocumentForSave(_doc);
+                NormalizeLiveDocumentForTool();
                 await _pdfDocumentService.SaveAsync(() => _doc!.Save(source), CancellationToken.None);
 
                 TDPdf.Services.PdfRedaction.Result Run() =>
@@ -9211,6 +9218,11 @@ namespace TDPdf
                 "Save && Move", "Cancel",
                 "TDPdf", MessageBoxImage.Question);
             if (res != MessageBoxResult.Yes)
+            {
+                Telemetry.TrackEvent("TabDrag.Blocked", new Dictionary<string, string> { ["Reason"] = "Declined" });
+                return null;
+            }
+            if (!ConfirmSaveWithPendingRedactions() || !ConfirmSaveOverDigitalSignature(inPlace: true))
             {
                 Telemetry.TrackEvent("TabDrag.Blocked", new Dictionary<string, string> { ["Reason"] = "Declined" });
                 return null;

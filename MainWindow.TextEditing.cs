@@ -403,7 +403,7 @@ namespace TDPdf
             {
                 // Against the CURRENT document, structural edits and all — the file on disk may be
                 // several rotations and page deletions behind what is on screen.
-                NormalizeDocumentForSave(_doc);
+                NormalizeLiveDocumentForTool();
                 _doc.Save(source);
 
                 var outcome = TDPdf.Services.PdfTextEdit.Apply(

@@ -161,6 +161,8 @@ namespace TDPdf
                 // chosen for the other file); an internal reload (crop) keeps them but not the fields.
                 ESignDropFieldsForLayoutChange(_ctx);
                 if (!internalReload) _ctx.ESignSession = null;
+                // A different document's file is what is on disk now; a crop reload is still this one.
+                if (!internalReload) _ctx.SignatureStrippedSinceSave = false;
                 _annotations.Clear();
                 ClearFormState();
                 ClearMeasurement();   // a reading about the document that just went away
@@ -1903,7 +1905,7 @@ namespace TDPdf
             // %TEMP%. Route them to Save As. OriginalPath — not _currentFile — is the destination.
             if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
-            if (!ConfirmSaveOverDigitalSignature()) return;
+            if (!ConfirmSaveOverDigitalSignature(inPlace: true)) return;
             await SaveInPlaceAsync();
         }
 
@@ -2025,6 +2027,20 @@ namespace TDPdf
         private static bool IsDegenerateBox(PdfItem? item) =>
             ReadOwnPageBox(item) is { } box && (box.Width < 1 || box.Height < 1);
 
+        /// <summary>
+        /// <see cref="NormalizeDocumentForSave"/> on the LIVE document, for the tools that hand it to
+        /// an external pass (Redact, in-place text edit). The normalization strips any digital
+        /// signature, so record that the file on disk still has one for the save warning.
+        /// </summary>
+        private void NormalizeLiveDocumentForTool()
+        {
+            if (_doc is null) return;
+            if (TDPdf.Services.PdfSignatureScan.SignedFields(_doc).Count > 0
+                || TDPdf.Services.PdfSignatureScan.HasUsageRights(_doc))
+                _ctx.SignatureStrippedSinceSave = true;
+            NormalizeDocumentForSave(_doc);
+        }
+
         // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
         // existing digital signature: its /ByteRange and digest describe the old bytes (ISO 19005-2,
         // 6.4.3 requires the digest to cover the entire file). Carrying the dead signature forward
@@ -2060,12 +2076,31 @@ namespace TDPdf
         /// on disk was already overwritten by the time anyone could notice. Returns false to
         /// abandon the save, in the shape of <see cref="ConfirmSaveWithPendingRedactions"/>.
         /// </remarks>
-        private bool ConfirmSaveOverDigitalSignature()
+        /// <param name="inPlace">
+        /// True when the save writes back over this tab's own file. Only then does a signature that a
+        /// tool already removed from the live document (<see cref="DocumentContext.SignatureStrippedSinceSave"/>)
+        /// still count: it is on disk, and this save is the one that overwrites it. Save As writes a
+        /// new file and leaves the signed original alone.
+        /// </param>
+        private bool ConfirmSaveOverDigitalSignature(bool inPlace = false)
         {
             if (_doc is null) return true;
             int signed = TDPdf.Services.PdfSignatureScan.SignedFields(_doc).Count;
             bool rights = TDPdf.Services.PdfSignatureScan.HasUsageRights(_doc);
-            if (signed == 0 && !rights) return true;
+            if (signed == 0 && !rights)
+            {
+                if (!inPlace || !_ctx.SignatureStrippedSinceSave) return true;
+                // Upstream 1.8.90 asks from the file on disk; this is the same question for the one
+                // case where the live document no longer knows the answer.
+                return TdpDialog.ShowYesNo(this,
+                    "The file on disk carries a digital signature.\n\n" +
+                    "An earlier Redact or text edit has already removed it from the open document, " +
+                    "and saving over the file removes it there too.\n\n" +
+                    "The original file on disk is unchanged until you continue. To keep the signed " +
+                    "original, cancel and use Save As instead.",
+                    "Save anyway", "Cancel",
+                    "Saving Removes the Signature", MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            }
 
             string what = signed > 0
                 ? $"This PDF carries {signed} digital signature{(signed == 1 ? "" : "s")}"
@@ -2149,6 +2184,7 @@ namespace TDPdf
                 SetFileOperationBusy(true, "Saving...");
                 await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
+                _ctx.SignatureStrippedSinceSave = false;   // the file on disk is now unsigned as well
                 if (_ctx.WasProtected)
                 {
                     // #149: the file on disk no longer carries its password — PdfSharpCore writes no
@@ -2323,6 +2359,7 @@ namespace TDPdf
                 // to writing the file they saved away from. Recents keeps its own eligibility gate.
                 _ctx.IsUntitled   = false;
                 _ctx.OriginalPath = targetFile;
+                _ctx.SignatureStrippedSinceSave = false;   // this tab's file is now the unsigned copy
                 SetDisplayName(System.IO.Path.GetFileName(targetFile));
                 if (IsRecentEligiblePath(targetFile)) AddRecentFile(targetFile);
                 if (_ctx.WasProtected)
