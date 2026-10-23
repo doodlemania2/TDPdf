@@ -422,6 +422,7 @@ namespace TDPdf
             closeWinBtn.MouseEnter += (_, _2) => closeWinBtn.Foreground = BrushResource("DangerRed");
             closeWinBtn.MouseLeave += (_, _2) => closeWinBtn.Foreground = BrushResource("TextSecondary");
             closeWinBtn.Click += (_, _2) => win.Close();
+            AutomationProperties.SetName(closeWinBtn, "Close");
             Grid.SetColumn(closeWinBtn, 1);
             titleGrid.Children.Add(titleText);
             titleGrid.Children.Add(closeWinBtn);
@@ -671,6 +672,7 @@ namespace TDPdf
             closeWinBtn.MouseEnter += (_, _2) => closeWinBtn.Foreground = BrushResource("DangerRed");
             closeWinBtn.MouseLeave += (_, _2) => closeWinBtn.Foreground = BrushResource("TextSecondary");
             closeWinBtn.Click += (_, _2) => win.Close();
+            AutomationProperties.SetName(closeWinBtn, "Close");
             Grid.SetColumn(closeWinBtn, 1);
             titleGrid.Children.Add(titleText);
             titleGrid.Children.Add(closeWinBtn);

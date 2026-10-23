@@ -3860,6 +3860,7 @@ namespace TDPdf
             _sidebarCollapsed = collapse;
             _sidebarToggleBtn.Content = collapse ? "\uE76C" : "\uE76B";   // ChevronRight / ChevronLeft (Segoe MDL2)
             _sidebarToggleBtn.ToolTip = collapse ? "Expand sidebar" : "Collapse sidebar";
+            System.Windows.Automation.AutomationProperties.SetName(_sidebarToggleBtn, (string)_sidebarToggleBtn.ToolTip);
             double target = collapse ? SbPx(SidebarStripWidth) : _sidebarExpandedWidth;
 
             // Full screen owns the live column while it is active (it zeroes width AND MinWidth to

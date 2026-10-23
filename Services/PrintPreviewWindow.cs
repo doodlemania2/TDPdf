@@ -342,6 +342,7 @@ namespace TDPdf.Services
                 closeBtn.Cursor          = Cursors.Hand;
             }
             closeBtn.Click += (_, _) => { DialogResult = false; Close(); };
+            System.Windows.Automation.AutomationProperties.SetName(closeBtn, "Close");
             Grid.SetColumn(closeBtn, 1);
 
             titleGrid.Children.Add(titleText);
