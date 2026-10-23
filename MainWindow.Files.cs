@@ -161,6 +161,8 @@ namespace TDPdf
                 // chosen for the other file); an internal reload (crop) keeps them but not the fields.
                 ESignDropFieldsForLayoutChange(_ctx);
                 if (!internalReload) _ctx.ESignSession = null;
+                // A different document's file is what is on disk now; a crop reload is still this one.
+                if (!internalReload) _ctx.SignatureStrippedSinceSave = false;
                 _annotations.Clear();
                 ClearFormState();
                 ClearMeasurement();   // a reading about the document that just went away
@@ -204,7 +206,7 @@ namespace TDPdf
                     _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
                         (Action)ApplyViewModeOnOpen);
                 }
-                var readOnlySuffix = result.OpenedReadOnly ? " (read-only - owner restrictions)" : string.Empty;
+                var readOnlySuffix = result.OpenedReadOnly ? " (read-only: owner restrictions)" : string.Empty;
                 // An owner-restricted file PdfSharpCore could not parse comes back as a PDFium-repaired,
                 // decrypted copy: editable, so it must NOT claim read-only, but say the restriction went.
                 if (result.RestrictionsRemoved)
@@ -212,10 +214,10 @@ namespace TDPdf
                 // A merely malformed file PdfSharpCore refused is reopened the same way (#406). That is
                 // lossless, so it says "repaired" — never the rasterized notice below.
                 else if (result.RepairedByPdfium)
-                    readOnlySuffix = " (repaired - the file's structure was damaged)";
+                    readOnlySuffix = " (repaired: the file's structure was damaged)";
                 if (result.RecoveredFromRaster)
-                    readOnlySuffix = " (recovered - pages rasterized, text not selectable)";
-                SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix} - {_doc.PageCount} page(s)");
+                    readOnlySuffix = " (recovered: pages rasterized, text not selectable)";
+                SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix}, {_doc.PageCount} page(s)");
                 UpdateTabChrome();
 
                 // OriginalPath is the user's document: the in-place save target and the session
@@ -450,7 +452,7 @@ namespace TDPdf
                     {
                         _primaryPageBitmap = null;
                         PageImage.Source = null;
-                        SetStatus($"Page {pageIndex + 1} - could not render");
+                        SetStatus($"Page {pageIndex + 1} could not be rendered");
                         return;
                     }
 
@@ -492,7 +494,7 @@ namespace TDPdf
                 ClearSelection();
                 ClearSecondaryPages();
                 RenderAllAnnotations(pageIndex);
-                SetStatus($"Page {pageIndex + 1} of {_doc.PageCount} - {Zoom.DisplayText}");
+                SetStatus($"Page {pageIndex + 1} of {_doc.PageCount}, {Zoom.DisplayText}");
                 // Defer additional pages until layout has settled so ActualWidth is valid.
                 // RenderPageLinks runs AFTER RenderAdditionalPages so ClearSecondaryPages
                 // inside RenderAdditionalPages doesn't wipe the overlays we just added.
@@ -841,7 +843,7 @@ namespace TDPdf
                 bytes = new FileInfo(path).Length;
             }
             catch { return; }   // a vanished / unreadable file is not worth a dialog
-            FlashStatus($"{System.IO.Path.GetFileName(path)} — {FormatFileSize(bytes)}",
+            FlashStatus($"{System.IO.Path.GetFileName(path)} ({FormatFileSize(bytes)})",
                         holdMs: 2500, life: TimeSpan.FromMilliseconds(2600));
         }
 
@@ -1036,7 +1038,7 @@ namespace TDPdf
             if (failed > 0)
                 SetStatus(dlg.FileNames.Length == 1
                     ? "That file could not be opened."
-                    : $"Opened {dlg.FileNames.Length - failed} of {dlg.FileNames.Length} selected file(s) — {failed} failed.");
+                    : $"Opened {dlg.FileNames.Length - failed} of {dlg.FileNames.Length} selected file(s); {failed} failed.");
         }
 
         private void Merge_Click(object sender, RoutedEventArgs e)
@@ -1055,7 +1057,7 @@ namespace TDPdf
                 // the unsaved annotations are still exactly right and need no remapping. The default
                 // clear used to throw them all away for pages the merge never touched.
                 SaveTempAndReload(keepAnnotations: true);
-                SetStatus($"Merged {dlg.FileNames.Length} file(s) - {_doc?.PageCount} total pages");
+                SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages");
             }
             catch (Exception ex)
             {
@@ -1270,7 +1272,7 @@ namespace TDPdf
             var selected = PageList.SelectedItems;
             if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to extract."); return; }
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save extracted pages as" };
-            if (dlg.ShowDialog() != true) return;
+            if (!ShowPdfSaveDialog(dlg)) return;
             try
             {
                 var indices = new List<int>();
@@ -1322,7 +1324,7 @@ namespace TDPdf
                     doc.Pages.RemoveAt(idx);
                 ApplyPageIndexMap(map);
                 SaveTempAndReload(keepAnnotations: true);
-                SetStatus($"Deleted {indices.Count} page(s) - {_doc?.PageCount} remaining");
+                SetStatus($"Deleted {indices.Count} page(s), {_doc?.PageCount} remaining");
             }
             catch (Exception ex)
             {
@@ -1586,12 +1588,12 @@ namespace TDPdf
                 }
                 if (wPt < MinSidePt || hPt < MinSidePt)
                 {
-                    problem = $"Too small — each side must be at least {MinSidePt / ptPer:0.###} {units[Math.Max(0, unitBox.SelectedIndex)].Name}.";
+                    problem = $"Too small. Each side must be at least {MinSidePt / ptPer:0.###} {units[Math.Max(0, unitBox.SelectedIndex)].Name}.";
                     return false;
                 }
                 if (wPt > MaxSidePt || hPt > MaxSidePt)
                 {
-                    problem = $"Too large — a PDF page cannot exceed {MaxSidePt / ptPer:0.##} {units[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
+                    problem = $"Too large. A PDF page cannot exceed {MaxSidePt / ptPer:0.##} {units[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
                     return false;
                 }
                 problem = string.Empty;
@@ -1903,7 +1905,7 @@ namespace TDPdf
             // %TEMP%. Route them to Save As. OriginalPath — not _currentFile — is the destination.
             if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
-            if (!ConfirmSaveOverDigitalSignature()) return;
+            if (!ConfirmSaveOverDigitalSignature(inPlace: true)) return;
             await SaveInPlaceAsync();
         }
 
@@ -2025,6 +2027,20 @@ namespace TDPdf
         private static bool IsDegenerateBox(PdfItem? item) =>
             ReadOwnPageBox(item) is { } box && (box.Width < 1 || box.Height < 1);
 
+        /// <summary>
+        /// <see cref="NormalizeDocumentForSave"/> on the LIVE document, for the tools that hand it to
+        /// an external pass (Redact, in-place text edit). The normalization strips any digital
+        /// signature, so record that the file on disk still has one for the save warning.
+        /// </summary>
+        private void NormalizeLiveDocumentForTool()
+        {
+            if (_doc is null) return;
+            if (TDPdf.Services.PdfSignatureScan.SignedFields(_doc).Count > 0
+                || TDPdf.Services.PdfSignatureScan.HasUsageRights(_doc))
+                _ctx.SignatureStrippedSinceSave = true;
+            NormalizeDocumentForSave(_doc);
+        }
+
         // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
         // existing digital signature: its /ByteRange and digest describe the old bytes (ISO 19005-2,
         // 6.4.3 requires the digest to cover the entire file). Carrying the dead signature forward
@@ -2060,12 +2076,31 @@ namespace TDPdf
         /// on disk was already overwritten by the time anyone could notice. Returns false to
         /// abandon the save, in the shape of <see cref="ConfirmSaveWithPendingRedactions"/>.
         /// </remarks>
-        private bool ConfirmSaveOverDigitalSignature()
+        /// <param name="inPlace">
+        /// True when the save writes back over this tab's own file. Only then does a signature that a
+        /// tool already removed from the live document (<see cref="DocumentContext.SignatureStrippedSinceSave"/>)
+        /// still count: it is on disk, and this save is the one that overwrites it. Save As writes a
+        /// new file and leaves the signed original alone.
+        /// </param>
+        private bool ConfirmSaveOverDigitalSignature(bool inPlace = false)
         {
             if (_doc is null) return true;
             int signed = TDPdf.Services.PdfSignatureScan.SignedFields(_doc).Count;
             bool rights = TDPdf.Services.PdfSignatureScan.HasUsageRights(_doc);
-            if (signed == 0 && !rights) return true;
+            if (signed == 0 && !rights)
+            {
+                if (!inPlace || !_ctx.SignatureStrippedSinceSave) return true;
+                // Upstream 1.8.90 asks from the file on disk; this is the same question for the one
+                // case where the live document no longer knows the answer.
+                return TdpDialog.ShowYesNo(this,
+                    "The file on disk carries a digital signature.\n\n" +
+                    "An earlier Redact or text edit has already removed it from the open document, " +
+                    "and saving over the file removes it there too.\n\n" +
+                    "The original file on disk is unchanged until you continue. To keep the signed " +
+                    "original, cancel and use Save As instead.",
+                    "Save anyway", "Cancel",
+                    "Saving Removes the Signature", MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            }
 
             string what = signed > 0
                 ? $"This PDF carries {signed} digital signature{(signed == 1 ? "" : "s")}"
@@ -2075,8 +2110,8 @@ namespace TDPdf
             var answer = TdpDialog.ShowYesNo(this,
                 $"{what}.\n\n" +
                 "Saving rewrites the whole file, which leaves any signature covering bytes that no " +
-                "longer exist. TDPdf removes it rather than writing one that fails to validate — a " +
-                "broken signature looks like the document was tampered with, an unsigned one only " +
+                "longer exist. TDPdf removes it rather than writing one that fails to validate, because a " +
+                "broken signature looks like the document was tampered with, while an unsigned one only " +
                 "looks unsigned.\n\n" +
                 "The original file on disk is unchanged until you continue. To keep the signature, " +
                 "cancel and work on a copy instead.",
@@ -2135,12 +2170,12 @@ namespace TDPdf
 
                     doc = await RestoreDocumentAsync(doc, tempClean, CancellationToken.None);
                     saveError?.Throw();
-                    status = $"Saved — {System.IO.Path.GetFileName(targetFile)}";
+                    status = $"Saved {System.IO.Path.GetFileName(targetFile)}";
                 }
                 else
                 {
                     await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
-                    status = $"Saved — {System.IO.Path.GetFileName(targetFile)}";
+                    status = $"Saved {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
 
@@ -2149,6 +2184,7 @@ namespace TDPdf
                 SetFileOperationBusy(true, "Saving...");
                 await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
+                _ctx.SignatureStrippedSinceSave = false;   // the file on disk is now unsigned as well
                 if (_ctx.WasProtected)
                 {
                     // #149: the file on disk no longer carries its password — PdfSharpCore writes no
@@ -2157,7 +2193,7 @@ namespace TDPdf
                     // here on this tab's file is unprotected.
                     _ctx.WasProtected = false;
                     status = removingPassword
-                        ? $"Password protection removed — {System.IO.Path.GetFileName(targetFile)}"
+                        ? $"Password protection removed from {System.IO.Path.GetFileName(targetFile)}"
                         : status + " (password protection removed)";
                 }
                 SetStatus(status);
@@ -2217,6 +2253,35 @@ namespace TDPdf
             UpdateESignatureMenu();   // MainWindow.ESignature.cs
         }
 
+        /// <summary>
+        /// Shows a Save dialog for a PDF and makes sure the chosen name ends in <c>.pdf</c>.
+        /// </summary>
+        /// <remarks>
+        /// Upstream #450. The Windows dialog adds the filter's extension only to a name that has
+        /// none, so "report.v2" or "scan.jpg" saved a PDF under that name — a file nothing would
+        /// open as a PDF, and the dotted name is a common one. The extension is appended rather
+        /// than substituted, so "report.v2" becomes "report.v2.pdf". The dialog's own overwrite
+        /// prompt was for the name as typed, so when the corrected name exists the question is
+        /// asked again here, and "No" goes back to the dialog.
+        /// </remarks>
+        private bool ShowPdfSaveDialog(SaveFileDialog dlg, Window? owner = null)
+        {
+            owner ??= this;
+            while (true)
+            {
+                if (dlg.ShowDialog(owner) != true) return false;
+                string name = dlg.FileName;
+                if (name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) return true;
+                string corrected = name + ".pdf";
+                dlg.FileName = corrected;
+                if (!File.Exists(corrected)) return true;
+                if (TdpDialog.Show(owner,
+                        $"{System.IO.Path.GetFileName(corrected)} already exists.\nDo you want to replace it?",
+                        "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                    return true;
+            }
+        }
+
         private async void SaveAs_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
@@ -2236,7 +2301,7 @@ namespace TDPdf
                     dlg.FileName = System.IO.Path.GetFileName(seed);
             }
             catch { /* malformed seed path — just open the dialog with its defaults */ }
-            if (dlg.ShowDialog() != true) return;
+            if (!ShowPdfSaveDialog(dlg)) return;
             using var op = Telemetry.StartOperation("SaveAs");
             string targetFile = dlg.FileName;
             string status = "";
@@ -2294,6 +2359,7 @@ namespace TDPdf
                 // to writing the file they saved away from. Recents keeps its own eligibility gate.
                 _ctx.IsUntitled   = false;
                 _ctx.OriginalPath = targetFile;
+                _ctx.SignatureStrippedSinceSave = false;   // this tab's file is now the unsigned copy
                 SetDisplayName(System.IO.Path.GetFileName(targetFile));
                 if (IsRecentEligiblePath(targetFile)) AddRecentFile(targetFile);
                 if (_ctx.WasProtected)
@@ -2333,7 +2399,7 @@ namespace TDPdf
             if (!ConfirmSaveOverDigitalSignature()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
-            if (dlg.ShowDialog() != true) return;
+            if (!ShowPdfSaveDialog(dlg)) return;
             using var op = Telemetry.StartOperation("SaveFlattened");
             SetFileOperationBusy(true, "Flattening...");
             string targetFile = dlg.FileName;
@@ -2580,7 +2646,9 @@ namespace TDPdf
                     pageSizes.Add(new Size(w, h));
                 }
 
-                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0);
+                // Form values typed since the last save count too, as they do for every other output
+                // path: without them a filled-in form printed its old values (upstream 1.8.81).
+                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 if (hasAnnotations)
                 {
@@ -2665,7 +2733,7 @@ namespace TDPdf
             {
                 // Nothing could reopen the pre-print copy. Keep the live document (which now has the
                 // annotations burned in) rather than throwing out of Print_Click's finally block.
-                SetStatus("Printed - the pre-print copy could not be reloaded; use Save As to keep your work");
+                SetStatus("Printed, but the pre-print copy could not be reloaded. Use Save As to keep your work.");
                 return;
             }
 

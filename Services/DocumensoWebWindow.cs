@@ -278,7 +278,7 @@ namespace TDPdf.Services
                             break;
                         default:
                             if (fromCompletePage)
-                                Say($"Your part is done. {inputs.Host} seals the signed copy once everyone has signed — TDPdf will notice while this window is open.", "AccentGreen");
+                                Say($"Your part is done. {inputs.Host} seals the signed copy once everyone has signed, and TDPdf will notice while this window is open.", "AccentGreen");
                             break;
                     }
                 }
@@ -302,7 +302,7 @@ namespace TDPdf.Services
             {
                 completed = env;
                 poll.Stop();
-                Say($"Signed. {inputs.Host} has sealed the signed copy. Keep the downloaded file as your signed original — saving it again in TDPdf removes the signature.", "AccentGreen");
+                Say($"Signed. {inputs.Host} has sealed the signed copy. Keep the downloaded file as your signed original, because saving it again in TDPdf removes the signature.", "AccentGreen");
                 downloadBtn.Visibility = inputs.DownloadSignedAsync is null ? Visibility.Collapsed : Visibility.Visible;
                 openBtn.Visibility = inputs.DownloadSignedAsync is null || inputs.OpenAsync is null ? Visibility.Collapsed : Visibility.Visible;
                 openBtn.IsEnabled = savedPath is not null;
@@ -334,7 +334,7 @@ namespace TDPdf.Services
                         Say("This signing link has expired. Ask the sender to resend it.", "WarningOrange");
                         break;
                     case DocumensoWebPage.SigningWaiting:
-                        Say("It isn't your turn to sign yet — someone earlier in the signing order still has to.", "TextSecondary");
+                        Say("It isn't your turn to sign yet. Someone earlier in the signing order still has to.", "TextSecondary");
                         break;
                     case DocumensoWebPage.SignIn when inputs.Request.Purpose != DocumensoWebPurpose.Sign:
                         if (completed is null)

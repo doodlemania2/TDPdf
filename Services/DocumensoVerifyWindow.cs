@@ -97,7 +97,7 @@ namespace TDPdf.Services
                     {
                         Say(ex.Failure switch
                         {
-                            DocumensoFailure.AuthRejected => $"{host} rejected your sign-in — it may have expired. Connect again, then try again.",
+                            DocumensoFailure.AuthRejected => $"{host} rejected your sign-in, which may have expired. Connect again, then try again.",
                             DocumensoFailure.Network or DocumensoFailure.Timeout => $"Could not reach {host}. Check your connection and try again.",
                             DocumensoFailure.NotFound => $"{host} no longer has that request.",
                             DocumensoFailure.RateLimited => $"{host} is busy. Wait a minute and try again.",

@@ -228,7 +228,7 @@ namespace TDPdf
                 "Save and continue", "Cancel", "Electronic Signature", MessageBoxImage.Question);
             if (answer != MessageBoxResult.Yes)
             {
-                SetStatus("Not sent — the document has unsaved changes.");
+                SetStatus("Not sent because the document has unsaved changes.");
                 return false;
             }
             if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath))
@@ -239,7 +239,7 @@ namespace TDPdf
                 return false;
             }
             if (!ConfirmSaveWithPendingRedactions()) return false;
-            if (!ConfirmSaveOverDigitalSignature()) return false;
+            if (!ConfirmSaveOverDigitalSignature(inPlace: true)) return false;
             await SaveInPlaceAsync();
             if (_isDirty)
             {
@@ -355,7 +355,7 @@ namespace TDPdf
             string why = res.Cancelled ? "Cancelled."
                 : f?.Failure switch
                 {
-                    DocumensoFailure.AuthRejected => $"{host} rejected your sign-in — it may have expired. Connect again in Settings ▸ Electronic signature.",
+                    DocumensoFailure.AuthRejected => $"{host} rejected your sign-in, which may have expired. Connect again in Settings ▸ Electronic signature.",
                     DocumensoFailure.Network or DocumensoFailure.Timeout => $"Could not reach {host}. Check your connection and try again.",
                     DocumensoFailure.RateLimited => $"{host} is busy. Wait a minute and try again.",
                     DocumensoFailure.Rejected when f.ErrorCode == "MISSING_SIGNATURE_FIELD" => "Every signer needs a Signature field.",
@@ -365,7 +365,7 @@ namespace TDPdf
                     _ => "Something went wrong.",
                 };
             return res.RolledBack == false
-                ? $"{why} Nothing was sent, but an unsent draft could not be removed — delete it on {host}."
+                ? $"{why} Nothing was sent, but an unsent draft could not be removed. Delete it on {host}."
                 : $"{why} Nothing was sent.";
         }
 
@@ -663,8 +663,8 @@ namespace TDPdf
             {
                 var cert = await anonymous.GetCertificateStatusAsync(ct);
                 lines.Add(cert.IsAvailable
-                    ? ("Sealing: ready — completed documents are digitally sealed.", "AccentGreen")
-                    : ("Sealing: the service is reachable but cannot yet seal documents — signing requests will not complete.", "WarningOrange"));
+                    ? ("Sealing: ready. Completed documents are digitally sealed.", "AccentGreen")
+                    : ("Sealing: the service is reachable but cannot yet seal documents, so signing requests will not complete.", "WarningOrange"));
             }
             catch (DocumensoApiException ex)
             {
@@ -674,7 +674,7 @@ namespace TDPdf
             string? token = DocumensoCredentialStore.TryLoadToken(baseUrl);
             if (token is null)
             {
-                lines.Add(("Your sign-in: not connected — connect to check it.", "TextSecondary"));
+                lines.Add(("Your sign-in: not connected. Connect to check it.", "TextSecondary"));
                 return lines;
             }
             try
@@ -685,7 +685,7 @@ namespace TDPdf
             }
             catch (DocumensoApiException ex) when (ex.Failure == DocumensoFailure.AuthRejected)
             {
-                lines.Add(($"Your sign-in: {host} rejected it — it may have expired. Connect again to continue.", "DangerRed"));
+                lines.Add(($"Your sign-in: {host} rejected it. It may have expired, so connect again to continue.", "DangerRed"));
             }
             catch (DocumensoApiException ex)
             {

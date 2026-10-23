@@ -31,7 +31,7 @@ namespace TDPdf
             if (!ESignRequireDocument()) return;
             if (ESignOnDiskPath() is not { } path)
             {
-                SetStatus("Save the document first — Verify Signatures reads the file on disk.");
+                SetStatus("Save the document first. Verify Signatures reads the file on disk.");
                 return;
             }
             var ctx = _ctx;

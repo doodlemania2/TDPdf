@@ -1267,7 +1267,7 @@
                 </Grid>
                 <!-- File operations -->
                     <Button Content="&#xE7C3;" Style="{StaticResource ToolbarButton}" Click="New_Click" ToolTip="New Blank Document (Ctrl+N)" KeyboardNavigation.TabIndex="3" AutomationProperties.Name="New blank document" AutomationProperties.HelpText="Create a single blank A4 page as a new document. Shortcut Ctrl+N." AutomationProperties.AccessKey="N"/>
-                    <Button x:Name="OpenBtn" Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O) — right-click for recent files" KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
+                    <Button x:Name="OpenBtn" Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O). Right-click for recent files." KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
                     <Button x:Name="CloseFileBtn" Content="&#xE711;" Style="{StaticResource ToolbarButton}" Click="CloseFile_Click" ToolTip="Close File (Ctrl+W, Alt+W)" IsEnabled="False" KeyboardNavigation.TabIndex="5" AutomationProperties.Name="Close file" AutomationProperties.HelpText="Close the current PDF and return to the start view. Shortcut Ctrl+W. Access key Alt+W." AutomationProperties.AccessKey="W" AutomationProperties.LabeledBy="{Binding ElementName=CloseFileButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE710;" Style="{StaticResource ToolbarButton}" Click="Merge_Click" ToolTip="Merge PDFs (Alt+M)" KeyboardNavigation.TabIndex="6" AutomationProperties.Name="Merge PDFs" AutomationProperties.HelpText="Combine additional PDFs into this document. Access key Alt+M." AutomationProperties.AccessKey="M" AutomationProperties.LabeledBy="{Binding ElementName=MergeButtonLabel}"/>
@@ -1277,7 +1277,7 @@
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE74A;" Style="{StaticResource ToolbarButton}" Click="MoveUp_Click" ToolTip="Move Page Up (Alt+U)" KeyboardNavigation.TabIndex="9" AutomationProperties.Name="Move page up" AutomationProperties.HelpText="Move the selected page earlier in the document. Access key Alt+U." AutomationProperties.AccessKey="U" AutomationProperties.LabeledBy="{Binding ElementName=MoveUpButtonLabel}"/>
                     <Button Content="&#xE74B;" Style="{StaticResource ToolbarButton}" Click="MoveDown_Click" ToolTip="Move Page Down (Alt+N)" KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Move page down" AutomationProperties.HelpText="Move the selected page later in the document. Access key Alt+N." AutomationProperties.AccessKey="N" AutomationProperties.LabeledBy="{Binding ElementName=MoveDownButtonLabel}"/>
-                    <Button x:Name="RotateBtn" Content="&#xE7AD;" Style="{StaticResource ToolbarButton}" Click="RotateBtn_Click" MouseRightButtonUp="RotateBtn_RightButtonUp" ToolTip="Rotate Selected Pages Clockwise — right-click for counter-clockwise / fine rotate" KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Rotate selected pages" AutomationProperties.HelpText="Rotate the selected page(s) 90 degrees clockwise. Right-click for counter-clockwise or a fine-angle transform." AutomationProperties.LabeledBy="{Binding ElementName=RotateButtonLabel}"/>
+                    <Button x:Name="RotateBtn" Content="&#xE7AD;" Style="{StaticResource ToolbarButton}" Click="RotateBtn_Click" MouseRightButtonUp="RotateBtn_RightButtonUp" ToolTip="Rotate Selected Pages Clockwise. Right-click for counter-clockwise or fine rotate." KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Rotate selected pages" AutomationProperties.HelpText="Rotate the selected page(s) 90 degrees clockwise. Right-click for counter-clockwise or a fine-angle transform." AutomationProperties.LabeledBy="{Binding ElementName=RotateButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button x:Name="SaveAsBtn" Content="&#xE74E;" Style="{StaticResource ToolbarButtonAccent}" Click="SaveAs_Click" ToolTip="Save As (Ctrl+Shift+S, Alt+S)" KeyboardNavigation.TabIndex="11" AutomationProperties.Name="Save as" AutomationProperties.HelpText="Save the PDF with annotations to a new file. Shortcut Ctrl+Shift+S. Access key Alt+S." AutomationProperties.AccessKey="S" AutomationProperties.LabeledBy="{Binding ElementName=SaveAsButtonLabel}"/>
                     <Button Content="&#xE8B9;" Style="{StaticResource ToolbarButton}" Click="SaveFlattened_Click" ToolTip="Save Flattened PDF (Alt+F)" KeyboardNavigation.TabIndex="12" AutomationProperties.Name="Save flattened PDF" AutomationProperties.HelpText="Rasterize all pages and save a fully uneditable PDF. Access key Alt+F." AutomationProperties.AccessKey="F" AutomationProperties.LabeledBy="{Binding ElementName=SaveFlattenedButtonLabel}"/>
@@ -1292,17 +1292,17 @@
                      strip left to right — 1 at the Text tool through 0 at the Eraser — while Select,
                      Pan, Signature and Crop are letter-only (see OnPreviewKeyDown). -->
                     <Button x:Name="ToolSelectBtn" Content="&#xE8B3;" Style="{StaticResource ToolbarButton}" Click="ToolSelect_Click" ToolTip="Select Tool (V, Alt+Q)" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Select tool" AutomationProperties.HelpText="Select annotations, drag to select text, or double-click text to edit. Shortcut V. Access key Alt+Q." AutomationProperties.AccessKey="Q" AutomationProperties.LabeledBy="{Binding ElementName=SelectToolButtonLabel}"/>
-                    <Button x:Name="ToolPanBtn" Content="&#xE7C9;" Style="{StaticResource ToolbarButton}" Click="ToolPan_Click" ToolTip="Pan / Hand Tool (P) — drag the page; middle-click to pan in any tool" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Pan tool" AutomationProperties.HelpText="Drag the page to scroll. Middle-mouse drag also pans while any tool is active. Shortcut P."/>
+                    <Button x:Name="ToolPanBtn" Content="&#xE7C9;" Style="{StaticResource ToolbarButton}" Click="ToolPan_Click" ToolTip="Pan / Hand Tool (P): drag the page. Middle-click to pan in any tool." KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Pan tool" AutomationProperties.HelpText="Drag the page to scroll. Middle-mouse drag also pans while any tool is active. Shortcut P."/>
                     <Button x:Name="ToolTextBtn" Content="&#xE8D2;" Style="{StaticResource ToolbarButton}" Click="ToolText_Click" ToolTip="Text Tool (1 or T, Alt+T)" KeyboardNavigation.TabIndex="15" AutomationProperties.Name="Text tool" AutomationProperties.HelpText="Click the page to add text. Shortcut 1 or T. Access key Alt+T." AutomationProperties.AccessKey="T" AutomationProperties.LabeledBy="{Binding ElementName=TextToolButtonLabel}"/>
                     <Button x:Name="ToolEditTextBtn" Content="&#xE104;" Style="{StaticResource ToolbarButton}" Click="ToolEditText_Click" ToolTip="Edit Existing Text (2 or X)" KeyboardNavigation.TabIndex="16" AutomationProperties.Name="Edit existing text tool" AutomationProperties.HelpText="Click a PDF text run to white-out and redraw it. Shortcut 2 or X." AutomationProperties.LabeledBy="{Binding ElementName=EditTextToolButtonLabel}"/>
                     <Button x:Name="ToolEditImageBtn" Content="&#xEB9F;" Style="{StaticResource ToolbarButton}" Click="ToolEditImage_Click" ToolTip="Edit Existing Image (3)" KeyboardNavigation.TabIndex="17" AutomationProperties.Name="Edit existing image tool" AutomationProperties.HelpText="Click a PDF image to replace, delete, or resize it. Shortcut 3." AutomationProperties.LabeledBy="{Binding ElementName=EditImageToolButtonLabel}"/>
                     <Button x:Name="ToolImageBtn" Content="&#xE91B;" Style="{StaticResource ToolbarButton}" Click="ToolImage_Click" ToolTip="Insert Image (4 or I, Alt+I)" KeyboardNavigation.TabIndex="18" AutomationProperties.Name="Insert image tool" AutomationProperties.HelpText="Click the page to insert a PNG/JPG/BMP/GIF/TIFF as a resizable annotation. Shortcut 4 or I. Access key Alt+I." AutomationProperties.AccessKey="I"/>
                     <Button x:Name="ToolHighlightBtn" Content="&#xED56;" Style="{StaticResource ToolbarButton}" Click="ToolHighlight_Click" ToolTip="Highlight Tool (5 or H, Alt+H)" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Highlight tool" AutomationProperties.HelpText="Drag on the page to add a highlight. Shortcut 5 or H. Access key Alt+H." AutomationProperties.AccessKey="H" AutomationProperties.LabeledBy="{Binding ElementName=HighlightToolButtonLabel}"/>
-                    <Button x:Name="ToolStrikeBtn" Content="&#xEDE0;" Style="{StaticResource ToolbarButton}" Click="ToolStrike_Click" ToolTip="Strikethrough (6 or K) — drag across text" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Strikethrough tool" AutomationProperties.HelpText="Drag across words on the page to strike them through. The markup follows the text, hugging each line. Shortcut 6 or K." AutomationProperties.LabeledBy="{Binding ElementName=StrikeToolButtonLabel}"/>
-                    <Button x:Name="ToolUnderlineBtn" Content="&#xE8DC;" Style="{StaticResource ToolbarButton}" Click="ToolUnderline_Click" ToolTip="Underline (7 or U) — drag across text" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Underline tool" AutomationProperties.HelpText="Drag across words on the page to underline them. The markup follows the text, hugging each line. Shortcut 7 or U." AutomationProperties.LabeledBy="{Binding ElementName=UnderlineToolButtonLabel}"/>
-                    <Button x:Name="ToolShapeBtn" Content="&#xF158;" Style="{StaticResource ToolbarButton}" Click="ToolShape_Click" ToolTip="Shape Tool (8 or S) — rectangle / ellipse / line / freeform polygon with stroke and fill" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Shape tool" AutomationProperties.HelpText="Drag on the page to draw a rectangle, ellipse, or line, or pick the polygon sub-mode and click to place each point. Shortcut 8 or S."/>
+                    <Button x:Name="ToolStrikeBtn" Content="&#xEDE0;" Style="{StaticResource ToolbarButton}" Click="ToolStrike_Click" ToolTip="Strikethrough (6 or K): drag across text" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Strikethrough tool" AutomationProperties.HelpText="Drag across words on the page to strike them through. The markup follows the text, hugging each line. Shortcut 6 or K." AutomationProperties.LabeledBy="{Binding ElementName=StrikeToolButtonLabel}"/>
+                    <Button x:Name="ToolUnderlineBtn" Content="&#xE8DC;" Style="{StaticResource ToolbarButton}" Click="ToolUnderline_Click" ToolTip="Underline (7 or U): drag across text" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Underline tool" AutomationProperties.HelpText="Drag across words on the page to underline them. The markup follows the text, hugging each line. Shortcut 7 or U." AutomationProperties.LabeledBy="{Binding ElementName=UnderlineToolButtonLabel}"/>
+                    <Button x:Name="ToolShapeBtn" Content="&#xF158;" Style="{StaticResource ToolbarButton}" Click="ToolShape_Click" ToolTip="Shape Tool (8 or S): rectangle, ellipse, line or freeform polygon with stroke and fill" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Shape tool" AutomationProperties.HelpText="Drag on the page to draw a rectangle, ellipse, or line, or pick the polygon sub-mode and click to place each point. Shortcut 8 or S."/>
                     <Button x:Name="ToolDrawBtn" Content="&#xED63;" Style="{StaticResource ToolbarButton}" Click="ToolDraw_Click" ToolTip="Draw Tool (9 or D, Alt+R)" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Draw tool" AutomationProperties.HelpText="Draw freehand ink on the page. Shortcut 9 or D. Access key Alt+R." AutomationProperties.AccessKey="R" AutomationProperties.LabeledBy="{Binding ElementName=DrawToolButtonLabel}"/>
-                    <Button x:Name="ToolEraseBtn" Content="&#xE75C;" Style="{StaticResource ToolbarButton}" Click="ToolErase_Click" ToolTip="Eraser (0 or E) — click an annotation to remove it" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Eraser tool" AutomationProperties.HelpText="Click an annotation to delete it. Shortcut 0 or E."/>
+                    <Button x:Name="ToolEraseBtn" Content="&#xE75C;" Style="{StaticResource ToolbarButton}" Click="ToolErase_Click" ToolTip="Eraser (0 or E): click an annotation to remove it" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Eraser tool" AutomationProperties.HelpText="Click an annotation to delete it. Shortcut 0 or E."/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature Picture (G, Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature Picture tool" AutomationProperties.HelpText="Create and place a picture of your signature. Shortcut G. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
                     <Button x:Name="ToolCropBtn" Content="&#xE7A8;" Style="{StaticResource ToolbarButton}" Click="ToolCrop_Click" ToolTip="Crop pages (C, Alt+C)" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Crop tool" AutomationProperties.HelpText="Drag a rectangle on the page, then apply the crop. Shortcut C. Access key Alt+C." AutomationProperties.AccessKey="C" AutomationProperties.LabeledBy="{Binding ElementName=CropToolButtonLabel}"/>
@@ -1310,7 +1310,7 @@
                          MeasureRulerGeometry resource for why. The stroke binds to the button's own
                          Foreground so SetTool's active-tool highlight (AccentGreen) and every theme
                          switch reach it without this button needing to know about either. -->
-                    <Button x:Name="ToolMeasureBtn" Style="{StaticResource ToolbarButton}" Click="ToolMeasure_Click" ToolTip="Measure (M) — drag to measure a distance in inches, millimetres and points" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Measure tool" AutomationProperties.HelpText="Drag from one point on the page to another to read the distance between them in inches, millimetres and PDF points. Nothing is added to the document. Shortcut M.">
+                    <Button x:Name="ToolMeasureBtn" Style="{StaticResource ToolbarButton}" Click="ToolMeasure_Click" ToolTip="Measure (M): drag to measure a distance in inches, millimetres and points" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Measure tool" AutomationProperties.HelpText="Drag from one point on the page to another to read the distance between them in inches, millimetres and PDF points. Nothing is added to the document. Shortcut M.">
                         <Path Data="{StaticResource MeasureRulerGeometry}"
                               Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                               StrokeThickness="1.2" StrokeLineJoin="Round" Fill="{x:Null}"
@@ -1319,8 +1319,8 @@
                     <!-- Redaction is destructive and irreversible, so it wears the danger chrome
                          rather than the ordinary tool chrome: it is the only edit tool that removes
                          content from the file outright. -->
-                    <Button x:Name="ToolFormBtn" Content="&#xE8FD;" Style="{StaticResource ToolbarButton}" Click="ToolForm_Click" ToolTip="Form fields (F) — add text boxes, check boxes, dropdowns and signature fields" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Form field tool" AutomationProperties.HelpText="Choose a field type, then drag on the page to place it. Shortcut F."/>
-                    <Button x:Name="ToolRedactBtn" Content="&#xE73B;" Style="{StaticResource ToolbarButtonDanger}" Click="ToolRedact_Click" ToolTip="Redact (R) — permanently remove content from the file" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Redact tool" AutomationProperties.HelpText="Drag rectangles over the content to destroy, then Apply. Redaction deletes the underlying text and images from the PDF and cannot be undone. Shortcut R."/>
+                    <Button x:Name="ToolFormBtn" Content="&#xE8FD;" Style="{StaticResource ToolbarButton}" Click="ToolForm_Click" ToolTip="Form fields (F): add text boxes, check boxes, dropdowns and signature fields" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Form field tool" AutomationProperties.HelpText="Choose a field type, then drag on the page to place it. Shortcut F."/>
+                    <Button x:Name="ToolRedactBtn" Content="&#xE73B;" Style="{StaticResource ToolbarButtonDanger}" Click="ToolRedact_Click" ToolTip="Redact (R): permanently remove content from the file" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Redact tool" AutomationProperties.HelpText="Drag rectangles over the content to destroy, then Apply. Redaction deletes the underlying text and images from the PDF and cannot be undone. Shortcut R."/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE7A7;" Style="{StaticResource ToolbarButton}" Click="Undo_Click" ToolTip="Undo Last (Ctrl+Z, Alt+Z)" KeyboardNavigation.TabIndex="23" AutomationProperties.Name="Undo last annotation" AutomationProperties.HelpText="Undo the last annotation change. Shortcut Ctrl+Z. Access key Alt+Z." AutomationProperties.AccessKey="Z" AutomationProperties.LabeledBy="{Binding ElementName=UndoButtonLabel}"/>
                     <Button Content="&#xED62;" Style="{StaticResource ToolbarButtonDanger}" Click="ClearAnnotations_Click" ToolTip="Clear All Annotations (Alt+L)" KeyboardNavigation.TabIndex="24" AutomationProperties.Name="Clear all annotations" AutomationProperties.HelpText="Clear all annotations on the current page. Access key Alt+L." AutomationProperties.AccessKey="L" AutomationProperties.LabeledBy="{Binding ElementName=ClearAnnotationsButtonLabel}"/>
@@ -1517,6 +1517,7 @@
                     <Grid>
                         <Button x:Name="SidebarToggleBtn"
                                 Content="&#xE76B;" ToolTip="Collapse sidebar"
+                                AutomationProperties.Name="Collapse sidebar"
                                 Style="{StaticResource ToolbarButton}"
                                 Width="24" Padding="0" FontSize="10"
                                 VerticalAlignment="Top" Margin="0,6,0,0"
@@ -1716,7 +1717,7 @@
                              Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
                              FontFamily="Consolas" FontSize="10" Visibility="Collapsed"
                              Click="PageSizeReadout_Click"
-                             ToolTip="Page size — click to cycle pixels, inches, millimetres and points"
+                             ToolTip="Page size. Click to cycle pixels, inches, millimetres and points."
                              AutomationProperties.Name="Current page size"
                              AutomationProperties.HelpText="The current page's dimensions. Click to cycle the units between pixels, inches, millimetres and points."/>
                     <!-- App-wide UI scale (AppScale.cs), deliberately sat next to the page-zoom
@@ -1729,7 +1730,7 @@
                              Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
                              FontFamily="Consolas" FontSize="10"
                              Click="AppScaleReset_Click" MouseWheel="LogoBar_MouseWheel"
-                             ToolTip="App size — scroll to resize the menu, toolbar, tab strip and sidebar; click to reset to 100% (Ctrl+Shift+0)"
+                             ToolTip="App size. Scroll to resize the menu, toolbar, tab strip and sidebar, or click to reset to 100% (Ctrl+Shift+0)."
                              AutomationProperties.Name="App size"
                              AutomationProperties.HelpText="Scales the application chrome between 70 and 250 percent. Scroll the mouse wheel to change it, or press Control Shift Plus and Control Shift Minus. Click to reset. The document page keeps its own zoom."/>
                     <Button x:Name="StatusZoomButton" Content="{Binding Zoom.DisplayText, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -1738,7 +1739,7 @@
                              Click="ResetZoom_Click" ToolTip="Reset zoom to 100% (Ctrl+0)" AutomationProperties.Name="Current zoom" AutomationProperties.HelpText="Reset zoom to 100 percent. Shortcut Control zero."/>
                     <Button Click="ShortcutHelp_Click"
                             Cursor="Hand" VerticalAlignment="Center"
-                            Margin="0,0,12,0" FocusVisualStyle="{x:Null}"
+                            Margin="0,0,12,0" FocusVisualStyle="{StaticResource VisibleFocusVisual}"
                             ToolTip="Keyboard shortcuts (Ctrl+?)"
                             AutomationProperties.Name="Keyboard shortcuts"
                             AutomationProperties.HelpText="Show the keyboard shortcut overlay. Shortcut Control question mark.">
@@ -1791,7 +1792,7 @@
                         <StackPanel Orientation="Horizontal"
                                     HorizontalAlignment="Center" VerticalAlignment="Center">
                             <Button x:Name="KsViewListBtn" Content="LIST" Click="KsViewList_Click"
-                                    Cursor="Hand" FocusVisualStyle="{x:Null}"
+                                    Cursor="Hand" FocusVisualStyle="{StaticResource VisibleFocusVisual}"
                                     FontFamily="Consolas" FontSize="11" FontWeight="SemiBold"
                                     Foreground="{DynamicResource AccentGreen}"
                                     AutomationProperties.Name="Show shortcuts as a list">
@@ -1805,7 +1806,7 @@
                                        FontFamily="Consolas" FontSize="11"
                                        Foreground="{DynamicResource TextMuted}"/>
                             <Button x:Name="KsViewKeyboardBtn" Content="KEYBOARD" Click="KsViewKeyboard_Click"
-                                    Cursor="Hand" FocusVisualStyle="{x:Null}"
+                                    Cursor="Hand" FocusVisualStyle="{StaticResource VisibleFocusVisual}"
                                     FontFamily="Consolas" FontSize="11" FontWeight="SemiBold"
                                     Foreground="{DynamicResource TextSecondary}"
                                     AutomationProperties.Name="Show shortcuts on a keyboard">
@@ -1819,7 +1820,7 @@
 
                         <Button Click="ShortcutOverlayClose_Click"
                                 HorizontalAlignment="Right" VerticalAlignment="Center"
-                                Cursor="Hand" FocusVisualStyle="{x:Null}"
+                                Cursor="Hand" FocusVisualStyle="{StaticResource VisibleFocusVisual}"
                                 Width="24" Height="24"
                                 AutomationProperties.Name="Close keyboard shortcuts">
                             <Button.Template>

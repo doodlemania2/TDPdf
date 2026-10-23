@@ -297,7 +297,7 @@ namespace TDPdf.Services
                     var line = new Grid { Margin = new Thickness(12, 0, 0, 1) };
                     line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                     line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                    var who = Para($"{DocumensoRequestView.RecipientLabel(r)} — {DocumensoRequestView.RecipientStatus(r, env.Status)}",
+                    var who = Para($"{DocumensoRequestView.RecipientLabel(r)}: {DocumensoRequestView.RecipientStatus(r, env.Status)}",
                         "TextSecondary", 11, new Thickness(0));
                     who.VerticalAlignment = VerticalAlignment.Center;
                     line.Children.Add(who);
@@ -310,7 +310,7 @@ namespace TDPdf.Services
                         // same desk, or the sender signing their own part.
                         var signHere = SmallButton(owner, "Sign on this computer", $"Sign on this computer as {label}");
                         signHere.Margin = new Thickness(6, 0, 0, 2);
-                        signHere.ToolTip = $"Opens {label}'s signing page here. Only for {label} — whoever uses it signs as them.";
+                        signHere.ToolTip = $"Opens {label}'s signing page here. Only for {label}: whoever uses it signs as them.";
                         signHere.Click += (_, _) =>
                         {
                             if (client is null) { Expired(); return; }
@@ -320,13 +320,13 @@ namespace TDPdf.Services
                         linkButtons.Children.Add(signHere);
                         var copy = SmallButton(owner, "Copy signing link", $"Copy signing link for {label}");
                         copy.Margin = new Thickness(6, 0, 0, 2);
-                        copy.ToolTip = "Whoever has this link can sign as this person — give it only to them.";
+                        copy.ToolTip = "Whoever has this link can sign as this person, so give it only to them.";
                         copy.Click += (_, _) =>
                         {
                             try
                             {
                                 Clipboard.SetText(link);
-                                Say($"Copied the signing link for {label}. Give it only to them — it lets whoever has it sign.", "AccentGreen");
+                                Say($"Copied the signing link for {label}. Give it only to them, because it lets whoever has it sign.", "AccentGreen");
                             }
                             catch
                             {

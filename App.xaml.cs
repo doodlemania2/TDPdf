@@ -58,6 +58,16 @@ namespace TDPdf
         private static InstallScope NewInstallScope =>
             IsSystemContextSafe() ? InstallScope.PerMachine : InstallScope.PerUser;
 
+        // The install lock's scope (Services/InstallerExitCodes): one machine-wide install at a time,
+        // and one per user for per-user installs, which never share files with anyone else's.
+        private static string InstallLockKey()
+        {
+            if (NewInstallScope == InstallScope.PerMachine) return "Machine";
+            string? sid = null;
+            try { sid = WindowsIdentity.GetCurrent().User?.Value; } catch { /* fall back below */ }
+            return "User-" + (sid ?? Environment.UserName);
+        }
+
         private static bool IsSystemContextSafe()
         {
             try { return WindowsIdentity.GetCurrent().IsSystem; }
@@ -181,7 +191,8 @@ namespace TDPdf
                     Telemetry.TrackEvent("Install.Start", InstallProps(silent));
                     try
                     {
-                        DoInstall(wantDesktop: false);
+                        using (InstallerExitCodes.Acquire(InstallLockKey()))
+                            DoInstall(wantDesktop: false);
                         InstallLog.Write("INSTALL OK");
                         Telemetry.TrackEvent("Install.Success", InstallProps(silent));
                         Telemetry.Flush();
@@ -189,10 +200,14 @@ namespace TDPdf
                     }
                     catch (Exception ex)
                     {
-                        InstallLog.WriteError("INSTALL FAILED", ex);
-                        Telemetry.TrackCrash(ex, "Install", recoverable: false);
+                        int code = InstallerExitCodes.FromException(ex);
+                        InstallLog.WriteError($"INSTALL FAILED (exit {code})", ex);
+                        if (code == InstallerExitCodes.Busy)
+                            Telemetry.TrackEvent("Install.Busy", InstallProps(silent));
+                        else
+                            Telemetry.TrackCrash(ex, "Install", recoverable: false);
                         Telemetry.Flush();
-                        Shutdown(1);
+                        Shutdown(code);
                     }
                     return;
                 }
@@ -204,7 +219,8 @@ namespace TDPdf
                     Telemetry.TrackEvent("Uninstall.Start", InstallProps(silent));
                     try
                     {
-                        Uninstall(silent: silent);
+                        using (InstallerExitCodes.Acquire(InstallLockKey()))
+                            Uninstall(silent: silent);
                         InstallLog.Write("UNINSTALL OK");
                         Telemetry.TrackEvent("Uninstall.Success", InstallProps(silent));
                         Telemetry.Flush();
@@ -212,10 +228,14 @@ namespace TDPdf
                     }
                     catch (Exception ex)
                     {
-                        InstallLog.WriteError("UNINSTALL FAILED", ex);
-                        Telemetry.TrackCrash(ex, "Uninstall", recoverable: false);
+                        int code = InstallerExitCodes.FromException(ex);
+                        InstallLog.WriteError($"UNINSTALL FAILED (exit {code})", ex);
+                        if (code == InstallerExitCodes.Busy)
+                            Telemetry.TrackEvent("Uninstall.Busy", InstallProps(silent));
+                        else
+                            Telemetry.TrackCrash(ex, "Uninstall", recoverable: false);
                         Telemetry.Flush();
-                        Shutdown(1);
+                        Shutdown(code);
                     }
                     return;
                 }

@@ -143,7 +143,7 @@ namespace TDPdf.Services
             _applyPixelRatio  = applyPixelRatio > 0 ? applyPixelRatio : 1.0;
             _mixedSelectionSizes = mixedSelectionSizes;
 
-            Title  = "TDPdf - Transform";
+            Title  = "TDPdf: Transform";
             Width  = 980;
             Height = 720;
             MinWidth  = 680;
@@ -235,7 +235,7 @@ namespace TDPdf.Services
             titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var titleText = new TextBlock
             {
-                Text       = "TDPdf - Transform",
+                Text       = "TDPdf: Transform",
                 Foreground = R("AccentGreen"),
                 FontWeight = FontWeights.SemiBold,
                 FontSize   = 13,
@@ -261,6 +261,7 @@ namespace TDPdf.Services
                 closeBtn.Cursor          = Cursors.Hand;
             }
             closeBtn.Click += (_, _) => { Applied = false; Close(); };
+            System.Windows.Automation.AutomationProperties.SetName(closeBtn, "Close");
             Grid.SetColumn(closeBtn, 1);
 
             titleGrid.Children.Add(titleText);

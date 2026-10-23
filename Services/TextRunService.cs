@@ -141,18 +141,34 @@ namespace TDPdf.Services
             PageTextRuns? runs = null;
             try
             {
-                using var doc = PdfDocument.Open(path);
-                if (pageIdx < doc.NumberOfPages)
-                    runs = Build(doc.GetPage(pageIdx + 1));   // PdfPig is 1-based
+                runs = ReadPage(path, pageIdx);
             }
             catch
             {
                 // Encrypted / malformed: flowing selection simply isn't offered on this page and
-                // the caller falls back to the classic rectangle marquee.
+                // the caller falls back to the classic rectangle marquee. Also the case where
+                // Windows will not load PdfPig at all (application control, antivirus — upstream
+                // #441), which is why the PdfPig calls live in ReadPage: see there.
             }
 
             _cache[key] = runs;
             return runs;
+        }
+
+        /// <summary>
+        /// The PdfPig half of <see cref="GetPage"/>, kept in its own never-inlined method so that a
+        /// PdfPig assembly Windows refuses to load fails HERE, inside GetPage's try. The runtime
+        /// loads an assembly when it compiles the first method that uses its types; were these
+        /// calls written inline, that would be GetPage itself, and the load failure would be thrown
+        /// at the call into GetPage — past its catch, out of a mouse-move handler, on every hover.
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static PageTextRuns? ReadPage(string path, int pageIdx)
+        {
+            using var doc = PdfDocument.Open(path);
+            return pageIdx < doc.NumberOfPages
+                ? Build(doc.GetPage(pageIdx + 1))   // PdfPig is 1-based
+                : null;
         }
 
         /// <summary>

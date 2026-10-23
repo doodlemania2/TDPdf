@@ -239,7 +239,7 @@ namespace TDPdf
             _invertColorsBtn.Tag = _docInvert ? "on" : null;
             string hint = _docInvert
                 ? "Restore the document's true colors (Ctrl+I)"
-                : "Invert document colors for dark reading — display only (Ctrl+I)";
+                : "Invert document colors for dark reading (display only, Ctrl+I)";
             // The rail button is the only place the carve-out is discoverable by mouse alone, so
             // its tooltip advertises the right-click menu and says which way the option is set.
             string railHint = hint + "\nRight-click for night-mode options. " + InvertImagesHelpText;

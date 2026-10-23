@@ -118,7 +118,7 @@ namespace TDPdf
                     _textEditorCanvas.Children.Insert(_textEditorCanvas.Children.IndexOf(retb), rewo);
                     retb.KeyDown += EditTextBox_KeyDown;
                     FocusTextEditorWhenLoaded(retb, selectAll: true, EditTextBox_LostFocus);
-                    SetStatus("Re-editing text — Enter to save, Escape to cancel");
+                    SetStatus("Re-editing text. Enter to save, Escape to cancel");
                     return;
                 }
             }
@@ -193,7 +193,7 @@ namespace TDPdf
                 tb.KeyDown += EditTextBox_KeyDown;
                 FocusTextEditorWhenLoaded(tb, selectAll: true, EditTextBox_LostFocus);
 
-                SetStatus("Editing text - Enter to save, Escape to cancel");
+                SetStatus("Editing text. Enter to save, Escape to cancel");
             }
             catch (Exception ex)
             {
@@ -352,7 +352,7 @@ namespace TDPdf
             // difference is never left implicit.
             SetStatus(_pendingOverlayReason is null
                 ? $"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\" (drawn over the original)"
-                : $"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\" — drawn over the original because {_pendingOverlayReason}");
+                : $"Text edited: \"{ctx.OriginalText}\" -> \"{newText}\" (drawn over the original because {_pendingOverlayReason})");
             _pendingOverlayReason = null;
             // #168: the in-place editor starts from whatever the PDF already says, so it is the path
             // most likely to carry non-Latin text. Warn on the family the burn will actually use.
@@ -403,7 +403,7 @@ namespace TDPdf
             {
                 // Against the CURRENT document, structural edits and all — the file on disk may be
                 // several rotations and page deletions behind what is on screen.
-                NormalizeDocumentForSave(_doc);
+                NormalizeLiveDocumentForTool();
                 _doc.Save(source);
 
                 var outcome = TDPdf.Services.PdfTextEdit.Apply(
@@ -514,7 +514,7 @@ namespace TDPdf
                     try
                     {
                         if (!IsLoaded || PresentationSource.FromVisual(this) is null) return;
-                        SetStatus($"No installed font can draw: {missing} - these will save as empty boxes");
+                        SetStatus($"No installed font can draw: {missing}. These will save as empty boxes");
                         // Deferred rather than shown inline: CommitActiveTextBox / CommitTextEdit
                         // are the app's "settle any in-progress edit" chokepoint and run from
                         // inside save, print, close, tool-switch and tab-switch paths. A modal
@@ -570,7 +570,7 @@ namespace TDPdf
             RenderAllAnnotations(pageIdx);
             SelectAnnotation(edit, edit.TargetBounds);
             ShowImageEditMenu(edit);
-            SetStatus("Image selected - replace, delete, or drag the green handle to resize");
+            SetStatus("Image selected. Replace, delete, or drag the green handle to resize");
         }
 
         private string? CapturePageImageRegion(Rect bounds)
@@ -620,7 +620,7 @@ namespace TDPdf
             RenderAllAnnotations(edit.PageIndex);
             SelectAnnotation(edit, edit.TargetBounds);
             MarkDirty();
-            SetStatus("Replacement image selected - save to apply white-out + overdraw");
+            SetStatus("Replacement image selected. Save to apply white-out + overdraw");
         }
 
         private void DeleteImageEdit(ImageEditAnnotation edit)
@@ -630,7 +630,7 @@ namespace TDPdf
             RenderAllAnnotations(edit.PageIndex);
             SelectAnnotation(edit, edit.TargetBounds);
             MarkDirty();
-            SetStatus("Image marked for deletion - save to apply white-out");
+            SetStatus("Image marked for deletion. Save to apply white-out");
         }
 
         private void ResetImageEditSize(ImageEditAnnotation edit)

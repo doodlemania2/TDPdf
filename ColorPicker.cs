@@ -67,7 +67,7 @@ namespace TDPdf
         private TdpColorPicker(Window? owner, Color initial, IReadOnlyList<Color> recent)
         {
             _recent = recent;
-            Title = "TDPdf - Color";
+            Title = "TDPdf: Color";
             Width = 300;
             SizeToContent = SizeToContent.Height;
             WindowStyle = WindowStyle.None;

@@ -166,14 +166,14 @@ namespace TDPdf.Services
                 bool placed = s.Fields.Any(f => f.RecipientKey == r.Key && IsSignatureType(f.Type));
                 bool fromPlaceholder = placeholders.Any(p => p.IsSignature && p.RecipientNumber == i + 1);
                 if (!placed && !fromPlaceholder)
-                    errors.Add($"{Label(r, i)} has no Signature field. Every signer needs one — place one on the page, " +
+                    errors.Add($"{Label(r, i)} has no Signature field. Every signer needs one. Place one on the page, " +
                                "or make them an Approver, Viewer or CC.");
             }
 
             foreach (var r in s.Recipients.Where(r => !TakesFields(r.Role)))
             {
                 if (s.FieldCountFor(r.Key) > 0)
-                    warnings.Add($"Fields placed for {Label(r, s.Recipients.IndexOf(r))} will be left out — " +
+                    warnings.Add($"Fields placed for {Label(r, s.Recipients.IndexOf(r))} will be left out, because " +
                                  $"a {RoleLabel(r.Role)} is never asked to fill anything in.");
             }
 

@@ -433,14 +433,14 @@ namespace TDPdf.Services
     internal static class SignatureObservationText
     {
         internal const string Disclaimer =
-            "TDPdf reads what the signatures state; it does not check them — not the cryptography, the signer's " +
-            "certificate chain, revocation or the timestamp. To have a signature checked, open the file in a PDF " +
+            "TDPdf reads what the signatures state; it does not check them (not the cryptography, the signer's " +
+            "certificate chain, revocation or the timestamp). To have a signature checked, open the file in a PDF " +
             "reader that verifies signatures, such as Adobe Acrobat Reader.";
 
         internal static string Heading(ObservedSignature s, int index)
         {
             string what = s.IsDocumentTimestamp ? "Document timestamp" : $"Signature {index + 1}";
-            return s.FieldName.Length > 0 ? $"{what} — field “{s.FieldName}”" : what;
+            return s.FieldName.Length > 0 ? $"{what} (field “{s.FieldName}”)" : what;
         }
 
         /// <summary>The detail lines for one signature, in reading order.</summary>

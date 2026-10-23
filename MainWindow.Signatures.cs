@@ -422,6 +422,7 @@ namespace TDPdf
             closeWinBtn.MouseEnter += (_, _2) => closeWinBtn.Foreground = BrushResource("DangerRed");
             closeWinBtn.MouseLeave += (_, _2) => closeWinBtn.Foreground = BrushResource("TextSecondary");
             closeWinBtn.Click += (_, _2) => win.Close();
+            AutomationProperties.SetName(closeWinBtn, "Close");
             Grid.SetColumn(closeWinBtn, 1);
             titleGrid.Children.Add(titleText);
             titleGrid.Children.Add(closeWinBtn);
@@ -575,7 +576,7 @@ namespace TDPdf
                 // Auto-select the new signature for placement
                 _pendingSignature = saved;
                 _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                SetStatus("Signature picture saved - click on the page to place it");
+                SetStatus("Signature picture saved. Click on the page to place it");
 
                 win.Close();
             };
@@ -671,6 +672,7 @@ namespace TDPdf
             closeWinBtn.MouseEnter += (_, _2) => closeWinBtn.Foreground = BrushResource("DangerRed");
             closeWinBtn.MouseLeave += (_, _2) => closeWinBtn.Foreground = BrushResource("TextSecondary");
             closeWinBtn.Click += (_, _2) => win.Close();
+            AutomationProperties.SetName(closeWinBtn, "Close");
             Grid.SetColumn(closeWinBtn, 1);
             titleGrid.Children.Add(titleText);
             titleGrid.Children.Add(closeWinBtn);
@@ -896,7 +898,7 @@ namespace TDPdf
 
                 _pendingSignature = saved;
                 _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                SetStatus("Signature picture saved - click on the page to place it");
+                SetStatus("Signature picture saved. Click on the page to place it");
                 win.Close();
             }
             saveBtn.Click += (_, _2) => DoSave();
@@ -994,7 +996,7 @@ namespace TDPdf
 
                 _pendingSignature = saved;
                 _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                SetStatus("Image loaded - click on the page to place it");
+                SetStatus("Image loaded. Click on the page to place it");
                 ShowSignaturePopup(); // refresh to show the new entry
             }
             catch (Exception ex)
@@ -1041,7 +1043,7 @@ namespace TDPdf
             double sigH = annot.SourceHeight * annot.Scale;
             SetTool(EditTool.Select);
             SelectAnnotation(annot, new Rect(annot.Position.X, annot.Position.Y, sigW, sigH));
-            SetStatus("Signature picture placed — drag the corner handle to resize, or Delete to remove");
+            SetStatus("Signature picture placed. Drag the corner handle to resize, or Delete to remove");
             Telemetry.TrackEvent("Annotation.PlaceCompleted",
                 new Dictionary<string, string> { ["Type"] = "Signature" });
         }
@@ -1086,7 +1088,7 @@ namespace TDPdf
                 double w = srcW * scale;
                 double h = srcH * scale;
                 SelectAnnotation(imgAnnot, new Rect(pos.X, pos.Y, w, h));
-                SetStatus("Image placed - drag the corner handle to resize, switch to Select to move/delete");
+                SetStatus("Image placed. Drag the corner handle to resize, or switch to Select to move/delete");
             }
             catch (Exception ex)
             {
