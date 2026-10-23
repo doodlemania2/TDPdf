@@ -3163,7 +3163,10 @@ namespace TDPdf
                 if (annotsArr is null || annotIndex >= annotsArr.Elements.Count) return;
                 annotsArr.Elements.RemoveAt(annotIndex);
                 MarkDirty();
-                SaveTempAndReload();
+                // Removing a link changes neither page geometry nor page numbering, so every
+                // overlay annotation is still valid where it is (upstream 1.8.90 found the same
+                // loss: the default reload threw away every unsaved annotation in the document).
+                SaveTempAndReload(keepAnnotations: true);
                 // Refresh the current page view so the overlay disappears.
                 int sel = PageList.SelectedIndex;
                 PageList.SelectedIndex = -1;
@@ -10035,6 +10038,20 @@ namespace TDPdf
             }
             // Placed Electronic Signature fields are positions on pages for exactly the same reason.
             ESignDropFieldsForLayoutChange(_ctx);
+            // Typed form values are keyed by object number, which the temp save below renumbers,
+            // so they cannot survive as pending state. Write them into the document instead, where
+            // the reload reads them back as the fields' values — otherwise rotating, deleting or
+            // reordering a page, or removing a link, silently emptied every field filled in since
+            // the last save. The document is already dirty, so nothing reaches disk until a save.
+            // A widget that is a direct object has no object number and is keyed by its page and
+            // /Annots position instead — which a delete or reorder has just moved, so that key could
+            // now name a different field. Only object-number keys are carried over.
+            if (HasPendingFormValues)
+            {
+                foreach (var k in _formTextValues.Keys.Where(k => k < 0).ToList()) _formTextValues.Remove(k);
+                foreach (var k in _formCheckValues.Keys.Where(k => k < 0).ToList()) _formCheckValues.Remove(k);
+                WriteFormValuesToDocument();
+            }
             ClearFormState();
             InvalidateRenderCache();
             _contentEditor.ClearCache();
