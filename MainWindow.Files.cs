@@ -1270,7 +1270,7 @@ namespace TDPdf
             var selected = PageList.SelectedItems;
             if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to extract."); return; }
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save extracted pages as" };
-            if (dlg.ShowDialog() != true) return;
+            if (!ShowPdfSaveDialog(dlg)) return;
             try
             {
                 var indices = new List<int>();
@@ -2217,6 +2217,35 @@ namespace TDPdf
             UpdateESignatureMenu();   // MainWindow.ESignature.cs
         }
 
+        /// <summary>
+        /// Shows a Save dialog for a PDF and makes sure the chosen name ends in <c>.pdf</c>.
+        /// </summary>
+        /// <remarks>
+        /// Upstream #450. The Windows dialog adds the filter's extension only to a name that has
+        /// none, so "report.v2" or "scan.jpg" saved a PDF under that name — a file nothing would
+        /// open as a PDF, and the dotted name is a common one. The extension is appended rather
+        /// than substituted, so "report.v2" becomes "report.v2.pdf". The dialog's own overwrite
+        /// prompt was for the name as typed, so when the corrected name exists the question is
+        /// asked again here, and "No" goes back to the dialog.
+        /// </remarks>
+        private bool ShowPdfSaveDialog(SaveFileDialog dlg, Window? owner = null)
+        {
+            owner ??= this;
+            while (true)
+            {
+                if (dlg.ShowDialog(owner) != true) return false;
+                string name = dlg.FileName;
+                if (name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) return true;
+                string corrected = name + ".pdf";
+                dlg.FileName = corrected;
+                if (!File.Exists(corrected)) return true;
+                if (TdpDialog.Show(owner,
+                        $"{System.IO.Path.GetFileName(corrected)} already exists.\nDo you want to replace it?",
+                        "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                    return true;
+            }
+        }
+
         private async void SaveAs_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
@@ -2236,7 +2265,7 @@ namespace TDPdf
                     dlg.FileName = System.IO.Path.GetFileName(seed);
             }
             catch { /* malformed seed path — just open the dialog with its defaults */ }
-            if (dlg.ShowDialog() != true) return;
+            if (!ShowPdfSaveDialog(dlg)) return;
             using var op = Telemetry.StartOperation("SaveAs");
             string targetFile = dlg.FileName;
             string status = "";
@@ -2333,7 +2362,7 @@ namespace TDPdf
             if (!ConfirmSaveOverDigitalSignature()) return;
             CommitActiveTextBox();
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
-            if (dlg.ShowDialog() != true) return;
+            if (!ShowPdfSaveDialog(dlg)) return;
             using var op = Telemetry.StartOperation("SaveFlattened");
             SetFileOperationBusy(true, "Flattening...");
             string targetFile = dlg.FileName;
@@ -2580,7 +2609,9 @@ namespace TDPdf
                     pageSizes.Add(new Size(w, h));
                 }
 
-                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0);
+                // Form values typed since the last save count too, as they do for every other output
+                // path: without them a filled-in form printed its old values (upstream 1.8.81).
+                bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 if (hasAnnotations)
                 {

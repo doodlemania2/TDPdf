@@ -785,7 +785,7 @@ namespace TDPdf
                 CheckFileExists = false,
                 CheckPathExists = true
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!ShowPdfSaveDialog(dlg)) return;
             string outPath = dlg.FileName;
 
             // Snapshot the current document (with its rotations) to a temp; we render and re-open from this so
