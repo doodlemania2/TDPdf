@@ -15,8 +15,8 @@ Windows machine without deploying a certificate first. Check a download against 
 
 | Command | What it does |
 |---|---|
-| `TDPdf.exe /install /silent` | Installs with no UI. Exit code 0 on success, 1 on failure. |
-| `TDPdf.exe /uninstall /silent` | Uninstalls with no UI. |
+| `TDPdf.exe /install /silent` | Installs with no UI. Exits 0 on success; see [Exit codes](#exit-codes) for failures. |
+| `TDPdf.exe /uninstall /silent` | Uninstalls with no UI. Same exit codes. |
 | `TDPdf.exe /install` | Installs, showing errors in a dialog. |
 | `TDPdf.exe /uninstall` | Uninstalls after a confirmation. |
 | `TDPdf.exe /clear-telemetry` | Opts the device out of telemetry (see below). |
@@ -25,6 +25,17 @@ Windows machine without deploying a certificate first. Check a download against 
 
 Use `/silent` for any unattended install. It never shows a window, so a failure under SYSTEM
 cannot hang on a dialog nobody can see.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. |
+| 5 | Access denied: the account cannot write the install folder or registry hive. |
+| 112 | The disk is full. |
+| 1223 | Cancelled. |
+| 1618 | Another TDPdf install or uninstall is already running in the same scope. Intune retries this code by itself. |
+| 1 | Any other failure. The install log has the details. |
 
 ## Where it installs
 
