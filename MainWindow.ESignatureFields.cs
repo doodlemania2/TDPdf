@@ -136,7 +136,7 @@ namespace TDPdf
 
             if (how == ESignPlacementEnd.Aborted && p.Session.Fields.Count > 0 && ReferenceEquals(_ctx, p.Ctx)
                 && ReferenceEquals(p.Session, p.Ctx.ESignSession))
-                SetStatus("Field placement ended. Your fields are kept — choose Send for Signature again to finish.");
+                SetStatus("Field placement ended. Your fields are kept. Choose Send for Signature again to finish.");
             p.Ended.TrySetResult(how);
         }
 
@@ -152,7 +152,7 @@ namespace TDPdf
             if (ctx.ESignSession is { Fields.Count: > 0 } s)
             {
                 s.Fields.Clear();
-                SetStatusHeld("Electronic Signature fields were cleared — the page layout changed. Place them again.", 4000);
+                SetStatusHeld("Electronic Signature fields were cleared because the page layout changed. Place them again.", 4000);
             }
         }
 

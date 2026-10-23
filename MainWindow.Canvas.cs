@@ -468,7 +468,7 @@ namespace TDPdf
                             if (existing.Count == 0) _redactionMarks.Remove(pageIdx);
                             RenderAllAnnotations(pageIdx);
                             ShowRedactSettings();
-                            SetStatus($"Redaction mark removed — {PendingRedactionCount} pending");
+                            SetStatus($"Redaction mark removed, {PendingRedactionCount} pending");
                             e.Handled = true;
                             break;
                         }
@@ -1378,7 +1378,7 @@ namespace TDPdf
                 }
                 RenderAllAnnotations(resizing.PageIndex);
                 SelectAnnotation(resizing, resizing.TargetBounds);
-                SetStatus("Image resize committed - save to apply white-out + overdraw");
+                SetStatus("Image resize committed. Save to apply white-out + overdraw");
                 _resizingImageEdit = null;
                 return;
             }
@@ -1461,7 +1461,7 @@ namespace TDPdf
                         marks.Add(new Rect(Canvas.GetLeft(rrect), Canvas.GetTop(rrect), rrect.Width, rrect.Height));
                         RenderAllAnnotations(pageIdx);
                         ShowRedactSettings();
-                        SetStatus($"{PendingRedactionCount} area{(PendingRedactionCount == 1 ? "" : "s")} marked — nothing is removed until you press Redact");
+                        SetStatus($"{PendingRedactionCount} area{(PendingRedactionCount == 1 ? "" : "s")} marked. Nothing is removed until you press Redact");
                     }
                     else
                     {
@@ -1478,7 +1478,7 @@ namespace TDPdf
                             Bounds = new Rect(Canvas.GetLeft(rect), Canvas.GetTop(rect), rect.Width, rect.Height)
                         };
                         ShowCropPopup();
-                        SetStatus("Crop rectangle selected - choose Apply crop, Reset, or Cancel");
+                        SetStatus("Crop rectangle selected. Choose Apply crop, Reset, or Cancel");
                     }
                     else
                     {
@@ -1593,7 +1593,7 @@ namespace TDPdf
                 _activePreview = null;
             _activeCrop = null;
             if (_currentTool == EditTool.Crop)
-                SetStatus("Crop cleared - drag a new crop rectangle");
+                SetStatus("Crop cleared. Drag a new crop rectangle");
         }
 
         private async void ApplyCrop_Click(object sender, RoutedEventArgs e)

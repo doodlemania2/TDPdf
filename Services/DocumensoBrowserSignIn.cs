@@ -456,7 +456,7 @@ namespace TDPdf.Services
         {
             try
             {
-                string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>TDPdf - " + title + "</title>"
+                string html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>TDPdf: " + title + "</title>"
                     + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
                     + "<style>body{font-family:Segoe UI,system-ui,sans-serif;background:#1e1e1e;color:#e6e6e6;display:flex;"
                     + "align-items:center;justify-content:center;min-height:100vh;margin:0}main{max-width:28rem;padding:2rem}"

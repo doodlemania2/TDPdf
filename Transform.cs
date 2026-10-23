@@ -63,7 +63,7 @@ namespace TDPdf
                     "Transforming a page rasterizes it: the page becomes an image, so its text is no longer " +
                     "selectable and any annotations on it are baked into the picture (they follow the transform). " +
                     "This is the same as how Crop works.\n\nContinue?",
-                    "TDPdf - Transform", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                    "TDPdf: Transform", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
                 if (res != MessageBoxResult.OK) return;
                 _transformWarnShown = true;
             }

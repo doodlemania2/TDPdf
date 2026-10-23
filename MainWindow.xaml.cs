@@ -725,7 +725,7 @@ namespace TDPdf
                 if (App.InstalledExePath is { } installedExe
                     && TDPdf.Services.UpdateCheck.IsRestartPending(installedExe, running))
                 {
-                    SetStatusHeld("An update has been installed - restart TDPdf to use it.", 10000);
+                    SetStatusHeld("An update has been installed. Restart TDPdf to use it.", 10000);
                     Telemetry.TrackEvent("Update.RestartPending");
                 }
             };
@@ -1698,7 +1698,7 @@ namespace TDPdf
                     "Reinstall repairs the installed copy with this one and relaunches from it.",
                 _ =>
                     $"This portable copy is the same version (v{thisVer}).\n\n" +
-                    "Reinstall repairs the installed copy — shortcuts and file associations — and " +
+                    "Reinstall repairs the installed copy (shortcuts and file associations) and " +
                     "relaunches from it.",
             };
 
@@ -1779,7 +1779,7 @@ namespace TDPdf
             var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             var versionLine = v != null ? $"Version {v.Major}.{v.Minor}.{v.Build}" : "Version unknown";
             var message =
-                $"TDPdf — A Windows PDF editor by The Doodle Project.\n\n" +
+                $"TDPdf is a Windows PDF editor by The Doodle Project.\n\n" +
                 $"{versionLine}\n\n" +
                 "Released under the GNU General Public License v3.0.\n\n" +
                 // The upstream-project credit moved to Help > Third-Party Licenses, alongside the
@@ -2756,7 +2756,7 @@ namespace TDPdf
                 TDPdf.Properties.Settings.Default.Save();
             }
             catch { /* non-critical user preference */ }
-            SetStatus(on ? "Book layout on - the cover shows alone" : "Book layout off - pages pair from the cover");
+            SetStatus(on ? "Book layout on. The cover shows alone" : "Book layout off. Pages pair from the cover");
             if (_doc is null || _viewMode != ViewMode.TwoPage) return;
             // Re-pair what is on screen. Toggling is an explicit request about pairing, so unlike
             // every other navigation path it is allowed to move the selection onto the new spread's
@@ -4346,7 +4346,7 @@ namespace TDPdf
             (FormFieldMode.Text,      "Text",      "A single-line text box"),
             (FormFieldMode.Multiline, "Paragraph", "A text box that wraps onto several lines"),
             (FormFieldMode.CheckBox,  "Check",     "A single check box"),
-            (FormFieldMode.Radio,     "Radio",     "A group of mutually exclusive buttons — drag a box around where they should sit and give the choices"),
+            (FormFieldMode.Radio,     "Radio",     "A group of mutually exclusive buttons. Drag a box around where they should sit and give the choices"),
             (FormFieldMode.Dropdown,  "Dropdown",  "A list of choices"),
             (FormFieldMode.Signature, "Signature", "An empty signature field for someone to sign later"),
         ];
@@ -4471,7 +4471,7 @@ namespace TDPdf
                 return btn;
             }
 
-            Chip("Rename", "Change the field's name — this is what appears in exported form data")
+            Chip("Rename", "Change the field's name, which is what appears in exported form data")
                 .Click += (_, _) => RenameSelectedFormField();
 
             void Toggle(string label, bool required, string tip)
@@ -4666,12 +4666,12 @@ namespace TDPdf
                 string name = (field.Elements["/T"] as PdfString)?.Value ?? "field";
                 Telemetry.TrackEvent("Form.FieldAdded", new Dictionary<string, string> { ["Kind"] = _formMode.ToString() });
                 SetStatus(_formMode == FormFieldMode.Radio
-                    ? $"Added \"{name}\" — {rects.Count} buttons. Save to write it to the file."
+                    ? $"Added \"{name}\" with {rects.Count} buttons. Save to write it to the file."
                     : $"Added \"{name}\". Save to write it to the file.");
             }
             catch (Exception ex)
             {
-                SetStatus($"Form: the field could not be created — {ex.Message}");
+                SetStatus($"Form: the field could not be created ({ex.Message})");
             }
         }
 
@@ -4794,7 +4794,7 @@ namespace TDPdf
             // The bar stays while the tool is still selected — it is the tool's own settings bar,
             // and clearing the marks is not leaving the tool.
             if (_currentTool == EditTool.Redact) ShowRedactSettings(); else HideRedactSettings();
-            SetStatus("Redaction marks cleared — the document was not changed");
+            SetStatus("Redaction marks cleared. The document was not changed");
         }
 
         // ── Bulk marking from a search ───────────────────────────────────────────────────
@@ -4907,7 +4907,7 @@ namespace TDPdf
             if (added == 0)
             {
                 SetStatus(unplaceable > 0
-                    ? "Redact: those matches could not be placed on their pages — nothing was marked"
+                    ? "Redact: those matches could not be placed on their pages, so nothing was marked"
                     : "Redact: every match is already marked");
                 return;
             }
@@ -4925,7 +4925,7 @@ namespace TDPdf
                 ? $"; {unplaceable} could not be placed"
                 : "";
             SetStatus($"{added} match{(added == 1 ? "" : "es")} marked on {touched.Count} " +
-                      $"page{(touched.Count == 1 ? "" : "s")} — review them, then press Redact Permanently{tail}");
+                      $"page{(touched.Count == 1 ? "" : "s")}. Review them, then press Redact Permanently{tail}");
         }
 
         // ── The settings / confirm bar ───────────────────────────────────────────────────
@@ -4952,7 +4952,7 @@ namespace TDPdf
                 FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(4, 0, 10, 0),
-                ToolTip = "An object that straddles the edge of a mark is removed whole. Off leaves it in place — " +
+                ToolTip = "An object that straddles the edge of a mark is removed whole. Off leaves it in place, " +
                           "which can leave part of what you meant to destroy, so the redaction is then refused rather than written."
             };
             partial.Checked += (_, _) => _redactRemovePartial = true;
@@ -5141,9 +5141,9 @@ namespace TDPdf
                     var pages = outcome.PagesNeedingRaster;
                     bool agreed = ConfirmRasterize(pages,
                         pages.Select(p => $"Page {p + 1}: the marked area is part of an image, so there is " +
-                                          "nothing smaller to delete — this is what a scanned page looks like")
+                                          "nothing smaller to delete (this is what a scanned page looks like)")
                              .ToList());
-                    if (!agreed) { SetStatus("Redaction cancelled — the document was not changed"); return; }
+                    if (!agreed) { SetStatus("Redaction cancelled. The document was not changed"); return; }
                     foreach (int p in pages) raster.Add(p);
                     SetFileOperationBusy(true, "Redacting...");
                     outcome = await Task.Run(Run);
@@ -5163,13 +5163,13 @@ namespace TDPdf
                         $"The redaction was not applied: {outcome.Error}{detail}\n\n" +
                         "Your document has not been changed.",
                         "Redact", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    SetStatus("Redaction refused — the document was not changed");
+                    SetStatus("Redaction refused. The document was not changed");
                     return;
                 }
 
                 AdoptRedactedFile(result);
 
-                string summary = $"Redacted {markCount} area{(markCount == 1 ? "" : "s")} — " +
+                string summary = $"Redacted {markCount} area{(markCount == 1 ? "" : "s")}: " +
                                  $"{outcome.ObjectsRemoved} object{(outcome.ObjectsRemoved == 1 ? "" : "s")} removed";
                 if (outcome.InvisibleTextRemoved > 0)
                     summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
@@ -5184,7 +5184,7 @@ namespace TDPdf
                 Telemetry.TrackCrash(ex, "Redact", recoverable: true);
                 TdpDialog.Show(this, $"The redaction was not applied: {ex.Message}\n\nYour document has not been changed.",
                     "Redact", MessageBoxButton.OK, MessageBoxImage.Error);
-                SetStatus("Redaction failed — the document was not changed");
+                SetStatus("Redaction failed. The document was not changed");
             }
             finally
             {
@@ -5214,7 +5214,7 @@ namespace TDPdf
                 string.Join("\n", reasons.Take(6)) +
                 (reasons.Count > 6 ? $"\n…and {reasons.Count - 6} more" : "") +
                 $"\n\nTDPdf can redact {(one ? "it" : "them")} by replacing the page with an image of " +
-                "itself, with the marked areas painted out. The marked content is genuinely gone — " +
+                "itself, with the marked areas painted out. The marked content is genuinely gone, " +
                 $"but so is the page's text: {(one ? "it" : "they")} will no longer be searchable, " +
                 "selectable, or readable by a screen reader.\n\n" +
                 "Other pages, if any, are redacted normally and keep their text.",
@@ -5290,7 +5290,7 @@ namespace TDPdf
 
             var answer = TdpDialog.ShowYesNo(this,
                 $"{marks} redaction mark{(marks == 1 ? " has" : "s have")} not been applied.\n\n" +
-                "Saving now writes a file that still contains all of the marked content — the marks " +
+                "Saving now writes a file that still contains all of the marked content, and the marks " +
                 "themselves are not saved. Use Redact Permanently to remove the content first.",
                 "Save anyway", "Cancel",
                 "Unapplied Redactions", MessageBoxImage.Warning);
@@ -5971,7 +5971,7 @@ namespace TDPdf
                     Value = Math.Clamp(curSpacing, TextLetterSpacing.SliderMin, TextLetterSpacing.SliderMax),
                     Width = 90, VerticalAlignment = VerticalAlignment.Center,
                     TickFrequency = TextLetterSpacing.SliderStep, IsSnapToTickEnabled = true,
-                    ToolTip = "Space between characters, in pixels — negative tightens. "
+                    ToolTip = "Space between characters, in pixels. Negative tightens. "
                             + "Applies to the placed text box; it cannot be shown while you are typing."
                 };
                 AutomationProperties.SetName(spacingSlider, "Letter spacing");
@@ -6462,7 +6462,7 @@ namespace TDPdf
                 _annotationCanvas.Children.Add(_polyRubber);
                 _annotationCanvas.Children.Add(_polySnapDot);
                 _polyVertices.Add(pos);
-                SetStatus("Polygon: click to add points — click the first point or double-click to close, "
+                SetStatus("Polygon: click to add points. Click the first point or double-click to close, "
                           + "Backspace removes the last point, Esc cancels");
                 return;
             }
@@ -6772,7 +6772,7 @@ namespace TDPdf
                 Canvas.SetTop(_resizeHandle, bounds.Y + bounds.Height - 4 - hSize / 2);
                 _annotationCanvas.Children.Add(_resizeHandle);
                 string label = annot is SignatureAnnotation ? "Signature picture" : "Image";
-                SetStatus($"{label} selected — drag corner handle to resize, Delete to remove");
+                SetStatus($"{label} selected. Drag the corner handle to resize, Delete to remove");
             }
             else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation or TextEditAnnotation)
             {
@@ -6810,11 +6810,11 @@ namespace TDPdf
                     TextEditAnnotation => "edited text",
                     _ => "annotation"
                 };
-                SetStatus($"Selected {kind} — drag to move, corner handle to resize, Delete to remove");
+                SetStatus($"Selected {kind}. Drag to move, corner handle to resize, Delete to remove");
             }
             else
             {
-                SetStatus($"Selected {annot.GetType().Name.Replace("Annotation", "").ToLower()} annotation - drag to move, press Delete to remove");
+                SetStatus($"Selected {annot.GetType().Name.Replace("Annotation", "").ToLower()} annotation. Drag to move, press Delete to remove");
             }
 
             // Restyle-in-place: reopen the matching settings bar bound to this annotation.
@@ -7062,7 +7062,7 @@ namespace TDPdf
                     return;
                 }
                 Clipboard.SetText(_selectedText);
-                SetStatus("Selected all text - copied to clipboard");
+                SetStatus("Selected all text and copied it to the clipboard");
             }
             catch (Exception ex)
             {
@@ -7079,7 +7079,7 @@ namespace TDPdf
             }
             else
             {
-                SetStatus("No text selected - drag to select text");
+                SetStatus("No text selected. Drag to select text");
             }
         }
 
@@ -10047,7 +10047,7 @@ namespace TDPdf
                 // Held: every caller of this sets its own status line immediately afterwards
                 // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
                 // marks silently gone.
-                SetStatusHeld("Redaction marks were cleared — the page layout changed. Mark the areas again.", 4000);
+                SetStatusHeld("Redaction marks were cleared because the page layout changed. Mark the areas again.", 4000);
             }
             // Placed Electronic Signature fields are positions on pages for exactly the same reason.
             ESignDropFieldsForLayoutChange(_ctx);
@@ -10993,7 +10993,7 @@ namespace TDPdf
             if (found.Count == 0)
             {
                 CleanupDirs(tempDirs);
-                SetStatus("Nothing to open — drop PDFs, images, folders, or .zip archives");
+                SetStatus("Nothing to open. Drop PDFs, images, folders, or .zip archives");
                 return;
             }
 
@@ -11066,7 +11066,7 @@ namespace TDPdf
             }
             SetStatus(failed == 0
                 ? $"Opened {found.Count} item(s) in separate tabs"
-                : $"Opened {found.Count - failed} of {found.Count} item(s) in separate tabs — {failed} failed");
+                : $"Opened {found.Count - failed} of {found.Count} item(s) in separate tabs; {failed} failed");
             // Extracted-zip temp dirs are intentionally NOT deleted here: an imported-image tab keeps
             // no handle, but a PDF opened directly from an extracted folder is read lazily, so the
             // extracted files must survive for the session. The OS clears %TEMP% eventually.
@@ -11693,7 +11693,7 @@ namespace TDPdf
             }
             if (doc.PageCount == before)
             {
-                SetStatus("Nothing could be appended — the dropped files could not be read.");
+                SetStatus("Nothing could be appended because the dropped files could not be read.");
                 return;
             }
             int added = doc.PageCount - before;
@@ -11722,7 +11722,7 @@ namespace TDPdf
             string name = System.IO.Path.GetFileName(path);
             var ask = TdpDialog.Show(this,
                 $"\"{name}\" has a damaged structure and could not be appended.\n\n" +
-                "Attempt a repair? A repaired copy is used — the original file is not changed.\n\n" +
+                "Attempt a repair? A repaired copy is used, and the original file is not changed.\n\n" +
                 "A repaired file may be missing bookmarks, forms and other interactive features.",
                 "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (ask != MessageBoxResult.Yes) return;

@@ -574,7 +574,7 @@ namespace TDPdf
             }
             catch (Exception ex)
             {
-                SetStatus($"Could not open the folder — {ex.Message}");
+                SetStatus($"Could not open the folder: {ex.Message}");
             }
         }
 

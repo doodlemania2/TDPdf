@@ -352,7 +352,7 @@ namespace TDPdf
             }
 
             if (anyField)
-                SetStatus($"Page {pageIndex + 1} of {_doc.PageCount} - contains fillable form fields");
+                SetStatus($"Page {pageIndex + 1} of {_doc.PageCount} contains fillable form fields");
         }
 
         /// <summary>

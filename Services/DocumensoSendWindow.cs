@@ -105,7 +105,7 @@ namespace TDPdf.Services
             addMeBtn.Margin = new Thickness(8, 0, 0, 0);
             addMeBtn.ToolTip = inputs.AccountEmail is { Length: > 0 } me
                 ? $"Add yourself ({me})"
-                : "Add yourself — type your address; TDPdf remembers it after your first send";
+                : "Add yourself. Type your address; TDPdf remembers it after your first send";
             addRow.Children.Add(addBtn);
             addRow.Children.Add(addMeBtn);
             body.Children.Add(addRow);
@@ -120,11 +120,11 @@ namespace TDPdf.Services
             // ── Message ────────────────────────────────────────────────────────────────────
             body.Children.Add(Heading("Email to recipients (optional)", new Thickness(0, 0, 0, 4)));
             var subjectBox = MakeTextBox(s.Subject, "Email subject", DocumensoSendPlan.MaxSubject);
-            subjectBox.ToolTip = "Subject — leave empty for the signing service's default";
+            subjectBox.ToolTip = "Subject (leave empty for the signing service's default)";
             subjectBox.Margin = new Thickness(0, 0, 0, 4);
             body.Children.Add(subjectBox);
             var messageBox = MakeTextBox(s.Message, "Email message", DocumensoSendPlan.MaxMessage);
-            messageBox.ToolTip = "Message — leave empty for the signing service's default";
+            messageBox.ToolTip = "Message (leave empty for the signing service's default)";
             messageBox.AcceptsReturn = true;
             messageBox.TextWrapping = TextWrapping.Wrap;
             messageBox.Height = 64;
@@ -184,7 +184,7 @@ namespace TDPdf.Services
                     int sigs = mine.Count(f => DocumensoSendPlan.IsSignatureType(f.Type));
                     string what = mine.Count == 0 ? "no fields placed"
                         : $"{mine.Count} field{(mine.Count == 1 ? "" : "s")} placed" + (sigs > 0 ? $" ({sigs} Signature)" : "");
-                    fieldsPanel.Children.Add(SwatchLine(i, $"{DocumensoSendPlan.Label(r, i)} — {what}"));
+                    fieldsPanel.Children.Add(SwatchLine(i, $"{DocumensoSendPlan.Label(r, i)}: {what}"));
                 }
                 if (!anyTaker)
                     fieldsPanel.Children.Add(Para("Add a signer or approver to place fields for.", "TextSecondary", 12, new Thickness(0, 0, 0, 2)));
@@ -193,7 +193,7 @@ namespace TDPdf.Services
                 if (n > 0)
                 {
                     fieldsPanel.Children.Add(Para(
-                        $"This document contains {n} signature placeholder{(n == 1 ? "" : "s")} — they will be used automatically. " +
+                        $"This document contains {n} signature placeholder{(n == 1 ? "" : "s")}. They will be used automatically. " +
                         "In them, r1 is the first recipient listed above, r2 the second, and so on.",
                         "AccentGreen", 12, new Thickness(0, 4, 0, 2)));
                 }
@@ -323,7 +323,7 @@ namespace TDPdf.Services
                 Refresh();
                 if (myEmail is not { Length: > 0 })
                 {
-                    addMeNote.Text = "TDPdf does not know your address yet — type it in. It is remembered after your first send.";
+                    addMeNote.Text = "TDPdf does not know your address yet. Type it in. It is remembered after your first send.";
                     addMeNote.Visibility = Visibility.Visible;
                     LastEmailBox()?.Focus();
                 }
@@ -492,7 +492,7 @@ namespace TDPdf.Services
                     row.Children.Add(copy);
                     body.Children.Add(row);
                 }
-                body.Children.Add(Para("A signing link lets whoever has it sign as that person — give it only to them.",
+                body.Children.Add(Para("A signing link lets whoever has it sign as that person, so give it only to them.",
                     "WarningOrange", 11, new Thickness(0, 6, 0, 0)));
                 body.Children.Add(feedback);
             }

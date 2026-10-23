@@ -315,7 +315,7 @@ namespace TDPdf
 
                 var sel = GetSelectedOcrLanguages();
                 if (!sel.Contains(code)) { sel.Add(code); SetSelectedOcrLanguages(sel); }
-                SetStatus($"{name} installed - OCR language: {string.Join("+", GetSelectedOcrLanguages())}");
+                SetStatus($"{name} installed. OCR language: {string.Join("+", GetSelectedOcrLanguages())}");
             }
             catch (OperationCanceledException)
             {
@@ -376,7 +376,7 @@ namespace TDPdf
                     string url = $"https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/{code}.traineddata";
                     try
                     {
-                        await DownloadTrainedDataAsync(http, url, dest, $"Downloading {name} (HQ) - {i} of {toDownload.Count} -", ct);
+                        await DownloadTrainedDataAsync(http, url, dest, $"Downloading {name} (HQ), {i} of {toDownload.Count}:", ct);
                         MarkLanguageHq(code, true);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
@@ -428,7 +428,7 @@ namespace TDPdf
                     string name = NameForCode(code);
                     string dest = Path.Combine(tessDir, code + ".traineddata");
                     await DownloadTrainedDataAsync(http, LanguageDataUrl(code), dest,
-                        missing.Count == 1 ? $"Downloading {name}..." : $"Downloading {name} - {i + 1} of {missing.Count} -", ct);
+                        missing.Count == 1 ? $"Downloading {name}..." : $"Downloading {name}, {i + 1} of {missing.Count}:", ct);
                     MarkLanguageHq(code, OcrHighQuality);
                     if (ct.IsCancellationRequested) return false;
                 }

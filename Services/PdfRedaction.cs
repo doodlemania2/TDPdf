@@ -170,7 +170,7 @@ namespace TDPdf.Services
                 if (result.Survivors.Count > 0)
                 {
                     result.Error =
-                        $"redaction could not be confirmed — {result.Survivors.Count} item(s) of text " +
+                        $"redaction could not be confirmed because {result.Survivors.Count} item(s) of text " +
                         "remain inside a redacted area, so the file was not written";
                     return result;
                 }

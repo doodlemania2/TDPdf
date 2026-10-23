@@ -123,7 +123,7 @@ namespace TDPdf
                 {
                     var a = await ESignRunSendAsync(client, ctx, session, path, doc.PageCount, progress, ct, "DocumensoSelfSign");
                     if (!a.Ok) return new DocumensoSelfSignWindow.SendOutcome(false, a.Error, null, null);
-                    SetStatus($"Sent to you for signature on {host} — finish signing in your browser.");
+                    SetStatus($"Sent to you for signature on {host}. Finish signing in your browser.");
                     return new DocumensoSelfSignWindow.SendOutcome(true, null, a.EnvelopeId,
                         DocumensoSelfSignPlan.SigningUrlFor(signer, a.Links, session.Recipients));
                 },

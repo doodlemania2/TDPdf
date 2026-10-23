@@ -129,7 +129,7 @@ namespace TDPdf.Services
             _pageCount  = pageSizes.Count;
             _cache      = new BitmapSource?[_pageCount];
 
-            Title  = "TDPdf - Print";
+            Title  = "TDPdf: Print";
             Width  = 940;
             Height = 700;
             MinWidth  = 720;
@@ -316,7 +316,7 @@ namespace TDPdf.Services
             titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var titleText = new TextBlock
             {
-                Text       = "TDPdf - Print",
+                Text       = "TDPdf: Print",
                 Foreground = R("AccentGreen"),
                 FontWeight = FontWeights.SemiBold,
                 FontSize   = 13,

@@ -176,7 +176,7 @@ namespace TDPdf.Services
 
             string Describe(DocumensoApiException ex) => ex.Failure switch
             {
-                DocumensoFailure.AuthRejected => $"{inputs.Host} rejected your sign-in — it may have expired. Connect again in Settings ▸ Electronic signature, then Refresh.",
+                DocumensoFailure.AuthRejected => $"{inputs.Host} rejected your sign-in, which may have expired. Connect again in Settings ▸ Electronic signature, then Refresh.",
                 DocumensoFailure.Network or DocumensoFailure.Timeout => $"Could not reach {inputs.Host}. Check your connection and try again.",
                 DocumensoFailure.RateLimited => $"{inputs.Host} is busy. Wait a minute and try again.",
                 DocumensoFailure.NotFound => $"{inputs.Host} no longer has this request.",
@@ -189,8 +189,8 @@ namespace TDPdf.Services
                 Body($"Sign “{inputs.DocumentName}” electronically on {inputs.Host}.",
                     $"TDPdf uploads this document to {inputs.Host}, sends it for signature to you alone ({inputs.Email}), " +
                     (inputs.InApp
-                        ? "and opens the signing page here in TDPdf. You sign on that page, and the signing service seals the signed copy — "
-                        : "and opens the signing page in your browser. You sign there, and the signing service seals the signed copy — ") +
+                        ? "and opens the signing page here in TDPdf. You sign on that page, and the signing service seals the signed copy. "
+                        : "and opens the signing page in your browser. You sign there, and the signing service seals the signed copy. ") +
                     "TDPdf does not sign anything itself.",
                     inputs.FieldNote);
                 footer.Children.Clear();
@@ -297,7 +297,7 @@ namespace TDPdf.Services
                             Say("");
                             break;
                         default:
-                            Say("Not signed yet. If you have just finished, the signing service may still be sealing it — Refresh again in a few seconds.", "WarningOrange");
+                            Say("Not signed yet. If you have just finished, the signing service may still be sealing it. Refresh again in a few seconds.", "WarningOrange");
                             break;
                     }
                 }

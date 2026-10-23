@@ -161,7 +161,7 @@ namespace TDPdf
         // the status-line file-size flash needs exactly the same behaviour and two copies of a
         // save-and-put-back is how the two drift apart.
         private void ShowScaleReadout(double scale)
-            => FlashStatus($"App size {(int)Math.Round(scale * 100)}% — the page keeps its own zoom",
+            => FlashStatus($"App size {(int)Math.Round(scale * 100)}%. The page keeps its own zoom",
                            holdMs: 1200, life: TimeSpan.FromSeconds(5));
     }
 }

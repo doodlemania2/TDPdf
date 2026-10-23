@@ -206,7 +206,7 @@ namespace TDPdf
                     _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
                         (Action)ApplyViewModeOnOpen);
                 }
-                var readOnlySuffix = result.OpenedReadOnly ? " (read-only - owner restrictions)" : string.Empty;
+                var readOnlySuffix = result.OpenedReadOnly ? " (read-only: owner restrictions)" : string.Empty;
                 // An owner-restricted file PdfSharpCore could not parse comes back as a PDFium-repaired,
                 // decrypted copy: editable, so it must NOT claim read-only, but say the restriction went.
                 if (result.RestrictionsRemoved)
@@ -214,10 +214,10 @@ namespace TDPdf
                 // A merely malformed file PdfSharpCore refused is reopened the same way (#406). That is
                 // lossless, so it says "repaired" — never the rasterized notice below.
                 else if (result.RepairedByPdfium)
-                    readOnlySuffix = " (repaired - the file's structure was damaged)";
+                    readOnlySuffix = " (repaired: the file's structure was damaged)";
                 if (result.RecoveredFromRaster)
-                    readOnlySuffix = " (recovered - pages rasterized, text not selectable)";
-                SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix} - {_doc.PageCount} page(s)");
+                    readOnlySuffix = " (recovered: pages rasterized, text not selectable)";
+                SetStatus($"Opened {System.IO.Path.GetFileName(result.DisplayPath)}{readOnlySuffix}, {_doc.PageCount} page(s)");
                 UpdateTabChrome();
 
                 // OriginalPath is the user's document: the in-place save target and the session
@@ -452,7 +452,7 @@ namespace TDPdf
                     {
                         _primaryPageBitmap = null;
                         PageImage.Source = null;
-                        SetStatus($"Page {pageIndex + 1} - could not render");
+                        SetStatus($"Page {pageIndex + 1} could not be rendered");
                         return;
                     }
 
@@ -494,7 +494,7 @@ namespace TDPdf
                 ClearSelection();
                 ClearSecondaryPages();
                 RenderAllAnnotations(pageIndex);
-                SetStatus($"Page {pageIndex + 1} of {_doc.PageCount} - {Zoom.DisplayText}");
+                SetStatus($"Page {pageIndex + 1} of {_doc.PageCount}, {Zoom.DisplayText}");
                 // Defer additional pages until layout has settled so ActualWidth is valid.
                 // RenderPageLinks runs AFTER RenderAdditionalPages so ClearSecondaryPages
                 // inside RenderAdditionalPages doesn't wipe the overlays we just added.
@@ -843,7 +843,7 @@ namespace TDPdf
                 bytes = new FileInfo(path).Length;
             }
             catch { return; }   // a vanished / unreadable file is not worth a dialog
-            FlashStatus($"{System.IO.Path.GetFileName(path)} — {FormatFileSize(bytes)}",
+            FlashStatus($"{System.IO.Path.GetFileName(path)} ({FormatFileSize(bytes)})",
                         holdMs: 2500, life: TimeSpan.FromMilliseconds(2600));
         }
 
@@ -1038,7 +1038,7 @@ namespace TDPdf
             if (failed > 0)
                 SetStatus(dlg.FileNames.Length == 1
                     ? "That file could not be opened."
-                    : $"Opened {dlg.FileNames.Length - failed} of {dlg.FileNames.Length} selected file(s) — {failed} failed.");
+                    : $"Opened {dlg.FileNames.Length - failed} of {dlg.FileNames.Length} selected file(s); {failed} failed.");
         }
 
         private void Merge_Click(object sender, RoutedEventArgs e)
@@ -1057,7 +1057,7 @@ namespace TDPdf
                 // the unsaved annotations are still exactly right and need no remapping. The default
                 // clear used to throw them all away for pages the merge never touched.
                 SaveTempAndReload(keepAnnotations: true);
-                SetStatus($"Merged {dlg.FileNames.Length} file(s) - {_doc?.PageCount} total pages");
+                SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages");
             }
             catch (Exception ex)
             {
@@ -1324,7 +1324,7 @@ namespace TDPdf
                     doc.Pages.RemoveAt(idx);
                 ApplyPageIndexMap(map);
                 SaveTempAndReload(keepAnnotations: true);
-                SetStatus($"Deleted {indices.Count} page(s) - {_doc?.PageCount} remaining");
+                SetStatus($"Deleted {indices.Count} page(s), {_doc?.PageCount} remaining");
             }
             catch (Exception ex)
             {
@@ -1588,12 +1588,12 @@ namespace TDPdf
                 }
                 if (wPt < MinSidePt || hPt < MinSidePt)
                 {
-                    problem = $"Too small — each side must be at least {MinSidePt / ptPer:0.###} {units[Math.Max(0, unitBox.SelectedIndex)].Name}.";
+                    problem = $"Too small. Each side must be at least {MinSidePt / ptPer:0.###} {units[Math.Max(0, unitBox.SelectedIndex)].Name}.";
                     return false;
                 }
                 if (wPt > MaxSidePt || hPt > MaxSidePt)
                 {
-                    problem = $"Too large — a PDF page cannot exceed {MaxSidePt / ptPer:0.##} {units[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
+                    problem = $"Too large. A PDF page cannot exceed {MaxSidePt / ptPer:0.##} {units[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
                     return false;
                 }
                 problem = string.Empty;
@@ -2110,8 +2110,8 @@ namespace TDPdf
             var answer = TdpDialog.ShowYesNo(this,
                 $"{what}.\n\n" +
                 "Saving rewrites the whole file, which leaves any signature covering bytes that no " +
-                "longer exist. TDPdf removes it rather than writing one that fails to validate — a " +
-                "broken signature looks like the document was tampered with, an unsigned one only " +
+                "longer exist. TDPdf removes it rather than writing one that fails to validate, because a " +
+                "broken signature looks like the document was tampered with, while an unsigned one only " +
                 "looks unsigned.\n\n" +
                 "The original file on disk is unchanged until you continue. To keep the signature, " +
                 "cancel and work on a copy instead.",
@@ -2170,12 +2170,12 @@ namespace TDPdf
 
                     doc = await RestoreDocumentAsync(doc, tempClean, CancellationToken.None);
                     saveError?.Throw();
-                    status = $"Saved — {System.IO.Path.GetFileName(targetFile)}";
+                    status = $"Saved {System.IO.Path.GetFileName(targetFile)}";
                 }
                 else
                 {
                     await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
-                    status = $"Saved — {System.IO.Path.GetFileName(targetFile)}";
+                    status = $"Saved {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
 
@@ -2193,7 +2193,7 @@ namespace TDPdf
                     // here on this tab's file is unprotected.
                     _ctx.WasProtected = false;
                     status = removingPassword
-                        ? $"Password protection removed — {System.IO.Path.GetFileName(targetFile)}"
+                        ? $"Password protection removed from {System.IO.Path.GetFileName(targetFile)}"
                         : status + " (password protection removed)";
                 }
                 SetStatus(status);
@@ -2733,7 +2733,7 @@ namespace TDPdf
             {
                 // Nothing could reopen the pre-print copy. Keep the live document (which now has the
                 // annotations burned in) rather than throwing out of Print_Click's finally block.
-                SetStatus("Printed - the pre-print copy could not be reloaded; use Save As to keep your work");
+                SetStatus("Printed, but the pre-print copy could not be reloaded. Use Save As to keep your work.");
                 return;
             }
 

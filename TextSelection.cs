@@ -65,7 +65,7 @@ namespace TDPdf
         /// names the Shape tool rather than a keystroke.
         /// </summary>
         private const string NoTextLayerHint =
-            "No text layer on this page — use the Shape tool to draw a box over it.";
+            "No text layer on this page. Use the Shape tool to draw a box over it.";
 
         /// <summary>
         /// Shown when the highlighter is used on a page with no text layer. Purely informational:
@@ -73,13 +73,13 @@ namespace TDPdf
         /// hugging individual words.
         /// </summary>
         private const string NoTextLayerHighlightHint =
-            "No text layer on this page — highlighting a rectangle instead.";
+            "No text layer on this page. Highlighting a rectangle instead.";
 
         /// <summary>
         /// Shown when a markup tool is pressed on a blank part of a page that does have text.
         /// </summary>
         private const string NoTextHereHint =
-            "No text here — drag across words to mark them.";
+            "No text here. Drag across words to mark them.";
 
         /// <summary>
         /// True when PdfPig finds selectable text on the page. Cheap after the first call: the
