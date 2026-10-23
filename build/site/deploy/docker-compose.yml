@@ -1,0 +1,64 @@
+# tdpdf.com on doodlessd.
+#
+# Lives at /home/derek/tdpdf-site-stack/docker-compose.yml, beside docs-stack (whose pattern
+# this follows), chores-stack and documenso-stack. Two containers:
+#
+#   tdpdf-site         the static pages in nginx, from ghcr.io/doodlemania2/tdpdf-site:latest.
+#                      .github/workflows/site.yml builds and pushes that tag; watchtower (it
+#                      lives in docs-stack and watches every container carrying its label)
+#                      pulls it within 5 minutes. No deploy credential exists anywhere.
+#   tdpdf-site-tunnel  cloudflared for the remotely managed tunnel `tdpdf-site`. Cloudflare
+#                      holds the ingress (tdpdf.com and www.tdpdf.com -> http://tdpdf-site:8080).
+#                      TUNNEL_TOKEN is in .env, mode 600, never in git.
+#
+# No published port: the tunnel is the only way in. Do not add an NPM proxy host for it.
+
+name: tdpdf-site
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  tdpdf-site:
+    image: ghcr.io/doodlemania2/tdpdf-site:latest
+    container_name: tdpdf-site
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp, /var/cache/nginx]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 64m, cpus: "0.25" }
+    logging: *logging
+
+  tdpdf-site-tunnel:
+    image: cloudflare/cloudflared:2026.8.2
+    container_name: tdpdf-site-tunnel
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:2000", "run"]
+    env_file: .env
+    depends_on:
+      tdpdf-site: { condition: service_healthy }
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "65532:65532"
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:2000", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { memory: 128m, cpus: "0.25" }
+    logging: *logging

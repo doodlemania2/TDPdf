@@ -1,0 +1,88 @@
+name: site
+
+# Builds tdpdf.com and publishes it as a container image, ghcr.io/doodlemania2/tdpdf-site.
+#
+# The site is static HTML (build/site/build-site.ps1) served by nginx on doodlessd. This
+# workflow never reaches doodlessd: it pushes :latest with the built-in GITHUB_TOKEN, and
+# watchtower there pulls it within five minutes (build/site/deploy/docker-compose.yml). So
+# there is no deploy key, SSH key or API token to mint, store or rotate.
+#
+# When it runs:
+#   - a push to main that touches the site or a page it publishes (PRIVACY.md and
+#     THIRD-PARTY-NOTICES.md are pages);
+#   - after every successful release run, so the download page moves to the new version
+#     without anyone remembering to rebuild it;
+#   - by hand (workflow_dispatch), optionally against a specific release tag.
+#
+# Runs on the self-hosted `tdpdf` runner, which has Docker (dind) and pwsh. None of these
+# triggers is reachable from a fork PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'build/site/**'
+      - 'PRIVACY.md'
+      - 'THIRD-PARTY-NOTICES.md'
+      - 'Resources/splash-logo.png'
+      - '.github/workflows/site.yml'
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag the download page describes (e.g. v2.0.2.0). Empty = latest release."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+# One publish at a time, and the newest wins: a build for an older commit is worthless.
+concurrency:
+  group: site
+  cancel-in-progress: true
+
+jobs:
+  site:
+    # After a release, only when it succeeded: a failed release has no assets to describe.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: tdpdf
+    timeout-minutes: 15
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/tdpdf-site
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Build the pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $opts = @{ OutputDir = 'build/site/out' }
+          if ($env:TAG) { $opts.Tag = $env:TAG }
+          ./build/site/build-site.ps1 @opts
+
+      - name: Build and push the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IMAGE_LC="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "$IMAGE_LC:latest" -t "$IMAGE_LC:${{ github.sha }}" build/site
+          docker push "$IMAGE_LC:${{ github.sha }}"
+          docker push "$IMAGE_LC:latest"
+          {
+            echo '### tdpdf.com published'
+            echo
+            echo "\`$IMAGE_LC:latest\` now points at ${{ github.sha }}. doodlessd picks it up within 5 minutes."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -6,7 +6,7 @@
 <h1>Download TDPdf <em>{{VERSION}}</em></h1>
 <p class="tdp-lead">One signed file, about {{EXE_SIZE_MB}}&nbsp;MB. Run it straight away, or click <i>Install TDPdf…</i> in the status bar to install it for your account. You don't need to be an administrator.</p>
 <div class="tdp-dl" style="margin-top:1.8rem">
-<img class="tdp-dl-mark" src="https://raw.githubusercontent.com/doodlemania2/TDPdf/main/Resources/splash-logo.png" alt="" width="88" height="88">
+<img class="tdp-dl-mark" src="{{LOGO}}" alt="" width="88" height="88">
 <div>
 <h2 style="font-size:1.35rem">TDPdf for Windows</h2>
 <p class="tdp-muted" style="margin:0">Version {{VERSION}} · {{EXE_SIZE_MB}} MB · signed by The Doodle Project</p>

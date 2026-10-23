@@ -1,195 +1,141 @@
-<!--
-  TDPdf site theme — injected into Ghost Settings -> Code injection -> Site header
-  by build/ghost/publish-site.ps1. Do not paste this into the Ghost admin UI by hand:
-  the script owns this field, and a hand-edit is overwritten on the next publish.
+/*
+  tdpdf.com — the whole stylesheet. Built into the site by build/site/build-site.ps1.
 
-  Every colour below is lifted from Themes/Dark.xaml, which is the application's own
-  dark palette. Keep the two in step — if a brush changes there, change it here.
+  Every colour is lifted from Themes/Dark.xaml, the application's own dark palette. Keep
+  the two in step: if a brush changes there, change it here.
 
-  This is deliberately code injection rather than a forked Ghost theme. A fork means
-  owning a whole theme's markup, its Handlebars templates and its upgrade path forever,
-  in exchange for restyling what is really a handful of surfaces on five static pages.
-  Ghost's stock theme already carries the accessibility and responsive work; this only
-  repaints it.
--->
-<style>
-  :root {
-    /* Themes/Dark.xaml */
-    --tdp-bg-dark:        #1a1a1a;  /* BgDark          */
-    --tdp-bg-panel:       #242424;  /* BgPanel         */
-    --tdp-bg-deep:        #111111;  /* PanelBackground */
-    --tdp-bg-hover:       #2e2e2e;  /* BgHover         */
-    --tdp-border:         #333333;  /* BorderDim       */
-    --tdp-accent:         #4ade80;  /* AccentGreen     */
-    --tdp-accent-dim:     #22543d;  /* AccentGreenDim  */
-    --tdp-accent-mid:     #1a8f48;  /* SelectionAccent */
-    --tdp-text:           #e0e0e0;  /* TextPrimary     */
-    --tdp-text-secondary: #888888;  /* TextSecondary   */
-    --tdp-text-muted:     #444444;  /* TextMuted       */
-    --tdp-warning:        #ffa500;  /* WarningOrange   */
-    --tdp-danger:         #ef4444;  /* DangerRed       */
+  The root font size is 62.5% (1rem = 10px) and body text 1.7rem, the scale the site was
+  first written against. Inline styles in content/*.md and the .tdp components below are
+  in that unit, so keep it.
+*/
 
-    /* Ghost's stock themes (Source, Casper) read these. Overriding them here
-       repaints most of the site without touching a single theme selector. */
-    --background-color: var(--tdp-bg-dark);
-    --ghost-accent-color: var(--tdp-accent);
-    --color-darkgrey: var(--tdp-text);
-    --color-midgrey: var(--tdp-text-secondary);
-    --color-lightgrey: var(--tdp-border);
-    --color-wash: var(--tdp-bg-panel);
-    --color-border: var(--tdp-border);
+:root {
+  /* Themes/Dark.xaml */
+  --tdp-bg-dark:        #1a1a1a;  /* BgDark          */
+  --tdp-bg-panel:       #242424;  /* BgPanel         */
+  --tdp-bg-deep:        #111111;  /* PanelBackground */
+  --tdp-border:         #333333;  /* BorderDim       */
+  --tdp-accent:         #4ade80;  /* AccentGreen     */
+  --tdp-accent-dim:     #22543d;  /* AccentGreenDim  */
+  --tdp-accent-mid:     #1a8f48;  /* SelectionAccent */
+  --tdp-text:           #e0e0e0;  /* TextPrimary     */
+  --tdp-text-secondary: #888888;  /* TextSecondary   */
+  --tdp-warning:        #ffa500;  /* WarningOrange   */
+  --tdp-content-w:      720px;
+  color-scheme: dark;
+}
 
-    /* Dark form controls, scrollbars and focus rings, for free. */
-    color-scheme: dark;
-  }
+*, *::before, *::after { box-sizing: border-box; }
 
-  html, body {
-    background-color: var(--tdp-bg-dark);
-    color: var(--tdp-text);
-  }
+html { font-size: 62.5%; -webkit-text-size-adjust: 100%; }
 
-  /* Ghost themes paint several full-width bands with their own background. */
-  .site-header, .gh-head, .site-footer, .gh-foot,
-  .site-header-content, .gh-navigation, .gh-outer, .gh-inner {
-    background-color: transparent;
-    color: var(--tdp-text);
-  }
+body {
+  margin: 0;
+  background-color: var(--tdp-bg-dark);
+  color: var(--tdp-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 1.7rem;
+  line-height: 1.6;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
 
-  h1, h2, h3, h4, h5, h6,
-  .gh-article-title, .post-card-title, .article-title {
-    color: #ffffff;
-  }
+h1, h2, h3, h4, h5, h6 { color: #ffffff; line-height: 1.25; margin: 1.6em 0 .6em; }
+h2 { border-bottom: 1px solid var(--tdp-border); padding-bottom: 0.3em; }
+:is(h1, h2, h3, h4, h5, h6)[id] { scroll-margin-top: 1.5rem; }
 
-  h2 {
-    border-bottom: 1px solid var(--tdp-border);
-    padding-bottom: 0.3em;
-  }
+a { color: var(--tdp-accent); }
+a:hover { color: #ffffff; }
+:focus-visible { outline: 2px solid var(--tdp-accent); outline-offset: 2px; }
 
-  a { color: var(--tdp-accent); }
-  a:hover { color: #ffffff; }
+p, ul, ol, table, pre, blockquote { margin: 0 0 1.2em; }
+img { max-width: 100%; height: auto; border-radius: 5px; }
+hr { border: 0; border-top: 1px solid var(--tdp-border); margin: 2.4em 0; }
 
-  /* Navigation and footer links read as chrome, not as body links. */
-  .gh-head a, .site-header a, .gh-foot a, .site-footer a, .nav a {
-    color: var(--tdp-text-secondary);
-  }
-  .gh-head a:hover, .site-header a:hover, .gh-foot a:hover,
-  .site-footer a:hover, .nav a:hover {
-    color: var(--tdp-accent);
-  }
+::selection { background-color: var(--tdp-accent-mid); color: #ffffff; }
 
-  /* --- Content ------------------------------------------------------------ */
+.skip { position: absolute; left: -999px; top: 0; padding: .6em 1em; background: var(--tdp-accent); color: #0d1f12; z-index: 10; }
+.skip:focus { left: 1em; top: 1em; }
 
-  .gh-content, .post-full-content, .post-content {
-    color: var(--tdp-text);
-  }
+/* --- Header and footer ------------------------------------------------------ */
 
-  .gh-content blockquote, .post-full-content blockquote, blockquote {
-    background-color: var(--tdp-bg-panel);
-    border-left: 4px solid var(--tdp-warning);
-    color: var(--tdp-text);
-    padding: 1rem 1.25rem;
-    margin-left: 0;
-    margin-right: 0;
-    font-style: normal;
-  }
+.site-head, .site-foot { padding: 0 2rem; }
+.site-head-inner, .site-foot-inner {
+  max-width: 1120px; margin: 0 auto;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 3rem;
+}
+.site-head-inner { min-height: 7.2rem; justify-content: space-between; }
+.site-logo { display: inline-flex; align-items: center; gap: 1rem; color: #ffffff; font-weight: 800; font-size: 2.2rem; letter-spacing: -.02em; text-decoration: none; }
+.site-logo img { width: 3.2rem; height: 3.2rem; border-radius: 8px; }
+.site-logo:hover { color: #ffffff; }
 
-  /* Inline code and fenced blocks: the download page leans on both. */
-  code, kbd, samp, tt {
-    background-color: var(--tdp-bg-panel);
-    color: var(--tdp-accent);
-    border: 1px solid var(--tdp-border);
-    border-radius: 3px;
-    padding: 0.1em 0.35em;
-    font-size: 0.9em;
-  }
+.site-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .4rem 2.4rem; }
+.site-nav a { color: var(--tdp-text-secondary); text-decoration: none; font-weight: 600; font-size: 1.5rem; }
+.site-nav a:hover, .site-nav a[aria-current="page"] { color: var(--tdp-accent); }
 
-  pre {
-    background-color: var(--tdp-bg-deep);
-    border: 1px solid var(--tdp-border);
-    border-radius: 5px;
-    color: var(--tdp-text);
-    padding: 1rem 1.25rem;
-    overflow-x: auto;
-  }
+.site-main { flex: 1 0 auto; }
 
-  pre code {
-    background: none;
-    border: 0;
-    padding: 0;
-    color: inherit;
-    font-size: 0.95em;
-  }
+.site-foot { border-top: 1px solid var(--tdp-border); margin-top: 6rem; }
+.site-foot-inner { padding: 3rem 0; justify-content: space-between; color: var(--tdp-text-secondary); font-size: 1.4rem; }
+.site-foot-brand { color: #ffffff; font-weight: 800; }
 
-  /* The licences page is one very long table-and-heading document; the privacy
-     and telemetry pages are mostly tables. These need to be legible, not pretty. */
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    display: block;
-    overflow-x: auto;
-  }
+/* --- Content column --------------------------------------------------------- */
+/* Text sits in a readable column; a .tdp-band breaks out to the full width. */
 
-  th, td {
-    border: 1px solid var(--tdp-border);
-    padding: 0.5rem 0.75rem;
-    text-align: left;
-    vertical-align: top;
-  }
+.canvas {
+  display: grid;
+  grid-template-columns:
+    [full-start] minmax(2rem, 1fr)
+    [main-start] min(var(--tdp-content-w), 100% - 4rem)
+    [main-end] minmax(2rem, 1fr)
+    [full-end];
+}
+.canvas > * { grid-column: main-start / main-end; }
+.canvas > .tdp-band { grid-column: full-start / full-end; }
+.doc { padding-top: 4rem; }
+.doc-title { font-size: clamp(3.2rem, 5vw, 4.6rem); letter-spacing: -.02em; margin: 0 0 3rem; }
 
-  th {
-    background-color: var(--tdp-bg-panel);
-    color: #ffffff;
-  }
+blockquote {
+  background-color: var(--tdp-bg-panel);
+  border-left: 4px solid var(--tdp-warning);
+  padding: 1rem 1.25rem;
+  margin-left: 0;
+  margin-right: 0;
+}
+blockquote > :last-child { margin-bottom: 0; }
 
-  tbody tr:nth-child(even) { background-color: #1f1f1f; }
+code, kbd, samp {
+  background-color: var(--tdp-bg-panel);
+  color: var(--tdp-accent);
+  border: 1px solid var(--tdp-border);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
 
-  hr { border: 0; border-top: 1px solid var(--tdp-border); }
+pre {
+  background-color: var(--tdp-bg-deep);
+  border: 1px solid var(--tdp-border);
+  border-radius: 5px;
+  color: var(--tdp-text);
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+}
+pre code { background: none; border: 0; padding: 0; color: inherit; font-size: 0.95em; }
 
-  img { border-radius: 5px; }
+/* The licences page is one very long table-and-heading document; the privacy and
+   telemetry pages are mostly tables. These need to be legible, not pretty. */
+table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; font-size: .92em; }
+th, td { border: 1px solid var(--tdp-border); padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+th { background-color: var(--tdp-bg-panel); color: #ffffff; }
+tbody tr:nth-child(even) { background-color: #1f1f1f; }
 
-  ::selection {
-    background-color: var(--tdp-accent-mid);
-    color: #ffffff;
-  }
-
-  /* --- Buttons and cards -------------------------------------------------- */
-
-  .gh-button, .button, button, input[type="submit"],
-  .gh-head-button, .post-card, .gh-card {
-    border-color: var(--tdp-border);
-  }
-
-  .gh-button, .button, button, input[type="submit"], .gh-head-button {
-    background-color: var(--tdp-accent-dim);
-    color: var(--tdp-accent);
-  }
-
-  .gh-button:hover, .button:hover, button:hover,
-  input[type="submit"]:hover, .gh-head-button:hover {
-    background-color: var(--tdp-accent-mid);
-    color: #ffffff;
-  }
-
-  .post-card, .gh-card, .gh-canvas .kg-card {
-    background-color: var(--tdp-bg-panel);
-  }
-
-  input, textarea, select {
-    background-color: var(--tdp-bg-panel);
-    color: var(--tdp-text);
-    border: 1px solid var(--tdp-border);
-  }
-
-  /* --- Anchored headings -------------------------------------------------- */
-  /* The licences and privacy pages carry in-page tables of contents, so a
-     heading jumped to must not land flush against the viewport top. */
-  :is(h1, h2, h3, h4, h5, h6)[id] { scroll-margin-top: 1.5rem; }
-
-  /* ======================================================================
-     Product pages (home, download). The page body is one html card that the
-     publish script writes; these classes are its layout. Everything is scoped
-     under .tdp so the document pages (privacy, licences, telemetry) are untouched.
-     ====================================================================== */
+/* ======================================================================
+   Product pages (home, download). Everything is scoped under .tdp so the
+   document pages (privacy, licences, telemetry) are untouched.
+   ====================================================================== */
 
   :root {
     --tdp-gold: #e8cf63;               /* the mark in Resources/splash-logo.png */
@@ -198,17 +144,6 @@
     --tdp-maxw: 1120px;
   }
 
-  /* The home page is its own hero; Ghost's title block above it is redundant. */
-  .home-template .gh-article-header,
-  .page-download .gh-article-header { display: none; }
-  .home-template .gh-article, .page-download .gh-article { padding-top: 0; }
-
-  /* Members/newsletter chrome: TDPdf has no newsletter. */
-  .gh-head-actions .gh-head-button, .gh-head-members, .gh-footer-signup,
-  [data-portal="signup"], [data-portal="signin"] { display: none !important; }
-
-  /* Source sets html { font-size: 62.5% }, so 1rem is 10px there. Everything below is
-     in em off this 17px base instead, which keeps the components independent of that. */
   .tdp { font-size: 1.7rem; line-height: 1.65; box-sizing: border-box; }
   .tdp *, .tdp *::before, .tdp *::after { box-sizing: border-box; }
   .tdp-band { width: 100%; max-width: 100vw; min-width: 0; overflow-x: clip; }
@@ -220,7 +155,7 @@
   .tdp p { margin: 0 0 1em; }
   .tdp img { display: block; max-width: 100%; height: auto; }
 
-  .tdp-band { grid-column: full-start / full-end; padding: clamp(3em, 7vw, 6em) 1.25em; }
+  .tdp-band { padding: clamp(3em, 7vw, 6em) 1.25em; }
   .tdp-band + .tdp-band { margin-top: 0 !important; }
   .tdp-band.alt { background: linear-gradient(180deg, #1f1f1f, #161616); border-top: 1px solid var(--tdp-border); border-bottom: 1px solid var(--tdp-border); }
   .tdp-wrap { max-width: var(--tdp-maxw); margin: 0 auto; }
@@ -313,4 +248,3 @@
     .tdp-btn { width: 100%; justify-content: center; }
   }
   @media (prefers-reduced-motion: reduce) { .tdp-btn { transition: none; } .tdp-btn:hover { transform: none; } }
-</style>

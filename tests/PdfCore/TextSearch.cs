@@ -29,7 +29,7 @@ internal static class TextSearch
 
     private static void DemoIncidentReport(Action<string, bool, string> Check, string tmp)
     {
-        string? src = FindRepoFile("build/ghost/screenshots/demo/incident-report.pdf");
+        string? src = FindRepoFile("build/site/screenshots/demo/incident-report.pdf");
         if (src is null) { Check("demo incident-report.pdf found", false, "not found above " + AppContext.BaseDirectory); return; }
 
         List<PdfTextSearch.Match> matches;

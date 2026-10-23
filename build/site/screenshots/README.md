@@ -2,7 +2,7 @@
 
 The home page has a slot for each file below. Until a PNG is on `main`, the page shows
 an illustration in that slot instead (labelled as one), so nothing ever renders broken.
-Add a file, merge it, run `build/ghost/publish-site.ps1`, and the slot switches over.
+Add a file and merge it; `.github/workflows/site.yml` rebuilds tdpdf.com and the slot switches over.
 
 ## How they are made
 
