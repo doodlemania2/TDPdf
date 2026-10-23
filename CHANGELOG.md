@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.0.2.0] - 2026-10-23
+
+Fixes from a curated sync with upstream KillerPDF v1.8.81 through v1.8.92. As before, upstream's changelog was read as a list of problems to look for in TDPdf's own code, not as code to copy.
+
+### Fixed
+
+- **Removing a link threw away every unsaved annotation in the document** (upstream 1.8.90). **Remove Link from PDF** now leaves your annotations where they are.
+- **Rotating, deleting or reordering pages, or removing a link, emptied every form field you had filled in since the last save.** Those values are now kept. Found during this sync; it is not an upstream item.
+- **Printing a filled-in form without saving it first printed the old values**, unless the document also had annotations (upstream 1.8.81).
+- **Save As, Save Flattened, Extract Pages, Save Searchable PDF and the signed-copy downloads kept a non-PDF extension you typed.** For example, "report.v2" or "scan.jpg" was saved as a PDF under that name. TDPdf now adds `.pdf` ("report.v2.pdf") and asks again if that name already exists (upstream #450).
+- **After a Redact or an in-place text edit, Ctrl+S could overwrite a signed original without warning** (upstream 1.8.90). Those tools remove the signature from the open document before they run, so the save warning no longer saw it. Moving a document with unsaved changes to another window now asks the same questions as a save; before, it asked neither.
+- **If Windows blocks the text library (application control or antivirus), moving the pointer over a page no longer shows a crash dialog every time.** Text selection simply isn't offered (upstream #441).
+- **Install and uninstall now return specific Windows exit codes** (5, 112, 1223, 1618) instead of 1 for every failure. A second install running at the same time returns 1618, which Intune retries, instead of racing the first one (upstream 1.8.90). The codes are listed in `docs/intune-distribution.md`.
+- **Screen readers now announce the sidebar toggle and the close buttons in the signature, Transform and Print Preview windows**, and the buttons on the keyboard shortcuts overlay show keyboard focus (upstream 1.8.90).
+- **Tooltips and status messages are written as plain sentences** rather than joined with spaced dashes (upstream 1.8.90).
+
+### Not taken
+
+- Upstream's System.Security.Cryptography.Pkcs advisory update (1.8.90/1.8.91): TDPdf does not reference that package, and `dotnet list package --vulnerable` reports nothing.
+- Rotated-page search highlights, selection and Crop (1.8.90): TDPdf already maps these correctly, because PdfPig reports text the way the page is displayed. tests/PdfCore checks this.
+- The fading-dialog fix for Insert Blank Page (1.8.90): TDPdf's dialogs don't fade out when they close.
+- Split pane, film grain, wordmarks, fonts, themes, the website, localization, Chocolatey/WinGet and engine packaging: as before.
+
 ## [2.0.1.0] - 2026-10-16
 
 ### Added
@@ -1252,7 +1275,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.0.1.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.0.2.0...HEAD
+[2.0.2.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.1.0...v2.0.2.0
 [2.0.1.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.0.0...v2.0.1.0
 [2.0.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.31.0.0...v2.0.0.0
 [1.31.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.30.2.0...v1.31.0.0
