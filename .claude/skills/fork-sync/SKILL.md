@@ -35,7 +35,7 @@ For each upstream feature/fix since our last sync, decide: **already have it? wa
 
 **Skip** anything that is: branding/landing-page (`pdf-landing/`, README marketing, screenshots, og-images), upstream's extra "edgy" themes (Blood/Greed/Cyanotic), Chocolatey/winget packaging, or localization unless explicitly requested (our product strings differ). **Port** genuine bug fixes and user-facing features.
 
-Group the keepers into clusters by size/risk and present them to the user (an `AskUserQuestion` with multiSelect works well) — confirm scope and whether to deliver as one combined PR + version bump or one PR per cluster.
+**Derek decides on every upstream change individually.** Present each applicable item on its own: a one-line description, a size and a recommendation (`AskUserQuestion` with multiSelect works well). Do not write any port code until he has picked. Already-fixed and N/A items only need reporting.
 
 ### 3. Port each cluster (adapt, never blind-copy)
 All feature work tends to touch the ~8000-line `MainWindow.xaml.cs`, so **port clusters sequentially, not in parallel worktrees** (parallel edits to that file conflict badly). For each cluster, delegate to a `general-purpose` implementation agent with a precise brief that includes:
