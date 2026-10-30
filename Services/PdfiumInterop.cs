@@ -120,8 +120,11 @@ namespace TDPdf.Services
         private const int FPDFBitmapBgra = 4;   // FPDFBitmap_BGRA — the layout Docnet's GetImage returns
         private const int FpdfAnnot = 0x01;     // paint the annotation appearance streams the file carries
         private const int FpdfLcdText = 0x02;   // subpixel text antialiasing
+        private const int FpdfPrinting = 0x800; // FPDF_PRINTING: annotations follow their Print flag, not NoView
         private const int FpdfAnnotSubtypeWidget = 20;   // fpdf_annot.h FPDF_ANNOT_WIDGET
         private const int FpdfAnnotFlagHidden = 1 << 1;  // fpdf_annot.h FPDF_ANNOT_FLAG_HIDDEN
+        private const int FpdfAnnotFlagPrint = 1 << 2;   // fpdf_annot.h FPDF_ANNOT_FLAG_PRINT
+        private const int FpdfAnnotFlagNoView = 1 << 5;  // fpdf_annot.h FPDF_ANNOT_FLAG_NOVIEW
 
         private const uint OpaqueWhite = 0xFFFFFFFFu;
         private const uint FullyTransparent = 0x00000000u;
@@ -179,7 +182,7 @@ namespace TDPdf.Services
         /// Same locking and handle discipline as <see cref="HideWidgetAnnotations"/> — call only
         /// from inside the <c>PdfiumLock</c> section, and close every annot handle that is opened.
         /// </remarks>
-        private static void RestoreWidgetAnnotationFlags(IntPtr page, Dictionary<int, int>? saved)
+        private static void RestoreWidgetAnnotationFlags(IntPtr page, Dictionary<int, int>? saved, bool forPrint)
         {
             if (saved is null) return;
             try
@@ -188,12 +191,25 @@ namespace TDPdf.Services
                 {
                     IntPtr annot = FPDFPage_GetAnnotRaw(page, kv.Key);
                     if (annot == IntPtr.Zero) continue;
-                    try { FPDFAnnot_SetFlagsRaw(annot, kv.Value); }
+                    try { FPDFAnnot_SetFlagsRaw(annot, forPrint ? PrintVisibility(kv.Value) : kv.Value); }
                     finally { FPDFPage_CloseAnnotRaw(annot); }
                 }
             }
             catch { /* best-effort: the document is a one-shot load that is never saved */ }
         }
+
+        /// <summary>
+        /// A widget's flags rewritten so FFLDraw shows it exactly when it would print.
+        /// </summary>
+        /// <remarks>
+        /// FPDF_PRINTING makes the static annotation pass follow the Print flag, but FFLDraw, which
+        /// paints the form fields, decides visibility from Hidden and NoView only. So on the print
+        /// path a field without the Print flag (a Submit button, an on-screen hint) is hidden, and a
+        /// print-only field (NoView plus Print) has NoView cleared. Hidden itself always wins, as
+        /// the spec says it does for both display and print. In-memory only, like the rest.
+        /// </remarks>
+        private static int PrintVisibility(int flags) =>
+            (flags & FpdfAnnotFlagPrint) != 0 ? flags & ~FpdfAnnotFlagNoView : flags | FpdfAnnotFlagHidden;
 
         /// <summary>
         /// Renders one page of <paramref name="sourcePath"/> to a BGRA buffer with the annotation
@@ -217,6 +233,14 @@ namespace TDPdf.Services
         /// Grid/Two-Page secondary tiles and the Continuous strip), where dropping the baked
         /// appearance would simply erase the filled-in values.
         /// </param>
+        /// <param name="forPrint">
+        /// Render as the page PRINTS rather than as it shows: annotations follow their Print flag
+        /// (print-only stamps appear, screen-only buttons and notes do not) and text is greyscale
+        /// antialiased. For the print path and Save Flattened only, whose output is paper or a
+        /// picture of the page, never for anything drawn on screen. LCD (subpixel) antialiasing is
+        /// dropped there because it bakes colour fringes tuned to one monitor's subpixel layout
+        /// into pixels that end up on paper or in a file.
+        /// </param>
         /// <remarks>
         /// One-shot by design: owning the whole document → form → page lifetime here is what makes
         /// the native teardown ordering safe (see the class header), but it does mean an extra
@@ -230,9 +254,10 @@ namespace TDPdf.Services
         /// </remarks>
         internal static byte[]? RenderPageWithAnnotations(
             string sourcePath, int pageIndex, int width, int height,
-            bool transparentBackground = false, bool includeFormFields = true)
+            bool transparentBackground = false, bool includeFormFields = true, bool forPrint = false)
         {
             if (width <= 0 || height <= 0) return null;
+            int renderFlags = forPrint ? FpdfAnnot | FpdfPrinting : FpdfAnnot | FpdfLcdText;
             try
             {
                 try { _ = DocLib.Instance; } catch { /* force PDFium init */ }
@@ -304,7 +329,7 @@ namespace TDPdf.Services
                                     FPDFBitmap_FillRectRaw(bitmap, 0, 0, width, height,
                                         transparentBackground ? FullyTransparent : OpaqueWhite);
                                     FPDF_RenderPageBitmapRaw(bitmap, page, 0, 0, width, height, 0,
-                                        FpdfAnnot | FpdfLcdText);
+                                        renderFlags);
                                     // Widget (form field) appearances live in the form-fill layer.
                                     // Skipped entirely when the caller does not want them: the
                                     // hidden flag set above already suppresses them, but FFLDraw is
@@ -314,9 +339,9 @@ namespace TDPdf.Services
                                         // Restore first: FFLDraw honours the hidden flag too, so
                                         // leaving it set would suppress the very pass that is meant
                                         // to be the single painter of these fields.
-                                        RestoreWidgetAnnotationFlags(page, savedWidgetFlags);
+                                        RestoreWidgetAnnotationFlags(page, savedWidgetFlags, forPrint);
                                         FPDF_FFLDrawRaw(form, bitmap, page, 0, 0, width, height, 0,
-                                            FpdfAnnot | FpdfLcdText);
+                                            renderFlags);
                                     }
                                 }
                                 finally { FPDFBitmap_DestroyRaw(bitmap); }

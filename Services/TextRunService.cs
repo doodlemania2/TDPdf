@@ -331,11 +331,11 @@ namespace TDPdf.Services
                     double sT = double.MinValue, sB = double.MaxValue, sL = double.MaxValue, sR = double.MinValue;
                     foreach (var w in sws)
                     {
-                        var bb = w.BoundingBox;
-                        if (bb.Top > sT) sT = bb.Top;
-                        if (bb.Bottom < sB) sB = bb.Bottom;
-                        if (LeftOf(bb) < sL) sL = LeftOf(bb);
-                        if (RightOf(bb) > sR) sR = RightOf(bb);
+                        var (bl, bb, br, bt) = PdfBoxExtent.Of(w.BoundingBox);
+                        if (bt > sT) sT = bt;
+                        if (bb < sB) sB = bb;
+                        if (bl < sL) sL = bl;
+                        if (br > sR) sR = br;
                     }
                     // A wide segment is a title, a full-measure line of body text or a footer: it closes the
                     // open column section and emits in place, so the sections above and below a
@@ -363,8 +363,9 @@ namespace TDPdf.Services
             var lineWords = new List<(List<UglyToad.PdfPig.Content.Word> Words, double Top, double Bottom)>();
             foreach (var w in words)
             {
-                var bb = w.BoundingBox;
-                double wTop = bb.Top, wBottom = bb.Bottom;
+                // Corner extent, not raw Top/Bottom: upside-down text has Top below Bottom, which
+                // made minH negative so its words never joined a line (upstream #437).
+                var (_, wBottom, _, wTop) = PdfBoxExtent.Of(w.BoundingBox);
                 int found = -1;
                 for (int i = 0; i < lineWords.Count; i++)
                 {
@@ -437,9 +438,7 @@ namespace TDPdf.Services
                         : (a, b) => LeftOf(a.BoundingBox).CompareTo(LeftOf(b.BoundingBox)));
                     foreach (var letter in letters)
                     {
-                        var g = letter.BoundingBox;
-                        double l = Math.Min(g.Left, g.Right);
-                        double r = Math.Max(g.Left, g.Right);
+                        var (l, _, r, _) = PdfBoxExtent.Of(letter.BoundingBox);
                         result.Chars.Add(new RunChar(letter.Value, l, r, wordOrdinal, lineIndex));
                     }
                     wordOrdinal++;
@@ -461,8 +460,8 @@ namespace TDPdf.Services
             return result;
         }
 
-        private static double LeftOf(UglyToad.PdfPig.Core.PdfRectangle r) => Math.Min(r.Left, r.Right);
-        private static double RightOf(UglyToad.PdfPig.Core.PdfRectangle r) => Math.Max(r.Left, r.Right);
+        private static double LeftOf(UglyToad.PdfPig.Core.PdfRectangle r) => PdfBoxExtent.LeftOf(r);
+        private static double RightOf(UglyToad.PdfPig.Core.PdfRectangle r) => PdfBoxExtent.RightOf(r);
 
         /// <summary>
         /// Majority vote over a line's characters: RTL when right-to-left letters outnumber the

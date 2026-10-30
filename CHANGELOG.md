@@ -6,6 +6,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.1.0.0] - 2026-10-30
+
+Fixes from a curated sync with upstream KillerPDF v1.9.0 and the last v1.8.92 commits. Upstream 1.9.0 replaced its PDF engine, so none of its code applies here. As before, its changelog was read as a list of problems to look for in TDPdf's own code, and each item was approved individually.
+
+### Security
+
+- **Redaction now also removes comments, links and form fields under a marked area**, including the field's typed value and a hybrid form's XFA copy of it. Before, only page content was removed, and the check that nothing survived looked only at page text. If any annotation or field is still inside a mark, the redacted file is not written (upstream 1.9.0).
+- **Files opened while TDPdf is running are handed only to a TDPdf window of the same Windows account and session.** The channel was named after the user name alone and had no access control, so two RDP sessions of one account could swap files and another account could take the name (upstream 1.9.0).
+
+### Added
+
+- **Right-clicking the title bar or pressing Alt+Space opens the window menu** (Restore, Move, Size, Minimize, Maximize, Close) (upstream 1.9.0).
+- **TDPdf warns before saving over a file another program changed since you opened it**, and offers Overwrite, Save As or Cancel. The check compares content, so a rewrite with the same size and date is still caught (upstream 1.9.0).
+- **The first-run install asks whether to add a desktop shortcut** instead of always creating one (upstream 1.9.0).
+
+### Fixed
+
+- **If a save cannot finish writing over your file, TDPdf keeps a complete copy next to it** and tells you where. Before, a failed fallback copy could leave the file cut short and delete the only good copy (upstream 1.9.0).
+- **Extract Page(s) can no longer overwrite the document you are extracting from**, and it writes its file safely (upstream 1.9.0).
+- **Signing out of or shutting down Windows with unsaved changes now stops and tells you**, instead of closing TDPdf without asking (upstream 1.9.0).
+- **If a page edit fails, the document is left as it was** and you are told why. This covers rotate, delete, insert, duplicate, merge, crop, transform, link removal and page moves; a failed drag to reorder pages used to raise the crash dialog (upstream 1.9.0).
+- **Deleting the last pages keeps you at the end of the document** instead of jumping to page 1 (upstream 1.9.0).
+- **Printing, print preview and Save Flattened follow each annotation's print setting**, so screen-only notes and buttons stay off the page and print-only stamps appear (upstream 1.9.0).
+- **Two-sided printing chosen in the printer's own Properties dialog is kept**, and the two-sided option is offered on printers that report it only for the whole document (upstream #454).
+- **Saved Hebrew text that contains numbers or English words keeps the order shown in its text box**, including wrapped lines and brackets (upstream #435).
+- **Selecting, copying and table-exporting rotated, upside-down or mirrored text gives correct boxes and lines.** Sideways text used to get zero-height selections and mixed-up lines (upstream #437, #452, #453).
+- **Form fields filled with check marks, stars, arrows and other symbols save with those characters visible** instead of empty boxes. Emoji outside the basic character range still cannot be drawn by the PDF library and are listed in the existing warning (upstream 1.9.0).
+- **A form field that appears in several places shows the same value in every copy as you type**, and saves it to all of them, including repeated check boxes (upstream 1.9.0).
+- **Closing a TDPdf prompt with Alt+F4 counts as Cancel.** It counted as OK, so Alt+F4 on the install prompt installed (upstream 1.9.0).
+- **TDPdf opens inside the screen on small or high-scaling displays**, and the window cannot be made so small that the footer is cut off (upstream 1.8.92).
+- **The maximize button shows the restore icon while the window is maximized** (upstream 1.9.0).
+- **Uninstall removes the TDPdf folder when the profile path has accented letters or a percent sign.** It used to leave the folder behind silently (upstream 1.9.0).
+- **Uninstall no longer reports success while TDPdf is open.** It asks you to close TDPdf first; a silent `/uninstall` returns 1618 so Intune retries (upstream 1.9.0).
+- **A reinstall that cannot replace TDPdf.exe puts the original back** instead of leaving the install without its program, and an interactive install can no longer run at the same time as an Intune install (upstream 1.9.0).
+- **With several TDPdf windows open, each window's documents are remembered for next launch**, instead of the last window to close overwriting the others (upstream 1.9.0).
+- **Recent files no longer list the same document twice** when an old entry was stored with forward slashes (upstream 1.9.0).
+- **Keyboard focus moves into the Shortcuts overlay and returns when it closes**, and each group of radio options is a single Tab stop navigated with the arrow keys (upstream 1.8.92).
+
+### Not taken
+
+- Upstream's own PDF engine and everything built on it: Office export, OCR text replacement, paragraph editing, Find and Replace, certificate encryption, signature validation, preflight, optimization, macros and the command-line additions.
+- Split panes, comparison, the tray, Search Tools, the Killer Tools shared UI, themes, film grain, fonts, localization, the website and packaging, as before.
+- Ctrl+Q to quit and Ctrl+Shift+Q to close all tabs: a new shortcut scheme, not a fix.
+
 ## [2.0.2.0] - 2026-10-23
 
 Fixes from a curated sync with upstream KillerPDF v1.8.81 through v1.8.92. As before, upstream's changelog was read as a list of problems to look for in TDPdf's own code, not as code to copy.
@@ -1275,7 +1319,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.0.2.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.1.0.0...HEAD
+[2.1.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.2.0...v2.1.0.0
 [2.0.2.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.1.0...v2.0.2.0
 [2.0.1.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.0.0...v2.0.1.0
 [2.0.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.31.0.0...v2.0.0.0

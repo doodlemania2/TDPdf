@@ -48,7 +48,7 @@ namespace TDPdf
         // malformed AcroForm can never crash open or save.
 
         private readonly record struct FormFieldInfo(
-            int    ObjNum,        // widget annotation object number (used as key)
+            int    ObjNum,        // widget annotation object number (identifies the widget; values key on FieldKey)
             string FieldType,     // /Tx, /Btn, /Ch
             bool   IsCheckBox,
             bool   IsRadio,
@@ -78,7 +78,14 @@ namespace TDPdf
             // #242: true when the field's /AA additional-action JavaScript formats it as a number
             // (Acrobat and LiveCycle both write AFNumber_*). Form-aware OCR uses it to restrict
             // recognition to digits and separators, where O/l/S are the usual misreads.
-            bool   IsNumeric = false);
+            bool   IsNumeric = false,
+            // Key the pending value is stored under: the FIELD, not the widget, so every widget of
+            // one field (same name printed twice) shares one value (FormFieldSiblings.FieldKey).
+            // Equals ObjNum for a widget that is its own field.
+            int    FieldKey = 0,
+            // The widget's own /AS, which decides a check box's initial tick when the field's /V
+            // names a sibling's on-state rather than this widget's.
+            string WidgetState = "");
 
         /// <summary>
         /// Scans the current page's /Annots for Widget subtypes and overlays interactive
@@ -123,6 +130,19 @@ namespace TDPdf
             // Collect radio buttons per group so we can wire mutual exclusion after the loop.
             var radioGroups = new Dictionary<string, List<(Ellipse dot, string onVal)>>();
 
+            // Widgets that share one field, by FieldKey, so a change in one updates the others on
+            // the page at once (siblings on other pages read the shared value when they render).
+            // `syncing` stops a sibling's own change handler from echoing the update back.
+            var textSiblings  = new Dictionary<int, List<TextBox>>();
+            var comboSiblings = new Dictionary<int, List<(ComboBox combo, List<string> exports, List<string> options)>>();
+            var checkSiblings = new Dictionary<int, List<(TextBlock mark, string onVal)>>();
+            bool syncing = false;
+            static void AddSibling<T>(Dictionary<int, List<T>> map, int key, T item)
+            {
+                if (!map.TryGetValue(key, out var list)) map[key] = list = new();
+                list.Add(item);
+            }
+
             bool anyField = false;
             foreach (var f in fields)
             {
@@ -138,7 +158,7 @@ namespace TDPdf
                 // -- Text field ----------------------------------------------------
                 if (!f.IsCheckBox && !f.IsRadio && f.FieldType != "/Ch")
                 {
-                    string cur = _formTextValues.TryGetValue(f.ObjNum, out var tv) ? tv : f.CurrentValue;
+                    string cur = _formTextValues.TryGetValue(f.FieldKey, out var tv) ? tv : f.CurrentValue;
                     // Use the shorter canvas dimension as the font size reference so that
                     // rotated fields (where Cw and Ch are swapped vs. portrait) don't blow up.
                     double fieldShort = Math.Min(f.Cw, f.Ch);
@@ -180,14 +200,28 @@ namespace TDPdf
                     if (f.IsComb) tb.FontFamily = new FontFamily("Consolas");
                     tb.GotFocus  += (_, _) => tb.BorderBrush = focusBrush;
                     tb.LostFocus += (_, _) => tb.BorderBrush = greenBrush;
-                    int capturedKey = f.ObjNum;
-                    tb.TextChanged += (_, _) => { _formTextValues[capturedKey] = tb.Text; MarkDirty(); };
+                    int capturedKey = f.FieldKey;
+                    AddSibling(textSiblings, capturedKey, tb);
+                    tb.TextChanged += (_, _) =>
+                    {
+                        if (syncing) return;
+                        _formTextValues[capturedKey] = tb.Text;
+                        MarkDirty();
+                        if (!textSiblings.TryGetValue(capturedKey, out var sibs) || sibs.Count < 2) return;
+                        syncing = true;
+                        try
+                        {
+                            foreach (var other in sibs)
+                                if (!ReferenceEquals(other, tb) && other.Text != tb.Text) other.Text = tb.Text;
+                        }
+                        finally { syncing = false; }
+                    };
                     ctrl = tb;
                 }
                 // -- Dropdown / choice --------------------------------------------
                 else if (f.FieldType == "/Ch" && f.Options.Count > 0)
                 {
-                    string cur = _formTextValues.TryGetValue(f.ObjNum, out var tv) ? tv : f.CurrentValue;
+                    string cur = _formTextValues.TryGetValue(f.FieldKey, out var tv) ? tv : f.CurrentValue;
                     var combo = new ComboBox
                     {
                         Tag        = FormOverlayTag,
@@ -209,23 +243,42 @@ namespace TDPdf
                     if (selIdx < 0) selIdx = f.Options.IndexOf(cur);
                     combo.SelectedIndex = selIdx;   // -1 when /V matches nothing: leave it unset
 
-                    int capturedKey = f.ObjNum;
+                    int capturedKey = f.FieldKey;
+                    AddSibling(comboSiblings, capturedKey, (combo, exports, f.Options));
                     combo.SelectionChanged += (_, _) =>
                     {
+                        if (syncing) return;
                         int i = combo.SelectedIndex;
                         if (i < 0) return;
                         // Write the export value, which is what other viewers read back.
-                        _formTextValues[capturedKey] = i < exports.Count ? exports[i] : f.Options[i];
+                        string value = i < exports.Count ? exports[i] : f.Options[i];
+                        _formTextValues[capturedKey] = value;
                         MarkDirty();
+                        if (!comboSiblings.TryGetValue(capturedKey, out var sibs) || sibs.Count < 2) return;
+                        syncing = true;
+                        try
+                        {
+                            foreach (var (other, oex, oopt) in sibs)
+                            {
+                                if (ReferenceEquals(other, combo)) continue;
+                                int j = oex.IndexOf(value);
+                                if (j < 0) j = oopt.IndexOf(value);
+                                if (j >= 0 && other.SelectedIndex != j) other.SelectedIndex = j;
+                            }
+                        }
+                        finally { syncing = false; }
                     };
                     ctrl = combo;
                 }
                 // -- Checkbox ------------------------------------------------------
                 else if (f.IsCheckBox)
                 {
-                    bool isChecked = _formCheckValues.TryGetValue(f.ObjNum, out var cv) ? cv
-                        : !string.IsNullOrEmpty(f.CurrentValue)
-                          && f.CurrentValue != "/Off" && f.CurrentValue != "Off";
+                    // The pending value is the FIELD's state name ("/Off" or an on-state), shared by
+                    // every widget of the field; each widget is ticked when it names that widget's
+                    // own on-state, so siblings with different export values behave correctly.
+                    bool isChecked = _formCheckValues.TryGetValue(f.FieldKey, out var cv)
+                        ? FormFieldSiblings.IsOn(cv, f.OnValue)
+                        : FormFieldSiblings.InitiallyChecked(f.CurrentValue, f.OnValue, f.WidgetState);
 
                     // Custom border-based checkbox — WPF's built-in CheckBox indicator
                     // doesn't scale with Width/Height, so we draw it ourselves.
@@ -253,14 +306,18 @@ namespace TDPdf
                         Child           = checkMark,
                         ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
                     };
+                    AddSibling(checkSiblings, f.FieldKey, (checkMark, f.OnValue));
                     if (!f.IsReadOnly)
                     {
-                        int capturedKey = f.ObjNum;
+                        int capturedKey = f.FieldKey;
+                        string capturedOn = f.OnValue;
                         box.MouseLeftButtonDown += (_, e) =>
                         {
-                            bool now = !(_formCheckValues.TryGetValue(capturedKey, out var v) ? v : isChecked);
-                            _formCheckValues[capturedKey] = now;
-                            checkMark.Visibility = now ? Visibility.Visible : Visibility.Collapsed;
+                            string value = FormFieldSiblings.Toggle(checkMark.Visibility == Visibility.Visible, capturedOn);
+                            _formCheckValues[capturedKey] = value;
+                            if (checkSiblings.TryGetValue(capturedKey, out var sibs))
+                                foreach (var (mark, on) in sibs)
+                                    mark.Visibility = FormFieldSiblings.IsOn(value, on) ? Visibility.Visible : Visibility.Collapsed;
                             MarkDirty();
                             e.Handled = true;
                         };
@@ -567,10 +624,12 @@ namespace TDPdf
                     int objNum = GetObjectNumber(elem);
                     if (objNum < 0)
                         objNum = -(pageIndex * 10000 + i); // synthetic key for inline dicts
+                    int fieldKey = FormFieldSiblings.FieldKey(ann, objNum);
+                    string widgetState = ann.Elements["/AS"]?.ToString() ?? "";
 
                     result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
                         name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options,
-                        isComb, maxLen, isPushBtn, optionExports, isNumeric));
+                        isComb, maxLen, isPushBtn, optionExports, isNumeric, fieldKey, widgetState));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
@@ -675,19 +734,26 @@ namespace TDPdf
                         bool isComb = ffType.Contains("Tx") && (fieldFlags & (1 << 24)) != 0
                                       && combLen > 0 && !isMultiLine;
 
-                        if (_formTextValues.TryGetValue(objNum, out var textVal) && fieldDict is not null)
+                        // Values are keyed by FIELD, so every widget of a field finds the same value
+                        // here: /V lands on the field once (rewritten with the same value per widget)
+                        // and each widget gets its own regenerated appearance. A field with two
+                        // widgets used to keep one stale appearance, and the last widget written won.
+                        int fieldKey = FormFieldSiblings.FieldKey(ann, objNum);
+                        if (_formTextValues.TryGetValue(fieldKey, out var textVal) && fieldDict is not null)
                         {
-                            fieldDict.Elements["/V"] = new PdfString(textVal);
+                            FormFieldSiblings.SetValue(ann, new PdfString(textVal));
                             GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine,
                                 isComb ? combLen : 0);
                         }
-                        else if (_formCheckValues.TryGetValue(objNum, out var checkVal) && fieldDict is not null)
+                        else if (_formCheckValues.TryGetValue(fieldKey, out var checkVal) && fieldDict is not null)
                         {
+                            // /V is the field's state; /AS is this widget's own on-state or /Off, since
+                            // siblings may carry different on-state names (export values).
                             string onVal = WidgetOnValue(ann);
-                            fieldDict.Elements["/V"]  = new PdfName(checkVal ? onVal : "/Off");
-                            fieldDict.Elements["/AS"] = new PdfName(checkVal ? onVal : "/Off");
-                            ann.Elements["/AS"]       = new PdfName(checkVal ? onVal : "/Off");
-                            GenerateCheckBoxAppearance(ann, checkVal, onVal, fieldW, fieldH);
+                            string state = FormFieldSiblings.CheckStateFor(checkVal, onVal);
+                            FormFieldSiblings.SetValue(ann, new PdfName(checkVal.StartsWith('/') ? checkVal : "/" + checkVal));
+                            ann.Elements["/AS"] = new PdfName(state);
+                            GenerateCheckBoxAppearance(ann, state != "/Off", onVal, fieldW, fieldH);
                         }
                         else if (_formRadioValues.Count > 0 && fieldDict is not null)
                         {
@@ -972,10 +1038,24 @@ namespace TDPdf
                 fontSize = isMultiLine ? Math.Max(6, fontSize)
                                        : Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
 
+                // A zero-width joiner or variation selector the subset lacks would draw .notdef, a
+                // visible box, so the drawn value leaves them out (/V keeps them).
+                text = FontFallback.StripInvisible(text);
+
                 // Same family choice the annotation burn-in makes, so a value rendered here and the
-                // same text placed as an annotation resolve to one face rather than two.
-                var font = TdpFontResolver.TryCreate(
-                    FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text), fontSize, XFontStyle.Regular);
+                // same text placed as an annotation resolve to one face rather than two. When no one
+                // family covers the whole value (text plus a check mark only Segoe UI Symbol has,
+                // say), it is cut into per-family runs instead and each run embeds its own subset.
+                string family = FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text);
+                List<FontRun>? runs = null;
+                if (!FontCoverage.CoversAll(family, text))
+                {
+                    var split = FontCoverage.SplitRuns(family, text);
+                    if (split.Select(r => r.Family).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+                        runs = split;
+                }
+
+                var font = TdpFontResolver.TryCreate(family, fontSize, XFontStyle.Regular);
                 if (font is null) return false;
 
                 var form = new XForm(_doc, new XSize(fieldW, fieldH));
@@ -993,18 +1073,26 @@ namespace TDPdf
                         // run cannot drift, matching the per-glyph Tm the legacy comb path uses.
                         double cellW = fieldW / combLen;
                         fontSize = Math.Max(6, Math.Min(fontSize, Math.Min(fieldH * 0.85, cellW * 1.4)));
-                        var combFont = TdpFontResolver.TryCreate(
-                            FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text), fontSize, XFontStyle.Regular);
-                        if (combFont is null) return false;
+                        var combFonts = new FieldFontCache(family, fontSize);
+                        if (combFonts.Base is not { } combFont) return false;
 
                         string oneLine = text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
                         if (oneLine.Length > combLen) oneLine = oneLine[..combLen];
+                        // Each cell's family, by UTF-16 index (the cell walk below is per char).
+                        var cellFamily = new string?[oneLine.Length];
+                        int at = 0;
+                        foreach (var r in runs is null ? new List<FontRun> { new(oneLine, family) } : FontCoverage.SplitRuns(family, oneLine))
+                            for (int k = 0; k < r.Text.Length && at < cellFamily.Length; k++) cellFamily[at++] = r.Family;
                         for (int i = 0; i < oneLine.Length; i++)
                         {
                             if (oneLine[i] == ' ') continue;
-                            gfx.DrawString(oneLine[i].ToString(), combFont, XBrushes.Black,
+                            gfx.DrawString(oneLine[i].ToString(), combFonts.For(cellFamily[i] ?? family, combFont), XBrushes.Black,
                                 new XRect(i * cellW, 0, cellW, fieldH), XStringFormats.Center);
                         }
+                    }
+                    else if (runs is not null)
+                    {
+                        DrawFieldRuns(gfx, text, family, fontSize, fieldW, fieldH, isMultiLine, pad);
                     }
                     else if (isMultiLine)
                     {
@@ -1032,6 +1120,86 @@ namespace TDPdf
                 // Never let this fail the save — fall back to the legacy literal path.
                 System.Diagnostics.Debug.WriteLine($"TryGenerateUnicodeFieldAppearance: {ex}");
                 return false;
+            }
+        }
+
+        /// <summary>One XFont per family at one size, created on first use.</summary>
+        private sealed class FieldFontCache(string baseFamily, double size)
+        {
+            private readonly Dictionary<string, XFont?> _fonts = new(StringComparer.OrdinalIgnoreCase);
+            public XFont? Base => Get(baseFamily);
+            // A family that will not resolve falls back to the base font: a box for that run is
+            // no worse than the single-family path would have drawn.
+            public XFont For(string family, XFont fallback) => Get(family) ?? fallback;
+            private XFont? Get(string family)
+            {
+                if (!_fonts.TryGetValue(family, out var f))
+                    _fonts[family] = f = TdpFontResolver.TryCreate(family, size, XFontStyle.Regular);
+                return f;
+            }
+        }
+
+        /// <summary>
+        /// Draws a field value as per-family font runs (see <see cref="FontCoverage.SplitRuns"/>),
+        /// for a value no single family covers. Every run on a line shares one baseline, taken from
+        /// the base family's metrics exactly the way XGraphics places CenterLeft (single line) and
+        /// XTextFormatter places its first line (multiline), so the Latin part sits where the
+        /// single-family path would put it. Multiline wraps greedily at spaces, measuring runs.
+        /// </summary>
+        private static void DrawFieldRuns(XGraphics gfx, string text, string baseFamily, double fontSize,
+            double fieldW, double fieldH, bool isMultiLine, double pad)
+        {
+            var fonts = new FieldFontCache(baseFamily, fontSize);
+            var baseFont = fonts.Base;
+            if (baseFont is null) return;
+            double lineSpace = baseFont.GetHeight();
+            double ascent = baseFont.CellSpace > 0 ? lineSpace * baseFont.CellAscent / baseFont.CellSpace : fontSize;
+
+            double Measure(string s)
+            {
+                double w = 0;
+                foreach (var r in FontCoverage.SplitRuns(baseFamily, s))
+                    w += gfx.MeasureString(r.Text, fonts.For(r.Family, baseFont)).Width;
+                return w;
+            }
+            void DrawLine(string s, double baseline)
+            {
+                double x = pad;
+                foreach (var r in FontCoverage.SplitRuns(baseFamily, s))
+                {
+                    var f = fonts.For(r.Family, baseFont);
+                    gfx.DrawString(r.Text, f, XBrushes.Black, x, baseline, XStringFormats.BaseLineLeft);
+                    x += gfx.MeasureString(r.Text, f).Width;
+                }
+            }
+
+            if (!isMultiLine)
+            {
+                // XGraphicsPdfRenderer's CenterLeft: half the box plus half of 3/4 of the ascent.
+                DrawLine(text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' '),
+                         fieldH / 2 + ascent * 3 / 8);
+                return;
+            }
+
+            double innerW = Math.Max(1, fieldW - pad * 2);
+            var lines = new List<string>();
+            foreach (var para in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                string current = "";
+                foreach (var word in para.Split(' '))
+                {
+                    string candidate = current.Length == 0 ? word : current + " " + word;
+                    if (current.Length > 0 && Measure(candidate) > innerW) { lines.Add(current); current = word; }
+                    else current = candidate;
+                }
+                lines.Add(current);
+            }
+            // Lines past the bottom are clipped by the caller's IntersectClip.
+            for (int i = 0; i < lines.Count; i++)
+            {
+                double baseline = ascent + i * lineSpace;
+                if (baseline - ascent > fieldH) break;
+                if (lines[i].Length > 0) DrawLine(lines[i], baseline);
             }
         }
 

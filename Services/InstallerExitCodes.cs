@@ -23,6 +23,8 @@ namespace TDPdf.Services
         internal const int AccessDenied = 5;
         internal const int DiskFull     = 112;
         internal const int Cancelled    = 1223;
+        // Also returned by a silent uninstall while TDPdf is running from the install folder:
+        // like a concurrent install, it clears by itself, and 1618 is what Intune retries.
         internal const int Busy         = 1618;
 
         private const int HandleDiskFull = 39;   // ERROR_HANDLE_DISK_FULL, the other "no space" code

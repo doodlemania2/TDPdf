@@ -151,17 +151,11 @@ namespace TDPdf.Services
         private static Glyph FromBox(int word, PdfRectangle r, bool horizontal)
         {
             // A box can be rotated with the text; take its axis-aligned extent in the frame.
-            double l = Min4(r.TopLeft.X, r.TopRight.X, r.BottomLeft.X, r.BottomRight.X);
-            double rr = Max4(r.TopLeft.X, r.TopRight.X, r.BottomLeft.X, r.BottomRight.X);
-            double b = Min4(r.TopLeft.Y, r.TopRight.Y, r.BottomLeft.Y, r.BottomRight.Y);
-            double t = Max4(r.TopLeft.Y, r.TopRight.Y, r.BottomLeft.Y, r.BottomRight.Y);
+            var (l, b, rr, t) = PdfBoxExtent.Of(r);
             bool ink = rr > l && t > b && double.IsFinite(l) && double.IsFinite(rr)
                        && double.IsFinite(b) && double.IsFinite(t);
             return new Glyph(word, l, b, rr, t, horizontal, ink);
         }
-
-        private static double Min4(double a, double b, double c, double d) => Math.Min(Math.Min(a, b), Math.Min(c, d));
-        private static double Max4(double a, double b, double c, double d) => Math.Max(Math.Max(a, b), Math.Max(c, d));
 
         /// <summary>The padded boxes of the glyphs in [start, start+length), one per line.</summary>
         private static List<PdfiumInterop.PdfRect> BoxesOf(List<Glyph?> source, int start, int length)

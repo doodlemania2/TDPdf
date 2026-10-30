@@ -38,18 +38,20 @@ GitHub). `-Tag v2.0.2.0` builds against a specific release.
 ```
 merge to main / release ──> site.yml (runner `tdpdf`) ──> ghcr.io/doodlemania2/tdpdf-site:latest
                                                                     │ watchtower, every 5 min
-visitor ──> Cloudflare ──> tunnel `tdpdf-site` ──> doodlessd: tdpdf-site-tunnel ──> tdpdf-site:8080
+visitor ──> Cloudflare ──> tunnel `public-fleet` ──> doodlessd: 127.0.0.1:18106 ──> tdpdf-site:8080
 ```
 
-- **doodlessd** `~/tdpdf-site-stack/`: `docker-compose.yml` (a copy of `deploy/docker-compose.yml`)
-  and `.env` holding `TUNNEL_TOKEN` (mode 600). Watchtower lives in `~/docs-stack` and updates
-  every container labelled `com.centurylinklabs.watchtower.enable=true`, this one included.
-- **Cloudflare**: remotely managed tunnel `tdpdf-site`, id `6dad024c-aaf6-4ffe-ae6b-8f6f4d7e246b`.
-  Its ingress is held by Cloudflare: `tdpdf.com` and `www.tdpdf.com` → `http://tdpdf-site:8080`.
-  DNS for both names is a proxied CNAME to `6dad024c-aaf6-4ffe-ae6b-8f6f4d7e246b.cfargotunnel.com`.
+- **doodlessd** `~/tdpdf-site-stack/docker-compose.yml`, a copy of `deploy/docker-compose.yml`.
+  Watchtower lives in `~/docs-stack` and updates every container labelled
+  `com.centurylinklabs.watchtower.enable=true`, this one included.
+- **Cloudflare**: the shared `public-fleet` tunnel, a host-network cloudflared on doodlessd whose
+  config lives in the K3s repo (`services/edge/public-fleet/config.yml`). It routes `tdpdf.com` and
+  `www.tdpdf.com` to `http://127.0.0.1:18106`. Until 2026-10-30 the site had its own tunnel,
+  `tdpdf-site`, and a `tdpdf-site-tunnel` container; both are retired.
 - nginx answers `www.tdpdf.com` with a 301 to `https://tdpdf.com`, and sends the old Ghost URLs
   `/home/`, `/news/` and `/rss/` to `/`.
-- The container publishes no port. The tunnel is the only way in; do not add an NPM proxy host.
+- The container publishes only on loopback (`127.0.0.1:18106`). The tunnel is the only way in;
+  do not add an NPM proxy host.
 
 To redeploy by hand: Actions ▸ site ▸ Run workflow. To restart on doodlessd:
 `cd ~/tdpdf-site-stack && docker compose pull && docker compose up -d`.

@@ -53,6 +53,9 @@
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
     <Compile Include="..\..\Services\PdfTextSearch.cs" />
+    <Compile Include="..\..\Services\PdfBoxExtent.cs" />
+    <Compile Include="..\..\Services\TextRunService.cs" />
+    <Compile Include="..\..\Services\TableExtractor.cs" />
     <Compile Include="..\..\Services\PdfTextEdit.cs" />
     <Compile Include="..\..\Services\PdfContentInspector.cs" />
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
@@ -61,9 +64,16 @@
     <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
     <Compile Include="..\..\Services\RtlTextLayout.cs" />
+    <Compile Include="..\..\Services\FontFallback.cs" />
+    <Compile Include="..\..\Services\FormFieldSiblings.cs" />
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
+    <Compile Include="..\..\Services\PrintTicketDuplex.cs" />
+    <Compile Include="..\..\Services\AtomicFileWriter.cs" />
+    <Compile Include="..\..\Services\FilePathPolicy.cs" />
+    <Compile Include="..\..\Services\FileFingerprint.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
+    <Compile Include="..\..\Services\WindowFitMath.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />
     <Compile Include="..\..\Services\InkDot.cs" />
     <!-- Electronic Signature: the WPF-free parts. The registry reads in DocumensoConfig are

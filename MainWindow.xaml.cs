@@ -93,7 +93,7 @@ namespace TDPdf
         // Interactive form-field state — forwarded from the active DocumentContext so it
         // survives tab switches (see the PDF Form Field Overlays region).
         private Dictionary<int, string>    _formTextValues  => _ctx.FormTextValues;
-        private Dictionary<int, bool>      _formCheckValues => _ctx.FormCheckValues;
+        private Dictionary<int, string>    _formCheckValues => _ctx.FormCheckValues;
         private Dictionary<string, string> _formRadioValues => _ctx.FormRadioValues;
         private const string FormOverlayTag = "FormFieldOverlay";
         private double _currentDpiScale = 1.0;
@@ -497,6 +497,9 @@ namespace TDPdf
         private TextBlock _pageTotalLabel = null!;
         private Border _customTitleBar = null!;
         private RowDefinition _titleBarRow = null!;
+        private Button _maximizeBtn = null!;
+        private StackPanel _footerRightGroup = null!;
+        private TextBlock _footerCopyright = null!;
 
         // Full-screen (F11) chrome refs — root grid + the two rows that are fixed-height
         // (title, footer) so they can be zeroed when all chrome is hidden.
@@ -607,6 +610,14 @@ namespace TDPdf
             _pageTotalLabel = (TextBlock)FindName("PageTotalLabel")!;
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
             _titleBarRow = (RowDefinition)FindName("TitleBarRow")!;
+            _maximizeBtn = (Button)FindName("MaximizeBtn")!;
+            _footerRightGroup = (StackPanel)FindName("FooterRightGroup")!;
+            _footerCopyright = (TextBlock)FindName("FooterCopyright")!;
+            StateChanged += (_, _) => UpdateMaximizeButton();
+            UpdateMaximizeButton();
+            _customTitleBar.MouseRightButtonUp += TitleBar_MouseRightButtonUp;
+            ShortcutOverlay.IsVisibleChanged += ShortcutOverlay_IsVisibleChanged;
+            TDPdf.Controls.RadioGroupKeyboard.Apply((Grid)FindName("SidebarTabRow")!);
             _outlineTree = (TreeView)FindName("OutlineTree")!;
             // Expanded/Collapsed bubble from the items, which are rebuilt on every tab switch and
             // reload — so the recorder hangs off the tree, once, rather than off the items.
@@ -623,6 +634,8 @@ namespace TDPdf
             _rootGrid = (Grid)FindName("RootGrid")!;
             _toolbarBorder = (Border)FindName("ToolbarBorder")!;
             _statusBarBorder = (Border)FindName("StatusBarBorder")!;
+            _statusBarBorder.SizeChanged += (_, _) => FitFooterToWidth();
+            _footerRightGroup.SizeChanged += (_, _) => FitFooterToWidth();
             _sidebarOuterGrid = (Grid)FindName("SidebarOuterGrid")!;
             _appScaleButton = (Button)FindName("AppScaleButton")!;
             _pageSizeButton = (Button)FindName("PageSizeButton")!;
@@ -697,9 +710,12 @@ namespace TDPdf
                 bool isTearOffLaunch = args.Length > 1 &&
                     string.Equals(args[1], "--new-window", StringComparison.OrdinalIgnoreCase);
                 int fileArgIndex = isTearOffLaunch ? 2 : 1;
+                // Only the first TDPdf window owns (and restores) the saved session; see SaveSession.
+                bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
+                if (ownsSession) ClaimSavedSession();
                 if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
                     await OpenInTabAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
-                else if (!isTearOffLaunch)
+                else if (ownsSession)
                     await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 
                 if (App.IsPortable())
@@ -909,6 +925,7 @@ namespace TDPdf
         {
             UpdateCurrentDpiScale();
             var hwnd = new WindowInteropHelper(this).Handle;
+            FitToStartupMonitor();
             _hwndSource = HwndSource.FromHwnd(hwnd);
             _hwndSource?.AddHook(WndProc);
             InitializeTaskbarIcons(hwnd);
@@ -930,6 +947,67 @@ namespace TDPdf
                 DwmSetWindowAttribute(hwnd, DWMWA_HAS_ICONIC_BITMAP, ref trueVal, sizeof(int));
             }
         }
+
+        // The XAML size (1000 x 700) is taller than the work area of a 1920 x 1080 screen at 150%
+        // (about 690 DIPs once the taskbar is out), so the footer opened off the bottom edge.
+        // Before the window is first shown, shrink it to the work area of the monitor WPF will
+        // center it on (the one under the pointer) and re-center it there. Runs before WPF applies
+        // CenterScreen, so WPF's own centering sees the new size too. Idea from upstream KillerPDF
+        // 1.8.92 (WorkAreaFit); best-effort, a window size is never worth failing startup over.
+        private void FitToStartupMonitor()
+        {
+            if (WindowState != WindowState.Normal) return;
+            try
+            {
+                double sx = _currentDpiScale > 0 ? _currentDpiScale : 1.0;
+                if (!GetCursorPos(out POINT cursor)) return;
+                IntPtr monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+                if (monitor == IntPtr.Zero) return;
+                var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
+                if (!GetMonitorInfo(monitor, ref info)) return;
+                RECT work = info.rcWork;
+
+                // Window coordinates follow the window's own DPI; the work area's SIZE follows the
+                // target monitor's, which differs only when that monitor is scaled differently.
+                double toDip = 1 / sx;
+                try
+                {
+                    if (GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out uint dpiX, out _) == 0 && dpiX > 0)
+                        toDip = 96.0 / dpiX;
+                }
+                catch (DllNotFoundException) { }
+                catch (EntryPointNotFoundException) { }
+
+                double areaW = (work.right - work.left) * toDip;
+                double areaH = (work.bottom - work.top) * toDip;
+                if (areaW <= 0 || areaH <= 0) return;
+
+                // A work area smaller than the minimum lowers the minimum, or WPF would coerce
+                // the size straight back past the screen edge.
+                if (MinWidth > areaW) MinWidth = Math.Floor(areaW);
+                if (MinHeight > areaH) MinHeight = Math.Floor(areaH);
+
+                double w = double.IsNaN(Width) ? ActualWidth : Width;
+                double h = double.IsNaN(Height) ? ActualHeight : Height;
+                if (w <= 0 || h <= 0) return;
+                var fit = WindowFitMath.FitCentered(w, h, work.left / sx, work.top / sx, areaW, areaH,
+                                                    MinWidth, MinHeight);
+                if (Math.Abs(fit.Width - w) <= 0.5 && Math.Abs(fit.Height - h) <= 0.5) return;
+                Width = fit.Width;
+                Height = fit.Height;
+                Left = fit.Left;
+                Top = fit.Top;
+            }
+            catch { /* best-effort */ }
+        }
+
+        private const int MDT_EFFECTIVE_DPI = 0;
+
+        [DllImport("shcore.dll")]
+        private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hwnd);
 
         private const int WM_GETMINMAXINFO = 0x0024;
         private const int WM_DPICHANGED = 0x02E0;
@@ -970,9 +1048,17 @@ namespace TDPdf
             {
                 _inWindowSizeMove = false;
             }
+            else if (msg == WM_SYSCOMMAND && (wParam.ToInt64() & 0xFFF0) == SC_KEYMENU && lParam.ToInt64() == ' '
+                     && !_useNativeWindowFrame && !_fullScreen)
+            {
+                // Alt+Space that reached Windows (OnPreviewKeyDown normally takes it first): the
+                // frameless window has no system menu of its own to open, so show ours.
+                ShowWindowSystemMenuFromKeyboard();
+                handled = true;
+            }
             else if (msg == WM_GETMINMAXINFO && !_useNativeWindowFrame)
             {
-                WmGetMinMaxInfo(hwnd, lParam, _inWindowSizeMove);
+                WmGetMinMaxInfo(hwnd, lParam, _inWindowSizeMove, MinWidth, MinHeight, WindowDpiScale(hwnd));
                 handled = true;
             }
             else if (msg == WM_DPICHANGED)
@@ -1167,7 +1253,21 @@ namespace TDPdf
                 (Action)(() => { if (_doc is not null) RerenderCurrentPage(); }));
         }
 
-        private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam, bool inSizeMove)
+        // The HWND's own DPI (it can lead WPF's during a cross-monitor drag); falls back to the
+        // last scale WPF reported on systems without GetDpiForWindow (before Windows 10 1607).
+        private double WindowDpiScale(IntPtr hwnd)
+        {
+            try
+            {
+                uint dpi = GetDpiForWindow(hwnd);
+                if (dpi > 0) return dpi / 96.0;
+            }
+            catch (EntryPointNotFoundException) { }
+            return _currentDpiScale > 0 ? _currentDpiScale : 1.0;
+        }
+
+        private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam, bool inSizeMove,
+                                            double minWidth, double minHeight, double dpiScale)
         {
             var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
             // During a cross-monitor drag (e.g. drag-to-top Aero Snap maximize) the HWND can still
@@ -1205,6 +1305,11 @@ namespace TDPdf
                 // Ported from upstream KillerPDF v1.8.4 (#363).
                 mmi.ptMaxTrackSize.x = Math.Max(mmi.ptMaxTrackSize.x, mmi.ptMaxSize.x);
                 mmi.ptMaxTrackSize.y = Math.Max(mmi.ptMaxTrackSize.y, mmi.ptMaxSize.y);
+                // Handling this message means WPF never applies MinWidth / MinHeight to a drag
+                // resize, so the hook does it, in device pixels. Capped at the work area so a small
+                // or heavily scaled screen can still fit the window (upstream KillerPDF 1.8.92).
+                mmi.ptMinTrackSize.x = WindowFitMath.MinTrackPixels(minWidth, dpiScale, mmi.ptMaxSize.x, mmi.ptMinTrackSize.x);
+                mmi.ptMinTrackSize.y = WindowFitMath.MinTrackPixels(minHeight, dpiScale, mmi.ptMaxSize.y, mmi.ptMinTrackSize.y);
                 Marshal.StructureToPtr(mmi, lParam, true);
             }
         }
@@ -1443,6 +1548,11 @@ namespace TDPdf
             // merged-on-drop / imported images / raster-recovered / a file inside %TEMP%), in which
             // case Ctrl+S routes to Save As. Retargeted by a successful Save As.
             public string? OriginalPath;
+            // What OriginalPath held when it was opened or last saved (hashed off the UI thread),
+            // and the path that fingerprint is for. A save in place compares the file against it to
+            // catch another program having changed it meanwhile. Null when there is nothing to
+            // compare against.
+            public (string Path, Task<TDPdf.Services.FileFingerprint?> Fingerprint)? OriginalFingerprint;
             public string DisplayName = "";      // shown in the tab header and title bar
             public bool IsDirty;
 
@@ -1500,11 +1610,13 @@ namespace TDPdf
             // from, never a validity claim. Cleared whenever HasDigitalSignature is recomputed.
             public bool ESignSignedCopy;
 
-            // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
-            // by widget object number, checkboxes by widget object number, radios by field
-            // name (shared across the widgets in a group). Persisted into the PDF on save.
+            // Pending interactive form-field values (AcroForm). Text, dropdowns and checkboxes
+            // are keyed by FIELD (FormFieldSiblings.FieldKey: the field's object number, or the
+            // widget's own key when the widget is its field), so every widget of one field shares
+            // a value; a checkbox stores the field's state name ("/Off" or an on-state). Radios
+            // are keyed by field name. Persisted into the PDF on save.
             public readonly Dictionary<int, string>    FormTextValues  = new();
-            public readonly Dictionary<int, bool>      FormCheckValues = new();
+            public readonly Dictionary<int, string>    FormCheckValues = new();
             public readonly Dictionary<string, string> FormRadioValues = new();
             public readonly Dictionary<(int pageIndex, int dpiX), RenderedPage> RenderCache = new();
             public readonly LinkedList<UndoEntry> UndoStack = new();
@@ -1615,6 +1727,132 @@ namespace TDPdf
             SendMessage(hwnd, WM_NCLBUTTONDOWN, new IntPtr(HTCAPTION), IntPtr.Zero);
         }
 
+        // The custom title bar is client area, so Windows never offers its system menu on a
+        // right-click there. Show it ourselves, at the pointer, as a native caption would.
+        private void TitleBar_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_useNativeWindowFrame || _fullScreen) return;
+            e.Handled = true;
+            ShowWindowSystemMenu(PointToScreen(e.GetPosition(this)));
+        }
+
+        // Alt+Space: the same menu, at the window's top-left corner just under the title bar.
+        // GetWindowRect rather than Left/Top, which keep the restored position while maximized.
+        private void ShowWindowSystemMenuFromKeyboard()
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out RECT r)) return;
+            double titlePx = _customTitleBar.ActualHeight * WindowDpiScale(hwnd);
+            ShowWindowSystemMenu(new Point(r.left, r.top + titlePx));
+        }
+
+        // Win32 system menu at a SCREEN point in device pixels. The menu's items are enabled by
+        // hand: with WindowStyle=None Windows does not update them for this window, and Restore,
+        // Move and Size only make sense for one state each. The chosen command goes back through
+        // WM_SYSCOMMAND, so Move / Size get Windows' own keyboard loops and Close the dirty prompt.
+        private void ShowWindowSystemMenu(Point screenPx)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            IntPtr menu = GetSystemMenu(hwnd, false);
+            if (menu == IntPtr.Zero) return;
+
+            bool maximized = WindowState == WindowState.Maximized;
+            bool minimized = WindowState == WindowState.Minimized;
+            bool normal = !maximized && !minimized;
+            bool canResize = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip;
+            void Enable(int cmd, bool on) =>
+                EnableMenuItem(menu, (uint)cmd, MF_BYCOMMAND | (on ? MF_ENABLED : MF_GRAYED));
+            Enable(SC_RESTORE, !normal);
+            Enable(SC_MOVE, normal);
+            Enable(SC_SIZE, normal && canResize);
+            Enable(SC_MINIMIZE, !minimized && ResizeMode != ResizeMode.NoResize);
+            Enable(SC_MAXIMIZE, !maximized && canResize);
+            Enable(SC_CLOSE, true);
+            SetMenuDefaultItem(menu, (uint)(maximized ? SC_RESTORE : SC_CLOSE), 0);
+
+            int cmdChosen = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+                (int)Math.Round(screenPx.X), (int)Math.Round(screenPx.Y), hwnd, IntPtr.Zero);
+            if (cmdChosen != 0)
+                PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(cmdChosen), IntPtr.Zero);
+        }
+
+        private const int WM_SYSCOMMAND = 0x0112;
+        private const int SC_SIZE = 0xF000;
+        private const int SC_MOVE = 0xF010;
+        private const int SC_MINIMIZE = 0xF020;
+        private const int SC_MAXIMIZE = 0xF030;
+        private const int SC_CLOSE = 0xF060;
+        private const int SC_KEYMENU = 0xF100;
+        private const int SC_RESTORE = 0xF120;
+        private const uint MF_BYCOMMAND = 0x0000;
+        private const uint MF_ENABLED = 0x0000;
+        private const uint MF_GRAYED = 0x0001;
+        private const uint TPM_LEFTALIGN = 0x0000;
+        private const uint TPM_TOPALIGN = 0x0000;
+        private const uint TPM_RIGHTBUTTON = 0x0002;
+        private const uint TPM_RETURNCMD = 0x0100;
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
+
+        [DllImport("user32.dll")]
+        private static extern int EnableMenuItem(IntPtr hMenu, uint uIDEnableItem, uint uEnable);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetMenuDefaultItem(IntPtr hMenu, uint uItem, uint fByPos);
+
+        [DllImport("user32.dll")]
+        private static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        // Maximize shows a single box, restore two overlapping ones; the name and ToolTip match
+        // the Windows caption button for the state.
+        private void UpdateMaximizeButton()
+        {
+            bool maximized = WindowState == WindowState.Maximized;
+            string name = maximized ? "Restore Down" : "Maximize";
+            _maximizeBtn.Content = maximized ? "\u2750" : "\u25A1";
+            _maximizeBtn.ToolTip = name;
+            AutomationProperties.SetName(_maximizeBtn, name);
+            if (FindName("MaximizeButtonLabel") is TextBlock label) label.Text = name;
+        }
+
+        // Status text keeps at least this much of the footer before labels start to collapse.
+        private const double FooterStatusReserve = 120;
+        private double _footerCopyrightWidth, _footerVersionWidth;
+
+        // The footer's right-hand group is one Grid cell shared with the status text, so in a
+        // narrow window it would clip from the left, taking the zoom and page-size chips with it.
+        // Drop the least useful labels first instead: the copyright, then the version.
+        private void FitFooterToWidth()
+        {
+            if (_footerRightGroup is null || _footerCopyright is null) return;
+            // A collapsed element measures zero, so remember each label's width while it shows.
+            if (_footerCopyright.IsVisible && _footerCopyright.DesiredSize.Width > 0)
+                _footerCopyrightWidth = _footerCopyright.DesiredSize.Width;
+            if (VersionLabel.IsVisible && VersionLabel.DesiredSize.Width > 0)
+                _footerVersionWidth = VersionLabel.DesiredSize.Width;
+
+            double others = 0;
+            foreach (UIElement child in _footerRightGroup.Children)
+                if (child != _footerCopyright && child != VersionLabel) others += child.DesiredSize.Width;
+
+            double avail = _statusBarBorder.ActualWidth - 32 - FooterStatusReserve;   // 32: the Grid's 16 DIP side margins
+            if (avail <= 0) return;
+            bool showVersion = others + _footerVersionWidth <= avail;
+            bool showCopyright = showVersion && others + _footerVersionWidth + _footerCopyrightWidth <= avail;
+            var vVersion = showVersion ? Visibility.Visible : Visibility.Collapsed;
+            var vCopyright = showCopyright ? Visibility.Visible : Visibility.Collapsed;
+            if (VersionLabel.Visibility != vVersion) VersionLabel.Visibility = vVersion;
+            if (_footerCopyright.Visibility != vCopyright) _footerCopyright.Visibility = vCopyright;
+        }
+
         /// <summary>
         /// Points the portable badge's button at what is actually on this machine: the first-run
         /// "Install TDPdf..." when nothing is installed, otherwise the installed version and a way
@@ -1653,11 +1891,14 @@ namespace TDPdf
             {
                 case PortableInstallOffer.FreshInstall:
                 {
-                    var res = TdpDialog.Show(this,
+                    // The desktop shortcut is the user's choice, unticked by default: it used to be
+                    // created silently although this prompt never mentioned it.
+                    var (res, wantDesktop) = TdpDialog.ShowWithCheckbox(this,
                         "Install TDPdf to your user profile?\n\n" +
                         "• Start Menu shortcut\n" +
                         "• Added to \"Open with\" for .pdf files\n" +
                         "• Appears in Add/Remove Programs",
+                        "Also add a desktop shortcut",
                         "Install TDPdf", MessageBoxButton.OKCancel);
                     if (res != MessageBoxResult.OK) return;
 
@@ -1667,7 +1908,7 @@ namespace TDPdf
                     // The ORIGINAL path, not _currentFile: after a decrypt-on-open _currentFile points at a
                     // working copy in %TEMP% that this process deletes on exit, so the installed build would
                     // relaunch onto a file that is already gone.
-                    App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop: true);
+                    App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop);
                     return;
                 }
 
@@ -1804,6 +2045,53 @@ namespace TDPdf
             ThirdPartyLicensesWindow.Show(this);
 
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern bool ShutdownBlockReasonCreate(IntPtr hWnd, string pwszReason);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
+
+        /// <summary>
+        /// Windows sign-out, restart or shutdown (App.OnSessionEnding). WPF does not raise Closing
+        /// for that, so without this the dirty-document prompt never ran, unsaved tabs were lost
+        /// and the restore-on-launch session was never written. Returns true when the session end
+        /// must be refused: Windows then shows "TDPdf is preventing sign out" with the reason set
+        /// here, and the user can come back and save. Otherwise saves the session and returns false.
+        /// </summary>
+        internal bool BlockSessionEndForUnsavedWork()
+        {
+            CommitActiveTextBox();   // typed but uncommitted text counts as unsaved work
+            int dirtyCount = _tabs.Count(t => t.Doc is not null && t.IsDirty);
+            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            if (dirtyCount > 0)
+            {
+                if (hwnd != IntPtr.Zero)
+                {
+                    try
+                    {
+                        ShutdownBlockReasonCreate(hwnd, dirtyCount == 1
+                            ? "You have unsaved changes in TDPdf."
+                            : $"You have unsaved changes in {dirtyCount} documents in TDPdf.");
+                    }
+                    catch { /* the refusal still works without a reason */ }
+                }
+                Telemetry.TrackEvent("App.SessionEndBlocked");
+                return true;
+            }
+            if (hwnd != IntPtr.Zero) { try { ShutdownBlockReasonDestroy(hwnd); } catch { } }
+            // Nothing unsaved: remember the open documents so they come back after the restart.
+            // No prompt can be shown while Windows is signing out, so "Ask" saves the session as
+            // "Yes" would; "No" still saves nothing.
+            CaptureViewState();
+            try
+            {
+                if (TDPdf.Properties.Settings.Default.ReopenSession != "No")
+                    SaveSession(OpenSessionFiles());
+            }
+            catch { /* never hold up the sign-out over the session list */ }
+            return false;
+        }
+
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
             CommitActiveTextBox();
@@ -1833,6 +2121,90 @@ namespace TDPdf
             base.OnClosing(e);
         }
 
+        // ── The saved session is shared by every TDPdf window ───────────────────────────────────
+        // Each window is its own process, and they all save to one SessionFiles setting. Each
+        // window therefore MERGES on close instead of overwriting: it re-reads the saved list,
+        // removes the entries it is responsible for (_sessionContributed) and appends its current
+        // tabs, leaving every other window's entries alone (FilePathPolicy.MergeSession). The first
+        // window of a login session is responsible for the list it found at startup, which it
+        // restores; later windows (tear-offs, or a second window when single-instance forwarding is
+        // off or fails) neither restore it nor own it. A per-user named mutex serialises the
+        // read-modify-write; a second one, held open for the life of the process, is how a window
+        // knows whether it is the first.
+        private static readonly string SessionLockName = "Local\\TDPdf.Session.Lock." + Environment.UserName;
+        private static readonly string SessionWindowName = "Local\\TDPdf.Session.Window." + Environment.UserName;
+        private static Mutex? s_sessionWindowHandle;
+        private List<string> _sessionContributed = new();
+
+        /// <summary>
+        /// Registers this window as alive and returns true when no other TDPdf window is. The handle
+        /// stays open until the process exits; ownership is never taken, so nothing is abandoned.
+        /// </summary>
+        private static bool RegisterSessionWindow()
+        {
+            try
+            {
+                if (s_sessionWindowHandle is not null) return false;   // already registered
+                s_sessionWindowHandle = new Mutex(false, SessionWindowName, out bool createdNew);
+                return createdNew;
+            }
+            catch
+            {
+                return true;   // no way to tell: behave as a lone window did before
+            }
+        }
+
+        private static void WithSessionLock(Action action)
+        {
+            Mutex? gate = null;
+            bool owned = false;
+            try
+            {
+                gate = new Mutex(false, SessionLockName);
+                try { owned = gate.WaitOne(TimeSpan.FromSeconds(5)); }
+                catch (AbandonedMutexException) { owned = true; }   // a window died holding it
+            }
+            catch { /* proceed unlocked rather than lose the session */ }
+            try { action(); }
+            finally
+            {
+                if (owned) { try { gate!.ReleaseMutex(); } catch { } }
+                gate?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// The saved session as it is on disk now. Settings.Default caches what this process read at
+        /// startup, so a fresh instance is read to see what other windows have written since.
+        /// </summary>
+        private static (List<string> Files, string Active) ReadSavedSession()
+        {
+            string files, active;
+            try
+            {
+                var fresh = new TDPdf.Properties.Settings();
+                files = fresh.SessionFiles;
+                active = fresh.SessionActiveFile;
+            }
+            catch
+            {
+                files = TDPdf.Properties.Settings.Default.SessionFiles;
+                active = TDPdf.Properties.Settings.Default.SessionActiveFile;
+            }
+            return (TDPdf.Services.FilePathPolicy.NormalizeDistinct(
+                        (files ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)),
+                    active ?? "");
+        }
+
+        /// <summary>
+        /// First window only: takes responsibility for the session left by the last run, so that
+        /// closing this window replaces it (as a lone window always did) rather than adding to it.
+        /// </summary>
+        private void ClaimSavedSession()
+        {
+            WithSessionLock(() => _sessionContributed = ReadSavedSession().Files);
+        }
+
         // The real, on-disk documents currently open, in tab order (temp / untitled / merged / imported /
         // recovered docs have a null OriginalPath and are excluded — they have no lasting home to reopen).
         // IsRecentEligiblePath also drops documents opened from under %TEMP% (e.g. a mail attachment):
@@ -1845,11 +2217,12 @@ namespace TDPdf
 
         // On close, remember (or forget) the open documents so the next launch can restore them.
         // Preference "Yes" always remembers, "No" never does, "Ask" prompts once (with an optional
-        // "remember my choice" that locks the answer). Forgetting clears the saved paths for privacy.
+        // "remember my choice" that locks the answer). Forgetting drops this window's documents;
+        // turning the preference to "No" clears the saved paths entirely, for privacy.
         private void HandleSessionOnClose()
         {
             var openFiles = OpenSessionFiles();
-            if (openFiles.Count == 0) { ClearSavedSession(); return; }
+            if (openFiles.Count == 0) { SaveSession(openFiles); return; }
 
             bool reopen;
             switch (TDPdf.Properties.Settings.Default.ReopenSession)
@@ -1873,23 +2246,38 @@ namespace TDPdf
             }
 
             if (reopen) SaveSession(openFiles);
-            else        ClearSavedSession();
+            else if (TDPdf.Properties.Settings.Default.ReopenSession == "No") ClearSavedSession();
+            else SaveSession(new List<string>());   // declined this once: forget only this window's
         }
 
+        /// <summary>Merges this window's documents into the saved session; see the block comment above.</summary>
         private void SaveSession(List<string> openFiles)
         {
-            var s = TDPdf.Properties.Settings.Default;
-            s.SessionFiles = string.Join("|", openFiles);
-            string? active = _ctx.OriginalPath;
-            s.SessionActiveFile = !string.IsNullOrEmpty(active)
-                && openFiles.Contains(active, StringComparer.OrdinalIgnoreCase) ? active : "";
-            s.Save();
+            WithSessionLock(() =>
+            {
+                var (saved, savedActive) = ReadSavedSession();
+                var merged = TDPdf.Services.FilePathPolicy.MergeSession(saved, _sessionContributed, openFiles);
+                string? mine = TDPdf.Services.FilePathPolicy.Normalize(_ctx.OriginalPath);
+                string active =
+                    mine is not null && openFiles.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, mine)) ? mine
+                    : merged.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, savedActive)) ? savedActive
+                    : "";
+                _sessionContributed = TDPdf.Services.FilePathPolicy.NormalizeDistinct(openFiles);
+                if (merged.SequenceEqual(saved, StringComparer.OrdinalIgnoreCase)
+                    && string.Equals(active, savedActive, StringComparison.OrdinalIgnoreCase))
+                    return;   // nothing changed: leave user.config alone
+                var s = TDPdf.Properties.Settings.Default;
+                s.SessionFiles = string.Join("|", merged);
+                s.SessionActiveFile = active;
+                s.Save();
+            });
         }
 
         private static void ClearSavedSession()
         {
             var s = TDPdf.Properties.Settings.Default;
-            if (s.SessionFiles.Length == 0 && s.SessionActiveFile.Length == 0) return;   // nothing to clear
+            if (s.SessionFiles.Length == 0 && s.SessionActiveFile.Length == 0
+                && ReadSavedSession().Files.Count == 0) return;   // nothing to clear
             s.SessionFiles = "";
             s.SessionActiveFile = "";
             s.Save();
@@ -1898,27 +2286,28 @@ namespace TDPdf
         /// <summary>
         /// Reopens the documents saved from the previous session as tabs, then re-selects the tab that was
         /// active last time. Skipped when the user opted out ("No"), when nothing was saved, or (by the
-        /// caller) when a file was passed on the command line — that file takes precedence over the session.
+        /// caller) when a file was passed on the command line — that file takes precedence over the session —
+        /// or when this is not the first TDPdf window (the first one already restored it).
         /// </summary>
         private async Task RestoreSessionAsync()
         {
             if (TDPdf.Properties.Settings.Default.ReopenSession == "No") return;
 
-            var files = TDPdf.Properties.Settings.Default.SessionFiles
-                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            // The list ClaimSavedSession just read under the lock, rather than Settings.Default's
+            // startup copy.
+            var files = _sessionContributed
                 .Where(System.IO.File.Exists)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (files.Count == 0) return;
 
             foreach (var f in files)
                 await OpenInTabAsync(f);
 
-            string active = TDPdf.Properties.Settings.Default.SessionActiveFile;
+            string active = ReadSavedSession().Active;
             if (!string.IsNullOrEmpty(active))
             {
                 var target = _tabs.FirstOrDefault(t =>
-                    string.Equals(t.OriginalPath, active, StringComparison.OrdinalIgnoreCase));
+                    TDPdf.Services.FilePathPolicy.SamePath(t.OriginalPath, active));
                 if (target is not null)
                 {
                     ActivateContext(target);
@@ -1960,6 +2349,9 @@ namespace TDPdf
             });
 
             var current = ParseThemeSetting(TDPdf.Properties.Settings.Default.Theme);
+            // Each radio group in its own panel: one Tab stop, arrow keys between the options.
+            var themeGroup = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel());
+            panel.Children.Add(themeGroup);
             foreach (var theme in new[] { Theme.Light, Theme.Dark, Theme.System })
             {
                 var radio = new RadioButton
@@ -1978,7 +2370,7 @@ namespace TDPdf
                     ThemeManager.Apply(selected);
                     SetStatus($"Theme set to {radio.Content}");
                 };
-                panel.Children.Add(radio);
+                themeGroup.Children.Add(radio);
             }
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
@@ -1990,6 +2382,8 @@ namespace TDPdf
                 Foreground = BrushResource("TextPrimary"),
                 Margin = new Thickness(0, 0, 0, 8)
             });
+            var viewModeGroup = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel());
+            panel.Children.Add(viewModeGroup);
             foreach (var (vm, labelText) in new[]
             {
                 (ViewMode.Single,     "Single page"),
@@ -2011,7 +2405,7 @@ namespace TDPdf
                 {
                     if (vmRadio.Tag is ViewMode m) SetViewMode(m);
                 };
-                panel.Children.Add(vmRadio);
+                viewModeGroup.Children.Add(vmRadio);
             }
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
@@ -2355,13 +2749,15 @@ namespace TDPdf
         private void RotatePages_Click(int delta)
         {
             if (_doc is null) return;
-            CommitActiveTextBox();
             var selected = PageList.SelectedItems;
             if (selected.Count == 0) return;
-            try
+            var indices = new List<int>();
+            foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+            // RunPageOperation commits the active text box, and on failure puts back the pages and
+            // the annotations (and undo snapshots) remapped through the turn below.
+            RunPageOperation("Rotate", () =>
             {
-                var indices = new List<int>();
-                foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+                var doc = _doc!;
                 // #169: a rotation must not destroy the overlay annotations. SaveTempAndReload's
                 // default clears them all, so a second rotation after placing an annotation would
                 // lose committed, unsaved work. Remap each rotated page's annotations through the
@@ -2373,14 +2769,14 @@ namespace TDPdf
                     // _renderDims, which may be missing for this page (emptied by a DPI change or an
                     // adopted text edit) or come from a secondary Grid tile's rounding rather than
                     // the primary canvas the user drew on.
-                    var dims = AnnotationCanvasSize(_doc.Pages[idx]);
+                    var dims = AnnotationCanvasSize(doc.Pages[idx]);
                     if (_annotations.TryGetValue(idx, out var anns))
                         TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h);
                     RemapAnnotationSnapshots(_undoStack, idx, delta, dims.w, dims.h);
                     RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
                 }
                 foreach (var idx in indices)
-                    _doc.Pages[idx].Rotate = ((_doc.Pages[idx].Rotate + delta) % 360 + 360) % 360;
+                    doc.Pages[idx].Rotate = ((doc.Pages[idx].Rotate + delta) % 360 + 360) % 360;
                 int restoreIdx = PageList.SelectedIndex;
                 SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = Math.Min(restoreIdx, PageList.Items.Count - 1);
@@ -2390,11 +2786,7 @@ namespace TDPdf
                 FitToPage();
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)FitToPage);
                 SetStatus($"Rotated {indices.Count} page(s)");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Rotate failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         // Rotate was previously reachable only via right-click on a page thumbnail in the Pages
@@ -3163,9 +3555,9 @@ namespace TDPdf
         private void RemoveLinkAnnotation(int pageIndex, int annotIndex)
         {
             if (_doc is null || pageIndex >= _doc.PageCount) return;
-            try
+            RunPageOperation("Remove link", () =>
             {
-                var pdfPage = _doc.Pages[pageIndex];
+                var pdfPage = _doc!.Pages[pageIndex];
                 var annotsArr = pdfPage.Elements.GetArray("/Annots");
                 if (annotsArr is null || annotIndex >= annotsArr.Elements.Count) return;
                 annotsArr.Elements.RemoveAt(annotIndex);
@@ -3179,12 +3571,7 @@ namespace TDPdf
                 PageList.SelectedIndex = -1;
                 PageList.SelectedIndex = sel;
                 SetStatus("Link removed.");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Remove link failed:\n{ex.Message}", "TDPdf",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         /// <summary>
@@ -4255,23 +4642,22 @@ namespace TDPdf
         private void RemoveCropBox(int[] pageIndices)
         {
             if (_doc is null || _currentFile is null) return;
-            try
+            // RunPageOperation shows the error and restores the document (and the undo entry
+            // pushed below) if the reload fails; this used to report only on the status line.
+            RunPageOperation("Remove crop", () =>
             {
+                var doc = _doc!;
                 PushDocUndo();
                 foreach (int pi in pageIndices)
                 {
-                    if (pi < 0 || pi >= _doc.PageCount) continue;
-                    _doc.Pages[pi].Elements.Remove("/CropBox");
+                    if (pi < 0 || pi >= doc.PageCount) continue;
+                    doc.Pages[pi].Elements.Remove("/CropBox");
                 }
                 HideCropConfirmBar();
                 SetTool(EditTool.Select);
                 SaveTempAndReload();
                 SetStatus($"Removed CropBox from {pageIndices.Length} page{(pageIndices.Length == 1 ? "" : "s")}");
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"Remove crop failed: {ex.Message}");
-            }
+            });
         }
 
         private void ApplyCrop(int[] pageIndices)
@@ -4281,8 +4667,10 @@ namespace TDPdf
             if (currentPage < 0) { SetStatus("Crop: no page selected"); return; }
             if (!_renderDims.ContainsKey(currentPage)) { SetStatus("Crop: page dimensions unavailable"); return; }
 
-            try
+            // As RemoveCropBox: a failure now gets the error dialog and the document back.
+            RunPageOperation("Crop", () =>
             {
+                var doc = _doc!;
                 PushDocUndo();
 
                 var (renderW, renderH) = _renderDims[currentPage];
@@ -4290,8 +4678,8 @@ namespace TDPdf
 
                 foreach (int pi in pageIndices)
                 {
-                    if (pi < 0 || pi >= _doc.PageCount) continue;
-                    var page = _doc.Pages[pi];
+                    if (pi < 0 || pi >= doc.PageCount) continue;
+                    var page = doc.Pages[pi];
                     double pdfW = page.Width.Point;
                     double pdfH = page.Height.Point;
 
@@ -4319,11 +4707,7 @@ namespace TDPdf
                 SetTool(EditTool.Select);
                 SaveTempAndReload();
                 SetStatus($"Cropped {pageIndices.Length} page{(pageIndices.Length == 1 ? "" : "s")}");
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"Crop failed: {ex.Message}");
-            }
+            });
         }
 
 
@@ -5157,7 +5541,9 @@ namespace TDPdf
                         ? "\n\nStill inside a marked area: " +
                           string.Join(", ", outcome.Survivors.Take(8)) +
                           (outcome.Survivors.Count > 8 ? ", …" : "") +
-                          "\n\nWiden the marks, or switch on \"Include partly covered objects\"."
+                          (outcome.SurvivorsAreAnnotations
+                              ? ""
+                              : "\n\nWiden the marks, or switch on \"Include partly covered objects\".")
                         : "";
                     TdpDialog.Show(this,
                         $"The redaction was not applied: {outcome.Error}{detail}\n\n" +
@@ -5173,6 +5559,8 @@ namespace TDPdf
                                  $"{outcome.ObjectsRemoved} object{(outcome.ObjectsRemoved == 1 ? "" : "s")} removed";
                 if (outcome.InvisibleTextRemoved > 0)
                     summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
+                if (outcome.AnnotationsRemoved > 0)
+                    summary += $"; {outcome.AnnotationsRemoved} annotation{(outcome.AnnotationsRemoved == 1 ? "" : "s")} or form field{(outcome.AnnotationsRemoved == 1 ? "" : "s")} removed";
                 if (outcome.Rasterized.Count > 0)
                     summary += $"; page{(outcome.Rasterized.Count == 1 ? "" : "s")} " +
                                string.Join(", ", outcome.Rasterized.Select(p => p + 1)) +
@@ -7135,8 +7523,11 @@ namespace TDPdf
                     renderW, renderH, page.Width, page.Height);
 
                 var words = page.GetWords()
-                    .Where(w => PdfPageGeometry.ContainsCenter(region,
-                        w.BoundingBox.Left, w.BoundingBox.Bottom, w.BoundingBox.Right, w.BoundingBox.Top))
+                    .Where(w =>
+                    {
+                        var b = PdfBoxExtent.Of(w.BoundingBox);
+                        return PdfPageGeometry.ContainsCenter(region, b.Left, b.Bottom, b.Right, b.Top);
+                    })
                     .ToList();
 
                 if (words.Count == 0)
@@ -7174,32 +7565,35 @@ namespace TDPdf
         /// </summary>
         private static string WordsToText(IEnumerable<UglyToad.PdfPig.Content.Word> source)
         {
+            // Corner min/max, not PdfPig's raw Top/Left/Height: those are wrong for quarter-turned,
+            // upside-down or mirrored text (negative heights, lines that never group).
             var words = source
-                .OrderByDescending(w => w.BoundingBox.Top)
-                .ThenBy(w => w.BoundingBox.Left)
+                .Select(w => (Word: w, Box: PdfBoxExtent.Of(w.BoundingBox)))
+                .OrderByDescending(x => x.Box.Top)
+                .ThenBy(x => x.Box.Left)
                 .ToList();
             if (words.Count == 0) return string.Empty;
 
             // Dynamic threshold: 40% of average word height, minimum 4 PDF units
-            double avgH = words.Average(w => w.BoundingBox.Height);
+            double avgH = words.Average(x => x.Box.Top - x.Box.Bottom);
             double thresh = Math.Max(4.0, avgH * 0.4);
 
-            var lines = new List<List<UglyToad.PdfPig.Content.Word>>();
+            var lines = new List<List<(UglyToad.PdfPig.Content.Word Word, (double Left, double Bottom, double Right, double Top) Box)>>();
             double lineY = double.MaxValue;
-            foreach (var w in words)
+            foreach (var x in words)
             {
-                if (Math.Abs(w.BoundingBox.Top - lineY) > thresh)
+                if (Math.Abs(x.Box.Top - lineY) > thresh)
                 {
                     lines.Add([]);
-                    lineY = w.BoundingBox.Top;
+                    lineY = x.Box.Top;
                 }
-                lines[^1].Add(w);
+                lines[^1].Add(x);
             }
 
             // Re-sort each line by X in case the top-Y sort caused any grouping
             // to pull words into the wrong order within a line.
             return string.Join("\n", lines.Select(l =>
-                string.Join(" ", l.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text))));
+                string.Join(" ", l.OrderBy(x => x.Box.Left).Select(x => x.Word.Text))));
         }
 
         // ============================================================
@@ -7599,6 +7993,16 @@ namespace TDPdf
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
             base.OnPreviewKeyDown(e);
+
+            // Alt+Space: the window's system menu, which the custom chrome would otherwise lose.
+            // The native frame gets it from Windows; full screen has no title bar to anchor it to.
+            if (e.Key == Key.System && e.SystemKey == Key.Space && Keyboard.Modifiers == ModifierKeys.Alt
+                && !_useNativeWindowFrame && !_fullScreen)
+            {
+                e.Handled = true;
+                ShowWindowSystemMenuFromKeyboard();
+                return;
+            }
 
             // A manual (non-OLE) mouse-captured drag doesn't get Escape-to-cancel for free the way
             // DragDrop.DoDragDrop would — release capture ourselves; LostMouseCapture on the chip
@@ -9480,7 +9884,7 @@ namespace TDPdf
         /// Drops all pending form-field values for the active document. Called when the
         /// document object is swapped/reloaded in place (structural edit, undo/redo of a
         /// document change, or open into the current context) because the values are keyed
-        /// by widget object number, which is invalidated by a reload.
+        /// by field object number, which is invalidated by a reload.
         /// </summary>
         private void ClearFormState()
         {
@@ -9553,15 +9957,18 @@ namespace TDPdf
         /// difference in practice — but sx is the right one to name for a horizontal quantity.)
         /// </remarks>
         private static void DrawTextLine(XGraphics gfx, TextAnnotation ta, string line,
-                                         XFont font, XBrush brush, double x, double baselineY, double sx)
+                                         XFont font, XBrush brush, double x, double baselineY, double sx,
+                                         string? paragraph = null, int lineStart = 0)
         {
             double spacing = ta.LetterSpacing * sx;
             // Upstream KillerPDF #435: PdfSharpCore does no bidi, so a Hebrew line drawn as one
-            // string saves in logical order — backwards. Draw it element by element from the right
-            // edge instead, inside the same span the left-to-right path would cover.
+            // string saves in logical order — backwards. Draw it element by element in visual
+            // order instead, inside the same span the left-to-right path would cover. A wrapped
+            // line passes its hard paragraph, whose directions decide the order as on screen.
             if (RtlTextLayout.IsHebrewRightToLeftLine(line))
             {
-                DrawRightToLeft(gfx, line, font, brush, x, baselineY, spacing);
+                DrawRightToLeft(gfx, paragraph ?? line, paragraph is null ? 0 : lineStart, line.Length,
+                                font, brush, x, baselineY, spacing);
                 return;
             }
             if (TextLetterSpacing.IsNone(spacing))
@@ -9577,19 +9984,20 @@ namespace TDPdf
         }
 
         /// <summary>
-        /// Burns a pure-Hebrew line in visual order: one text element per <c>DrawString</c>, at the
-        /// mirrored offsets <see cref="RtlTextLayout.Layout"/> computes. Upstream KillerPDF #435.
+        /// Burns a Hebrew line in visual order: one text element per <c>DrawString</c>, at the
+        /// offsets <see cref="RtlTextLayout.Layout(string, int, int, double, Func{string, double}, bool)"/>
+        /// computes for the line at <paramref name="start"/> in <paramref name="paragraph"/>. Upstream KillerPDF #435.
         /// </summary>
         /// <remarks>
         /// The line spans [x, x + width] exactly as its left-to-right draw would — PdfSharpCore's
         /// MeasureString is a plain sum of advances (see <see cref="SpacedStringWidth"/>), so the
         /// per-element sum here and the whole-string width the underline and fill use agree.
         /// </remarks>
-        private static void DrawRightToLeft(XGraphics gfx, string line, XFont font, XBrush brush,
-                                            double x, double baselineY, double spacing)
+        private static void DrawRightToLeft(XGraphics gfx, string paragraph, int start, int length,
+                                            XFont font, XBrush brush, double x, double baselineY, double spacing)
         {
             foreach (var (cluster, dx) in
-                     RtlTextLayout.Layout(line, spacing, s => gfx.MeasureString(s, font).Width))
+                     RtlTextLayout.Layout(paragraph, start, length, spacing, s => gfx.MeasureString(s, font).Width))
             {
                 gfx.DrawString(cluster, font, brush, x + dx, baselineY);
             }
@@ -9696,12 +10104,16 @@ namespace TDPdf
                                         ta.Width * sx, boxH * sy);
                                 }
                                 double ty = ta.Position.Y * sy + pad * sy + ta.FontSize * sy;
-                                foreach (var line in wrapped)
+                                // #435: bidi directions come from the whole hard paragraph.
+                                var sources = RtlTextLayout.LocateWrappedLines(ta.Content, wrapped);
+                                for (int li = 0; li < wrapped.Count; li++)
                                 {
+                                    string line = wrapped[li];
                                     if (!string.IsNullOrEmpty(line))
                                     {
                                         DrawTextLine(gfx, ta, line, font, taBrush,
-                                                     (ta.Position.X + pad) * sx, ty, sx);
+                                                     (ta.Position.X + pad) * sx, ty, sx,
+                                                     sources?[li].Paragraph, sources?[li].Start ?? 0);
                                         DrawTextUnderline(gfx, ta, line, font, taBrush,
                                                           (ta.Position.X + pad) * sx, ty, sx, sy);
                                     }
@@ -9897,12 +10309,12 @@ namespace TDPdf
                             double ety = tea.Position.Y * sy + tea.FontSize * sy;
                             var teaColor = tea.GetColor();
                             var teaBrush = new XSolidBrush(XColor.FromArgb(teaColor.A, teaColor.R, teaColor.G, teaColor.B));
-                            // #435: a pure-Hebrew edit would save backwards through DrawString,
+                            // #435: a Hebrew edit would save backwards through DrawString,
                             // which does no bidi. One line only — the edit is drawn as a single
-                            // string, so a line break here is not a layout this can mirror.
+                            // string, so a line break here is not a layout this can reorder.
                             if (tea.NewContent.IndexOfAny(new[] { '\r', '\n' }) < 0
                                 && RtlTextLayout.IsHebrewRightToLeftLine(tea.NewContent))
-                                DrawRightToLeft(gfx, tea.NewContent, editFont, teaBrush,
+                                DrawRightToLeft(gfx, tea.NewContent, 0, tea.NewContent.Length, editFont, teaBrush,
                                                 tea.Position.X * sx, ety, 0);
                             else
                                 gfx.DrawString(tea.NewContent, editFont, teaBrush, tea.Position.X * sx, ety);
@@ -10019,9 +10431,52 @@ namespace TDPdf
         // Temp save/reload
         // ============================================================
 
-        private void SaveTempAndReload(bool keepAnnotations = false)
+        /// <summary>
+        /// Writes the in-memory document to a fresh working temp file and reopens it, after a page
+        /// edit (rotate, delete, insert, reorder, duplicate, merge, crop, transform, remove link).
+        /// </summary>
+        /// <remarks>
+        /// Upstream KillerPDF 1.9.0 (111406b8, b070350d): the save and reopen happen FIRST, and only
+        /// once the new document is open is <c>_doc</c> swapped and the per-document state cleared.
+        /// It used to clear marks, fields, form state and selection, mark dirty and close
+        /// <c>_doc</c> before saving, so a failed save or reopen left the tab holding a closed
+        /// document. Now a failure throws with <c>_doc</c> untouched and still usable; callers go
+        /// through <see cref="RunPageOperation"/>, which also undoes their in-memory changes.
+        /// </remarks>
+        /// <param name="selectIndex">Page to select afterwards; default is the current selection.
+        /// Either way it is clamped to the new page count, so deleting the last pages keeps the
+        /// view at the end rather than jumping to page 1 (upstream a6035013).</param>
+        private void SaveTempAndReload(bool keepAnnotations = false, int? selectIndex = null)
         {
             if (_doc is null || _currentFile is null) return;
+            var doc = _doc;
+            int selectedIdx = selectIndex ?? PageList.SelectedIndex;
+            // Typed form values are keyed by object number, which the temp save below renumbers,
+            // so they cannot survive as pending state. Write them into the document instead, where
+            // the reload reads them back as the fields' values — otherwise rotating, deleting or
+            // reordering a page, or removing a link, silently emptied every field filled in since
+            // the last save. The document is already dirty, so nothing reaches disk until a save.
+            // A widget that is a direct object has no object number and is keyed by its page and
+            // /Annots position instead — which a delete or reorder has just moved, so that key could
+            // now name a different field. Only object-number keys are carried over. (RunPageOperation
+            // writes them all before the edit, while every key is still right, so this is normally
+            // a no-op.)
+            if (HasPendingFormValues)
+            {
+                foreach (var k in _formTextValues.Keys.Where(k => k < 0).ToList()) _formTextValues.Remove(k);
+                foreach (var k in _formCheckValues.Keys.Where(k => k < 0).ToList()) _formCheckValues.Remove(k);
+                WriteFormValuesToDocument();
+            }
+            var tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                $"tdpdf_temp_{Guid.NewGuid():N}.pdf");
+            doc.Save(tempPath);
+            var reopened = OpenWorkingCopy(ref tempPath);
+
+            // The new document is open: from here on nothing can leave the tab without one.
+            try { doc.Close(); } catch { /* the old instance is discarded either way */ }
+            _doc = reopened;
+            _currentFile = tempPath;
+
             // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
             // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
             // cleared by default. Every caller that can keep them passes keepAnnotations: true
@@ -10051,31 +10506,7 @@ namespace TDPdf
             }
             // Placed Electronic Signature fields are positions on pages for exactly the same reason.
             ESignDropFieldsForLayoutChange(_ctx);
-            // Typed form values are keyed by object number, which the temp save below renumbers,
-            // so they cannot survive as pending state. Write them into the document instead, where
-            // the reload reads them back as the fields' values — otherwise rotating, deleting or
-            // reordering a page, or removing a link, silently emptied every field filled in since
-            // the last save. The document is already dirty, so nothing reaches disk until a save.
-            // A widget that is a direct object has no object number and is keyed by its page and
-            // /Annots position instead — which a delete or reorder has just moved, so that key could
-            // now name a different field. Only object-number keys are carried over.
-            if (HasPendingFormValues)
-            {
-                foreach (var k in _formTextValues.Keys.Where(k => k < 0).ToList()) _formTextValues.Remove(k);
-                foreach (var k in _formCheckValues.Keys.Where(k => k < 0).ToList()) _formCheckValues.Remove(k);
-                WriteFormValuesToDocument();
-            }
             ClearFormState();
-            InvalidateRenderCache();
-            _contentEditor.ClearCache();
-            // Rotate / delete / reorder / crop / transform all land here and all change page
-            // geometry, so the flowing-selection character cache goes with the render cache. (The
-            // cache key already changes — the working path is repointed at a fresh temp file just
-            // below — but this keeps the invalidation explicit rather than incidental.)
-            InvalidateTextRunCache();
-            // Same reasoning for the link-target page map (#438): keyed on the document instance,
-            // which the reload below replaces, but dropped here explicitly all the same.
-            InvalidateLinkPageMap();
             // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
             // this tab's captured scroll offset now measures against a layout that no longer
             // exists. Drop the resume point and let the next activation place the view the way it
@@ -10083,37 +10514,54 @@ namespace TDPdf
             _ctx.ViewCaptured = false;
             ClearSelection();
             MarkDirty();
-            var doc = _doc;
-            int selectedIdx = PageList.SelectedIndex;
-            var tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                $"tdpdf_temp_{Guid.NewGuid():N}.pdf");
-            doc.Save(tempPath);
-            doc.Close();
-            // PdfSharpCore can silently produce a broken cross-reference entry when re-saving an
-            // encrypted (owner-restricted RC4) PDF after a modification such as a page rotation:
-            // the save succeeds but re-opening the result in Modify mode then throws "Unexpected
-            // token 'xref'". Catch that reopen failure and pipe the saved file (which already
-            // carries the new /Rotate values) through PDFium, which rebuilds a valid xref and
-            // strips encryption while preserving the rotation, then retry the open.
+            ShowReloadedDocument(selectedIdx);
+        }
+
+        /// <summary>
+        /// Opens a working temp file for editing. PdfSharpCore can silently produce a broken
+        /// cross-reference entry when re-saving an encrypted (owner-restricted RC4) PDF after a
+        /// modification such as a page rotation: the save succeeds but re-opening the result in
+        /// Modify mode then throws "Unexpected token 'xref'". That reopen failure is piped through
+        /// PDFium, which rebuilds a valid xref and strips encryption while preserving the edit, and
+        /// the open is retried; <paramref name="path"/> then names the repaired file.
+        /// </summary>
+        private static PdfDocument OpenWorkingCopy(ref string path)
+        {
             try
             {
-                _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
+                return PdfReader.Open(path, PdfDocumentOpenMode.Modify);
             }
             catch (Exception openEx) when (TDPdf.Services.PdfDocumentService.IsXRefException(openEx))
             {
                 var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
                     $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
-                if (!TDPdf.Services.PdfiumInterop.TryPdfiumRepair(tempPath, fixedPath))
+                if (!TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
                     throw; // PDFium also failed — re-throw the original reopen error
-                tempPath = fixedPath;
-                _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
+                path = fixedPath;
+                return PdfReader.Open(path, PdfDocumentOpenMode.Modify);
             }
-            _currentFile = tempPath;
+        }
+
+        /// <summary>
+        /// Drops the caches tied to the old document instance and re-renders the page list after
+        /// <c>_doc</c> was swapped for a reopened copy. <paramref name="selectedIdx"/> is clamped to
+        /// the new page count.
+        /// </summary>
+        private void ShowReloadedDocument(int selectedIdx)
+        {
+            InvalidateRenderCache();
+            _contentEditor.ClearCache();
+            // Rotate / delete / reorder / crop / transform all change page geometry, so the
+            // flowing-selection character cache goes with the render cache. (The cache key already
+            // changes — the working path was repointed at a fresh temp file — but this keeps the
+            // invalidation explicit rather than incidental.)
+            InvalidateTextRunCache();
+            // Same reasoning for the link-target page map (#438): keyed on the document instance,
+            // which the reload replaced, but dropped here explicitly all the same.
+            InvalidateLinkPageMap();
             RefreshPageList();
-            if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
-                PageList.SelectedIndex = selectedIdx;
-            else if (PageList.Items.Count > 0)
-                PageList.SelectedIndex = 0;
+            if (PageList.Items.Count > 0)
+                PageList.SelectedIndex = Math.Clamp(selectedIdx, 0, PageList.Items.Count - 1);
 
             // Continuous view caches one slot per page; the page set may have changed (rotate,
             // delete, reorder, crop) so rebuild the strip from the reloaded document.
@@ -10128,6 +10576,136 @@ namespace TDPdf
             // changing WHICH page it is, so the chip is refreshed here rather than left to a
             // selection change that may well restore the very same index.
             UpdatePageSizeReadout();
+        }
+
+        /// <summary>
+        /// Runs a page edit so that a failure leaves the document exactly as it was, and tells the
+        /// user. <paramref name="operation"/> mutates <c>_doc</c> and the annotation map, then calls
+        /// <see cref="SaveTempAndReload"/>. Returns false when it failed (the dialog has been shown).
+        /// </summary>
+        /// <remarks>
+        /// Upstream KillerPDF 1.9.0 (1b9e9d5d, e1ea224a). Callers change the in-memory document
+        /// and remap annotations and undo history BEFORE the reload, so a throw part-way used to
+        /// leave a half-edited document, annotations on the wrong pages, or a closed document. The
+        /// rollback point is taken here, before any of that:
+        ///   * the document is written to a temp file. Typed form values are written into it first,
+        ///     while their object-number and position keys still name the right widgets, because the
+        ///     save renumbers objects (so this also keeps position-keyed values a reorder used to drop);
+        ///   * the annotation map and both undo stacks are deep-cloned (rotation remaps annotation
+        ///     coordinates in place).
+        /// If even the snapshot cannot be written, the working file on disk is the fallback. It
+        /// holds every page edit made so far, but not unsaved bookmark or text edits made in memory
+        /// since the last reload.
+        /// </remarks>
+        private bool RunPageOperation(string failureTitle, Action operation)
+        {
+            if (_doc is null) return false;
+            var snapshot = BeginPageOperation();
+            try
+            {
+                operation();
+                EndPageOperation(snapshot);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                RollBackPageOperation(snapshot, failureTitle, ex);
+                return false;
+            }
+        }
+
+        /// <summary>The rollback point <see cref="RunPageOperation"/> takes; see its remarks.</summary>
+        private sealed record PageOperationSnapshot(
+            string? DocumentPath,
+            string? WorkingFile,
+            int SelectedIndex,
+            Dictionary<int, List<PageAnnotation>> Annotations,
+            List<UndoEntry> Undo,
+            List<UndoEntry> Redo);
+
+        /// <summary>
+        /// Takes the rollback point for a page edit. Split from <see cref="RunPageOperation"/> for the
+        /// one caller (the sidebar file drop) whose edit spans awaits and so cannot be one Action.
+        /// </summary>
+        private PageOperationSnapshot BeginPageOperation()
+        {
+            CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
+            if (HasPendingFormValues)
+            {
+                WriteFormValuesToDocument();
+                ClearFormState();
+            }
+            string? docPath = null;
+            if (_doc is not null)
+            {
+                docPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                    $"tdpdf_temp_{Guid.NewGuid():N}.pdf");
+                try { _doc.Save(docPath); }
+                catch { TryDeleteTempFile(docPath); docPath = null; }
+            }
+            return new PageOperationSnapshot(
+                docPath,
+                _currentFile,
+                PageList.SelectedIndex,
+                _annotations.ToDictionary(kv => kv.Key, kv => kv.Value.Select(a => a.Clone()).ToList()),
+                CloneHistory(_undoStack),
+                CloneHistory(_redoStack));
+        }
+
+        /// <summary>The edit succeeded (or changed nothing): drop the rollback copy.</summary>
+        private static void EndPageOperation(PageOperationSnapshot snapshot)
+        {
+            if (snapshot.DocumentPath is not null) TryDeleteTempFile(snapshot.DocumentPath);
+        }
+
+        /// <summary>
+        /// Puts the document, annotations and undo history back as <paramref name="snapshot"/> took
+        /// them, then shows the error.
+        /// </summary>
+        private void RollBackPageOperation(PageOperationSnapshot snapshot, string failureTitle, Exception ex)
+        {
+            Telemetry.TrackEvent("Page.OperationFailed", new Dictionary<string, string>
+            {
+                ["Operation"]     = failureTitle,
+                ["ExceptionType"] = ex.GetType().FullName ?? "Unknown",
+            });
+            bool restored = false;
+            foreach (var candidate in new[] { snapshot.DocumentPath, snapshot.WorkingFile })
+            {
+                if (candidate is null || !System.IO.File.Exists(candidate)) continue;
+                try
+                {
+                    string path = candidate;
+                    var restoredDoc = OpenWorkingCopy(ref path);
+                    try { _doc?.Close(); } catch { /* replaced either way */ }
+                    _doc = restoredDoc;
+                    _currentFile = path;
+                    _annotations.Clear();
+                    foreach (var (page, list) in snapshot.Annotations) _annotations[page] = list;
+                    ReplaceHistory(_undoStack, snapshot.Undo);
+                    ReplaceHistory(_redoStack, snapshot.Redo);
+                    ClearFormState();
+                    ClearSelection();
+                    ShowReloadedDocument(snapshot.SelectedIndex);
+                    restored = true;
+                    break;
+                }
+                catch { /* try the next candidate */ }
+            }
+            TdpDialog.Show(this,
+                $"{failureTitle} failed:\n{ex.Message}" +
+                (restored ? "\n\nThe document was left as it was before." : ""),
+                "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
+        private static List<UndoEntry> CloneHistory(LinkedList<UndoEntry> history) =>
+            history.Select(e => e.PageAnnotations is { } list
+                ? e with { PageAnnotations = list.Select(a => a.Clone()).ToList() }
+                : e).ToList();
+
+        private static void TryDeleteTempFile(string path)
+        {
+            try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* best effort */ }
         }
 
         // ============================================================
@@ -11312,15 +11890,16 @@ namespace TDPdf
             catch { return false; }
         }
 
-        // Reads the stored list, dropping any entry that no longer exists on disk.
+        // Reads the stored list, dropping any entry that no longer exists on disk. Entries are
+        // normalised to full paths and de-duplicated case-insensitively: older builds stored paths
+        // as given (forward slashes, relative segments), so one file could be listed twice.
         private static List<string> GetRecentFiles()
         {
             var list = new List<string>();
             var raw = TDPdf.Properties.Settings.Default.RecentFiles;
             if (string.IsNullOrEmpty(raw)) return list;
-            foreach (var p in raw.Split('|'))
+            foreach (var p in TDPdf.Services.FilePathPolicy.NormalizeDistinct(raw.Split('|')))
             {
-                if (string.IsNullOrWhiteSpace(p)) continue;
                 try { if (System.IO.File.Exists(p)) list.Add(p); } catch { }
             }
             return list;
@@ -11669,8 +12248,10 @@ namespace TDPdf
         private async void AppendFilesToCurrentDoc(string[] files)
         {
             if (_doc is null) return;
-            CommitActiveTextBox();
             var doc = _doc;
+            // The rollback point (which also commits the active text box): the appends below change
+            // _doc across awaits, so this cannot go through RunPageOperation's single Action.
+            var snapshot = BeginPageOperation();
             int before = doc.PageCount;
             foreach (var f in files)
             {
@@ -11689,19 +12270,32 @@ namespace TDPdf
                     // Offer the same repair the open path offers.
                     if (IsPdfPath(f)) await TryAppendRepairedPdfAsync(doc, f);
                 }
-                if (_doc is null || !ReferenceEquals(_doc, doc)) return;   // document swapped mid-await
+                if (_doc is null || !ReferenceEquals(_doc, doc))   // document swapped mid-await
+                {
+                    EndPageOperation(snapshot);
+                    return;
+                }
             }
             if (doc.PageCount == before)
             {
+                EndPageOperation(snapshot);
                 SetStatus("Nothing could be appended because the dropped files could not be read.");
                 return;
             }
             int added = doc.PageCount - before;
-            // Same persist-and-repaint path as the page reorder below; it marks the document dirty.
-            // Appending renumbers nothing (see the summary), so the unsaved annotations are kept
-            // as they are rather than taking the reload's default clear.
-            SaveTempAndReload(keepAnnotations: true);
-            SetStatus($"Appended {added} page{(added == 1 ? "" : "s")} from {files.Length} file{(files.Length == 1 ? "" : "s")}");
+            try
+            {
+                // Same persist-and-repaint path as the page reorder below; it marks the document dirty.
+                // Appending renumbers nothing (see the summary), so the unsaved annotations are kept
+                // as they are rather than taking the reload's default clear.
+                SaveTempAndReload(keepAnnotations: true);
+                EndPageOperation(snapshot);
+                SetStatus($"Appended {added} page{(added == 1 ? "" : "s")} from {files.Length} file{(files.Length == 1 ? "" : "s")}");
+            }
+            catch (Exception ex)
+            {
+                RollBackPageOperation(snapshot, "Append", ex);
+            }
         }
 
         /// <summary>
@@ -11789,8 +12383,15 @@ namespace TDPdf
             // document — a full re-render, a dirty flag and a lost scroll position — in exchange
             // for nothing at all.
             if (_doc is null || plan.IsNoOp || plan.From.Length == 0) return;
-            var doc = _doc;
-            CommitActiveTextBox();   // a half-typed box belongs to the layout about to be rewritten
+            // It had no error handling at all: a failed reload escaped to the crash handler with
+            // the pages already moved in memory. RunPageOperation (which also commits the active
+            // text box) shows the error and puts the document back.
+            RunPageOperation("Move pages", () => MovePageBlockCore(plan));
+        }
+
+        private void MovePageBlockCore(TDPdf.Services.PageBlockMove.Plan plan)
+        {
+            var doc = _doc!;
 
             // Each page's annotations travel with it (upstream KillerPDF #429 widened to reorder).
             // PageBlockMove.Apply is the model of exactly the mutation below, so inverting the order
@@ -11856,9 +12457,9 @@ namespace TDPdf
             // The menu row is disabled with an empty selection, so this only catches a caller that
             // arrives some other way; it must not fall back to page one and edit the document unasked.
             if (pages.Length == 0) { SetStatus("Select the pages to duplicate first."); return; }
-            CommitActiveTextBox();   // a half-typed box belongs to the layout about to be rewritten
-            try
+            RunPageOperation("Duplicate", () =>
             {
+                doc = _doc!;
                 int oldCount = doc.PageCount;
                 int insertAt = TDPdf.Services.PdfPageDuplicate.Duplicate(doc, pages);
                 if (insertAt < 0) return;
@@ -11880,12 +12481,7 @@ namespace TDPdf
                         PageList.SelectedItems.Add(PageList.Items[insertAt + k]);
                 }
                 SetStatus($"Duplicated {pages.Length} page{(pages.Length == 1 ? "" : "s")}");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Duplicate failed:\n{ex.Message}", "TDPdf",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         // ============================================================
@@ -11963,6 +12559,44 @@ namespace TDPdf
             ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                 ? Visibility.Collapsed : Visibility.Visible;
             if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
+        }
+
+        // The overlay is modal in effect, so keyboard focus belongs inside it while it shows
+        // (Tab cycles there, see the XAML) and goes back where it was when it closes. Driven by
+        // IsVisibleChanged so every open and close path is covered. Idea from upstream KillerPDF
+        // 1.8.92 (OverlayFocus).
+        private IInputElement? _shortcutOverlayReturnFocus;
+
+        private void ShortcutOverlay_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            if ((bool)e.NewValue)
+            {
+                var focused = Keyboard.FocusedElement;
+                _shortcutOverlayReturnFocus = focused is Visual v && ShortcutOverlay.IsAncestorOf(v) ? null : focused;
+                // After layout, so the card's buttons exist and are focusable.
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, (Action)(() =>
+                {
+                    if (ShortcutOverlay.IsVisible)
+                        ShortcutOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+                }));
+            }
+            else
+            {
+                var back = _shortcutOverlayReturnFocus;
+                _shortcutOverlayReturnFocus = null;
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, (Action)(() =>
+                {
+                    // Leave focus alone if something else already took it on purpose.
+                    var now = Keyboard.FocusedElement;
+                    bool stranded = now is null || now == this || (now is Visual nv && ShortcutOverlay.IsAncestorOf(nv))
+                                    || (now is UIElement u && !u.IsVisible);
+                    if (!stranded) return;
+                    if (back is UIElement target && target.IsVisible && target.IsEnabled && target.Focusable)
+                        Keyboard.Focus(target);
+                    else if (back is ContentElement ce && ce.IsEnabled && ce.Focusable)
+                        Keyboard.Focus(ce);
+                }));
+            }
         }
 
         private void ShortcutOverlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
