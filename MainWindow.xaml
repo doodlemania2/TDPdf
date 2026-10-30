@@ -6,7 +6,7 @@
         xmlns:local="clr-namespace:TDPdf"
         xmlns:controls="clr-namespace:TDPdf.Controls"
         mc:Ignorable="d"
-        Title="TDPdf" Height="700" Width="1000"
+        Title="TDPdf" Height="700" Width="1000" MinWidth="640" MinHeight="420"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource BgDark}"
         KeyboardNavigation.TabNavigation="Continue"
@@ -1695,7 +1695,9 @@
                         </Button.Template>
                     </Button>
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <!-- In a narrow window FitFooterToWidth collapses the copyright and then the version
+                     label, so the controls to their left never clip. -->
+                <StackPanel x:Name="FooterRightGroup" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <!-- Electronic Signature (design §5.5): shown while the active tab's document carries
                          a digital signature, so "Ctrl+S removes it" is never a surprise. Neutral colours
                          on purpose — it says a signature is PRESENT, never that it is valid; TDPdf does
@@ -1753,7 +1755,7 @@
                         </Button.Template>
                     </Button>
                     <TextBlock x:Name="VersionLabel" Text="v1.2.0.0" Foreground="{DynamicResource TextMuted}" FontFamily="Consolas" FontSize="10" VerticalAlignment="Center" Margin="0,0,12,0" AutomationProperties.Name="Application version"/>
-                    <TextBlock FontSize="10" VerticalAlignment="Center" FontFamily="Consolas">
+                    <TextBlock x:Name="FooterCopyright" FontSize="10" VerticalAlignment="Center" FontFamily="Consolas">
                         <Run Text="&#x00A9; 2026 " Foreground="{DynamicResource TextMuted}"/>
                         <Hyperlink NavigateUri="https://thedoodleproject.com/tdpdf" RequestNavigate="Hyperlink_RequestNavigate" KeyboardNavigation.TabIndex="50" AutomationProperties.Name="The Doodle Project website" AutomationProperties.HelpText="Opens The Doodle Project website" Foreground="{DynamicResource TextMuted}" TextDecorations="None">
                             <Run Text="The Doodle Project"/>
