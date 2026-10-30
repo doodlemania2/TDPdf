@@ -11,7 +11,9 @@
 #                      holds the ingress (tdpdf.com and www.tdpdf.com -> http://tdpdf-site:8080).
 #                      TUNNEL_TOKEN is in .env, mode 600, never in git.
 #
-# No published port: the tunnel is the only way in. Do not add an NPM proxy host for it.
+# Published on loopback only (127.0.0.1:18106), for the shared host-network `public-fleet`
+# tunnel, which is replacing tdpdf-site-tunnel (cutover run from the K3s repo, 2026-10-30).
+# Nothing is reachable from the LAN. Do not add an NPM proxy host for it.
 
 name: tdpdf-site
 
@@ -24,6 +26,7 @@ services:
     image: ghcr.io/doodlemania2/tdpdf-site:latest
     container_name: tdpdf-site
     restart: unless-stopped
+    ports: ["127.0.0.1:18106:8080"]
     read_only: true
     tmpfs: [/tmp, /var/cache/nginx]
     cap_drop: [ALL]
