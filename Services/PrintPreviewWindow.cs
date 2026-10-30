@@ -60,6 +60,9 @@ namespace TDPdf.Services
         // driver's own dialog survives into the job. The combo still offers the two entries it always
         // did; short edge simply shows there as "two-sided".
         private Duplexing _duplexMode = Duplexing.OneSided;
+        // The printer offers two-sided only as document-scope DocumentDuplex, which the typed
+        // Duplexing API cannot see or set. See PrintTicketDuplex.
+        private bool _documentDuplex;
         private bool _syncingFromDriver;      // suppresses control handlers while AdoptDriverTicket writes
         private int _scaleMode;              // 0 = fit to page, 1 = custom percentage
         private double _customPct = 100;     // custom scale % (clamped 25-400)
@@ -910,6 +913,18 @@ namespace TDPdf.Services
 
             bool ok = caps?.DuplexingCapability?.Contains(Duplexing.TwoSidedLongEdge) == true
                    || caps?.DuplexingCapability?.Contains(Duplexing.TwoSidedShortEdge) == true;
+            _documentDuplex = false;
+            if (!ok && _queue != null)
+            {
+                // DuplexingCapability reads only the job-scope feature.
+                try
+                {
+                    using var xml = _queue.GetPrintCapabilitiesAsXml();
+                    _documentDuplex = PrintTicketDuplex.SupportsDocumentDuplex(xml);
+                }
+                catch { /* capability XML unavailable: stays disabled, as before */ }
+                ok = _documentDuplex;
+            }
 
             _duplexCombo.IsEnabled = ok;
             _duplexCombo.Opacity   = ok ? 1.0 : 0.5;
@@ -968,6 +983,35 @@ namespace TDPdf.Services
         /// </summary>
         private PrintTicket BaseTicket(PrintDialog pd)
             => _driverTicket is { } t ? t.Clone() : pd.PrintTicket;
+
+        /// <summary>The document-scope duplex a ticket selects, which <c>PrintTicket.Duplexing</c> does not read.</summary>
+        private static Duplexing? DocumentDuplexOf(PrintTicket t)
+        {
+            try
+            {
+                using var xml = t.GetXmlStream();
+                return PrintTicketDuplex.Read(xml) is { } k && Enum.TryParse(k, out Duplexing d) ? d : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Sets duplex on <paramref name="t"/> at job scope and at document scope, so it holds on a
+        /// driver that only knows one of them. Returns the ticket to use, which may be a new one.
+        /// </summary>
+        private PrintTicket WithDuplex(PrintTicket t, Duplexing mode)
+        {
+            t.Duplexing = mode;
+            if (mode is not (Duplexing.OneSided or Duplexing.TwoSidedLongEdge or Duplexing.TwoSidedShortEdge))
+                return t;
+            try
+            {
+                using var xml = t.GetXmlStream();
+                using var rewritten = PrintTicketDuplex.Write(xml, mode.ToString(), addIfMissing: _documentDuplex);
+                return rewritten is null ? t : new PrintTicket(rewritten);
+            }
+            catch { return t; /* the job-scope setting above still stands */ }
+        }
 
         private const int WS_POPUP          = unchecked((int)0x80000000);
         private const int WS_VISIBLE        = 0x10000000;
@@ -1084,7 +1128,9 @@ namespace TDPdf.Services
                     var bytes = new byte[size];
                     Marshal.Copy(devMode, bytes, 0, size);
                     using var conv = new PrintTicketConverter(printerName, PrintTicketConverter.MaxPrintSchemaVersion);
-                    _driverTicket = conv.ConvertDevModeToPrintTicket(bytes, PrintTicketScope.JobScope);
+                    // DocumentScope, which includes job scope: JobScope drops document-level
+                    // settings, and DocumentDuplex is where many drivers keep two-sided printing.
+                    _driverTicket = conv.ConvertDevModeToPrintTicket(bytes, PrintTicketScope.DocumentScope);
 
                     AdoptDriverTicket(_driverTicket);
                 }
@@ -1114,11 +1160,11 @@ namespace TDPdf.Services
                 var seed = BaseTicket(pd);
                 seed.PageOrientation = _landscape ? PageOrientation.Landscape : PageOrientation.Portrait;
                 seed.OutputColor     = _grayscale ? OutputColor.Grayscale : OutputColor.Color;
-                seed.Duplexing       = _duplexMode;
                 if (_paperOverride != null) seed.PageMediaSize = _paperOverride;
+                seed = WithDuplex(seed, _duplexMode);
 
                 using var conv = new PrintTicketConverter(printerName, PrintTicketConverter.MaxPrintSchemaVersion);
-                byte[] dm = conv.ConvertPrintTicketToDevMode(seed, BaseDevModeType.UserDefault, PrintTicketScope.JobScope);
+                byte[] dm = conv.ConvertPrintTicketToDevMode(seed, BaseDevModeType.UserDefault, PrintTicketScope.DocumentScope);
                 if (dm.Length == 0 || dm.Length > size) return false;
                 Marshal.Copy(dm, 0, devMode, dm.Length);
                 return true;
@@ -1148,7 +1194,9 @@ namespace TDPdf.Services
                     if (_colorCombo != null) _colorCombo.SelectedIndex = _grayscale ? 1 : 0;
                 }
 
-                if (t.Duplexing is { } d)
+                // The document-scope setting first: on a driver that keeps duplex there, the typed
+                // (job-scope) property reads back as nothing or as a stale default.
+                if ((DocumentDuplexOf(t) ?? t.Duplexing) is { } d && d != Duplexing.Unknown)
                 {
                     // Short edge is kept on the field even though the combo has no entry for it: the
                     // driver asked for it, so the job gets it. The combo reads "two-sided" either way.
@@ -1587,7 +1635,6 @@ namespace TDPdf.Services
                 ticket.CopyCount       = copies;
                 ticket.PageOrientation = _landscape ? PageOrientation.Landscape : PageOrientation.Portrait;
                 ticket.OutputColor     = _grayscale ? OutputColor.Grayscale : OutputColor.Color;
-                ticket.Duplexing       = _duplexMode;
                 // We hand the spooler finished sheets, so the driver must not tile them again. The
                 // user's N-up choice — whether made in our combo or read back out of the driver dialog
                 // by AdoptDriverTicket — is already baked into the FixedDocument by ComposeSheet.
@@ -1599,6 +1646,9 @@ namespace TDPdf.Services
                 // on for the preview. (upstream KillerPDF #186)
                 if (_paperOverride != null) ticket.PageMediaSize = _paperOverride;
                 if (_sourceOverride is { } bin) ticket.InputBin  = bin;
+                // Duplex rides the ticket at both scopes. _duplexMode already holds what the driver
+                // dialog chose (short edge included, see AdoptDriverTicket), so this does not undo it.
+                ticket = WithDuplex(ticket, _duplexMode);
                 pd.PrintTicket = ticket;
 
                 double aw = pd.PrintableAreaWidth, ah = pd.PrintableAreaHeight;
