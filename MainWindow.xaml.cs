@@ -615,6 +615,7 @@ namespace TDPdf
             _footerCopyright = (TextBlock)FindName("FooterCopyright")!;
             StateChanged += (_, _) => UpdateMaximizeButton();
             UpdateMaximizeButton();
+            _customTitleBar.MouseRightButtonUp += TitleBar_MouseRightButtonUp;
             _outlineTree = (TreeView)FindName("OutlineTree")!;
             // Expanded/Collapsed bubble from the items, which are rebuilt on every tab switch and
             // reload — so the recorder hangs off the tree, once, rather than off the items.
@@ -1041,6 +1042,14 @@ namespace TDPdf
             else if (msg == WM_EXITSIZEMOVE)
             {
                 _inWindowSizeMove = false;
+            }
+            else if (msg == WM_SYSCOMMAND && (wParam.ToInt64() & 0xFFF0) == SC_KEYMENU && lParam.ToInt64() == ' '
+                     && !_useNativeWindowFrame && !_fullScreen)
+            {
+                // Alt+Space that reached Windows (OnPreviewKeyDown normally takes it first): the
+                // frameless window has no system menu of its own to open, so show ours.
+                ShowWindowSystemMenuFromKeyboard();
+                handled = true;
             }
             else if (msg == WM_GETMINMAXINFO && !_useNativeWindowFrame)
             {
@@ -1705,6 +1714,90 @@ namespace TDPdf
             var hwnd = new WindowInteropHelper(this).Handle;
             SendMessage(hwnd, WM_NCLBUTTONDOWN, new IntPtr(HTCAPTION), IntPtr.Zero);
         }
+
+        // The custom title bar is client area, so Windows never offers its system menu on a
+        // right-click there. Show it ourselves, at the pointer, as a native caption would.
+        private void TitleBar_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_useNativeWindowFrame || _fullScreen) return;
+            e.Handled = true;
+            ShowWindowSystemMenu(PointToScreen(e.GetPosition(this)));
+        }
+
+        // Alt+Space: the same menu, at the window's top-left corner just under the title bar.
+        // GetWindowRect rather than Left/Top, which keep the restored position while maximized.
+        private void ShowWindowSystemMenuFromKeyboard()
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out RECT r)) return;
+            double titlePx = _customTitleBar.ActualHeight * WindowDpiScale(hwnd);
+            ShowWindowSystemMenu(new Point(r.left, r.top + titlePx));
+        }
+
+        // Win32 system menu at a SCREEN point in device pixels. The menu's items are enabled by
+        // hand: with WindowStyle=None Windows does not update them for this window, and Restore,
+        // Move and Size only make sense for one state each. The chosen command goes back through
+        // WM_SYSCOMMAND, so Move / Size get Windows' own keyboard loops and Close the dirty prompt.
+        private void ShowWindowSystemMenu(Point screenPx)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            IntPtr menu = GetSystemMenu(hwnd, false);
+            if (menu == IntPtr.Zero) return;
+
+            bool maximized = WindowState == WindowState.Maximized;
+            bool minimized = WindowState == WindowState.Minimized;
+            bool normal = !maximized && !minimized;
+            bool canResize = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip;
+            void Enable(int cmd, bool on) =>
+                EnableMenuItem(menu, (uint)cmd, MF_BYCOMMAND | (on ? MF_ENABLED : MF_GRAYED));
+            Enable(SC_RESTORE, !normal);
+            Enable(SC_MOVE, normal);
+            Enable(SC_SIZE, normal && canResize);
+            Enable(SC_MINIMIZE, !minimized && ResizeMode != ResizeMode.NoResize);
+            Enable(SC_MAXIMIZE, !maximized && canResize);
+            Enable(SC_CLOSE, true);
+            SetMenuDefaultItem(menu, (uint)(maximized ? SC_RESTORE : SC_CLOSE), 0);
+
+            int cmdChosen = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+                (int)Math.Round(screenPx.X), (int)Math.Round(screenPx.Y), hwnd, IntPtr.Zero);
+            if (cmdChosen != 0)
+                PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(cmdChosen), IntPtr.Zero);
+        }
+
+        private const int WM_SYSCOMMAND = 0x0112;
+        private const int SC_SIZE = 0xF000;
+        private const int SC_MOVE = 0xF010;
+        private const int SC_MINIMIZE = 0xF020;
+        private const int SC_MAXIMIZE = 0xF030;
+        private const int SC_CLOSE = 0xF060;
+        private const int SC_KEYMENU = 0xF100;
+        private const int SC_RESTORE = 0xF120;
+        private const uint MF_BYCOMMAND = 0x0000;
+        private const uint MF_ENABLED = 0x0000;
+        private const uint MF_GRAYED = 0x0001;
+        private const uint TPM_LEFTALIGN = 0x0000;
+        private const uint TPM_TOPALIGN = 0x0000;
+        private const uint TPM_RIGHTBUTTON = 0x0002;
+        private const uint TPM_RETURNCMD = 0x0100;
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
+
+        [DllImport("user32.dll")]
+        private static extern int EnableMenuItem(IntPtr hMenu, uint uIDEnableItem, uint uEnable);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetMenuDefaultItem(IntPtr hMenu, uint uItem, uint fByPos);
+
+        [DllImport("user32.dll")]
+        private static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 
         // Maximize shows a single box, restore two overlapping ones; the name and ToolTip match
         // the Windows caption button for the state.
@@ -7732,6 +7825,16 @@ namespace TDPdf
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
             base.OnPreviewKeyDown(e);
+
+            // Alt+Space: the window's system menu, which the custom chrome would otherwise lose.
+            // The native frame gets it from Windows; full screen has no title bar to anchor it to.
+            if (e.Key == Key.System && e.SystemKey == Key.Space && Keyboard.Modifiers == ModifierKeys.Alt
+                && !_useNativeWindowFrame && !_fullScreen)
+            {
+                e.Handled = true;
+                ShowWindowSystemMenuFromKeyboard();
+                return;
+            }
 
             // A manual (non-OLE) mouse-captured drag doesn't get Escape-to-cancel for free the way
             // DragDrop.DoDragDrop would — release capture ourselves; LostMouseCapture on the chip
