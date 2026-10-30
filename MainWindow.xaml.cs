@@ -1443,6 +1443,11 @@ namespace TDPdf
             // merged-on-drop / imported images / raster-recovered / a file inside %TEMP%), in which
             // case Ctrl+S routes to Save As. Retargeted by a successful Save As.
             public string? OriginalPath;
+            // What OriginalPath held when it was opened or last saved (hashed off the UI thread),
+            // and the path that fingerprint is for. A save in place compares the file against it to
+            // catch another program having changed it meanwhile. Null when there is nothing to
+            // compare against.
+            public (string Path, Task<TDPdf.Services.FileFingerprint?> Fingerprint)? OriginalFingerprint;
             public string DisplayName = "";      // shown in the tab header and title bar
             public bool IsDirty;
 

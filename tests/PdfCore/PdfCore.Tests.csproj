@@ -65,6 +65,7 @@
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
     <Compile Include="..\..\Services\AtomicFileWriter.cs" />
     <Compile Include="..\..\Services\FilePathPolicy.cs" />
+    <Compile Include="..\..\Services\FileFingerprint.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />
     <Compile Include="..\..\Services\InkDot.cs" />

@@ -237,6 +237,9 @@ namespace TDPdf
                 {
                     bool hasRealHome = !result.RecoveredFromRaster && System.IO.File.Exists(result.DisplayPath);
                     _ctx.OriginalPath = hasRealHome ? result.DisplayPath : null;
+                    // For a password-protected file this is the encrypted original, not the
+                    // decrypted working copy: the original is what a save in place overwrites.
+                    RecordOriginalFingerprint(_ctx, hasRealHome ? result.DisplayPath : null);
                     // The recent list keeps its own stricter gate — temp paths are correctly excluded
                     // from it even when they are a perfectly good save target.
                     if (hasRealHome && IsRecentEligiblePath(result.DisplayPath)) AddRecentFile(result.DisplayPath);
@@ -2132,6 +2135,60 @@ namespace TDPdf
         // back apart the next time someone edits "the" walker and picks the wrong one.
 
         /// <summary>
+        /// Hashes <paramref name="path"/> off the UI thread as the baseline for
+        /// <see cref="ConfirmSaveOverOutsideChangesAsync"/>; null forgets the baseline.
+        /// </summary>
+        private static void RecordOriginalFingerprint(DocumentContext ctx, string? path)
+        {
+            ctx.OriginalFingerprint = string.IsNullOrEmpty(path)
+                ? null
+                : (path, Task.Run(() => FileFingerprint.TryCapture(path)));
+        }
+
+        /// <summary>
+        /// Before a save in place: if another program changed or removed the file since TDPdf
+        /// opened or last saved it, ask before overwriting. Returns true to go ahead. "Save As"
+        /// starts Save As and returns false.
+        /// </summary>
+        private async Task<bool> ConfirmSaveOverOutsideChangesAsync(string targetFile)
+        {
+            if (_ctx.OriginalFingerprint is not { } recorded
+                || !FilePathPolicy.SamePath(recorded.Path, targetFile))
+                return true;   // no baseline for this path (e.g. a working copy with no home)
+            FileFingerprint? baseline;
+            try { baseline = await recorded.Fingerprint; }
+            catch { return true; }
+            var state = await Task.Run(() => FileFingerprint.Compare(baseline, targetFile));
+            string name = System.IO.Path.GetFileName(targetFile);
+            switch (state)
+            {
+                case FileChangeState.Changed:
+                {
+                    var answer = TdpDialog.ShowYesNoCancel(this,
+                        $"{name} was changed by another program since you opened it.\n\n" +
+                        "Overwrite it anyway? The other program's changes would be lost.",
+                        "Overwrite", "Save As...", "Cancel",
+                        "File Changed on Disk", MessageBoxImage.Warning, defaultToCancel: true);
+                    if (answer == MessageBoxResult.Yes) return true;
+                    if (answer == MessageBoxResult.No) SaveAs_Click(this, new RoutedEventArgs());
+                    return false;
+                }
+                case FileChangeState.Missing:
+                {
+                    var answer = TdpDialog.ShowYesNo(this,
+                        $"{name} is no longer where it was opened from. It may have been moved, renamed or deleted.\n\n" +
+                        "Save the document somewhere else?",
+                        "Save As...", "Cancel",
+                        "File Not Found", MessageBoxImage.Warning);
+                    if (answer == MessageBoxResult.Yes) SaveAs_Click(this, new RoutedEventArgs());
+                    return false;
+                }
+                default:
+                    return true;
+            }
+        }
+
+        /// <summary>
         /// Saves the active document back over the file the user opened. <paramref name="removingPassword"/>
         /// only changes the wording of the success status: the write itself IS the password removal,
         /// because the working document is already decrypted and PdfSharpCore never re-encrypts.
@@ -2147,6 +2204,7 @@ namespace TDPdf
             // update a temp file that is then deleted. Callers with no on-disk home route to Save As
             // before getting here; the fallback keeps this method total.
             string targetFile = _ctx.OriginalPath ?? _currentFile;
+            if (!await ConfirmSaveOverOutsideChangesAsync(targetFile)) return;
             string status = "";
 
             // The unit of work retried by RunSaveWithRecoveryAsync. Reads _doc fresh each call so a
@@ -2190,6 +2248,7 @@ namespace TDPdf
                 SetFileOperationBusy(true, "Saving...");
                 await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
+                RecordOriginalFingerprint(_ctx, targetFile);   // our own write is the new baseline
                 _ctx.SignatureStrippedSinceSave = false;   // the file on disk is now unsigned as well
                 if (_ctx.WasProtected)
                 {
@@ -2365,6 +2424,7 @@ namespace TDPdf
                 // to writing the file they saved away from. Recents keeps its own eligibility gate.
                 _ctx.IsUntitled   = false;
                 _ctx.OriginalPath = targetFile;
+                RecordOriginalFingerprint(_ctx, targetFile);
                 _ctx.SignatureStrippedSinceSave = false;   // this tab's file is now the unsigned copy
                 SetDisplayName(System.IO.Path.GetFileName(targetFile));
                 if (IsRecentEligiblePath(targetFile)) AddRecentFile(targetFile);
