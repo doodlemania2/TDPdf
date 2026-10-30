@@ -60,9 +60,11 @@ namespace TDPdf
 
         // The install lock's scope (Services/InstallerExitCodes): one machine-wide install at a time,
         // and one per user for per-user installs, which never share files with anyone else's.
-        private static string InstallLockKey()
+        private static string InstallLockKey() => InstallLockKey(NewInstallScope);
+
+        private static string InstallLockKey(InstallScope scope)
         {
-            if (NewInstallScope == InstallScope.PerMachine) return "Machine";
+            if (scope == InstallScope.PerMachine) return "Machine";
             string? sid = null;
             try { sid = WindowsIdentity.GetCurrent().User?.Value; } catch { /* fall back below */ }
             return "User-" + (sid ?? Environment.UserName);
@@ -789,7 +791,10 @@ namespace TDPdf
             try
             {
                 InstallLog.WriteHeader("INSTALL (interactive)", Array.Empty<string>());
-                DoInstall(wantDesktop, scope);
+                // Same lock as /install, so this cannot race an Intune install of the same scope
+                // over the same files; a held lock surfaces as the failure dialog below.
+                using (InstallerExitCodes.Acquire(InstallLockKey(scope)))
+                    DoInstall(wantDesktop, scope);
             }
             catch (Exception ex)
             {
@@ -874,6 +879,10 @@ namespace TDPdf
                 catch { /* still held; DisplacedNamesFor will simply pick another name below */ }
             }
 
+            // Where the ORIGINAL exe was parked, if it was. Later displacements can only move a
+            // partial copy of ours, so only this first one is worth restoring.
+            string? parkedOriginal = null;
+
             for (int attempt = 1; ; attempt++)
             {
                 try
@@ -887,6 +896,9 @@ namespace TDPdf
                     if (attempt >= attempts)
                     {
                         InstallLog.WriteError($"Copy failed after {attempts} attempts", ex);
+                        // Never leave the install without an exe: the registry, ProgID and marker
+                        // all still point at it. Put the displaced original back.
+                        if (parkedOriginal is not null) RestoreDisplaced(parkedOriginal, dest);
                         throw;
                     }
                     InstallLog.Write($"Copy attempt {attempt} failed ({ex.GetType().Name}: {ex.Message}); retrying.");
@@ -896,7 +908,11 @@ namespace TDPdf
                     // happy to RENAME one, which is what makes updating a running TDPdf possible at
                     // all: the live process keeps running from the renamed image, the new build goes
                     // into place, and the next launch is the new build.
-                    if (attempt >= 2) TryDisplace(dest);
+                    if (attempt >= 2)
+                    {
+                        string? parked = TryDisplace(dest);
+                        parkedOriginal ??= parked;
+                    }
 
                     Thread.Sleep(250 * attempt);
                 }
@@ -915,9 +931,10 @@ namespace TDPdf
             for (int i = 1; i <= 4; i++) yield return $"{dest}.old{i}";
         }
 
-        private static void TryDisplace(string dest)
+        /// <summary>Moves a locked destination aside; returns where it went, or null.</summary>
+        private static string? TryDisplace(string dest)
         {
-            if (!File.Exists(dest)) return;
+            if (!File.Exists(dest)) return null;
             foreach (string parked in DisplacedNamesFor(dest))
             {
                 try
@@ -925,7 +942,7 @@ namespace TDPdf
                     if (File.Exists(parked)) continue;   // held by an older still-running instance
                     File.Move(dest, parked);
                     InstallLog.Write($"Displaced locked destination to {parked}.");
-                    return;
+                    return parked;
                 }
                 catch (Exception ex)
                 {
@@ -933,6 +950,23 @@ namespace TDPdf
                 }
             }
             InstallLog.Write("Could not displace the locked destination under any name.");
+            return null;
+        }
+
+        /// <summary>Undoes <see cref="TryDisplace"/> after every copy attempt failed.</summary>
+        private static void RestoreDisplaced(string parked, string dest)
+        {
+            try
+            {
+                // Anything at dest now is a partial copy of ours, not the original.
+                if (File.Exists(dest)) File.Delete(dest);
+                File.Move(parked, dest);
+                InstallLog.Write($"Restored the original exe from {parked}.");
+            }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError($"Could not restore the original exe from {parked}; it is still there", ex);
+            }
         }
 
         /// <summary>
