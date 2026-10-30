@@ -53,6 +53,8 @@
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
     <Compile Include="..\..\Services\PdfTextSearch.cs" />
+    <Compile Include="..\..\Services\PdfBoxExtent.cs" />
+    <Compile Include="..\..\Services\TextRunService.cs" />
     <Compile Include="..\..\Services\PdfTextEdit.cs" />
     <Compile Include="..\..\Services\PdfContentInspector.cs" />
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
