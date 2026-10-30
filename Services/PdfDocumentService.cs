@@ -65,47 +65,13 @@ namespace TDPdf.Services
         }
 
         /// <summary>The synchronous body of <see cref="SaveAtomicAsync"/>, for callers already off the UI thread.</summary>
+        /// <remarks>
+        /// Lives in <see cref="AtomicFileWriter"/> so tests/PdfCore can drive its failure paths. If the
+        /// overwrite fallback fails part-way, the complete staged copy is kept beside the destination
+        /// and <see cref="SaveRecoveredException"/> names it.
+        /// </remarks>
         private static void WriteAtomic(Action<string> saveToPath, string destinationPath, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            string directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath)) ?? ".";
-            string staging = Path.Combine(directory, $".tdpdf_save_{Guid.NewGuid():N}.tmp");
-            try
-            {
-                saveToPath(staging);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (File.Exists(destinationPath))
-                {
-                    try
-                    {
-                        File.Replace(staging, destinationPath, null, ignoreMetadataErrors: true);
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
-                    {
-                        // The staged file is complete at this point, so an overwrite here is
-                        // still strictly safer than having serialized into the destination.
-                        File.Copy(staging, destinationPath, overwrite: true);
-                        TryDelete(staging);
-                    }
-                }
-                else
-                {
-                    File.Move(staging, destinationPath);
-                }
-            }
-            catch
-            {
-                TryDelete(staging);
-                throw;
-            }
-        }
-
-        private static void TryDelete(string path)
-        {
-            try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort */ }
-        }
+            => AtomicFileWriter.Write(saveToPath, destinationPath, cancellationToken);
 
         public Task<PdfDocument> OpenPdfSharpAsync(string path, PdfDocumentOpenMode mode, CancellationToken cancellationToken)
         {

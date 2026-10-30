@@ -184,6 +184,7 @@ RtlLayout.Run(Check);
 XrefStreamSize.Run(Check);
 SelectCursor.Run(Check);
 PortableInstall.Run(Check);
+AtomicSave.Run(Check, tmp);
 ZoomAnchor.Run(Check);
 InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);
