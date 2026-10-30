@@ -967,8 +967,10 @@
                             KeyboardNavigation.TabIndex="0" AutomationProperties.Name="Minimize window"
                             AutomationProperties.HelpText="Minimizes TDPdf to the taskbar"
                             AutomationProperties.LabeledBy="{Binding ElementName=MinimizeButtonLabel}"/>
-                    <Button Content="&#x25A1;" Click="MaximizeBtn_Click" Style="{StaticResource ChromeButton}"
-                            KeyboardNavigation.TabIndex="1" AutomationProperties.Name="Maximize or restore window"
+                    <!-- Glyph, ToolTip and name follow the window state (UpdateMaximizeButton). -->
+                    <Button x:Name="MaximizeBtn" Content="&#x25A1;" Click="MaximizeBtn_Click" Style="{StaticResource ChromeButton}"
+                            ToolTip="Maximize"
+                            KeyboardNavigation.TabIndex="1" AutomationProperties.Name="Maximize"
                             AutomationProperties.HelpText="Toggles between maximized and restored window size"
                             AutomationProperties.LabeledBy="{Binding ElementName=MaximizeButtonLabel}"/>
                     <Button Content="&#x2715;" Click="CloseBtn_Click" Style="{StaticResource ChromeCloseButton}"

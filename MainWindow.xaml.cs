@@ -497,6 +497,7 @@ namespace TDPdf
         private TextBlock _pageTotalLabel = null!;
         private Border _customTitleBar = null!;
         private RowDefinition _titleBarRow = null!;
+        private Button _maximizeBtn = null!;
         private StackPanel _footerRightGroup = null!;
         private TextBlock _footerCopyright = null!;
 
@@ -609,8 +610,11 @@ namespace TDPdf
             _pageTotalLabel = (TextBlock)FindName("PageTotalLabel")!;
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
             _titleBarRow = (RowDefinition)FindName("TitleBarRow")!;
+            _maximizeBtn = (Button)FindName("MaximizeBtn")!;
             _footerRightGroup = (StackPanel)FindName("FooterRightGroup")!;
             _footerCopyright = (TextBlock)FindName("FooterCopyright")!;
+            StateChanged += (_, _) => UpdateMaximizeButton();
+            UpdateMaximizeButton();
             _outlineTree = (TreeView)FindName("OutlineTree")!;
             // Expanded/Collapsed bubble from the items, which are rebuilt on every tab switch and
             // reload — so the recorder hangs off the tree, once, rather than off the items.
@@ -1700,6 +1704,18 @@ namespace TDPdf
             e.Handled = true;
             var hwnd = new WindowInteropHelper(this).Handle;
             SendMessage(hwnd, WM_NCLBUTTONDOWN, new IntPtr(HTCAPTION), IntPtr.Zero);
+        }
+
+        // Maximize shows a single box, restore two overlapping ones; the name and ToolTip match
+        // the Windows caption button for the state.
+        private void UpdateMaximizeButton()
+        {
+            bool maximized = WindowState == WindowState.Maximized;
+            string name = maximized ? "Restore Down" : "Maximize";
+            _maximizeBtn.Content = maximized ? "\u2750" : "\u25A1";
+            _maximizeBtn.ToolTip = name;
+            AutomationProperties.SetName(_maximizeBtn, name);
+            if (FindName("MaximizeButtonLabel") is TextBlock label) label.Text = name;
         }
 
         // Status text keeps at least this much of the footer before labels start to collapse.
