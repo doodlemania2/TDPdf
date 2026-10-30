@@ -62,6 +62,7 @@
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
     <Compile Include="..\..\Services\RtlTextLayout.cs" />
     <Compile Include="..\..\Services\FontFallback.cs" />
+    <Compile Include="..\..\Services\FormFieldSiblings.cs" />
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
