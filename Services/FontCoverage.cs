@@ -13,46 +13,35 @@ namespace TDPdf.Services
     // standalone face, collections included), and parsing the table is
     // deterministic across font-library versions.
     //
-    // SCOPE: this picks the best single family for a whole run of text, which is
-    // what real documents need - a Japanese face covers Latin too, so a line
+    // SCOPE: PickFamily picks the best single family for a whole run of text, which
+    // is what real documents need - a Japanese face covers Latin too, so a line
     // mixing English and Japanese still lands on one font. Text no ONE family can
-    // carry (say Japanese and Bengali in the same box) falls back to the caller's
-    // own font for the uncovered part; that tail is what the commit-time warning
-    // in MainWindow is for. True per-character run splitting would mean
-    // re-implementing line breaking, which is not worth it for that tail.
+    // carry (say Japanese and Bengali, or text plus a symbol only Segoe UI Symbol
+    // has) is split into per-family runs by SplitRuns, which form field appearances
+    // use. Annotation burn-in still takes the single family and the commit-time
+    // warning in MainWindow covers its uncovered tail.
     // ============================================================
     internal static class FontCoverage
     {
-        // Per-script preference, first match wins. Sans-first throughout, mirroring what Windows
-        // itself falls back to, so a saved file looks like the editor did. Every entry is a family
-        // that ships with Windows; missing ones are skipped harmlessly at lookup time.
-        private static readonly string[] ChainJapanese     = ["Yu Gothic UI", "Yu Gothic", "Meiryo", "MS Gothic", "Yu Mincho"];
-        private static readonly string[] ChainSimplified   = ["Microsoft YaHei", "DengXian", "SimSun"];
-        private static readonly string[] ChainTraditional  = ["Microsoft JhengHei", "MingLiU", "PMingLiU"];
-        private static readonly string[] ChainKorean       = ["Malgun Gothic", "Gulim"];
-        private static readonly string[] ChainIndic        = ["Nirmala UI"];
-        private static readonly string[] ChainThai         = ["Leelawadee UI", "Tahoma"];
-        private static readonly string[] ChainArabic       = ["Segoe UI", "Tahoma", "Traditional Arabic"];
-        private static readonly string[] ChainDefault      = ["Segoe UI", "Arial", "Tahoma"];
-
         /// <summary>
         /// The family to draw <paramref name="text"/> with: the caller's own choice whenever it
-        /// covers everything, otherwise the first family in the script's chain that does. Falls back
-        /// to the caller's choice when nothing covers it, so behavior is never WORSE than before -
-        /// the caller warns in that case (see MainWindow.WarnIfGlyphsWillBeLost).
+        /// covers everything, otherwise the first family in the script's chain (then the symbol
+        /// faces, then the defaults) that does. Falls back to the caller's choice when nothing
+        /// covers it, so behavior is never WORSE than before - the caller warns in that case (see
+        /// MainWindow.WarnIfGlyphsWillBeLost). Chains live in <see cref="FontFallback"/>.
         /// </summary>
-        internal static string PickFamily(string preferred, string? text)
-        {
-            if (string.IsNullOrEmpty(text)) return preferred;
-            if (Covers(preferred, text)) return preferred;
+        internal static string PickFamily(string preferred, string? text) =>
+            FontFallback.PickFamily(preferred, text, Covers);
 
-            foreach (string family in ChainFor(text))
-            {
-                if (string.Equals(family, preferred, StringComparison.OrdinalIgnoreCase)) continue;
-                if (Covers(family, text)) return family;
-            }
-            return preferred;
-        }
+        /// <summary>True when <paramref name="family"/> is installed and covers all of <paramref name="text"/>.</summary>
+        internal static bool CoversAll(string family, string? text) =>
+            string.IsNullOrEmpty(text) || Covers(family, text);
+
+        /// <summary>
+        /// Per-family runs for a value no single family covers (see <see cref="FontFallback.SplitRuns"/>).
+        /// </summary>
+        internal static List<FontRun> SplitRuns(string preferred, string text) =>
+            FontFallback.SplitRuns(preferred, text, (family, cp) => !IsAstral(cp) && CoverageFor(family)?.Covers(cp) == true);
 
         /// <summary>
         /// The characters nothing installed can draw - what the warning shows the user. Empty when
@@ -67,47 +56,12 @@ namespace TDPdf.Services
             var bad = new List<char>();
             foreach (int cp in CodePoints(text))
             {
-                if (coverage.Covers(cp) || IsIgnorable(cp)) continue;
+                if ((coverage.Covers(cp) && !IsAstral(cp)) || IsIgnorable(cp)) continue;
                 foreach (char c in char.ConvertFromUtf32(cp))
                     if (!bad.Contains(c)) bad.Add(c);
                 if (bad.Count >= 12) break;   // a sample is enough; the box could be a whole page
             }
             return new string([.. bad]);
-        }
-
-        // ── Chain selection ───────────────────────────────────────────────────────────────────
-
-        // Picked from the first character that NEEDS help, not the first character overall: a line
-        // starting "Re: " and continuing in Japanese is Japanese text, not Latin text.
-        private static string[] ChainFor(string text)
-        {
-            foreach (int cp in CodePoints(text))
-            {
-                if (cp < 0x0370) continue;                                        // Latin / punctuation
-                if (cp is >= 0x3040 and <= 0x30FF) return ChainJapanese;           // kana - unambiguous
-                if (cp is >= 0xAC00 and <= 0xD7AF or >= 0x1100 and <= 0x11FF) return ChainKorean;
-                if (cp is >= 0x0E00 and <= 0x0E7F) return ChainThai;
-                if (cp is >= 0x0590 and <= 0x08FF) return ChainArabic;             // Hebrew + Arabic
-                if (cp is >= 0x0900 and <= 0x0DFF) return ChainIndic;              // Devanagari..Sinhala
-                if (cp is >= 0x3400 and <= 0x9FFF or >= 0xF900 and <= 0xFAFF)
-                {
-                    // Han with no kana anywhere: Chinese. Traditional-only blocks are rare, so
-                    // prefer Simplified and let the Traditional chain cover what it misses.
-                    foreach (int c2 in CodePoints(text))
-                        if (c2 is >= 0x3040 and <= 0x30FF) return ChainJapanese;
-                    return HasTraditionalMarker(text) ? ChainTraditional : ChainSimplified;
-                }
-            }
-            return ChainDefault;
-        }
-
-        // Bopomofo is Traditional-only, so it settles the Simplified/Traditional question when a
-        // document carries it. Otherwise the Simplified chain leads and Traditional follows.
-        private static bool HasTraditionalMarker(string text)
-        {
-            foreach (int cp in CodePoints(text))
-                if (cp is >= 0x3100 and <= 0x312F) return true;
-            return false;
         }
 
         // ── Coverage ──────────────────────────────────────────────────────────────────────────
@@ -122,13 +76,16 @@ namespace TDPdf.Services
             var coverage = CoverageFor(family);
             if (coverage is null) return false;   // not installed / unreadable: cannot promise anything
             foreach (int cp in CodePoints(text))
-                if (!coverage.Covers(cp) && !IsIgnorable(cp)) return false;
+                if (!IsAstral(cp) && !coverage.Covers(cp) && !IsIgnorable(cp)) return false;
             return true;
         }
 
-        // Whitespace and zero-width controls never render a box, so they must not veto a font.
-        private static bool IsIgnorable(int cp) =>
-            cp is 0x09 or 0x0A or 0x0D or 0x20 or 0xA0 or 0x200B or 0x200C or 0x200D or 0xFEFF;
+        private static bool IsIgnorable(int cp) => FontFallback.IsIgnorable(cp);
+
+        // PdfSharpCore maps glyphs one UTF-16 unit at a time through the font's BMP cmap, so nothing
+        // past U+FFFF (most emoji, CJK Ext B) draws in any face. Such a character must not steer the
+        // family choice, since no family can help, and it always counts as uncovered for the warning.
+        private static bool IsAstral(int cp) => cp > 0xFFFF;
 
         private static CmapCoverage? CoverageFor(string family)
         {
@@ -148,17 +105,6 @@ namespace TDPdf.Services
             }
         }
 
-        private static IEnumerable<int> CodePoints(string s)
-        {
-            for (int i = 0; i < s.Length; i++)
-            {
-                if (char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
-                {
-                    yield return char.ConvertToUtf32(s[i], s[i + 1]);
-                    i++;
-                }
-                else yield return s[i];
-            }
-        }
+        private static IEnumerable<int> CodePoints(string s) => FontFallback.CodePoints(s);
     }
 }

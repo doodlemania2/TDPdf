@@ -93,7 +93,7 @@ namespace TDPdf
         // Interactive form-field state — forwarded from the active DocumentContext so it
         // survives tab switches (see the PDF Form Field Overlays region).
         private Dictionary<int, string>    _formTextValues  => _ctx.FormTextValues;
-        private Dictionary<int, bool>      _formCheckValues => _ctx.FormCheckValues;
+        private Dictionary<int, string>    _formCheckValues => _ctx.FormCheckValues;
         private Dictionary<string, string> _formRadioValues => _ctx.FormRadioValues;
         private const string FormOverlayTag = "FormFieldOverlay";
         private double _currentDpiScale = 1.0;
@@ -1500,11 +1500,13 @@ namespace TDPdf
             // from, never a validity claim. Cleared whenever HasDigitalSignature is recomputed.
             public bool ESignSignedCopy;
 
-            // Pending interactive form-field values (AcroForm). Text & dropdowns are keyed
-            // by widget object number, checkboxes by widget object number, radios by field
-            // name (shared across the widgets in a group). Persisted into the PDF on save.
+            // Pending interactive form-field values (AcroForm). Text, dropdowns and checkboxes
+            // are keyed by FIELD (FormFieldSiblings.FieldKey: the field's object number, or the
+            // widget's own key when the widget is its field), so every widget of one field shares
+            // a value; a checkbox stores the field's state name ("/Off" or an on-state). Radios
+            // are keyed by field name. Persisted into the PDF on save.
             public readonly Dictionary<int, string>    FormTextValues  = new();
-            public readonly Dictionary<int, bool>      FormCheckValues = new();
+            public readonly Dictionary<int, string>    FormCheckValues = new();
             public readonly Dictionary<string, string> FormRadioValues = new();
             public readonly Dictionary<(int pageIndex, int dpiX), RenderedPage> RenderCache = new();
             public readonly LinkedList<UndoEntry> UndoStack = new();
@@ -9487,7 +9489,7 @@ namespace TDPdf
         /// Drops all pending form-field values for the active document. Called when the
         /// document object is swapped/reloaded in place (structural edit, undo/redo of a
         /// document change, or open into the current context) because the values are keyed
-        /// by widget object number, which is invalidated by a reload.
+        /// by field object number, which is invalidated by a reload.
         /// </summary>
         private void ClearFormState()
         {
@@ -10071,8 +10073,8 @@ namespace TDPdf
             // the reload reads them back as the fields' values — otherwise rotating, deleting or
             // reordering a page, or removing a link, silently emptied every field filled in since
             // the last save. The document is already dirty, so nothing reaches disk until a save.
-            // A widget that is a direct object has no object number and is keyed by its page and
-            // /Annots position instead — which a delete or reorder has just moved, so that key could
+            // A widget that is a direct object (and its own field) has no object number and is
+            // keyed by its page and /Annots position instead — which a delete or reorder has just moved, so that key could
             // now name a different field. Only object-number keys are carried over.
             if (HasPendingFormValues)
             {

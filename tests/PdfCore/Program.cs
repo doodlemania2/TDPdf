@@ -172,6 +172,8 @@ ImageGuard.Run(Check, tmp);
 Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 Forms.Run(Check, tmp);
+FormSiblings.Run(Check, tmp);
+FontRuns.Run(Check);
 TextEdit.Run(Check, tmp);
 Measure.Run(Check, tmp);
 PageMove.Run(Check);
