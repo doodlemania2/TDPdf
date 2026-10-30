@@ -73,5 +73,50 @@ internal static class PortableInstall
         Check("managed badge says managed", managed.Contains("managed"), managed);
         string unknown = PortableInstallPolicy.BadgeLabel(PortableInstallOffer.Reinstall, null);
         Check("unreadable version leaves no dangling 'v'", unknown == "Installed — Manage...", unknown);
+
+        Uninstall(Check);
+    }
+
+    // The deferred-delete script and the "is TDPdf still running from there" decision.
+    private static void Uninstall(Action<string, bool, string> Check)
+    {
+        Console.WriteLine();
+        Console.WriteLine("── uninstall: deferred delete + running-instance check ───────");
+
+        string script = UninstallPolicy.DeferredDeleteScript;
+        Check("delete script is pure ASCII (cmd reads it in the OEM code page)",
+              script.All(c => c < 128), "");
+        Check("delete script names no folder; it reads the environment variable",
+              !script.Contains(":\\") && script.Contains("\"%" + UninstallPolicy.DirVariable + "%\""), "");
+        Check("delete script refuses to run without the variable (no rmdir of \"\")",
+              script.Contains("if not defined " + UninstallPolicy.DirVariable + " goto done"), "");
+        Check("delete script turns delayed expansion off (a ! in the path stays literal)",
+              script.Contains("DisableDelayedExpansion"), "");
+        Check("delete script uses CRLF line endings throughout",
+              !script.Replace("\r\n", "").Contains('\n'), "");
+
+        string args = UninstallPolicy.DeferredDeleteArguments("tdpdf_uninstall_0123abcd.bat");
+        Check("cmd arguments name only the batch file, relative to the temp folder",
+              args == "/d /v:off /c .\\tdpdf_uninstall_0123abcd.bat", args);
+        bool threw = false;
+        try { UninstallPolicy.DeferredDeleteArguments("C:\\Users\\Jörg 100%\\x.bat"); }
+        catch (ArgumentException) { threw = true; }
+        Check("a path, non-ASCII letter or % never reaches cmd's command line", threw, "");
+
+        string dir = "C:\\Users\\Jörg\\AppData\\Local\\Programs\\TDPdf";
+        Check("the installed exe is inside the install folder",
+              UninstallPolicy.IsInside(dir + "\\TDPdf.exe", dir), "");
+        Check("inside-check ignores case and a trailing slash on the folder",
+              UninstallPolicy.IsInside(dir.ToUpperInvariant() + "\\tdpdf.EXE", dir + "\\"), "");
+        Check("a sibling folder with the same prefix is not inside",
+              !UninstallPolicy.IsInside("C:\\Users\\Jörg\\AppData\\Local\\Programs\\TDPdf2\\TDPdf.exe", dir), "");
+        Check("a portable copy elsewhere does not block uninstall",
+              !UninstallPolicy.BlocksUninstall("C:\\Users\\Jörg\\Downloads\\TDPdf.exe", dir), "");
+        Check("a copy running from the install folder blocks uninstall",
+              UninstallPolicy.BlocksUninstall(dir + "\\TDPdf.exe", dir), "");
+        Check("a TDPdf whose path cannot be read counts as running",
+              UninstallPolicy.BlocksUninstall(null, dir), "");
+        Check("no shortcut target is not inside anything",
+              !UninstallPolicy.IsInside(null, dir) && !UninstallPolicy.IsInside("", dir), "");
     }
 }

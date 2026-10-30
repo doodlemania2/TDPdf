@@ -60,9 +60,11 @@ namespace TDPdf
 
         // The install lock's scope (Services/InstallerExitCodes): one machine-wide install at a time,
         // and one per user for per-user installs, which never share files with anyone else's.
-        private static string InstallLockKey()
+        private static string InstallLockKey() => InstallLockKey(NewInstallScope);
+
+        private static string InstallLockKey(InstallScope scope)
         {
-            if (NewInstallScope == InstallScope.PerMachine) return "Machine";
+            if (scope == InstallScope.PerMachine) return "Machine";
             string? sid = null;
             try { sid = WindowsIdentity.GetCurrent().User?.Value; } catch { /* fall back below */ }
             return "User-" + (sid ?? Environment.UserName);
@@ -219,9 +221,10 @@ namespace TDPdf
                     Telemetry.TrackEvent("Uninstall.Start", InstallProps(silent));
                     try
                     {
+                        bool done;
                         using (InstallerExitCodes.Acquire(InstallLockKey()))
-                            Uninstall(silent: silent);
-                        InstallLog.Write("UNINSTALL OK");
+                            done = Uninstall(silent: silent);
+                        InstallLog.Write(done ? "UNINSTALL OK" : "UNINSTALL NOT DONE");
                         Telemetry.TrackEvent("Uninstall.Success", InstallProps(silent));
                         Telemetry.Flush();
                         Shutdown(0);
@@ -504,12 +507,16 @@ namespace TDPdf
         // Single instance (open subsequent PDFs as tabs in one window)
         // ============================================================
 
-        // Per-user names so concurrent logon sessions don't collide and so a
-        // per-user install never clashes with another account on the same box.
+        // Named from the user SID plus the session id (InstanceIdentity): the pipe namespace is
+        // machine-wide, so a user-name key let a second RDP session of the same account forward
+        // its files to the first session's window, and let another account pre-create the pipe
+        // and receive our paths. CurrentUserOnly on both ends closes the second hole. A running
+        // TDPdf older than this uses the old names, so a new launch will not find it and opens
+        // its own window instead.
         private static readonly string SingleInstanceMutexName =
-            "Local\\TDPdf.SingleInstance.Mutex." + Environment.UserName;
+            "Local\\TDPdf.SingleInstance.Mutex." + InstanceIdentity.Suffix;
         private static readonly string SingleInstancePipeName =
-            "TDPdf.SingleInstance.Pipe." + Environment.UserName;
+            "TDPdf.SingleInstance.Pipe." + InstanceIdentity.Suffix;
         private Mutex? _singleInstanceMutex;
 
         // Sends a file path (or empty string = "just focus") to the running
@@ -518,7 +525,8 @@ namespace TDPdf
         {
             try
             {
-                using var client = new NamedPipeClientStream(".", SingleInstancePipeName, PipeDirection.Out);
+                using var client = new NamedPipeClientStream(".", SingleInstancePipeName, PipeDirection.Out,
+                    PipeOptions.CurrentUserOnly);
                 client.Connect(3000);
                 using var writer = new StreamWriter(client) { AutoFlush = true };
                 writer.WriteLine(payload);
@@ -561,7 +569,7 @@ namespace TDPdf
                         PipeDirection.In,
                         1,
                         PipeTransmissionMode.Byte,
-                        PipeOptions.None);
+                        PipeOptions.CurrentUserOnly);
                     server.WaitForConnection();
                     using var reader = new StreamReader(server);
                     string? line = reader.ReadLine();
@@ -784,7 +792,10 @@ namespace TDPdf
             try
             {
                 InstallLog.WriteHeader("INSTALL (interactive)", Array.Empty<string>());
-                DoInstall(wantDesktop, scope);
+                // Same lock as /install, so this cannot race an Intune install of the same scope
+                // over the same files; a held lock surfaces as the failure dialog below.
+                using (InstallerExitCodes.Acquire(InstallLockKey(scope)))
+                    DoInstall(wantDesktop, scope);
             }
             catch (Exception ex)
             {
@@ -869,6 +880,10 @@ namespace TDPdf
                 catch { /* still held; DisplacedNamesFor will simply pick another name below */ }
             }
 
+            // Where the ORIGINAL exe was parked, if it was. Later displacements can only move a
+            // partial copy of ours, so only this first one is worth restoring.
+            string? parkedOriginal = null;
+
             for (int attempt = 1; ; attempt++)
             {
                 try
@@ -882,6 +897,9 @@ namespace TDPdf
                     if (attempt >= attempts)
                     {
                         InstallLog.WriteError($"Copy failed after {attempts} attempts", ex);
+                        // Never leave the install without an exe: the registry, ProgID and marker
+                        // all still point at it. Put the displaced original back.
+                        if (parkedOriginal is not null) RestoreDisplaced(parkedOriginal, dest);
                         throw;
                     }
                     InstallLog.Write($"Copy attempt {attempt} failed ({ex.GetType().Name}: {ex.Message}); retrying.");
@@ -891,7 +909,11 @@ namespace TDPdf
                     // happy to RENAME one, which is what makes updating a running TDPdf possible at
                     // all: the live process keeps running from the renamed image, the new build goes
                     // into place, and the next launch is the new build.
-                    if (attempt >= 2) TryDisplace(dest);
+                    if (attempt >= 2)
+                    {
+                        string? parked = TryDisplace(dest);
+                        parkedOriginal ??= parked;
+                    }
 
                     Thread.Sleep(250 * attempt);
                 }
@@ -910,9 +932,10 @@ namespace TDPdf
             for (int i = 1; i <= 4; i++) yield return $"{dest}.old{i}";
         }
 
-        private static void TryDisplace(string dest)
+        /// <summary>Moves a locked destination aside; returns where it went, or null.</summary>
+        private static string? TryDisplace(string dest)
         {
-            if (!File.Exists(dest)) return;
+            if (!File.Exists(dest)) return null;
             foreach (string parked in DisplacedNamesFor(dest))
             {
                 try
@@ -920,7 +943,7 @@ namespace TDPdf
                     if (File.Exists(parked)) continue;   // held by an older still-running instance
                     File.Move(dest, parked);
                     InstallLog.Write($"Displaced locked destination to {parked}.");
-                    return;
+                    return parked;
                 }
                 catch (Exception ex)
                 {
@@ -928,6 +951,23 @@ namespace TDPdf
                 }
             }
             InstallLog.Write("Could not displace the locked destination under any name.");
+            return null;
+        }
+
+        /// <summary>Undoes <see cref="TryDisplace"/> after every copy attempt failed.</summary>
+        private static void RestoreDisplaced(string parked, string dest)
+        {
+            try
+            {
+                // Anything at dest now is a partial copy of ours, not the original.
+                if (File.Exists(dest)) File.Delete(dest);
+                File.Move(parked, dest);
+                InstallLog.Write($"Restored the original exe from {parked}.");
+            }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError($"Could not restore the original exe from {parked}; it is still there", ex);
+            }
         }
 
         /// <summary>
@@ -1018,6 +1058,8 @@ namespace TDPdf
                 CreateShortcut(startMenuLnk, installExe);
                 if (wantDesktop)
                     CreateShortcut(DesktopLnk, installExe);
+                else
+                    InstallLog.Write("Desktop shortcut not requested");
             }
             catch (Exception ex)
             {
@@ -1150,19 +1192,101 @@ namespace TDPdf
             InstallLog.Write($"Extracted PDF file-type icon to {dest}");
         }
 
+        // Best-effort, but no longer silent: a shortcut that did not appear is logged, so a
+        // "where is my shortcut" report can be answered from install.log.
         private static void CreateShortcut(string lnkPath, string targetPath)
         {
             try
             {
                 var shellType = Type.GetTypeFromProgID("WScript.Shell");
-                if (shellType is null) return;
+                if (shellType is null)
+                {
+                    InstallLog.Write($"Shortcut not created ({lnkPath}): WScript.Shell is unavailable");
+                    return;
+                }
                 dynamic shell    = Activator.CreateInstance(shellType)!;
                 dynamic shortcut = shell.CreateShortcut(lnkPath);
                 shortcut.TargetPath       = targetPath;
                 shortcut.WorkingDirectory = Path.GetDirectoryName(targetPath);
                 shortcut.Save();
+                InstallLog.Write(File.Exists(lnkPath)
+                    ? $"Created shortcut {lnkPath}"
+                    : $"Shortcut not created ({lnkPath}): Save reported no error but the file is missing");
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError($"Shortcut not created ({lnkPath})", ex);
+            }
+        }
+
+        /// <summary>The target of an existing shortcut, or null when it cannot be read.</summary>
+        private static string? ShortcutTarget(string lnkPath)
+        {
+            try
+            {
+                if (!File.Exists(lnkPath)) return null;
+                var shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType is null) return null;
+                dynamic shell    = Activator.CreateInstance(shellType)!;
+                dynamic shortcut = shell.CreateShortcut(lnkPath);   // opens, does not overwrite
+                return shortcut.TargetPath as string;
+            }
+            catch { return null; }
+        }
+
+        // ============================================================
+        // Running-instance check for uninstall
+        // ============================================================
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder exeName, ref int size);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+        // Limited-information access works on the same account's processes in any session and,
+        // for SYSTEM (an Intune uninstall), on everyone's; Process.MainModule needs far more.
+        private static string? ProcessImagePath(int processId)
+        {
+            IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+            if (h == IntPtr.Zero) return null;
+            try
+            {
+                var sb = new StringBuilder(1024);
+                int size = sb.Capacity;
+                return QueryFullProcessImageName(h, 0, sb, ref size) ? sb.ToString(0, size) : null;
+            }
+            finally { CloseHandle(h); }
+        }
+
+        /// <summary>
+        /// How many other TDPdf processes are running out of <paramref name="installDir"/>, in any
+        /// session. One whose path cannot be read counts (see UninstallPolicy.BlocksUninstall).
+        /// </summary>
+        private static int CountRunningFrom(string installDir)
+        {
+            int count = 0;
+            int self = Environment.ProcessId;
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName)))
+            {
+                using (p)
+                {
+                    if (p.Id == self) continue;
+                    string? path = null;
+                    try { path = ProcessImagePath(p.Id); } catch { /* unreadable: counts below */ }
+                    if (UninstallPolicy.BlocksUninstall(path, installDir))
+                    {
+                        count++;
+                        InstallLog.Write($"Running TDPdf blocks uninstall: pid={p.Id} path={path ?? "(unreadable)"}");
+                    }
+                }
+            }
+            return count;
         }
 
         // ============================================================
@@ -1210,10 +1334,38 @@ namespace TDPdf
 
             InstallLog.Write($"Uninstall scope={scope} installDir={installDir} silent={silent}");
 
+            // Refuse while TDPdf is running from the install folder, BEFORE removing anything.
+            // Otherwise the registry and shortcuts go, the user is told it worked, and the
+            // deferred delete then fails on the in-use exe, leaving a half-uninstalled folder.
+            int running = CountRunningFrom(installDir);
+            if (running > 0)
+            {
+                if (silent)
+                {
+                    // 1618: Intune retries it on its own, which is what a busy install folder needs.
+                    throw new System.ComponentModel.Win32Exception(InstallerExitCodes.Busy,
+                        $"TDPdf is still running ({running} process(es)); uninstall postponed.");
+                }
+                Prompt(running == 1
+                        ? "TDPdf is still open. Close it, then uninstall again."
+                        : "TDPdf is still open in other windows. Close all of them, then uninstall again.",
+                    $"{AppName} Uninstall", MessageBoxButton.OK, MessageBoxImage.Warning);
+                InstallLog.Write("Uninstall stopped: TDPdf is running");
+                return false;
+            }
+
             // Shortcuts
             try { File.Delete(startMenuLnk); } catch (Exception ex) { InstallLog.WriteError("Delete start menu lnk", ex); }
             try { Directory.Delete(startMenuDir, recursive: false); } catch { /* non-empty or already gone */ }
-            try { File.Delete(DesktopLnk); } catch (Exception ex) { InstallLog.WriteError("Delete desktop lnk", ex); }
+            // Only OUR desktop shortcut: a TDPdf.lnk the user made for something else stays.
+            if (UninstallPolicy.IsInside(ShortcutTarget(DesktopLnk), installDir))
+            {
+                try { File.Delete(DesktopLnk); } catch (Exception ex) { InstallLog.WriteError("Delete desktop lnk", ex); }
+            }
+            else if (File.Exists(DesktopLnk))
+            {
+                InstallLog.Write("Desktop TDPdf.lnk kept: it does not point into the install folder");
+            }
 
             // Registry cleanup — try both hives so we tear down whether the
             // install was machine-wide (HKLM) or per-user (HKCU).
@@ -1244,28 +1396,15 @@ namespace TDPdf
 
             SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
 
-            // Self-delete: deferred via cmd batch so the EXE can exit first.
-            //
-            // It retries rather than waiting a fixed two seconds and trying once. The interactive path
-            // below holds this process open on the "uninstalled" message until the user clicks OK, which
-            // is routinely longer than two seconds, and antivirus scanners briefly hold a just-closed exe
-            // too - either way the single rmdir hit a locked file and left the install folder behind
-            // with nothing to say so. Up to a minute, once a second, until the folder is gone. The
-            // batch name is unique so nothing pre-placed at a fixed %TEMP% path runs in its place.
-            // (Upstream KillerPDF #434 found the same lock on its installer's folder swap.)
+            // Self-delete: deferred via cmd batch so the EXE can exit first. The script and its
+            // command line carry no path (UninstallPolicy.DeferredDeleteScript says why); the
+            // folder travels in an environment variable. The batch name is unique so nothing
+            // pre-placed at a fixed %TEMP% path runs in its place.
             string dir = installDir.TrimEnd('\\');
-            string bat = Path.Combine(Path.GetTempPath(), $"tdpdf_uninstall_{Guid.NewGuid():N}.bat");
-            File.WriteAllText(bat,
-                "@echo off\r\n" +
-                "set tries=0\r\n" +
-                ":retry\r\n" +
-                "ping -n 2 127.0.0.1 >nul\r\n" +
-                $"rmdir /s /q \"{dir}\" 2>nul\r\n" +
-                $"if not exist \"{dir}\\\" goto done\r\n" +
-                "set /a tries+=1\r\n" +
-                "if %tries% lss 60 goto retry\r\n" +
-                ":done\r\n" +
-                "del \"%~f0\"\r\n");
+            string batName = $"tdpdf_uninstall_{Guid.NewGuid():N}.bat";
+            string tempDir = Path.GetTempPath();
+            string bat = Path.Combine(tempDir, batName);
+            File.WriteAllText(bat, UninstallPolicy.DeferredDeleteScript, Encoding.ASCII);
 
             // The message comes first and the batch starts after it, so the minute of retries is spent
             // after this process is about to exit rather than while a dialog nobody has clicked holds
@@ -1276,11 +1415,14 @@ namespace TDPdf
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
-            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{bat}\"")
+            var psi = new ProcessStartInfo("cmd.exe", UninstallPolicy.DeferredDeleteArguments(batName))
             {
-                WindowStyle    = ProcessWindowStyle.Hidden,
-                UseShellExecute = true
-            });
+                WorkingDirectory = tempDir,
+                UseShellExecute  = false,   // required to pass the environment variable
+                CreateNoWindow   = true,
+            };
+            psi.Environment[UninstallPolicy.DirVariable] = dir;
+            Process.Start(psi);
             InstallLog.Write($"Scheduled deferred delete via {bat}");
             return true;
         }

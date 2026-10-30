@@ -12,6 +12,36 @@ using TDPdf.Diagnostics;
 namespace TDPdf.Services
 {
     /// <summary>
+    /// Names the per-account, per-session IPC objects (single-instance mutex and pipe, window
+    /// transfer pipes). Built from the user SID and the Windows session id, not the user name:
+    /// DOMAIN\bob and a local bob share a user name, and the same account signed in to two RDP
+    /// sessions must not hand its files to the other session's window (upstream KillerPDF 1.9.0).
+    /// </summary>
+    internal static class InstanceIdentity
+    {
+        internal static readonly string Suffix = Build();
+
+        private static string Build()
+        {
+            string? sid = null;
+            try
+            {
+                using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+                sid = identity.User?.Value;
+            }
+            catch { /* fall back to the user name below */ }
+            int session = 0;
+            try
+            {
+                using var self = System.Diagnostics.Process.GetCurrentProcess();
+                session = self.SessionId;
+            }
+            catch { /* session 0 is a harmless fallback */ }
+            return (sid ?? Environment.UserName) + "." + session;
+        }
+    }
+
+    /// <summary>
     /// Resolves which process owns the top-level window under a screen point, for dragging a tab
     /// out of one TDPdf window and onto (or off of) another. Deliberately Win32-based rather than
     /// WPF drag-and-drop: OLE DragDrop's own "where did this land" signal is ambiguous between a
@@ -89,7 +119,7 @@ namespace TDPdf.Services
         }
 
         private static string PipeNameFor(int processId) =>
-            "TDPdf.Window.Pipe." + Environment.UserName + "." + processId;
+            "TDPdf.Window.Pipe." + InstanceIdentity.Suffix + "." + processId;
 
         // Set once per failure streak, not per retry — the loop backs off and re-tries every
         // 150ms, and a genuine outage (e.g. the pipe name colliding, or a permissions problem)
@@ -104,8 +134,10 @@ namespace TDPdf.Services
             {
                 try
                 {
+                    // CurrentUserOnly: only this account can connect, so another user cannot hand
+                    // us a path (or squat on the name and receive one).
                     using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
-                        PipeTransmissionMode.Byte, PipeOptions.None);
+                        PipeTransmissionMode.Byte, PipeOptions.CurrentUserOnly);
                     server.WaitForConnection();
                     _loopFailureReported = false;   // a connection got through — the outage, if any, is over
                     using var reader = new StreamReader(server);
@@ -168,7 +200,10 @@ namespace TDPdf.Services
             error = null;
             try
             {
-                using var client = new NamedPipeClientStream(".", PipeNameFor(destProcessId), PipeDirection.InOut);
+                // CurrentUserOnly on the client also checks that the server is owned by this
+                // account, so a pipe pre-created under our name by someone else is refused.
+                using var client = new NamedPipeClientStream(".", PipeNameFor(destProcessId), PipeDirection.InOut,
+                    PipeOptions.CurrentUserOnly);
                 client.Connect(timeoutMs);
                 using var writer = new StreamWriter(client) { AutoFlush = true };
                 using var reader = new StreamReader(client);
