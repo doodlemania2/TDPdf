@@ -189,6 +189,7 @@ InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);
 RedactAnnotations.Run(Check, tmp);
+PrintFlags.Run(Check, tmp);
 TextSearch.Run(Check, tmp);
 NightModeImages.Run(Check, tmp);
 Documenso.Run(Check, tmp);

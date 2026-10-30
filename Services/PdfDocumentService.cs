@@ -169,7 +169,9 @@ namespace TDPdf.Services
                         // so anything Docnet's flag-0 GetImage leaves out (the file's own sticky notes,
                         // highlights, stamps, and filled form values) was silently dropped from the
                         // output. Falls back to the old raster if PDFium can't take the direct path.
-                        bgra = PdfiumInterop.RenderPageWithAnnotations(sourcePath, i, rw, rh)
+                        // Rendered as for print: a flattened copy is the page as it would print, so
+                        // screen-only annotations and buttons stay out and print-only ones go in.
+                        bgra = PdfiumInterop.RenderPageWithAnnotations(sourcePath, i, rw, rh, forPrint: true)
                                ?? pageReader.GetImage();
                     }
 
