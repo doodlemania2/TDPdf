@@ -1272,16 +1272,32 @@ namespace TDPdf
             var selected = PageList.SelectedItems;
             if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to extract."); return; }
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save extracted pages as" };
-            if (!ShowPdfSaveDialog(dlg)) return;
+            while (true)
+            {
+                if (!ShowPdfSaveDialog(dlg)) return;
+                // Writing the extract over the open document (or its working copy) would replace the
+                // user's file with just the selected pages. Ask for another name instead.
+                if (!TDPdf.Services.FilePathPolicy.SamePath(dlg.FileName, _ctx.OriginalPath)
+                    && !TDPdf.Services.FilePathPolicy.SamePath(dlg.FileName, currentFile))
+                    break;
+                TdpDialog.Show(this,
+                    "Extracted pages cannot be saved over the document they come from.\n\nChoose a different file name.",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
             try
             {
                 var indices = new List<int>();
                 foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+                // Pages come from the working file on disk. Every page-structure edit goes through
+                // SaveTempAndReload, which repoints _currentFile at the result, so the thumbnail
+                // indices always match it.
                 using var importDoc = PdfReader.Open(currentFile, PdfDocumentOpenMode.Import);
                 var newDoc = new PdfDocument();
                 foreach (var idx in indices.OrderBy(i => i))
                     newDoc.AddPage(importDoc.Pages[idx]);
-                newDoc.Save(dlg.FileName);
+                // Atomic, like every other save: a failure part-way must not truncate a file the
+                // user just agreed to replace.
+                TDPdf.Services.AtomicFileWriter.Write(newDoc.Save, dlg.FileName, CancellationToken.None);
                 SetStatus($"Extracted {indices.Count} page(s) to {System.IO.Path.GetFileName(dlg.FileName)}");
             }
             catch (Exception ex)
