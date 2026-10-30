@@ -63,6 +63,7 @@
     <Compile Include="..\..\Services\RtlTextLayout.cs" />
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
+    <Compile Include="..\..\Services\PrintTicketDuplex.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />
     <Compile Include="..\..\Services\InkDot.cs" />
