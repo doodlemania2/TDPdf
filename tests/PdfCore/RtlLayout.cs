@@ -9,8 +9,8 @@ using TDPdf.Services;
 /// letters in typed order — backwards. The burn now draws a pure-Hebrew line element by element
 /// from the right edge. The properties that must hold:
 ///
-///   * <b>only pure-Hebrew lines are reordered.</b> A mixed line (Latin or digits inside it) or an
-///     Arabic line keeps the path it always had; reversing either whole would be worse than not.
+///   * <b>only Hebrew lines are reordered.</b> Latin and digits inside one keep their left-to-right
+///     order through the bidi rules; an Arabic line keeps the path it always had (no shaping).
 ///   * <b>the order really is reversed</b>, with and without letter spacing.
 ///   * <b>the extent does not move.</b> The line covers exactly the span its left-to-right draw
 ///     would, so the box, fill and underline still line up with the ink.
@@ -35,8 +35,11 @@ internal static class RtlLayout
         Check("Hebrew with niqqud is right-to-left", RtlTextLayout.IsHebrewRightToLeftLine("שָׁלוֹם"), "");
         Check("Hebrew presentation forms count as Hebrew",
               RtlTextLayout.IsHebrewRightToLeftLine("שׁבּ"), "");
-        Check("Hebrew + Latin is NOT reordered", !RtlTextLayout.IsHebrewRightToLeftLine("שלום world"), "");
-        Check("Hebrew + digits is NOT reordered", !RtlTextLayout.IsHebrewRightToLeftLine("שלום 123"), "");
+        // #435 follow-up: mixed lines now go through the bidi subset instead of logical order.
+        Check("Hebrew + Latin is reordered", RtlTextLayout.IsHebrewRightToLeftLine("שלום world"), "");
+        Check("Hebrew + digits is reordered", RtlTextLayout.IsHebrewRightToLeftLine("שלום 123"), "");
+        Check("Hebrew + Arabic is NOT reordered (needs shaping)",
+              !RtlTextLayout.IsHebrewRightToLeftLine("שלום مرحبا"), "");
         Check("Arabic is NOT reordered (needs shaping)", !RtlTextLayout.IsHebrewRightToLeftLine("مرحبا"), "");
         Check("Latin is NOT reordered", !RtlTextLayout.IsHebrewRightToLeftLine("hello"), "");
         Check("empty / punctuation-only is NOT reordered",
@@ -116,5 +119,95 @@ internal static class RtlLayout
               string.Join(" | ", marks.Select(p => $"{p.Cluster.Length}@{p.X}")));
         Check("niqqud: the base letter + marks are drawn as a unit, rightmost first",
               marks.Count == 4 && Math.Abs(marks[0].X - 3) < eps && Math.Abs(marks[3].X) < eps, "");
+
+        // ── mixed lines: the bidi subset (#435 follow-up) ─────────────────────────────────
+        // Expected strings are what WPF shows, read left to right on screen.
+        static string Rev(string s) { var a = s.ToCharArray(); Array.Reverse(a); return new string(a); }
+        void V(string label, string text, bool rtl, string expected)
+        {
+            string got = RtlTextLayout.VisualText(text, rtl);
+            Check($"{(rtl ? "RTL" : "LTR")} box: {label}", got == expected, $"got \"{got}\" want \"{expected}\"");
+        }
+        const string shin = "שלום", olam = "עולם";
+        string SH = Rev(shin), OL = Rev(olam);
+
+        V("Hebrew then number: the number joins the Hebrew run", "שלום 123", false, "123 " + SH);
+        V("number then Hebrew", "123 שלום", false, "123 " + SH);
+        V("Hebrew, number, Hebrew", "שלום 123 עולם", false, OL + " 123 " + SH);
+        V("Hebrew then Latin", "שלום world", false, SH + " world");
+        V("Latin, Hebrew, Latin", "abc שלום def", false, "abc " + SH + " def");
+        V("two Hebrew words inside Latin", "abc שלום עולם def", false, "abc " + OL + " " + SH + " def");
+        V("thousands and decimal separators stay in the number", "שלום 1,234.5 עולם", false, OL + " 1,234.5 " + SH);
+        V("percent sign stays with its number", "שלום 50% עולם", false, OL + " 50% " + SH);
+        V("currency sign stays with its number", "שלום $5 עולם", false, OL + " $5 " + SH);
+        V("date separators stay in the number", "שלום 1/2/2026", false, "1/2/2026 " + SH);
+        V("leading minus in Latin context stays put", "abc -12 שלום", false, "abc -12 " + SH);
+        V("minus after Hebrew is neutral, as UAX #9 says", "שלום -12", false, "12- " + SH);
+        V("two numbers in Hebrew keep their own order", "שלום 12 34 עולם", false, OL + " 34 12 " + SH);
+        V("brackets in Latin context are not mirrored", "abc (שלום) def", false, "abc (" + SH + ") def");
+        V("brackets inside a Hebrew run are mirrored", "שלום (עולם) שלום", false,
+          SH + " (" + OL + ") " + SH);
+        V("trailing space stays trailing", "שלום 5 ", false, "5 " + SH + " ");
+        V("pure Latin is unchanged", "hello, world 42", false, "hello, world 42");
+
+        V("Hebrew then number", "שלום 123", true, "123 " + SH);
+        V("Hebrew then Latin", "שלום world", true, "world " + SH);
+        V("Latin, Hebrew, Latin", "abc שלום def", true, "def " + SH + " abc");
+        V("separators stay in the number", "שלום 1,234.5", true, "1,234.5 " + SH);
+        V("Latin in brackets", "שלום (abc)", true, "(abc) " + SH);
+        V("edge period goes to the left", "שלום.", true, "." + SH);
+        V("pure Latin stays left to right", "abc def", true, "abc def");
+
+        // Layout agrees with VisualText, and keeps the extent of the left-to-right draw.
+        {
+            const string mixed = "אב 12 c";
+            static double A(string s) => s[0] switch { 'א' => 1, 'ב' => 2, '1' => 3, '2' => 4, 'c' => 5, _ => 10 };
+            var lay = RtlTextLayout.Layout(mixed, 0, A);
+            var order = lay.OrderBy(p => p.X).Select(p => p.Cluster);
+            Check("mixed Layout places clusters in VisualText order",
+                  string.Concat(order) == RtlTextLayout.VisualText(mixed),
+                  string.Join(", ", lay.Select(p => $"{p.Cluster}@{p.X}")));
+            double right = lay.Max(p => p.X + A(p.Cluster));
+            Check("mixed Layout extent equals the left-to-right sum",
+                  Math.Abs(lay.Min(p => p.X)) < eps && Math.Abs(right - TextLetterSpacing.Clusters(mixed).Sum(A)) < eps,
+                  $"right {right}");
+            var paren = RtlTextLayout.Layout("א(ב)ג", 0, s => 1);
+            Check("Layout returns the mirrored glyph inside a right-to-left run",
+                  paren[1].Cluster == ")" && paren[3].Cluster == "(", string.Join(" ", paren.Select(p => p.Cluster)));
+        }
+
+        // ── wrapped lines: directions come from the whole paragraph ───────────────────────
+        {
+            // "שלום 123 עולם" wrapped after the Hebrew word: on its own, "123 עולם" would put the
+            // number on the left (sos is L), but in the paragraph the number follows Hebrew, so
+            // WPF shows it on the right of the second line.
+            const string para = "שלום 123 עולם";
+            int start = para.IndexOf('1');
+            string line2 = para.Substring(start);
+            Check("wrapped line: number after Hebrew in the paragraph sits right of the next word",
+                  RtlTextLayout.VisualText(para, start, line2.Length) == OL + " 123",
+                  RtlTextLayout.VisualText(para, start, line2.Length));
+            Check("wrapped line alone would read differently (proves the paragraph matters)",
+                  RtlTextLayout.VisualText(line2) == "123 " + OL, RtlTextLayout.VisualText(line2));
+
+            // LocateWrappedLines maps TextLetterSpacing.Wrap output back onto the paragraphs.
+            const string text = "שלום 123 עולם abc\nsecond שלום\r\nthird";
+            var wrapped = TextLetterSpacing.Wrap(text, 9, s => s.Length);
+            var loc = RtlTextLayout.LocateWrappedLines(text, wrapped);
+            bool ok = loc is not null && loc.Count == wrapped.Count;
+            for (int i = 0; ok && i < wrapped.Count; i++)
+                ok = loc![i].Paragraph.Substring(loc[i].Start, wrapped[i].Length) == wrapped[i];
+            Check("LocateWrappedLines finds every wrapped line in its paragraph", ok,
+                  string.Join(" | ", wrapped));
+            Check("LocateWrappedLines puts lines in the right paragraphs",
+                  ok && loc![0].Paragraph == "שלום 123 עולם abc" && loc[^1].Paragraph == "third", "");
+            Check("LocateWrappedLines refuses lines that are not the text's",
+                  RtlTextLayout.LocateWrappedLines("abc def", new[] { "xyz" }) is null, "");
+
+            // Multiple hard lines resolve independently.
+            Check("each hard line is its own paragraph",
+                  RtlTextLayout.VisualText("abc שלום") == "abc " + SH
+                  && RtlTextLayout.VisualText("שלום abc") == SH + " abc", "");
+        }
     }
 }

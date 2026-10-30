@@ -9553,15 +9553,18 @@ namespace TDPdf
         /// difference in practice — but sx is the right one to name for a horizontal quantity.)
         /// </remarks>
         private static void DrawTextLine(XGraphics gfx, TextAnnotation ta, string line,
-                                         XFont font, XBrush brush, double x, double baselineY, double sx)
+                                         XFont font, XBrush brush, double x, double baselineY, double sx,
+                                         string? paragraph = null, int lineStart = 0)
         {
             double spacing = ta.LetterSpacing * sx;
             // Upstream KillerPDF #435: PdfSharpCore does no bidi, so a Hebrew line drawn as one
-            // string saves in logical order — backwards. Draw it element by element from the right
-            // edge instead, inside the same span the left-to-right path would cover.
+            // string saves in logical order — backwards. Draw it element by element in visual
+            // order instead, inside the same span the left-to-right path would cover. A wrapped
+            // line passes its hard paragraph, whose directions decide the order as on screen.
             if (RtlTextLayout.IsHebrewRightToLeftLine(line))
             {
-                DrawRightToLeft(gfx, line, font, brush, x, baselineY, spacing);
+                DrawRightToLeft(gfx, paragraph ?? line, paragraph is null ? 0 : lineStart, line.Length,
+                                font, brush, x, baselineY, spacing);
                 return;
             }
             if (TextLetterSpacing.IsNone(spacing))
@@ -9577,19 +9580,20 @@ namespace TDPdf
         }
 
         /// <summary>
-        /// Burns a pure-Hebrew line in visual order: one text element per <c>DrawString</c>, at the
-        /// mirrored offsets <see cref="RtlTextLayout.Layout"/> computes. Upstream KillerPDF #435.
+        /// Burns a Hebrew line in visual order: one text element per <c>DrawString</c>, at the
+        /// offsets <see cref="RtlTextLayout.Layout(string, int, int, double, Func{string, double}, bool)"/>
+        /// computes for the line at <paramref name="start"/> in <paramref name="paragraph"/>. Upstream KillerPDF #435.
         /// </summary>
         /// <remarks>
         /// The line spans [x, x + width] exactly as its left-to-right draw would — PdfSharpCore's
         /// MeasureString is a plain sum of advances (see <see cref="SpacedStringWidth"/>), so the
         /// per-element sum here and the whole-string width the underline and fill use agree.
         /// </remarks>
-        private static void DrawRightToLeft(XGraphics gfx, string line, XFont font, XBrush brush,
-                                            double x, double baselineY, double spacing)
+        private static void DrawRightToLeft(XGraphics gfx, string paragraph, int start, int length,
+                                            XFont font, XBrush brush, double x, double baselineY, double spacing)
         {
             foreach (var (cluster, dx) in
-                     RtlTextLayout.Layout(line, spacing, s => gfx.MeasureString(s, font).Width))
+                     RtlTextLayout.Layout(paragraph, start, length, spacing, s => gfx.MeasureString(s, font).Width))
             {
                 gfx.DrawString(cluster, font, brush, x + dx, baselineY);
             }
@@ -9696,12 +9700,16 @@ namespace TDPdf
                                         ta.Width * sx, boxH * sy);
                                 }
                                 double ty = ta.Position.Y * sy + pad * sy + ta.FontSize * sy;
-                                foreach (var line in wrapped)
+                                // #435: bidi directions come from the whole hard paragraph.
+                                var sources = RtlTextLayout.LocateWrappedLines(ta.Content, wrapped);
+                                for (int li = 0; li < wrapped.Count; li++)
                                 {
+                                    string line = wrapped[li];
                                     if (!string.IsNullOrEmpty(line))
                                     {
                                         DrawTextLine(gfx, ta, line, font, taBrush,
-                                                     (ta.Position.X + pad) * sx, ty, sx);
+                                                     (ta.Position.X + pad) * sx, ty, sx,
+                                                     sources?[li].Paragraph, sources?[li].Start ?? 0);
                                         DrawTextUnderline(gfx, ta, line, font, taBrush,
                                                           (ta.Position.X + pad) * sx, ty, sx, sy);
                                     }
@@ -9897,12 +9905,12 @@ namespace TDPdf
                             double ety = tea.Position.Y * sy + tea.FontSize * sy;
                             var teaColor = tea.GetColor();
                             var teaBrush = new XSolidBrush(XColor.FromArgb(teaColor.A, teaColor.R, teaColor.G, teaColor.B));
-                            // #435: a pure-Hebrew edit would save backwards through DrawString,
+                            // #435: a Hebrew edit would save backwards through DrawString,
                             // which does no bidi. One line only — the edit is drawn as a single
-                            // string, so a line break here is not a layout this can mirror.
+                            // string, so a line break here is not a layout this can reorder.
                             if (tea.NewContent.IndexOfAny(new[] { '\r', '\n' }) < 0
                                 && RtlTextLayout.IsHebrewRightToLeftLine(tea.NewContent))
-                                DrawRightToLeft(gfx, tea.NewContent, editFont, teaBrush,
+                                DrawRightToLeft(gfx, tea.NewContent, 0, tea.NewContent.Length, editFont, teaBrush,
                                                 tea.Position.X * sx, ety, 0);
                             else
                                 gfx.DrawString(tea.NewContent, editFont, teaBrush, tea.Position.X * sx, ety);
