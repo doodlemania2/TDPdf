@@ -187,6 +187,7 @@ XrefStreamSize.Run(Check);
 SelectCursor.Run(Check);
 PortableInstall.Run(Check);
 ZoomAnchor.Run(Check);
+WindowFit.Run(Check);
 InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);

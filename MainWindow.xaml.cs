@@ -497,6 +497,9 @@ namespace TDPdf
         private TextBlock _pageTotalLabel = null!;
         private Border _customTitleBar = null!;
         private RowDefinition _titleBarRow = null!;
+        private Button _maximizeBtn = null!;
+        private StackPanel _footerRightGroup = null!;
+        private TextBlock _footerCopyright = null!;
 
         // Full-screen (F11) chrome refs — root grid + the two rows that are fixed-height
         // (title, footer) so they can be zeroed when all chrome is hidden.
@@ -607,6 +610,14 @@ namespace TDPdf
             _pageTotalLabel = (TextBlock)FindName("PageTotalLabel")!;
             _customTitleBar = (Border)FindName("CustomTitleBar")!;
             _titleBarRow = (RowDefinition)FindName("TitleBarRow")!;
+            _maximizeBtn = (Button)FindName("MaximizeBtn")!;
+            _footerRightGroup = (StackPanel)FindName("FooterRightGroup")!;
+            _footerCopyright = (TextBlock)FindName("FooterCopyright")!;
+            StateChanged += (_, _) => UpdateMaximizeButton();
+            UpdateMaximizeButton();
+            _customTitleBar.MouseRightButtonUp += TitleBar_MouseRightButtonUp;
+            ShortcutOverlay.IsVisibleChanged += ShortcutOverlay_IsVisibleChanged;
+            TDPdf.Controls.RadioGroupKeyboard.Apply((Grid)FindName("SidebarTabRow")!);
             _outlineTree = (TreeView)FindName("OutlineTree")!;
             // Expanded/Collapsed bubble from the items, which are rebuilt on every tab switch and
             // reload — so the recorder hangs off the tree, once, rather than off the items.
@@ -623,6 +634,8 @@ namespace TDPdf
             _rootGrid = (Grid)FindName("RootGrid")!;
             _toolbarBorder = (Border)FindName("ToolbarBorder")!;
             _statusBarBorder = (Border)FindName("StatusBarBorder")!;
+            _statusBarBorder.SizeChanged += (_, _) => FitFooterToWidth();
+            _footerRightGroup.SizeChanged += (_, _) => FitFooterToWidth();
             _sidebarOuterGrid = (Grid)FindName("SidebarOuterGrid")!;
             _appScaleButton = (Button)FindName("AppScaleButton")!;
             _pageSizeButton = (Button)FindName("PageSizeButton")!;
@@ -909,6 +922,7 @@ namespace TDPdf
         {
             UpdateCurrentDpiScale();
             var hwnd = new WindowInteropHelper(this).Handle;
+            FitToStartupMonitor();
             _hwndSource = HwndSource.FromHwnd(hwnd);
             _hwndSource?.AddHook(WndProc);
             InitializeTaskbarIcons(hwnd);
@@ -930,6 +944,67 @@ namespace TDPdf
                 DwmSetWindowAttribute(hwnd, DWMWA_HAS_ICONIC_BITMAP, ref trueVal, sizeof(int));
             }
         }
+
+        // The XAML size (1000 x 700) is taller than the work area of a 1920 x 1080 screen at 150%
+        // (about 690 DIPs once the taskbar is out), so the footer opened off the bottom edge.
+        // Before the window is first shown, shrink it to the work area of the monitor WPF will
+        // center it on (the one under the pointer) and re-center it there. Runs before WPF applies
+        // CenterScreen, so WPF's own centering sees the new size too. Idea from upstream KillerPDF
+        // 1.8.92 (WorkAreaFit); best-effort, a window size is never worth failing startup over.
+        private void FitToStartupMonitor()
+        {
+            if (WindowState != WindowState.Normal) return;
+            try
+            {
+                double sx = _currentDpiScale > 0 ? _currentDpiScale : 1.0;
+                if (!GetCursorPos(out POINT cursor)) return;
+                IntPtr monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+                if (monitor == IntPtr.Zero) return;
+                var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
+                if (!GetMonitorInfo(monitor, ref info)) return;
+                RECT work = info.rcWork;
+
+                // Window coordinates follow the window's own DPI; the work area's SIZE follows the
+                // target monitor's, which differs only when that monitor is scaled differently.
+                double toDip = 1 / sx;
+                try
+                {
+                    if (GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out uint dpiX, out _) == 0 && dpiX > 0)
+                        toDip = 96.0 / dpiX;
+                }
+                catch (DllNotFoundException) { }
+                catch (EntryPointNotFoundException) { }
+
+                double areaW = (work.right - work.left) * toDip;
+                double areaH = (work.bottom - work.top) * toDip;
+                if (areaW <= 0 || areaH <= 0) return;
+
+                // A work area smaller than the minimum lowers the minimum, or WPF would coerce
+                // the size straight back past the screen edge.
+                if (MinWidth > areaW) MinWidth = Math.Floor(areaW);
+                if (MinHeight > areaH) MinHeight = Math.Floor(areaH);
+
+                double w = double.IsNaN(Width) ? ActualWidth : Width;
+                double h = double.IsNaN(Height) ? ActualHeight : Height;
+                if (w <= 0 || h <= 0) return;
+                var fit = WindowFitMath.FitCentered(w, h, work.left / sx, work.top / sx, areaW, areaH,
+                                                    MinWidth, MinHeight);
+                if (Math.Abs(fit.Width - w) <= 0.5 && Math.Abs(fit.Height - h) <= 0.5) return;
+                Width = fit.Width;
+                Height = fit.Height;
+                Left = fit.Left;
+                Top = fit.Top;
+            }
+            catch { /* best-effort */ }
+        }
+
+        private const int MDT_EFFECTIVE_DPI = 0;
+
+        [DllImport("shcore.dll")]
+        private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hwnd);
 
         private const int WM_GETMINMAXINFO = 0x0024;
         private const int WM_DPICHANGED = 0x02E0;
@@ -970,9 +1045,17 @@ namespace TDPdf
             {
                 _inWindowSizeMove = false;
             }
+            else if (msg == WM_SYSCOMMAND && (wParam.ToInt64() & 0xFFF0) == SC_KEYMENU && lParam.ToInt64() == ' '
+                     && !_useNativeWindowFrame && !_fullScreen)
+            {
+                // Alt+Space that reached Windows (OnPreviewKeyDown normally takes it first): the
+                // frameless window has no system menu of its own to open, so show ours.
+                ShowWindowSystemMenuFromKeyboard();
+                handled = true;
+            }
             else if (msg == WM_GETMINMAXINFO && !_useNativeWindowFrame)
             {
-                WmGetMinMaxInfo(hwnd, lParam, _inWindowSizeMove);
+                WmGetMinMaxInfo(hwnd, lParam, _inWindowSizeMove, MinWidth, MinHeight, WindowDpiScale(hwnd));
                 handled = true;
             }
             else if (msg == WM_DPICHANGED)
@@ -1167,7 +1250,21 @@ namespace TDPdf
                 (Action)(() => { if (_doc is not null) RerenderCurrentPage(); }));
         }
 
-        private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam, bool inSizeMove)
+        // The HWND's own DPI (it can lead WPF's during a cross-monitor drag); falls back to the
+        // last scale WPF reported on systems without GetDpiForWindow (before Windows 10 1607).
+        private double WindowDpiScale(IntPtr hwnd)
+        {
+            try
+            {
+                uint dpi = GetDpiForWindow(hwnd);
+                if (dpi > 0) return dpi / 96.0;
+            }
+            catch (EntryPointNotFoundException) { }
+            return _currentDpiScale > 0 ? _currentDpiScale : 1.0;
+        }
+
+        private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam, bool inSizeMove,
+                                            double minWidth, double minHeight, double dpiScale)
         {
             var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
             // During a cross-monitor drag (e.g. drag-to-top Aero Snap maximize) the HWND can still
@@ -1205,6 +1302,11 @@ namespace TDPdf
                 // Ported from upstream KillerPDF v1.8.4 (#363).
                 mmi.ptMaxTrackSize.x = Math.Max(mmi.ptMaxTrackSize.x, mmi.ptMaxSize.x);
                 mmi.ptMaxTrackSize.y = Math.Max(mmi.ptMaxTrackSize.y, mmi.ptMaxSize.y);
+                // Handling this message means WPF never applies MinWidth / MinHeight to a drag
+                // resize, so the hook does it, in device pixels. Capped at the work area so a small
+                // or heavily scaled screen can still fit the window (upstream KillerPDF 1.8.92).
+                mmi.ptMinTrackSize.x = WindowFitMath.MinTrackPixels(minWidth, dpiScale, mmi.ptMaxSize.x, mmi.ptMinTrackSize.x);
+                mmi.ptMinTrackSize.y = WindowFitMath.MinTrackPixels(minHeight, dpiScale, mmi.ptMaxSize.y, mmi.ptMinTrackSize.y);
                 Marshal.StructureToPtr(mmi, lParam, true);
             }
         }
@@ -1617,6 +1719,132 @@ namespace TDPdf
             SendMessage(hwnd, WM_NCLBUTTONDOWN, new IntPtr(HTCAPTION), IntPtr.Zero);
         }
 
+        // The custom title bar is client area, so Windows never offers its system menu on a
+        // right-click there. Show it ourselves, at the pointer, as a native caption would.
+        private void TitleBar_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_useNativeWindowFrame || _fullScreen) return;
+            e.Handled = true;
+            ShowWindowSystemMenu(PointToScreen(e.GetPosition(this)));
+        }
+
+        // Alt+Space: the same menu, at the window's top-left corner just under the title bar.
+        // GetWindowRect rather than Left/Top, which keep the restored position while maximized.
+        private void ShowWindowSystemMenuFromKeyboard()
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out RECT r)) return;
+            double titlePx = _customTitleBar.ActualHeight * WindowDpiScale(hwnd);
+            ShowWindowSystemMenu(new Point(r.left, r.top + titlePx));
+        }
+
+        // Win32 system menu at a SCREEN point in device pixels. The menu's items are enabled by
+        // hand: with WindowStyle=None Windows does not update them for this window, and Restore,
+        // Move and Size only make sense for one state each. The chosen command goes back through
+        // WM_SYSCOMMAND, so Move / Size get Windows' own keyboard loops and Close the dirty prompt.
+        private void ShowWindowSystemMenu(Point screenPx)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            IntPtr menu = GetSystemMenu(hwnd, false);
+            if (menu == IntPtr.Zero) return;
+
+            bool maximized = WindowState == WindowState.Maximized;
+            bool minimized = WindowState == WindowState.Minimized;
+            bool normal = !maximized && !minimized;
+            bool canResize = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip;
+            void Enable(int cmd, bool on) =>
+                EnableMenuItem(menu, (uint)cmd, MF_BYCOMMAND | (on ? MF_ENABLED : MF_GRAYED));
+            Enable(SC_RESTORE, !normal);
+            Enable(SC_MOVE, normal);
+            Enable(SC_SIZE, normal && canResize);
+            Enable(SC_MINIMIZE, !minimized && ResizeMode != ResizeMode.NoResize);
+            Enable(SC_MAXIMIZE, !maximized && canResize);
+            Enable(SC_CLOSE, true);
+            SetMenuDefaultItem(menu, (uint)(maximized ? SC_RESTORE : SC_CLOSE), 0);
+
+            int cmdChosen = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+                (int)Math.Round(screenPx.X), (int)Math.Round(screenPx.Y), hwnd, IntPtr.Zero);
+            if (cmdChosen != 0)
+                PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(cmdChosen), IntPtr.Zero);
+        }
+
+        private const int WM_SYSCOMMAND = 0x0112;
+        private const int SC_SIZE = 0xF000;
+        private const int SC_MOVE = 0xF010;
+        private const int SC_MINIMIZE = 0xF020;
+        private const int SC_MAXIMIZE = 0xF030;
+        private const int SC_CLOSE = 0xF060;
+        private const int SC_KEYMENU = 0xF100;
+        private const int SC_RESTORE = 0xF120;
+        private const uint MF_BYCOMMAND = 0x0000;
+        private const uint MF_ENABLED = 0x0000;
+        private const uint MF_GRAYED = 0x0001;
+        private const uint TPM_LEFTALIGN = 0x0000;
+        private const uint TPM_TOPALIGN = 0x0000;
+        private const uint TPM_RIGHTBUTTON = 0x0002;
+        private const uint TPM_RETURNCMD = 0x0100;
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
+
+        [DllImport("user32.dll")]
+        private static extern int EnableMenuItem(IntPtr hMenu, uint uIDEnableItem, uint uEnable);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetMenuDefaultItem(IntPtr hMenu, uint uItem, uint fByPos);
+
+        [DllImport("user32.dll")]
+        private static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        // Maximize shows a single box, restore two overlapping ones; the name and ToolTip match
+        // the Windows caption button for the state.
+        private void UpdateMaximizeButton()
+        {
+            bool maximized = WindowState == WindowState.Maximized;
+            string name = maximized ? "Restore Down" : "Maximize";
+            _maximizeBtn.Content = maximized ? "\u2750" : "\u25A1";
+            _maximizeBtn.ToolTip = name;
+            AutomationProperties.SetName(_maximizeBtn, name);
+            if (FindName("MaximizeButtonLabel") is TextBlock label) label.Text = name;
+        }
+
+        // Status text keeps at least this much of the footer before labels start to collapse.
+        private const double FooterStatusReserve = 120;
+        private double _footerCopyrightWidth, _footerVersionWidth;
+
+        // The footer's right-hand group is one Grid cell shared with the status text, so in a
+        // narrow window it would clip from the left, taking the zoom and page-size chips with it.
+        // Drop the least useful labels first instead: the copyright, then the version.
+        private void FitFooterToWidth()
+        {
+            if (_footerRightGroup is null || _footerCopyright is null) return;
+            // A collapsed element measures zero, so remember each label's width while it shows.
+            if (_footerCopyright.IsVisible && _footerCopyright.DesiredSize.Width > 0)
+                _footerCopyrightWidth = _footerCopyright.DesiredSize.Width;
+            if (VersionLabel.IsVisible && VersionLabel.DesiredSize.Width > 0)
+                _footerVersionWidth = VersionLabel.DesiredSize.Width;
+
+            double others = 0;
+            foreach (UIElement child in _footerRightGroup.Children)
+                if (child != _footerCopyright && child != VersionLabel) others += child.DesiredSize.Width;
+
+            double avail = _statusBarBorder.ActualWidth - 32 - FooterStatusReserve;   // 32: the Grid's 16 DIP side margins
+            if (avail <= 0) return;
+            bool showVersion = others + _footerVersionWidth <= avail;
+            bool showCopyright = showVersion && others + _footerVersionWidth + _footerCopyrightWidth <= avail;
+            var vVersion = showVersion ? Visibility.Visible : Visibility.Collapsed;
+            var vCopyright = showCopyright ? Visibility.Visible : Visibility.Collapsed;
+            if (VersionLabel.Visibility != vVersion) VersionLabel.Visibility = vVersion;
+            if (_footerCopyright.Visibility != vCopyright) _footerCopyright.Visibility = vCopyright;
+        }
+
         /// <summary>
         /// Points the portable badge's button at what is actually on this machine: the first-run
         /// "Install TDPdf..." when nothing is installed, otherwise the installed version and a way
@@ -1965,6 +2193,9 @@ namespace TDPdf
             });
 
             var current = ParseThemeSetting(TDPdf.Properties.Settings.Default.Theme);
+            // Each radio group in its own panel: one Tab stop, arrow keys between the options.
+            var themeGroup = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel());
+            panel.Children.Add(themeGroup);
             foreach (var theme in new[] { Theme.Light, Theme.Dark, Theme.System })
             {
                 var radio = new RadioButton
@@ -1983,7 +2214,7 @@ namespace TDPdf
                     ThemeManager.Apply(selected);
                     SetStatus($"Theme set to {radio.Content}");
                 };
-                panel.Children.Add(radio);
+                themeGroup.Children.Add(radio);
             }
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
@@ -1995,6 +2226,8 @@ namespace TDPdf
                 Foreground = BrushResource("TextPrimary"),
                 Margin = new Thickness(0, 0, 0, 8)
             });
+            var viewModeGroup = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel());
+            panel.Children.Add(viewModeGroup);
             foreach (var (vm, labelText) in new[]
             {
                 (ViewMode.Single,     "Single page"),
@@ -2016,7 +2249,7 @@ namespace TDPdf
                 {
                     if (vmRadio.Tag is ViewMode m) SetViewMode(m);
                 };
-                panel.Children.Add(vmRadio);
+                viewModeGroup.Children.Add(vmRadio);
             }
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
@@ -7609,6 +7842,16 @@ namespace TDPdf
         {
             base.OnPreviewKeyDown(e);
 
+            // Alt+Space: the window's system menu, which the custom chrome would otherwise lose.
+            // The native frame gets it from Windows; full screen has no title bar to anchor it to.
+            if (e.Key == Key.System && e.SystemKey == Key.Space && Keyboard.Modifiers == ModifierKeys.Alt
+                && !_useNativeWindowFrame && !_fullScreen)
+            {
+                e.Handled = true;
+                ShowWindowSystemMenuFromKeyboard();
+                return;
+            }
+
             // A manual (non-OLE) mouse-captured drag doesn't get Escape-to-cancel for free the way
             // DragDrop.DoDragDrop would — release capture ourselves; LostMouseCapture on the chip
             // does the rest (drops the ghost window, clears drag state, no transfer attempted).
@@ -11980,6 +12223,44 @@ namespace TDPdf
             ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                 ? Visibility.Collapsed : Visibility.Visible;
             if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
+        }
+
+        // The overlay is modal in effect, so keyboard focus belongs inside it while it shows
+        // (Tab cycles there, see the XAML) and goes back where it was when it closes. Driven by
+        // IsVisibleChanged so every open and close path is covered. Idea from upstream KillerPDF
+        // 1.8.92 (OverlayFocus).
+        private IInputElement? _shortcutOverlayReturnFocus;
+
+        private void ShortcutOverlay_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            if ((bool)e.NewValue)
+            {
+                var focused = Keyboard.FocusedElement;
+                _shortcutOverlayReturnFocus = focused is Visual v && ShortcutOverlay.IsAncestorOf(v) ? null : focused;
+                // After layout, so the card's buttons exist and are focusable.
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, (Action)(() =>
+                {
+                    if (ShortcutOverlay.IsVisible)
+                        ShortcutOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+                }));
+            }
+            else
+            {
+                var back = _shortcutOverlayReturnFocus;
+                _shortcutOverlayReturnFocus = null;
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, (Action)(() =>
+                {
+                    // Leave focus alone if something else already took it on purpose.
+                    var now = Keyboard.FocusedElement;
+                    bool stranded = now is null || now == this || (now is Visual nv && ShortcutOverlay.IsAncestorOf(nv))
+                                    || (now is UIElement u && !u.IsVisible);
+                    if (!stranded) return;
+                    if (back is UIElement target && target.IsVisible && target.IsEnabled && target.Focusable)
+                        Keyboard.Focus(target);
+                    else if (back is ContentElement ce && ce.IsEnabled && ce.Focusable)
+                        Keyboard.Focus(ce);
+                }));
+            }
         }
 
         private void ShortcutOverlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

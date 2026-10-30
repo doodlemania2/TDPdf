@@ -480,7 +480,14 @@ namespace TDPdf
             string? cancelLabel = null,
             bool defaultToCancel = false)
         {
-            var result = MessageBoxResult.OK;
+            // Closing without a button (Alt+F4) means whatever the IsCancel button returns, never OK.
+            var result = buttons switch
+            {
+                MessageBoxButton.OKCancel    => MessageBoxResult.Cancel,
+                MessageBoxButton.YesNoCancel => MessageBoxResult.Cancel,
+                MessageBoxButton.YesNo       => MessageBoxResult.No,
+                _                            => MessageBoxResult.OK,
+            };
             bool ticked = false;
             var green = Brush("AccentGreen");
             var panel = Brush("BgPanel");
