@@ -1653,11 +1653,14 @@ namespace TDPdf
             {
                 case PortableInstallOffer.FreshInstall:
                 {
-                    var res = TdpDialog.Show(this,
+                    // The desktop shortcut is the user's choice, unticked by default: it used to be
+                    // created silently although this prompt never mentioned it.
+                    var (res, wantDesktop) = TdpDialog.ShowWithCheckbox(this,
                         "Install TDPdf to your user profile?\n\n" +
                         "• Start Menu shortcut\n" +
                         "• Added to \"Open with\" for .pdf files\n" +
                         "• Appears in Add/Remove Programs",
+                        "Also add a desktop shortcut",
                         "Install TDPdf", MessageBoxButton.OKCancel);
                     if (res != MessageBoxResult.OK) return;
 
@@ -1667,7 +1670,7 @@ namespace TDPdf
                     // The ORIGINAL path, not _currentFile: after a decrypt-on-open _currentFile points at a
                     // working copy in %TEMP% that this process deletes on exit, so the installed build would
                     // relaunch onto a file that is already gone.
-                    App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop: true);
+                    App.InstallAndRelaunch(_ctx.OriginalPath ?? _currentFile, wantDesktop);
                     return;
                 }
 

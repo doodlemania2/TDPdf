@@ -1058,6 +1058,8 @@ namespace TDPdf
                 CreateShortcut(startMenuLnk, installExe);
                 if (wantDesktop)
                     CreateShortcut(DesktopLnk, installExe);
+                else
+                    InstallLog.Write("Desktop shortcut not requested");
             }
             catch (Exception ex)
             {
