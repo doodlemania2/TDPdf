@@ -59,7 +59,7 @@ namespace TDPdf
             double sy = renderHeight / page.Height;
 
             var textRuns = page.GetWords()
-                .GroupBy(w => Math.Round((renderHeight - (w.BoundingBox.Top * sy)) / 4.0))
+                .GroupBy(w => Math.Round((renderHeight - (PdfBoxExtent.TopOf(w.BoundingBox) * sy)) / 4.0))
                 // #185: a Y bucket spans the whole page, so on a two-column layout one "line" held
                 // both columns — double-clicking to edit picked up a run whose text was the left
                 // and right columns space-joined and whose box straddled the gutter. Splitting each
@@ -70,10 +70,12 @@ namespace TDPdf
                 .SelectMany(g => TextRunService.SplitAtColumnGaps(g.ToList()))
                 .Select(words =>
                 {
-                    double left = words.Min(w => w.BoundingBox.Left) * sx;
-                    double top = renderHeight - (words.Max(w => w.BoundingBox.Top) * sy);
-                    double right = words.Max(w => w.BoundingBox.Right) * sx;
-                    double bottom = renderHeight - (words.Min(w => w.BoundingBox.Bottom) * sy);
+                    // Corner extents: raw Left/Right/Top/Bottom are only valid unrotated, and gave
+                    // mirrored or upside-down runs a 1px hit box (upstream #452, #453).
+                    double left = words.Min(w => PdfBoxExtent.LeftOf(w.BoundingBox)) * sx;
+                    double top = renderHeight - (words.Max(w => PdfBoxExtent.TopOf(w.BoundingBox)) * sy);
+                    double right = words.Max(w => PdfBoxExtent.RightOf(w.BoundingBox)) * sx;
+                    double bottom = renderHeight - (words.Min(w => PdfBoxExtent.BottomOf(w.BoundingBox)) * sy);
                     string text = string.Join(" ", words.Select(w => w.Text));
                     // Line-height estimate, used only when the content stream yields no usable size.
                     double fontSize = Math.Max((bottom - top) * 0.75, 10);
@@ -119,11 +121,11 @@ namespace TDPdf
             var images = page.GetImages()
                 .Select(img =>
                 {
-                    var box = img.BoundingBox;
-                    double left = box.Left * sx;
-                    double top = renderHeight - (box.Top * sy);
-                    double width = (box.Right - box.Left) * sx;
-                    double height = (box.Top - box.Bottom) * sy;
+                    var (bl, bb, br, bt) = PdfBoxExtent.Of(img.BoundingBox);
+                    double left = bl * sx;
+                    double top = renderHeight - (bt * sy);
+                    double width = (br - bl) * sx;
+                    double height = (bt - bb) * sy;
                     return new ImageHit { CanvasBounds = new Rect(left, top, Math.Max(width, 1), Math.Max(height, 1)) };
                 })
                 .Where(i => i.CanvasBounds.Width > 1 && i.CanvasBounds.Height > 1)
