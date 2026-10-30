@@ -20,6 +20,7 @@ internal static class InvertedText
     {
         Console.WriteLine();
         Console.WriteLine("Rotated, upside-down and mirrored text boxes (upstream #437 #452 #453)");
+        TableGrid(Check, tmp);
 
         string path = Path.Combine(tmp, "inverted-text.pdf");
         {
@@ -118,6 +119,62 @@ internal static class InvertedText
             var (_, b, _, t) = E(w);
             Check($"runs: quarter-turned \"{w.Text}\" has a line band covering its ink",
                   runs.Lines.Any(l => l.Top >= t - 0.01 && l.Bottom <= b + 0.01), $"ink [{b:F1},{t:F1}]");
+        }
+    }
+
+    /// <summary>
+    /// TableExtractor.BuildGrid and MainWindow.WordsToText group words into rows by box top and
+    /// into columns by box left. A 3 x 2 table drawn upright, upside down and quarter-turned must
+    /// give the same cells (in reading order of the DISPLAYED frame, as PdfPig reports it).
+    /// </summary>
+    private static void TableGrid(Action<string, bool, string> Check, string tmp)
+    {
+        string[,] cells = { { "ALPHA", "BRAVO" }, { "CHARLIE", "DELTA" }, { "ECHO", "FOXTROT" } };
+        foreach (int turn in new[] { 0, 180, 90, 270 })
+        {
+            string path = Path.Combine(tmp, $"table-{turn}.pdf");
+            {
+                var doc = new PdfSharpCore.Pdf.PdfDocument();
+                var page = doc.AddPage();
+                page.Width = XUnit.FromPoint(400);
+                page.Height = XUnit.FromPoint(400);
+                using var gfx = XGraphics.FromPdfPage(page);
+                if (turn != 0) gfx.RotateAtTransform(turn, new XPoint(200, 200));
+                var font = new XFont("Helvetica", 14);
+                for (int r = 0; r < 3; r++)
+                    for (int c = 0; c < 2; c++)
+                        gfx.DrawString(cells[r, c], font, XBrushes.Black, 100 + c * 120, 150 + r * 40);
+                doc.Save(path);
+            }
+            using var pig = UglyToad.PdfPig.PdfDocument.Open(path);
+            var grid = TDPdf.TableExtractor.BuildGrid(pig.GetPage(1).GetWords());
+            // PdfPig splits quarter-turned text into single letters, so compare the letters each
+            // row holds; the assertion is that rows and columns still separate.
+            static string Letters(string s) => string.Concat(s.Where(char.IsLetter).OrderBy(c => c));
+            if (turn == 0 || turn == 180)
+            {
+                // Upside down, the displayed order reverses: the last drawn row is on top.
+                var expect = Enumerable.Range(0, 3).Select(r => turn == 0 ? r : 2 - r).ToList();
+                // PdfPig hands an upside-down word back in fragments, so columns cannot be pinned
+                // exactly; the rows (what the raw Top/Height broke) and their letters can.
+                bool ok = grid.Count == 3;
+                for (int i = 0; ok && i < 3; i++)
+                    ok = Letters(string.Concat(grid[i])) == Letters(cells[expect[i], 0] + cells[expect[i], 1]);
+                Check($"table: {turn} degree table keeps 3 rows with the right letters in each", ok,
+                      string.Join(" / ", grid.Select(rw => string.Join(",", rw))));
+            }
+            else
+            {
+                // Quarter-turned: rows and columns swap axes, and each letter is its own word, so
+                // pin the weaker property that matters here: a real band per row (the old negative
+                // heights collapsed everything into one row or one row per letter).
+                int cellsOut = grid.Sum(rw => rw.Count(c => c.Length > 0));
+                string all = string.Concat(grid.SelectMany(rw => rw));
+                string want = string.Concat(Enumerable.Range(0, 3).SelectMany(r => new[] { cells[r, 0], cells[r, 1] }));
+                Check($"table: {turn} degree table keeps every letter and groups rows",
+                      Letters(all) == Letters(want) && grid.Count > 1 && grid.Count < want.Length,
+                      string.Join(" / ", grid.Select(rw => string.Join(",", rw))));
+            }
         }
     }
 }

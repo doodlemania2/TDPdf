@@ -1,4 +1,5 @@
 using System.Text;
+using TDPdf.Services;
 using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 using Word = UglyToad.PdfPig.Content.Word;
 
@@ -50,37 +51,41 @@ namespace TDPdf
         /// Turns a page's words into a rectangular string grid by clustering them into
         /// rows (by vertical position) and columns (by left-edge position).
         /// </summary>
-        private static List<List<string>> BuildGrid(IEnumerable<Word> wordsSource)
+        internal static List<List<string>> BuildGrid(IEnumerable<Word> wordsSource)
         {
             var words = wordsSource.Where(w => !string.IsNullOrWhiteSpace(w.Text)).ToList();
             if (words.Count == 0) return new List<List<string>>();
 
-            // --- Rows: cluster by BoundingBox.Top. PDF origin is bottom-left, so a
+            // Corner min/max (PdfBoxExtent), not PdfPig's raw Top/Left/Height: those are wrong for
+            // quarter-turned, upside-down or mirrored text (negative heights, rows that never group).
+            var boxes = words.Select(w => (Word: w, Box: PdfBoxExtent.Of(w.BoundingBox))).ToList();
+
+            // --- Rows: cluster by the box's top edge. PDF origin is bottom-left, so a
             // larger Top is higher on the page; we walk top-to-bottom. Threshold mirrors
             // WordsToText in MainWindow (40% of average glyph height). ---
-            double avgH = words.Average(w => w.BoundingBox.Height);
+            double avgH = boxes.Average(x => x.Box.Top - x.Box.Bottom);
             double rowThresh = Math.Max(4.0, avgH * 0.4);
 
-            var rows = new List<List<Word>>();
+            var rows = new List<List<(Word Word, (double Left, double Bottom, double Right, double Top) Box)>>();
             double lineY = double.MaxValue;
-            foreach (var w in words.OrderByDescending(w => w.BoundingBox.Top))
+            foreach (var x in boxes.OrderByDescending(x => x.Box.Top))
             {
-                if (rows.Count == 0 || Math.Abs(w.BoundingBox.Top - lineY) > rowThresh)
+                if (rows.Count == 0 || Math.Abs(x.Box.Top - lineY) > rowThresh)
                 {
-                    rows.Add(new List<Word>());
-                    lineY = w.BoundingBox.Top;
+                    rows.Add(new());
+                    lineY = x.Box.Top;
                 }
-                rows[^1].Add(w);
+                rows[^1].Add(x);
             }
 
             // --- Columns: cluster every word's left edge across the whole page. Most
             // rows share the same column start positions, so distinct columns surface as
             // distinct clusters of left edges. Each cluster's first (smallest) left is a
             // column anchor. ---
-            double medH = Median(words.Select(w => w.BoundingBox.Height).ToList());
+            double medH = Median(boxes.Select(x => x.Box.Top - x.Box.Bottom).ToList());
             double colThresh = Math.Max(3.0, medH * 0.5);
 
-            var lefts = words.Select(w => w.BoundingBox.Left).OrderBy(x => x).ToList();
+            var lefts = boxes.Select(x => x.Box.Left).OrderBy(x => x).ToList();
             var anchors = new List<double> { lefts[0] };
             double prev = lefts[0];
             foreach (var x in lefts.Skip(1))
@@ -96,10 +101,10 @@ namespace TDPdf
             foreach (var row in rows)
             {
                 var cells = new string[anchors.Count];
-                foreach (var w in row.OrderBy(w => w.BoundingBox.Left))
+                foreach (var x in row.OrderBy(x => x.Box.Left))
                 {
-                    int col = ColumnIndex(anchors, w.BoundingBox.Left);
-                    cells[col] = string.IsNullOrEmpty(cells[col]) ? w.Text : cells[col] + " " + w.Text;
+                    int col = ColumnIndex(anchors, x.Box.Left);
+                    cells[col] = string.IsNullOrEmpty(cells[col]) ? x.Word.Text : cells[col] + " " + x.Word.Text;
                 }
                 grid.Add(cells.Select(c => c ?? string.Empty).ToList());
             }
