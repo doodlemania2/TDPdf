@@ -1045,12 +1045,12 @@ namespace TDPdf
         {
             Telemetry.TrackEvent("File.Merge");
             if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
-            var doc = _doc;
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Select PDF to merge", Multiselect = true };
             if (dlg.ShowDialog() != true) return;
-            try
+            // RunPageOperation commits the active text box and rolls back a partial merge.
+            RunPageOperation("Merge", () =>
             {
-                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
+                var doc = _doc!;
                 foreach (var file in dlg.FileNames)
                     AppendPdfFileToDoc(doc, file);
                 // Merge only ever APPENDS, so every existing page keeps its number and its geometry:
@@ -1058,11 +1058,7 @@ namespace TDPdf
                 // clear used to throw them all away for pages the merge never touched.
                 SaveTempAndReload(keepAnnotations: true);
                 SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Merge failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         /// <summary>
@@ -1323,11 +1319,11 @@ namespace TDPdf
             var result = TdpDialog.Show(this, $"Delete {selected.Count} {(selected.Count == 1 ? "page" : "pages")}?", "TDPdf",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (result != MessageBoxResult.Yes) return;
-            try
+            var indices = new List<int>();
+            foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+            RunPageOperation("Delete", () =>
             {
-                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
-                var indices = new List<int>();
-                foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+                doc = _doc!;
                 // Upstream KillerPDF #429, and ours was worse: the reload's default clear discarded
                 // EVERY unsaved annotation in the document, including those on pages before the
                 // deleted range that the delete does not even renumber. Deleting changes page numbers
@@ -1339,13 +1335,11 @@ namespace TDPdf
                 foreach (var idx in indices.OrderByDescending(i => i))
                     doc.Pages.RemoveAt(idx);
                 ApplyPageIndexMap(map);
-                SaveTempAndReload(keepAnnotations: true);
+                // Land on the page that followed the deleted block, or the new last page when the
+                // block ran to the end (upstream a6035013), not back on page 1.
+                SaveTempAndReload(keepAnnotations: true, selectIndex: indices.Min());
                 SetStatus($"Deleted {indices.Count} page(s), {_doc?.PageCount} remaining");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Delete failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         private void InsertBlankPage_Click(object sender, RoutedEventArgs e)
@@ -1365,9 +1359,9 @@ namespace TDPdf
             if (picked is null) return;
             var (wPt, hPt) = picked.Value;
 
-            try
+            RunPageOperation("Insert", () =>
             {
-                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
+                doc = _doc!;
                 var map = TDPdf.Services.PageIndexRemap.ForInsert(doc.PageCount, insertAfter + 1, 1);
                 var blank = new PdfPage { Width = XUnit.FromPoint(wPt), Height = XUnit.FromPoint(hPt) };
                 doc.Pages.Insert(insertAfter + 1, blank);
@@ -1380,11 +1374,7 @@ namespace TDPdf
                 SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = insertAfter + 1;
                 SetStatus($"Inserted blank page at position {insertAfter + 2}");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Insert failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         private (double WidthPt, double HeightPt)? ShowInsertPageDialog(double currentWPt, double currentHPt)
