@@ -11473,15 +11473,16 @@ namespace TDPdf
             catch { return false; }
         }
 
-        // Reads the stored list, dropping any entry that no longer exists on disk.
+        // Reads the stored list, dropping any entry that no longer exists on disk. Entries are
+        // normalised to full paths and de-duplicated case-insensitively: older builds stored paths
+        // as given (forward slashes, relative segments), so one file could be listed twice.
         private static List<string> GetRecentFiles()
         {
             var list = new List<string>();
             var raw = TDPdf.Properties.Settings.Default.RecentFiles;
             if (string.IsNullOrEmpty(raw)) return list;
-            foreach (var p in raw.Split('|'))
+            foreach (var p in TDPdf.Services.FilePathPolicy.NormalizeDistinct(raw.Split('|')))
             {
-                if (string.IsNullOrWhiteSpace(p)) continue;
                 try { if (System.IO.File.Exists(p)) list.Add(p); } catch { }
             }
             return list;
