@@ -7377,8 +7377,11 @@ namespace TDPdf
                     renderW, renderH, page.Width, page.Height);
 
                 var words = page.GetWords()
-                    .Where(w => PdfPageGeometry.ContainsCenter(region,
-                        w.BoundingBox.Left, w.BoundingBox.Bottom, w.BoundingBox.Right, w.BoundingBox.Top))
+                    .Where(w =>
+                    {
+                        var b = PdfBoxExtent.Of(w.BoundingBox);
+                        return PdfPageGeometry.ContainsCenter(region, b.Left, b.Bottom, b.Right, b.Top);
+                    })
                     .ToList();
 
                 if (words.Count == 0)
@@ -7416,32 +7419,35 @@ namespace TDPdf
         /// </summary>
         private static string WordsToText(IEnumerable<UglyToad.PdfPig.Content.Word> source)
         {
+            // Corner min/max, not PdfPig's raw Top/Left/Height: those are wrong for quarter-turned,
+            // upside-down or mirrored text (negative heights, lines that never group).
             var words = source
-                .OrderByDescending(w => w.BoundingBox.Top)
-                .ThenBy(w => w.BoundingBox.Left)
+                .Select(w => (Word: w, Box: PdfBoxExtent.Of(w.BoundingBox)))
+                .OrderByDescending(x => x.Box.Top)
+                .ThenBy(x => x.Box.Left)
                 .ToList();
             if (words.Count == 0) return string.Empty;
 
             // Dynamic threshold: 40% of average word height, minimum 4 PDF units
-            double avgH = words.Average(w => w.BoundingBox.Height);
+            double avgH = words.Average(x => x.Box.Top - x.Box.Bottom);
             double thresh = Math.Max(4.0, avgH * 0.4);
 
-            var lines = new List<List<UglyToad.PdfPig.Content.Word>>();
+            var lines = new List<List<(UglyToad.PdfPig.Content.Word Word, (double Left, double Bottom, double Right, double Top) Box)>>();
             double lineY = double.MaxValue;
-            foreach (var w in words)
+            foreach (var x in words)
             {
-                if (Math.Abs(w.BoundingBox.Top - lineY) > thresh)
+                if (Math.Abs(x.Box.Top - lineY) > thresh)
                 {
                     lines.Add([]);
-                    lineY = w.BoundingBox.Top;
+                    lineY = x.Box.Top;
                 }
-                lines[^1].Add(w);
+                lines[^1].Add(x);
             }
 
             // Re-sort each line by X in case the top-Y sort caused any grouping
             // to pull words into the wrong order within a line.
             return string.Join("\n", lines.Select(l =>
-                string.Join(" ", l.OrderBy(w => w.BoundingBox.Left).Select(w => w.Text))));
+                string.Join(" ", l.OrderBy(x => x.Box.Left).Select(x => x.Word.Text))));
         }
 
         // ============================================================
