@@ -34,7 +34,7 @@ cannot hang on a dialog nobody can see.
 | 5 | Access denied: the account cannot write the install folder or registry hive. |
 | 112 | The disk is full. |
 | 1223 | Cancelled. |
-| 1618 | Another TDPdf install or uninstall is already running in the same scope. Intune retries this code by itself. |
+| 1618 | Another TDPdf install or uninstall is already running in the same scope, or (uninstall only) TDPdf is still running from the install folder. Intune retries this code by itself. |
 | 1 | Any other failure. The install log has the details. |
 
 ## Where it installs
@@ -60,6 +60,16 @@ installed, so your deployment tool retries instead of recording a half-install a
 
 If someone runs a downloaded copy on a machine where IT installed TDPdf for all users, TDPdf
 says so and leaves that install alone.
+
+### Uninstall while TDPdf is open
+
+Uninstall checks for TDPdf processes running from the install folder, in every session, before
+it removes anything. `/uninstall /silent` then exits 1618 and changes nothing, so Intune tries
+again later. `/uninstall` without `/silent` asks the user to close TDPdf and stops. A TDPdf
+process whose path the uninstaller cannot read (another account's, for a per-user uninstall
+run without elevation) counts as running.
+
+The desktop shortcut is removed only when it points into the install folder.
 
 ### Install log
 

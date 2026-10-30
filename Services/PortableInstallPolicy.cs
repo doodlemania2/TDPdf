@@ -120,3 +120,87 @@ namespace TDPdf.Services
             new(v.Major, v.Minor, Math.Max(0, v.Build), Math.Max(0, v.Revision));
     }
 }
+
+namespace TDPdf.Services
+{
+    /// <summary>
+    /// The pure parts of uninstall: which running processes block it, and the deferred-delete
+    /// script. Kept off Windows APIs so tests/PdfCore can pin them.
+    /// </summary>
+    internal static class UninstallPolicy
+    {
+        /// <summary>
+        /// Environment variable that carries the install folder to the deferred-delete script.
+        /// </summary>
+        public const string DirVariable = "TDPDF_UNINSTALL_DIR";
+
+        /// <summary>
+        /// The deferred-delete batch. It contains no path at all: cmd reads a batch file in the
+        /// OEM code page, so a UTF-8 path with non-ASCII letters (a profile like C:\Users\Jörg)
+        /// came out mangled and the rmdir silently failed, and a % in the path was expanded as a
+        /// variable. The folder arrives in <see cref="DirVariable"/> instead: cmd keeps the
+        /// environment in Unicode and expands a variable's value once, never re-scanning it, so
+        /// the path reaches rmdir exactly as written. Pure ASCII, so the code page is irrelevant.
+        /// </summary>
+        /// <remarks>
+        /// Retries once a second for up to a minute: antivirus and the exiting process hold the
+        /// exe briefly (upstream KillerPDF #434 found the same lock).
+        /// </remarks>
+        public static readonly string DeferredDeleteScript =
+            "@echo off\r\n" +
+            "setlocal DisableDelayedExpansion\r\n" +
+            "if not defined " + DirVariable + " goto done\r\n" +
+            "set tries=0\r\n" +
+            ":retry\r\n" +
+            "ping -n 2 127.0.0.1 >nul\r\n" +
+            "rmdir /s /q \"%" + DirVariable + "%\" 2>nul\r\n" +
+            "if not exist \"%" + DirVariable + "%\\\" goto done\r\n" +
+            "set /a tries+=1\r\n" +
+            "if %tries% lss 60 goto retry\r\n" +
+            ":done\r\n" +
+            "del \"%~f0\"\r\n";
+
+        /// <summary>
+        /// cmd.exe arguments that run <paramref name="batchFileName"/> from the working directory
+        /// (the temp folder, set by the caller). Only the bare, ASCII file name appears on the
+        /// command line, where cmd would otherwise expand % in a temp path such as a profile
+        /// folder named with a percent sign. /d skips AutoRun commands, /v:off keeps ! literal.
+        /// </summary>
+        public static string DeferredDeleteArguments(string batchFileName)
+        {
+            foreach (char c in batchFileName)
+            {
+                bool safe = c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9')
+                              or '_' or '-' or '.';
+                if (!safe)
+                    throw new ArgumentException("The batch file name must be plain ASCII.", nameof(batchFileName));
+            }
+            return $"/d /v:off /c .\\{batchFileName}";
+        }
+
+        /// <summary>
+        /// True when <paramref name="path"/> is <paramref name="directory"/> or lies inside it.
+        /// Windows paths, compared case-insensitively; a sibling such as "TDPdf2" is not inside
+        /// "TDPdf".
+        /// </summary>
+        public static bool IsInside(string? path, string directory)
+        {
+            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(directory)) return false;
+            string dir = directory.Replace('/', '\\').TrimEnd('\\');
+            string p = path.Replace('/', '\\');
+            if (p.Length == dir.Length) return string.Equals(p, dir, StringComparison.OrdinalIgnoreCase);
+            return p.Length > dir.Length
+                && p[dir.Length] == '\\'
+                && p.StartsWith(dir, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Whether a running TDPdf process blocks uninstalling <paramref name="installDir"/>.
+        /// <paramref name="imagePath"/> is its exe path, or <c>null</c> when it could not be read
+        /// (another account's process): that one counts as running, since deleting the folder
+        /// under it would fail anyway and a false "close TDPdf" beats a half-done uninstall.
+        /// </summary>
+        public static bool BlocksUninstall(string? imagePath, string installDir) =>
+            imagePath is null || IsInside(imagePath, installDir);
+    }
+}
