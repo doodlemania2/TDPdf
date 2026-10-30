@@ -5157,7 +5157,9 @@ namespace TDPdf
                         ? "\n\nStill inside a marked area: " +
                           string.Join(", ", outcome.Survivors.Take(8)) +
                           (outcome.Survivors.Count > 8 ? ", …" : "") +
-                          "\n\nWiden the marks, or switch on \"Include partly covered objects\"."
+                          (outcome.SurvivorsAreAnnotations
+                              ? ""
+                              : "\n\nWiden the marks, or switch on \"Include partly covered objects\".")
                         : "";
                     TdpDialog.Show(this,
                         $"The redaction was not applied: {outcome.Error}{detail}\n\n" +
@@ -5173,6 +5175,8 @@ namespace TDPdf
                                  $"{outcome.ObjectsRemoved} object{(outcome.ObjectsRemoved == 1 ? "" : "s")} removed";
                 if (outcome.InvisibleTextRemoved > 0)
                     summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
+                if (outcome.AnnotationsRemoved > 0)
+                    summary += $"; {outcome.AnnotationsRemoved} annotation{(outcome.AnnotationsRemoved == 1 ? "" : "s")} or form field{(outcome.AnnotationsRemoved == 1 ? "" : "s")} removed";
                 if (outcome.Rasterized.Count > 0)
                     summary += $"; page{(outcome.Rasterized.Count == 1 ? "" : "s")} " +
                                string.Join(", ", outcome.Rasterized.Select(p => p + 1)) +
