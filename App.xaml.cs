@@ -504,12 +504,16 @@ namespace TDPdf
         // Single instance (open subsequent PDFs as tabs in one window)
         // ============================================================
 
-        // Per-user names so concurrent logon sessions don't collide and so a
-        // per-user install never clashes with another account on the same box.
+        // Named from the user SID plus the session id (InstanceIdentity): the pipe namespace is
+        // machine-wide, so a user-name key let a second RDP session of the same account forward
+        // its files to the first session's window, and let another account pre-create the pipe
+        // and receive our paths. CurrentUserOnly on both ends closes the second hole. A running
+        // TDPdf older than this uses the old names, so a new launch will not find it and opens
+        // its own window instead.
         private static readonly string SingleInstanceMutexName =
-            "Local\\TDPdf.SingleInstance.Mutex." + Environment.UserName;
+            "Local\\TDPdf.SingleInstance.Mutex." + InstanceIdentity.Suffix;
         private static readonly string SingleInstancePipeName =
-            "TDPdf.SingleInstance.Pipe." + Environment.UserName;
+            "TDPdf.SingleInstance.Pipe." + InstanceIdentity.Suffix;
         private Mutex? _singleInstanceMutex;
 
         // Sends a file path (or empty string = "just focus") to the running
@@ -518,7 +522,8 @@ namespace TDPdf
         {
             try
             {
-                using var client = new NamedPipeClientStream(".", SingleInstancePipeName, PipeDirection.Out);
+                using var client = new NamedPipeClientStream(".", SingleInstancePipeName, PipeDirection.Out,
+                    PipeOptions.CurrentUserOnly);
                 client.Connect(3000);
                 using var writer = new StreamWriter(client) { AutoFlush = true };
                 writer.WriteLine(payload);
@@ -561,7 +566,7 @@ namespace TDPdf
                         PipeDirection.In,
                         1,
                         PipeTransmissionMode.Byte,
-                        PipeOptions.None);
+                        PipeOptions.CurrentUserOnly);
                     server.WaitForConnection();
                     using var reader = new StreamReader(server);
                     string? line = reader.ReadLine();
