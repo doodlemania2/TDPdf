@@ -214,41 +214,46 @@ namespace TDPdf
                 // ---- Phase 2: swap the rendered pages in. Fast, and past the point of cancelling. ----
                 // Snapshot the whole document for undo BEFORE mutating, so one Ctrl+Z reverts the transform
                 // (same document-level snapshot as Crop / Rotate / Delete). Pushed here rather than up front
-                // so a cancelled transform leaves no undo entry behind.
-                PushDocUndo();
-
+                // so a cancelled transform leaves no undo entry behind. Inside RunPageOperation, so a failure
+                // part-way takes the undo entry back out along with the half-swapped pages.
                 int done = 0;
-                foreach (var (pageIdx, tmpPath) in replacements.OrderBy(kv => kv.Key))
+                bool swapped = RunPageOperation("Transform", () =>
                 {
-                    if (pageIdx < 0 || pageIdx >= _doc.PageCount) continue;
-                    // Import that page and swap it in for the original (mirrors the duplicate-page index dance:
-                    // AddPage clones into _doc at the end, then we reposition the clone and drop the original).
-                    using (var srcDoc = PdfReader.Open(tmpPath, PdfDocumentOpenMode.Import))
+                    PushDocUndo();
+                    foreach (var (pageIdx, tmpPath) in replacements.OrderBy(kv => kv.Key))
                     {
-                        var imported = _doc.AddPage(srcDoc.Pages[0]);
-                        _doc.Pages.RemoveAt(_doc.PageCount - 1);
-                        _doc.Pages.Insert(pageIdx, imported);
-                        _doc.Pages.RemoveAt(pageIdx + 1);
+                        if (pageIdx < 0 || pageIdx >= _doc.PageCount) continue;
+                        // Import that page and swap it in for the original (mirrors the duplicate-page index dance:
+                        // AddPage clones into _doc at the end, then we reposition the clone and drop the original).
+                        using (var srcDoc = PdfReader.Open(tmpPath, PdfDocumentOpenMode.Import))
+                        {
+                            var imported = _doc.AddPage(srcDoc.Pages[0]);
+                            _doc.Pages.RemoveAt(_doc.PageCount - 1);
+                            _doc.Pages.Insert(pageIdx, imported);
+                            _doc.Pages.RemoveAt(pageIdx + 1);
+                        }
+                        done++;
                     }
-                    done++;
-                }
 
+                    if (done == 0) return;
+
+                    // Persist + re-render. SaveTempAndReload clears the in-app annotation overlay (as Crop/Rotate
+                    // do); the transformed pages' annotations already live in the raster, so nothing is lost there.
+                    //
+                    // Repaint of the edited page: upstream (#175) had to add an explicit RenderPage here because
+                    // its reload only refreshed secondary tiles. Ours does NOT need one — SaveTempAndReload
+                    // rebuilds the sidebar via RefreshPageList, whose PageList.Items.Clear() drops the selection
+                    // to -1, so restoring the index fires PageList_SelectionChanged -> RenderPage against the new
+                    // temp file (the render cache was invalidated in the same call). Continuous view, which
+                    // returns early from that handler, is covered by SaveTempAndReload's SetupContinuousView.
+                    // Do not rely on the FitToPage calls below for the repaint: when the transformed page happens
+                    // to fit at the same zoom, SetZoomLevel is a no-op and ApplyZoom never runs.
+                    SaveTempAndReload();
+                    if (restoreIdx >= 0 && restoreIdx < PageList.Items.Count)
+                        PageList.SelectedIndex = restoreIdx;
+                });
+                if (!swapped) return;
                 if (done == 0) { SetStatus("Transform: no pages could be rendered."); return; }
-
-                // Persist + re-render. SaveTempAndReload clears the in-app annotation overlay (as Crop/Rotate
-                // do); the transformed pages' annotations already live in the raster, so nothing is lost there.
-                //
-                // Repaint of the edited page: upstream (#175) had to add an explicit RenderPage here because
-                // its reload only refreshed secondary tiles. Ours does NOT need one — SaveTempAndReload
-                // rebuilds the sidebar via RefreshPageList, whose PageList.Items.Clear() drops the selection
-                // to -1, so restoring the index fires PageList_SelectionChanged -> RenderPage against the new
-                // temp file (the render cache was invalidated in the same call). Continuous view, which
-                // returns early from that handler, is covered by SaveTempAndReload's SetupContinuousView.
-                // Do not rely on the FitToPage calls below for the repaint: when the transformed page happens
-                // to fit at the same zoom, SetZoomLevel is a no-op and ApplyZoom never runs.
-                SaveTempAndReload();
-                if (restoreIdx >= 0 && restoreIdx < PageList.Items.Count)
-                    PageList.SelectedIndex = restoreIdx;
 
                 // A transform changes the page aspect ratio; fit-to-page so the full result is visible, and
                 // re-fit once the new page bitmap has laid out.

@@ -397,6 +397,24 @@ namespace TDPdf
             window.Show();
         }
 
+        /// <summary>
+        /// Windows sign-out / restart / shutdown. WPF does not run Window.Closing for it, so each
+        /// window is asked here: one with unsaved documents refuses (e.Cancel), which makes Windows
+        /// show that TDPdf is preventing sign out; otherwise the window saves its session.
+        /// </summary>
+        protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+        {
+            base.OnSessionEnding(e);
+            foreach (var window in Windows.OfType<MainWindow>().ToList())
+            {
+                try
+                {
+                    if (window.BlockSessionEndForUnsavedWork()) e.Cancel = true;
+                }
+                catch { /* a failure here must not hold up the sign-out */ }
+            }
+        }
+
         // ============================================================
         // Settings self-heal
         // ============================================================

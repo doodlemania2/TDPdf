@@ -69,6 +69,9 @@
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
     <Compile Include="..\..\Services\PrintTicketDuplex.cs" />
+    <Compile Include="..\..\Services\AtomicFileWriter.cs" />
+    <Compile Include="..\..\Services\FilePathPolicy.cs" />
+    <Compile Include="..\..\Services\FileFingerprint.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
     <Compile Include="..\..\Services\WindowFitMath.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />

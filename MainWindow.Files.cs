@@ -237,6 +237,9 @@ namespace TDPdf
                 {
                     bool hasRealHome = !result.RecoveredFromRaster && System.IO.File.Exists(result.DisplayPath);
                     _ctx.OriginalPath = hasRealHome ? result.DisplayPath : null;
+                    // For a password-protected file this is the encrypted original, not the
+                    // decrypted working copy: the original is what a save in place overwrites.
+                    RecordOriginalFingerprint(_ctx, hasRealHome ? result.DisplayPath : null);
                     // The recent list keeps its own stricter gate — temp paths are correctly excluded
                     // from it even when they are a perfectly good save target.
                     if (hasRealHome && IsRecentEligiblePath(result.DisplayPath)) AddRecentFile(result.DisplayPath);
@@ -1045,12 +1048,12 @@ namespace TDPdf
         {
             Telemetry.TrackEvent("File.Merge");
             if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
-            var doc = _doc;
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Select PDF to merge", Multiselect = true };
             if (dlg.ShowDialog() != true) return;
-            try
+            // RunPageOperation commits the active text box and rolls back a partial merge.
+            RunPageOperation("Merge", () =>
             {
-                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
+                var doc = _doc!;
                 foreach (var file in dlg.FileNames)
                     AppendPdfFileToDoc(doc, file);
                 // Merge only ever APPENDS, so every existing page keeps its number and its geometry:
@@ -1058,11 +1061,7 @@ namespace TDPdf
                 // clear used to throw them all away for pages the merge never touched.
                 SaveTempAndReload(keepAnnotations: true);
                 SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Merge failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         /// <summary>
@@ -1272,16 +1271,32 @@ namespace TDPdf
             var selected = PageList.SelectedItems;
             if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to extract."); return; }
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save extracted pages as" };
-            if (!ShowPdfSaveDialog(dlg)) return;
+            while (true)
+            {
+                if (!ShowPdfSaveDialog(dlg)) return;
+                // Writing the extract over the open document (or its working copy) would replace the
+                // user's file with just the selected pages. Ask for another name instead.
+                if (!TDPdf.Services.FilePathPolicy.SamePath(dlg.FileName, _ctx.OriginalPath)
+                    && !TDPdf.Services.FilePathPolicy.SamePath(dlg.FileName, currentFile))
+                    break;
+                TdpDialog.Show(this,
+                    "Extracted pages cannot be saved over the document they come from.\n\nChoose a different file name.",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
             try
             {
                 var indices = new List<int>();
                 foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+                // Pages come from the working file on disk. Every page-structure edit goes through
+                // SaveTempAndReload, which repoints _currentFile at the result, so the thumbnail
+                // indices always match it.
                 using var importDoc = PdfReader.Open(currentFile, PdfDocumentOpenMode.Import);
                 var newDoc = new PdfDocument();
                 foreach (var idx in indices.OrderBy(i => i))
                     newDoc.AddPage(importDoc.Pages[idx]);
-                newDoc.Save(dlg.FileName);
+                // Atomic, like every other save: a failure part-way must not truncate a file the
+                // user just agreed to replace.
+                TDPdf.Services.AtomicFileWriter.Write(newDoc.Save, dlg.FileName, CancellationToken.None);
                 SetStatus($"Extracted {indices.Count} page(s) to {System.IO.Path.GetFileName(dlg.FileName)}");
             }
             catch (Exception ex)
@@ -1307,11 +1322,11 @@ namespace TDPdf
             var result = TdpDialog.Show(this, $"Delete {selected.Count} {(selected.Count == 1 ? "page" : "pages")}?", "TDPdf",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (result != MessageBoxResult.Yes) return;
-            try
+            var indices = new List<int>();
+            foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+            RunPageOperation("Delete", () =>
             {
-                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
-                var indices = new List<int>();
-                foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+                doc = _doc!;
                 // Upstream KillerPDF #429, and ours was worse: the reload's default clear discarded
                 // EVERY unsaved annotation in the document, including those on pages before the
                 // deleted range that the delete does not even renumber. Deleting changes page numbers
@@ -1323,13 +1338,11 @@ namespace TDPdf
                 foreach (var idx in indices.OrderByDescending(i => i))
                     doc.Pages.RemoveAt(idx);
                 ApplyPageIndexMap(map);
-                SaveTempAndReload(keepAnnotations: true);
+                // Land on the page that followed the deleted block, or the new last page when the
+                // block ran to the end (upstream a6035013), not back on page 1.
+                SaveTempAndReload(keepAnnotations: true, selectIndex: indices.Min());
                 SetStatus($"Deleted {indices.Count} page(s), {_doc?.PageCount} remaining");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Delete failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         private void InsertBlankPage_Click(object sender, RoutedEventArgs e)
@@ -1349,9 +1362,9 @@ namespace TDPdf
             if (picked is null) return;
             var (wPt, hPt) = picked.Value;
 
-            try
+            RunPageOperation("Insert", () =>
             {
-                CommitActiveTextBox();   // a half-typed box is part of the unsaved work kept below
+                doc = _doc!;
                 var map = TDPdf.Services.PageIndexRemap.ForInsert(doc.PageCount, insertAfter + 1, 1);
                 var blank = new PdfPage { Width = XUnit.FromPoint(wPt), Height = XUnit.FromPoint(hPt) };
                 doc.Pages.Insert(insertAfter + 1, blank);
@@ -1364,11 +1377,7 @@ namespace TDPdf
                 SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = insertAfter + 1;
                 SetStatus($"Inserted blank page at position {insertAfter + 2}");
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Insert failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            });
         }
 
         private (double WidthPt, double HeightPt)? ShowInsertPageDialog(double currentWPt, double currentHPt)
@@ -2126,6 +2135,60 @@ namespace TDPdf
         // back apart the next time someone edits "the" walker and picks the wrong one.
 
         /// <summary>
+        /// Hashes <paramref name="path"/> off the UI thread as the baseline for
+        /// <see cref="ConfirmSaveOverOutsideChangesAsync"/>; null forgets the baseline.
+        /// </summary>
+        private static void RecordOriginalFingerprint(DocumentContext ctx, string? path)
+        {
+            ctx.OriginalFingerprint = string.IsNullOrEmpty(path)
+                ? null
+                : (path, Task.Run(() => FileFingerprint.TryCapture(path)));
+        }
+
+        /// <summary>
+        /// Before a save in place: if another program changed or removed the file since TDPdf
+        /// opened or last saved it, ask before overwriting. Returns true to go ahead. "Save As"
+        /// starts Save As and returns false.
+        /// </summary>
+        private async Task<bool> ConfirmSaveOverOutsideChangesAsync(string targetFile)
+        {
+            if (_ctx.OriginalFingerprint is not { } recorded
+                || !FilePathPolicy.SamePath(recorded.Path, targetFile))
+                return true;   // no baseline for this path (e.g. a working copy with no home)
+            FileFingerprint? baseline;
+            try { baseline = await recorded.Fingerprint; }
+            catch { return true; }
+            var state = await Task.Run(() => FileFingerprint.Compare(baseline, targetFile));
+            string name = System.IO.Path.GetFileName(targetFile);
+            switch (state)
+            {
+                case FileChangeState.Changed:
+                {
+                    var answer = TdpDialog.ShowYesNoCancel(this,
+                        $"{name} was changed by another program since you opened it.\n\n" +
+                        "Overwrite it anyway? The other program's changes would be lost.",
+                        "Overwrite", "Save As...", "Cancel",
+                        "File Changed on Disk", MessageBoxImage.Warning, defaultToCancel: true);
+                    if (answer == MessageBoxResult.Yes) return true;
+                    if (answer == MessageBoxResult.No) SaveAs_Click(this, new RoutedEventArgs());
+                    return false;
+                }
+                case FileChangeState.Missing:
+                {
+                    var answer = TdpDialog.ShowYesNo(this,
+                        $"{name} is no longer where it was opened from. It may have been moved, renamed or deleted.\n\n" +
+                        "Save the document somewhere else?",
+                        "Save As...", "Cancel",
+                        "File Not Found", MessageBoxImage.Warning);
+                    if (answer == MessageBoxResult.Yes) SaveAs_Click(this, new RoutedEventArgs());
+                    return false;
+                }
+                default:
+                    return true;
+            }
+        }
+
+        /// <summary>
         /// Saves the active document back over the file the user opened. <paramref name="removingPassword"/>
         /// only changes the wording of the success status: the write itself IS the password removal,
         /// because the working document is already decrypted and PdfSharpCore never re-encrypts.
@@ -2141,6 +2204,7 @@ namespace TDPdf
             // update a temp file that is then deleted. Callers with no on-disk home route to Save As
             // before getting here; the fallback keeps this method total.
             string targetFile = _ctx.OriginalPath ?? _currentFile;
+            if (!await ConfirmSaveOverOutsideChangesAsync(targetFile)) return;
             string status = "";
 
             // The unit of work retried by RunSaveWithRecoveryAsync. Reads _doc fresh each call so a
@@ -2184,6 +2248,7 @@ namespace TDPdf
                 SetFileOperationBusy(true, "Saving...");
                 await RunSaveWithRecoveryAsync(DoSaveAsync);
                 MarkDirty(false);
+                RecordOriginalFingerprint(_ctx, targetFile);   // our own write is the new baseline
                 _ctx.SignatureStrippedSinceSave = false;   // the file on disk is now unsigned as well
                 if (_ctx.WasProtected)
                 {
@@ -2359,6 +2424,7 @@ namespace TDPdf
                 // to writing the file they saved away from. Recents keeps its own eligibility gate.
                 _ctx.IsUntitled   = false;
                 _ctx.OriginalPath = targetFile;
+                RecordOriginalFingerprint(_ctx, targetFile);
                 _ctx.SignatureStrippedSinceSave = false;   // this tab's file is now the unsigned copy
                 SetDisplayName(System.IO.Path.GetFileName(targetFile));
                 if (IsRecentEligiblePath(targetFile)) AddRecentFile(targetFile);
