@@ -972,10 +972,24 @@ namespace TDPdf
                 fontSize = isMultiLine ? Math.Max(6, fontSize)
                                        : Math.Max(6, Math.Min(fontSize, fieldH * 0.85));
 
+                // A zero-width joiner or variation selector the subset lacks would draw .notdef, a
+                // visible box, so the drawn value leaves them out (/V keeps them).
+                text = FontFallback.StripInvisible(text);
+
                 // Same family choice the annotation burn-in makes, so a value rendered here and the
-                // same text placed as an annotation resolve to one face rather than two.
-                var font = TdpFontResolver.TryCreate(
-                    FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text), fontSize, XFontStyle.Regular);
+                // same text placed as an annotation resolve to one face rather than two. When no one
+                // family covers the whole value (text plus a check mark only Segoe UI Symbol has,
+                // say), it is cut into per-family runs instead and each run embeds its own subset.
+                string family = FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text);
+                List<FontRun>? runs = null;
+                if (!FontCoverage.CoversAll(family, text))
+                {
+                    var split = FontCoverage.SplitRuns(family, text);
+                    if (split.Select(r => r.Family).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+                        runs = split;
+                }
+
+                var font = TdpFontResolver.TryCreate(family, fontSize, XFontStyle.Regular);
                 if (font is null) return false;
 
                 var form = new XForm(_doc, new XSize(fieldW, fieldH));
@@ -993,18 +1007,26 @@ namespace TDPdf
                         // run cannot drift, matching the per-glyph Tm the legacy comb path uses.
                         double cellW = fieldW / combLen;
                         fontSize = Math.Max(6, Math.Min(fontSize, Math.Min(fieldH * 0.85, cellW * 1.4)));
-                        var combFont = TdpFontResolver.TryCreate(
-                            FontCoverage.PickFamily(PdfFontStyle.DefaultFamily, text), fontSize, XFontStyle.Regular);
-                        if (combFont is null) return false;
+                        var combFonts = new FieldFontCache(family, fontSize);
+                        if (combFonts.Base is not { } combFont) return false;
 
                         string oneLine = text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
                         if (oneLine.Length > combLen) oneLine = oneLine[..combLen];
+                        // Each cell's family, by UTF-16 index (the cell walk below is per char).
+                        var cellFamily = new string?[oneLine.Length];
+                        int at = 0;
+                        foreach (var r in runs is null ? new List<FontRun> { new(oneLine, family) } : FontCoverage.SplitRuns(family, oneLine))
+                            for (int k = 0; k < r.Text.Length && at < cellFamily.Length; k++) cellFamily[at++] = r.Family;
                         for (int i = 0; i < oneLine.Length; i++)
                         {
                             if (oneLine[i] == ' ') continue;
-                            gfx.DrawString(oneLine[i].ToString(), combFont, XBrushes.Black,
+                            gfx.DrawString(oneLine[i].ToString(), combFonts.For(cellFamily[i] ?? family, combFont), XBrushes.Black,
                                 new XRect(i * cellW, 0, cellW, fieldH), XStringFormats.Center);
                         }
+                    }
+                    else if (runs is not null)
+                    {
+                        DrawFieldRuns(gfx, text, family, fontSize, fieldW, fieldH, isMultiLine, pad);
                     }
                     else if (isMultiLine)
                     {
@@ -1032,6 +1054,86 @@ namespace TDPdf
                 // Never let this fail the save — fall back to the legacy literal path.
                 System.Diagnostics.Debug.WriteLine($"TryGenerateUnicodeFieldAppearance: {ex}");
                 return false;
+            }
+        }
+
+        /// <summary>One XFont per family at one size, created on first use.</summary>
+        private sealed class FieldFontCache(string baseFamily, double size)
+        {
+            private readonly Dictionary<string, XFont?> _fonts = new(StringComparer.OrdinalIgnoreCase);
+            public XFont? Base => Get(baseFamily);
+            // A family that will not resolve falls back to the base font: a box for that run is
+            // no worse than the single-family path would have drawn.
+            public XFont For(string family, XFont fallback) => Get(family) ?? fallback;
+            private XFont? Get(string family)
+            {
+                if (!_fonts.TryGetValue(family, out var f))
+                    _fonts[family] = f = TdpFontResolver.TryCreate(family, size, XFontStyle.Regular);
+                return f;
+            }
+        }
+
+        /// <summary>
+        /// Draws a field value as per-family font runs (see <see cref="FontCoverage.SplitRuns"/>),
+        /// for a value no single family covers. Every run on a line shares one baseline, taken from
+        /// the base family's metrics exactly the way XGraphics places CenterLeft (single line) and
+        /// XTextFormatter places its first line (multiline), so the Latin part sits where the
+        /// single-family path would put it. Multiline wraps greedily at spaces, measuring runs.
+        /// </summary>
+        private static void DrawFieldRuns(XGraphics gfx, string text, string baseFamily, double fontSize,
+            double fieldW, double fieldH, bool isMultiLine, double pad)
+        {
+            var fonts = new FieldFontCache(baseFamily, fontSize);
+            var baseFont = fonts.Base;
+            if (baseFont is null) return;
+            double lineSpace = baseFont.GetHeight();
+            double ascent = baseFont.CellSpace > 0 ? lineSpace * baseFont.CellAscent / baseFont.CellSpace : fontSize;
+
+            double Measure(string s)
+            {
+                double w = 0;
+                foreach (var r in FontCoverage.SplitRuns(baseFamily, s))
+                    w += gfx.MeasureString(r.Text, fonts.For(r.Family, baseFont)).Width;
+                return w;
+            }
+            void DrawLine(string s, double baseline)
+            {
+                double x = pad;
+                foreach (var r in FontCoverage.SplitRuns(baseFamily, s))
+                {
+                    var f = fonts.For(r.Family, baseFont);
+                    gfx.DrawString(r.Text, f, XBrushes.Black, x, baseline, XStringFormats.BaseLineLeft);
+                    x += gfx.MeasureString(r.Text, f).Width;
+                }
+            }
+
+            if (!isMultiLine)
+            {
+                // XGraphicsPdfRenderer's CenterLeft: half the box plus half of 3/4 of the ascent.
+                DrawLine(text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' '),
+                         fieldH / 2 + ascent * 3 / 8);
+                return;
+            }
+
+            double innerW = Math.Max(1, fieldW - pad * 2);
+            var lines = new List<string>();
+            foreach (var para in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                string current = "";
+                foreach (var word in para.Split(' '))
+                {
+                    string candidate = current.Length == 0 ? word : current + " " + word;
+                    if (current.Length > 0 && Measure(candidate) > innerW) { lines.Add(current); current = word; }
+                    else current = candidate;
+                }
+                lines.Add(current);
+            }
+            // Lines past the bottom are clipped by the caller's IntersectClip.
+            for (int i = 0; i < lines.Count; i++)
+            {
+                double baseline = ascent + i * lineSpace;
+                if (baseline - ascent > fieldH) break;
+                if (lines[i].Length > 0) DrawLine(lines[i], baseline);
             }
         }
 
