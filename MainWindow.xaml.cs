@@ -697,9 +697,12 @@ namespace TDPdf
                 bool isTearOffLaunch = args.Length > 1 &&
                     string.Equals(args[1], "--new-window", StringComparison.OrdinalIgnoreCase);
                 int fileArgIndex = isTearOffLaunch ? 2 : 1;
+                // Only the first TDPdf window owns (and restores) the saved session; see SaveSession.
+                bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
+                if (ownsSession) ClaimSavedSession();
                 if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
                     await OpenInTabAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
-                else if (!isTearOffLaunch)
+                else if (ownsSession)
                     await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 
                 if (App.IsPortable())
@@ -1838,6 +1841,90 @@ namespace TDPdf
             base.OnClosing(e);
         }
 
+        // ── The saved session is shared by every TDPdf window ───────────────────────────────────
+        // Each window is its own process, and they all save to one SessionFiles setting. Each
+        // window therefore MERGES on close instead of overwriting: it re-reads the saved list,
+        // removes the entries it is responsible for (_sessionContributed) and appends its current
+        // tabs, leaving every other window's entries alone (FilePathPolicy.MergeSession). The first
+        // window of a login session is responsible for the list it found at startup, which it
+        // restores; later windows (tear-offs, or a second window when single-instance forwarding is
+        // off or fails) neither restore it nor own it. A per-user named mutex serialises the
+        // read-modify-write; a second one, held open for the life of the process, is how a window
+        // knows whether it is the first.
+        private static readonly string SessionLockName = "Local\\TDPdf.Session.Lock." + Environment.UserName;
+        private static readonly string SessionWindowName = "Local\\TDPdf.Session.Window." + Environment.UserName;
+        private static Mutex? s_sessionWindowHandle;
+        private List<string> _sessionContributed = new();
+
+        /// <summary>
+        /// Registers this window as alive and returns true when no other TDPdf window is. The handle
+        /// stays open until the process exits; ownership is never taken, so nothing is abandoned.
+        /// </summary>
+        private static bool RegisterSessionWindow()
+        {
+            try
+            {
+                if (s_sessionWindowHandle is not null) return false;   // already registered
+                s_sessionWindowHandle = new Mutex(false, SessionWindowName, out bool createdNew);
+                return createdNew;
+            }
+            catch
+            {
+                return true;   // no way to tell: behave as a lone window did before
+            }
+        }
+
+        private static void WithSessionLock(Action action)
+        {
+            Mutex? gate = null;
+            bool owned = false;
+            try
+            {
+                gate = new Mutex(false, SessionLockName);
+                try { owned = gate.WaitOne(TimeSpan.FromSeconds(5)); }
+                catch (AbandonedMutexException) { owned = true; }   // a window died holding it
+            }
+            catch { /* proceed unlocked rather than lose the session */ }
+            try { action(); }
+            finally
+            {
+                if (owned) { try { gate!.ReleaseMutex(); } catch { } }
+                gate?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// The saved session as it is on disk now. Settings.Default caches what this process read at
+        /// startup, so a fresh instance is read to see what other windows have written since.
+        /// </summary>
+        private static (List<string> Files, string Active) ReadSavedSession()
+        {
+            string files, active;
+            try
+            {
+                var fresh = new TDPdf.Properties.Settings();
+                files = fresh.SessionFiles;
+                active = fresh.SessionActiveFile;
+            }
+            catch
+            {
+                files = TDPdf.Properties.Settings.Default.SessionFiles;
+                active = TDPdf.Properties.Settings.Default.SessionActiveFile;
+            }
+            return (TDPdf.Services.FilePathPolicy.NormalizeDistinct(
+                        (files ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)),
+                    active ?? "");
+        }
+
+        /// <summary>
+        /// First window only: takes responsibility for the session left by the last run, so that
+        /// closing this window replaces it (as a lone window always did) rather than adding to it.
+        /// </summary>
+        private void ClaimSavedSession()
+        {
+            WithSessionLock(() => _sessionContributed = ReadSavedSession().Files);
+        }
+
         // The real, on-disk documents currently open, in tab order (temp / untitled / merged / imported /
         // recovered docs have a null OriginalPath and are excluded — they have no lasting home to reopen).
         // IsRecentEligiblePath also drops documents opened from under %TEMP% (e.g. a mail attachment):
@@ -1850,11 +1937,12 @@ namespace TDPdf
 
         // On close, remember (or forget) the open documents so the next launch can restore them.
         // Preference "Yes" always remembers, "No" never does, "Ask" prompts once (with an optional
-        // "remember my choice" that locks the answer). Forgetting clears the saved paths for privacy.
+        // "remember my choice" that locks the answer). Forgetting drops this window's documents;
+        // turning the preference to "No" clears the saved paths entirely, for privacy.
         private void HandleSessionOnClose()
         {
             var openFiles = OpenSessionFiles();
-            if (openFiles.Count == 0) { ClearSavedSession(); return; }
+            if (openFiles.Count == 0) { SaveSession(openFiles); return; }
 
             bool reopen;
             switch (TDPdf.Properties.Settings.Default.ReopenSession)
@@ -1878,23 +1966,38 @@ namespace TDPdf
             }
 
             if (reopen) SaveSession(openFiles);
-            else        ClearSavedSession();
+            else if (TDPdf.Properties.Settings.Default.ReopenSession == "No") ClearSavedSession();
+            else SaveSession(new List<string>());   // declined this once: forget only this window's
         }
 
+        /// <summary>Merges this window's documents into the saved session; see the block comment above.</summary>
         private void SaveSession(List<string> openFiles)
         {
-            var s = TDPdf.Properties.Settings.Default;
-            s.SessionFiles = string.Join("|", openFiles);
-            string? active = _ctx.OriginalPath;
-            s.SessionActiveFile = !string.IsNullOrEmpty(active)
-                && openFiles.Contains(active, StringComparer.OrdinalIgnoreCase) ? active : "";
-            s.Save();
+            WithSessionLock(() =>
+            {
+                var (saved, savedActive) = ReadSavedSession();
+                var merged = TDPdf.Services.FilePathPolicy.MergeSession(saved, _sessionContributed, openFiles);
+                string? mine = TDPdf.Services.FilePathPolicy.Normalize(_ctx.OriginalPath);
+                string active =
+                    mine is not null && openFiles.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, mine)) ? mine
+                    : merged.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, savedActive)) ? savedActive
+                    : "";
+                _sessionContributed = TDPdf.Services.FilePathPolicy.NormalizeDistinct(openFiles);
+                if (merged.SequenceEqual(saved, StringComparer.OrdinalIgnoreCase)
+                    && string.Equals(active, savedActive, StringComparison.OrdinalIgnoreCase))
+                    return;   // nothing changed: leave user.config alone
+                var s = TDPdf.Properties.Settings.Default;
+                s.SessionFiles = string.Join("|", merged);
+                s.SessionActiveFile = active;
+                s.Save();
+            });
         }
 
         private static void ClearSavedSession()
         {
             var s = TDPdf.Properties.Settings.Default;
-            if (s.SessionFiles.Length == 0 && s.SessionActiveFile.Length == 0) return;   // nothing to clear
+            if (s.SessionFiles.Length == 0 && s.SessionActiveFile.Length == 0
+                && ReadSavedSession().Files.Count == 0) return;   // nothing to clear
             s.SessionFiles = "";
             s.SessionActiveFile = "";
             s.Save();
@@ -1903,27 +2006,28 @@ namespace TDPdf
         /// <summary>
         /// Reopens the documents saved from the previous session as tabs, then re-selects the tab that was
         /// active last time. Skipped when the user opted out ("No"), when nothing was saved, or (by the
-        /// caller) when a file was passed on the command line — that file takes precedence over the session.
+        /// caller) when a file was passed on the command line — that file takes precedence over the session —
+        /// or when this is not the first TDPdf window (the first one already restored it).
         /// </summary>
         private async Task RestoreSessionAsync()
         {
             if (TDPdf.Properties.Settings.Default.ReopenSession == "No") return;
 
-            var files = TDPdf.Properties.Settings.Default.SessionFiles
-                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            // The list ClaimSavedSession just read under the lock, rather than Settings.Default's
+            // startup copy.
+            var files = _sessionContributed
                 .Where(System.IO.File.Exists)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (files.Count == 0) return;
 
             foreach (var f in files)
                 await OpenInTabAsync(f);
 
-            string active = TDPdf.Properties.Settings.Default.SessionActiveFile;
+            string active = ReadSavedSession().Active;
             if (!string.IsNullOrEmpty(active))
             {
                 var target = _tabs.FirstOrDefault(t =>
-                    string.Equals(t.OriginalPath, active, StringComparison.OrdinalIgnoreCase));
+                    TDPdf.Services.FilePathPolicy.SamePath(t.OriginalPath, active));
                 if (target is not null)
                 {
                     ActivateContext(target);
