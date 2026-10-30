@@ -1509,7 +1509,7 @@ namespace TDPdf
                 Margin = new Thickness(0, 14, 0, 6)
             });
 
-            var orient = new StackPanel { Orientation = Orientation.Horizontal };
+            var orient = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel { Orientation = Orientation.Horizontal });
             var rbPortrait = new RadioButton
             {
                 Content = "Portrait", IsChecked = currentWPt <= currentHPt,

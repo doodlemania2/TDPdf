@@ -506,8 +506,11 @@ namespace TDPdf.Services
             var fixedRadio = MakeRadio("Keep the page size (pad / clip)", false);
             _expandRadio.Checked += (_, _2) => { _fixedPage = false; UpdatePreview(); };
             fixedRadio.Checked   += (_, _2) => { _fixedPage = true;  UpdatePreview(); };
-            panel.Children.Add(_expandRadio);
-            panel.Children.Add(fixedRadio);
+            // Own panel so the pair is one Tab stop with arrow keys between the options.
+            var sizeModeGroup = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel());
+            sizeModeGroup.Children.Add(_expandRadio);
+            sizeModeGroup.Children.Add(fixedRadio);
+            panel.Children.Add(sizeModeGroup);
 
             _sizeReadout = new TextBlock
             {

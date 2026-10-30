@@ -1773,6 +1773,9 @@
               Panel.ZIndex="10000"
               Visibility="Collapsed"
               Background="#BB000000"
+              KeyboardNavigation.TabNavigation="Cycle"
+              KeyboardNavigation.ControlTabNavigation="Cycle"
+              KeyboardNavigation.DirectionalNavigation="Contained"
               MouseLeftButtonDown="ShortcutOverlay_MouseLeftButtonDown">
             <Border x:Name="ShortcutCard"
                     Background="{DynamicResource BgPanel}"

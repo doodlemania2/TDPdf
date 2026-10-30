@@ -616,6 +616,8 @@ namespace TDPdf
             StateChanged += (_, _) => UpdateMaximizeButton();
             UpdateMaximizeButton();
             _customTitleBar.MouseRightButtonUp += TitleBar_MouseRightButtonUp;
+            ShortcutOverlay.IsVisibleChanged += ShortcutOverlay_IsVisibleChanged;
+            TDPdf.Controls.RadioGroupKeyboard.Apply((Grid)FindName("SidebarTabRow")!);
             _outlineTree = (TreeView)FindName("OutlineTree")!;
             // Expanded/Collapsed bubble from the items, which are rebuilt on every tab switch and
             // reload — so the recorder hangs off the tree, once, rather than off the items.
@@ -2186,6 +2188,9 @@ namespace TDPdf
             });
 
             var current = ParseThemeSetting(TDPdf.Properties.Settings.Default.Theme);
+            // Each radio group in its own panel: one Tab stop, arrow keys between the options.
+            var themeGroup = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel());
+            panel.Children.Add(themeGroup);
             foreach (var theme in new[] { Theme.Light, Theme.Dark, Theme.System })
             {
                 var radio = new RadioButton
@@ -2204,7 +2209,7 @@ namespace TDPdf
                     ThemeManager.Apply(selected);
                     SetStatus($"Theme set to {radio.Content}");
                 };
-                panel.Children.Add(radio);
+                themeGroup.Children.Add(radio);
             }
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
@@ -2216,6 +2221,8 @@ namespace TDPdf
                 Foreground = BrushResource("TextPrimary"),
                 Margin = new Thickness(0, 0, 0, 8)
             });
+            var viewModeGroup = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel());
+            panel.Children.Add(viewModeGroup);
             foreach (var (vm, labelText) in new[]
             {
                 (ViewMode.Single,     "Single page"),
@@ -2237,7 +2244,7 @@ namespace TDPdf
                 {
                     if (vmRadio.Tag is ViewMode m) SetViewMode(m);
                 };
-                panel.Children.Add(vmRadio);
+                viewModeGroup.Children.Add(vmRadio);
             }
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
@@ -12199,6 +12206,44 @@ namespace TDPdf
             ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                 ? Visibility.Collapsed : Visibility.Visible;
             if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
+        }
+
+        // The overlay is modal in effect, so keyboard focus belongs inside it while it shows
+        // (Tab cycles there, see the XAML) and goes back where it was when it closes. Driven by
+        // IsVisibleChanged so every open and close path is covered. Idea from upstream KillerPDF
+        // 1.8.92 (OverlayFocus).
+        private IInputElement? _shortcutOverlayReturnFocus;
+
+        private void ShortcutOverlay_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            if ((bool)e.NewValue)
+            {
+                var focused = Keyboard.FocusedElement;
+                _shortcutOverlayReturnFocus = focused is Visual v && ShortcutOverlay.IsAncestorOf(v) ? null : focused;
+                // After layout, so the card's buttons exist and are focusable.
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, (Action)(() =>
+                {
+                    if (ShortcutOverlay.IsVisible)
+                        ShortcutOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+                }));
+            }
+            else
+            {
+                var back = _shortcutOverlayReturnFocus;
+                _shortcutOverlayReturnFocus = null;
+                _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, (Action)(() =>
+                {
+                    // Leave focus alone if something else already took it on purpose.
+                    var now = Keyboard.FocusedElement;
+                    bool stranded = now is null || now == this || (now is Visual nv && ShortcutOverlay.IsAncestorOf(nv))
+                                    || (now is UIElement u && !u.IsVisible);
+                    if (!stranded) return;
+                    if (back is UIElement target && target.IsVisible && target.IsEnabled && target.Focusable)
+                        Keyboard.Focus(target);
+                    else if (back is ContentElement ce && ce.IsEnabled && ce.Focusable)
+                        Keyboard.Focus(ce);
+                }));
+            }
         }
 
         private void ShortcutOverlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
