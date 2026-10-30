@@ -1812,6 +1812,53 @@ namespace TDPdf
             ThirdPartyLicensesWindow.Show(this);
 
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern bool ShutdownBlockReasonCreate(IntPtr hWnd, string pwszReason);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
+
+        /// <summary>
+        /// Windows sign-out, restart or shutdown (App.OnSessionEnding). WPF does not raise Closing
+        /// for that, so without this the dirty-document prompt never ran, unsaved tabs were lost
+        /// and the restore-on-launch session was never written. Returns true when the session end
+        /// must be refused: Windows then shows "TDPdf is preventing sign out" with the reason set
+        /// here, and the user can come back and save. Otherwise saves the session and returns false.
+        /// </summary>
+        internal bool BlockSessionEndForUnsavedWork()
+        {
+            CommitActiveTextBox();   // typed but uncommitted text counts as unsaved work
+            int dirtyCount = _tabs.Count(t => t.Doc is not null && t.IsDirty);
+            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            if (dirtyCount > 0)
+            {
+                if (hwnd != IntPtr.Zero)
+                {
+                    try
+                    {
+                        ShutdownBlockReasonCreate(hwnd, dirtyCount == 1
+                            ? "You have unsaved changes in TDPdf."
+                            : $"You have unsaved changes in {dirtyCount} documents in TDPdf.");
+                    }
+                    catch { /* the refusal still works without a reason */ }
+                }
+                Telemetry.TrackEvent("App.SessionEndBlocked");
+                return true;
+            }
+            if (hwnd != IntPtr.Zero) { try { ShutdownBlockReasonDestroy(hwnd); } catch { } }
+            // Nothing unsaved: remember the open documents so they come back after the restart.
+            // No prompt can be shown while Windows is signing out, so "Ask" saves the session as
+            // "Yes" would; "No" still saves nothing.
+            CaptureViewState();
+            try
+            {
+                if (TDPdf.Properties.Settings.Default.ReopenSession != "No")
+                    SaveSession(OpenSessionFiles());
+            }
+            catch { /* never hold up the sign-out over the session list */ }
+            return false;
+        }
+
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
             CommitActiveTextBox();
