@@ -150,3 +150,11 @@ Outline MCP is unavailable in your session (headless and cron runs sometimes lac
 explicitly and put the fully-formatted item inline in your reply rather than dropping it.
 
 <!-- END derek-task-inbox -->
+
+## Worktrees
+
+Follow the shared convention in `/Volumes/Data/repos/CLAUDE.md`:
+
+- Create: `/Volumes/Data/repos/_tools/wt new TDPdf <issue#>-<slug> [branch]`. It freshens the primary and cuts `/Volumes/Data/repos/TDPdf.worktrees/<issue#>-<slug>` from `origin/main`.
+- Reclaim: `/Volumes/Data/repos/_tools/wt done TDPdf <issue#>-<slug>` once the branch has landed on `main`.
+- Leave the primary checkout on `main` and clean. Do not use `git stash`, because all worktrees share one stash stack.
