@@ -171,12 +171,16 @@ namespace TDPdf.Diagnostics
             private readonly Stopwatch _stopwatch;
             private readonly Dictionary<string, string> _properties = new();
             private bool _success = true;
+            private readonly Activity? _span;
             private bool _completed;
 
             internal Operation(string name)
             {
                 _name = name;
                 _stopwatch = Stopwatch.StartNew();
+                // Current for the life of the scope, so events and crashes logged inside it share
+                // its trace id. Null (and free) when telemetry is off.
+                _span = IsEnabled ? OtlpTelemetry.BeginOperation("Op." + name) : null;
             }
 
             public Operation With(string key, string value)
@@ -197,7 +201,21 @@ namespace TDPdf.Diagnostics
                 if (_completed) return;
                 _completed = true;
                 _stopwatch.Stop();
-                TrackOperation(_name, _stopwatch.Elapsed.TotalMilliseconds, _success, _properties);
+                if (_span is null)
+                {
+                    TrackOperation(_name, _stopwatch.Elapsed.TotalMilliseconds, _success, _properties);
+                    return;
+                }
+                var props = new Dictionary<string, string>
+                {
+                    ["Success"]    = _success ? "true" : "false",
+                    ["DurationMs"] = ((long)_stopwatch.Elapsed.TotalMilliseconds).ToString(),
+                };
+                var scrubbed = ScrubProperties(_properties);
+                if (scrubbed is not null)
+                    foreach (var kv in scrubbed)
+                        props[kv.Key] = kv.Value;
+                OtlpTelemetry.EndOperation(_span, _success, props);
             }
         }
 

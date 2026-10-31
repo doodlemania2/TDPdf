@@ -1,0 +1,32 @@
+name: ntfy notify
+description: >-
+  Page the tdpdf topic on ntfy (https://alert.thedoodleproject.net) about a
+  failed run. NEVER fails the job: the failure being reported is the signal that
+  matters, and it is already recorded. Pass the repo secret NTFY_URL (the full
+  publish URL incl. ?auth=...) as `ntfy-url`; it is a bearer credential.
+inputs:
+  ntfy-url:
+    description: Full ntfy publish URL from the NTFY_URL secret.
+    required: true
+  title:
+    description: Notification title.
+    required: true
+  priority:
+    description: ntfy priority (default, high, urgent).
+    default: high
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        NTFY_URL: ${{ inputs.ntfy-url }}
+        TITLE: ${{ inputs.title }}
+        PRIORITY: ${{ inputs.priority }}
+      run: |
+        set -uo pipefail
+        [ -n "${NTFY_URL:-}" ] || { echo "::warning::NTFY_URL not set; no alert sent"; exit 0; }
+        TEXT="${GITHUB_WORKFLOW} failed on ${GITHUB_REF_NAME} (${GITHUB_EVENT_NAME}).
+        Commit ${GITHUB_SHA:0:7} - ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        curl -sS -m 20 -X POST -H "Title: ${TITLE}" -H "Priority: ${PRIORITY}" \
+          -H 'Tags: rotating_light' --data "$TEXT" "$NTFY_URL" >/dev/null \
+          || echo "::warning::could not post to ntfy"

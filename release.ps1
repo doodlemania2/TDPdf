@@ -292,7 +292,7 @@ try {
         if ($intunewin) { Write-Host "  WIN32: $intunewin" -ForegroundColor Green }
         Write-Host   "  SHA256: $hash" -ForegroundColor Green
         Write-Host   ""
-        Write-Host   "  tdpdf.com rebuilds itself after a tagged release (.github/workflows/site.yml)"
+        Write-Host   "  tdpdf.com rebuilds itself after a tagged release (the tdpdf-site repo checks every 15 minutes)"
 
         if ($intunewin) {
             Write-Host ""

@@ -42,12 +42,12 @@ jobs:
     env:
       HAS_AZSIGN:    ${{ secrets.SIGN_CLIENT_SECRET != '' }}
       HAS_FLEET:     ${{ secrets.FLEET_DISPATCH_TOKEN != '' }}
+      HAS_SITE:      ${{ secrets.SITE_DISPATCH_TOKEN != '' }}
       # vars.MSSTORE_ENABLED stays unset until the first, hand-made Store submission is
       # published: while that one is in certification, the API must not touch the product.
       HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' && vars.MSSTORE_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Resolve tag
         id: tag
         run: |
@@ -86,7 +86,7 @@ jobs:
       # install fails with "cp: cannot create directory ... Permission denied" — while still
       # reporting success, so the next step fails confusingly on the OLD SDK instead. Installing
       # into RUNNER_TEMP sidesteps it and is harmless on a hosted runner.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
@@ -301,6 +301,18 @@ jobs:
             -f event_type=tdpdf-released -f "client_payload[tag]=$TAG"
           echo "Dispatched tdpdf-released for $TAG. Follow it at https://github.com/doodlemania2/tdpdf-fleet/actions"
 
+      # Same pattern for the private doodlemania2/tdpdf-site repo, so tdpdf.com's download page
+      # moves to this release at once. Optional: without SITE_DISPATCH_TOKEN (fine-grained,
+      # Contents: write on tdpdf-site only) that repo's own 15-minute check rebuilds the site anyway.
+      - name: Tell tdpdf-site to rebuild
+        if: env.HAS_SITE == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          gh api repos/doodlemania2/tdpdf-site/dispatches \
+            -f event_type=tdpdf-release -f "client_payload[tag]=$TAG"
+
       - name: Note why Intune was not dispatched
         if: env.HAS_FLEET == 'true' && github.event.inputs.skip_intune != 'true' && steps.fleet.outcome == 'skipped'
         run: echo "::warning::tdpdf-fleet was not told to deploy — this build is not signed by Azure Artifact Signing, and the fleet only deploys binaries whose signature validates against public roots."
@@ -318,3 +330,18 @@ jobs:
             echo "| Intune | ${{ steps.fleet.outcome == 'success' && 'dispatched to tdpdf-fleet' || 'not dispatched' }} |"
             echo "| Store | ${{ steps.store.outcome == 'success' && 'submitted' || (steps.store.outcome == 'failure' && 'FAILED — see the Store step log; the release and Intune were not affected' || 'skipped') }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  notify-failure:
+    name: Notify ntfy on failure
+    runs-on: tdpdf
+    timeout-minutes: 5
+    needs: [release]
+    if: failure()
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: .github/actions
+      - uses: ./.github/actions/ntfy-notify
+        with:
+          ntfy-url: ${{ secrets.NTFY_URL }}
+          title: TDPdf release FAILED

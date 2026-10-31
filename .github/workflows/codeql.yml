@@ -35,10 +35,13 @@ jobs:
   analyze:
     name: Analyze (csharp)
     runs-on: tdpdf-pr
+    # Dependabot PRs stay as notices and never start CI; the `run-ci` label opts one in.
+    if: >-
+      github.event.pull_request.user.login != 'dependabot[bot]' ||
+      contains(github.event.pull_request.labels.*.name, 'run-ci')
 
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The ARC runner image ships the .NET 9 SDK, which cannot target net10.0 at all
       # (NETSDK1045 at restore). Pinning the SDK here rather than waiting on a runner image
       # rebuild keeps the workflow self-sufficient: it works on the self-hosted runner, on a
@@ -49,14 +52,14 @@ jobs:
       # install fails with "cp: cannot create directory ... Permission denied" — while still
       # reporting success, so the next step fails confusingly on the OLD SDK instead. Installing
       # into RUNNER_TEMP sidesteps it and is harmless on a hosted runner.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: '10.0.x'
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
@@ -64,7 +67,7 @@ jobs:
             nuget-${{ runner.os }}-
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
         with:
           languages: csharp
           build-mode: manual
@@ -76,6 +79,6 @@ jobs:
         run: dotnet build TDPdf.csproj -c Release -p:Platform=x64 -p:EnableWindowsTargeting=true --no-restore
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
         with:
           category: "/language:csharp"

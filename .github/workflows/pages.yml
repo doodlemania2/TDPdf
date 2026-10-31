@@ -41,8 +41,7 @@ jobs:
   build:
     runs-on: tdpdf
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Render PRIVACY.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,10 +120,10 @@ jobs:
       # enablement: true so the workflow provisions Pages itself if it is not already on.
       # Without it the first run fails with a bare "Get Pages site failed ... Not Found",
       # which reads like a broken workflow rather than an unset repository setting.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
         with:
           enablement: true
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: site
 
@@ -136,4 +135,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
