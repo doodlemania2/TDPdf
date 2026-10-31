@@ -318,3 +318,18 @@ jobs:
             echo "| Intune | ${{ steps.fleet.outcome == 'success' && 'dispatched to tdpdf-fleet' || 'not dispatched' }} |"
             echo "| Store | ${{ steps.store.outcome == 'success' && 'submitted' || (steps.store.outcome == 'failure' && 'FAILED — see the Store step log; the release and Intune were not affected' || 'skipped') }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  notify-failure:
+    name: Notify ntfy on failure
+    runs-on: tdpdf
+    timeout-minutes: 5
+    needs: [release]
+    if: failure()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+      - uses: ./.github/actions/ntfy-notify
+        with:
+          ntfy-url: ${{ secrets.NTFY_URL }}
+          title: TDPdf release FAILED

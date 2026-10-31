@@ -252,6 +252,39 @@ namespace TDPdf.Diagnostics
         }
 
         /// <summary>
+        /// Opens an operation span that stays current until <see cref="EndOperation"/>, so any
+        /// event or crash logged inside it carries the span's trace and span ids (the OpenTelemetry
+        /// logger reads <see cref="Activity.Current"/>). Returns null when telemetry is off or
+        /// nothing listens, and <see cref="EndOperation"/> accepts that.
+        /// </summary>
+        public static Activity? BeginOperation(string name)
+        {
+            if (!IsEnabled || s_activitySource is null) return null;
+            try { return s_activitySource.StartActivity(name, ActivityKind.Internal); }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Closes a span from <see cref="BeginOperation"/> with the measured outcome and restores
+        /// the previous current activity.
+        /// </summary>
+        public static void EndOperation(Activity? activity, bool success,
+                                        IDictionary<string, string>? properties)
+        {
+            if (activity is null) return;
+            try
+            {
+                activity.SetTag("operation.success", success);
+                if (properties is not null)
+                    foreach (var kv in properties)
+                        activity.SetTag(kv.Key, kv.Value);
+                activity.SetStatus(success ? ActivityStatusCode.Ok : ActivityStatusCode.Error);
+            }
+            catch { /* swallow */ }
+            finally { activity.Dispose(); }
+        }
+
+        /// <summary>
         /// A crash as an ERROR log record carrying the OpenTelemetry exception attributes.
         /// </summary>
         /// <remarks>

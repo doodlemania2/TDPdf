@@ -86,3 +86,18 @@ jobs:
             echo
             echo "\`$IMAGE_LC:latest\` now points at ${{ github.sha }}. doodlessd picks it up within 5 minutes."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  notify-failure:
+    name: Notify ntfy on failure
+    runs-on: tdpdf
+    timeout-minutes: 5
+    needs: [site]
+    if: failure()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+      - uses: ./.github/actions/ntfy-notify
+        with:
+          ntfy-url: ${{ secrets.NTFY_URL }}
+          title: tdpdf.com site build FAILED
