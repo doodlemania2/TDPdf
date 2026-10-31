@@ -25,3 +25,17 @@ Thumbs.db
 bin/
 obj/
 __pycache__/
+
+# Secrets and local credentials (repo hygiene 2026-10-30)
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.pfx
+*.p12
+kubeconfig
+local.settings.json
