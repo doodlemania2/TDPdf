@@ -1996,7 +1996,7 @@ namespace TDPdf
 
         // Points at the rendered copy on tdpdf.com, not the repository blob: the Microsoft Store
         // requires a privacy policy at a working URL and the developer agreement wants a link to
-        // it from inside the app as well. build/site/build-site.ps1 renders it from PRIVACY.md,
+        // it from inside the app as well. the tdpdf-site repo renders it from PRIVACY.md,
         // which stays the single source of the text. The GitHub Pages copy
         // (.github/workflows/pages.yml) stays up because builds up to 2.0.0.0 link there.
         private void HelpPrivacy_Click(object sender, RoutedEventArgs e) =>
