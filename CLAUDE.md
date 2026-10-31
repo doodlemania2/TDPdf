@@ -104,49 +104,43 @@ These files were produced by a pure move-only split; the banner comments (`// ==
 
 <!-- BEGIN derek-task-inbox — shared block, identical in every CLAUDE.md under /Volumes/Data/repos. Edit all copies together. Canonical source: the Outline "Protocol" page linked below. -->
 
-## Handing work back to Derek — the Outline Task Inbox
+## Handing work back to Derek — a Paperclip task
 
 Derek runs many agents at once, so a task mentioned only in a chat reply is lost. **Anything
-that requires Derek personally must be filed as an item in the Outline Task Inbox in the same
-turn you discover it**, and then also mentioned in your reply.
+that requires Derek personally must be filed as a Paperclip task in the same turn you discover
+it**, and then also mentioned in your reply. The Outline Task Inbox closed on 2026-10-01; its
+page is read-only history, so do not append to it.
 
-- Inbox: [Derek's Task Inbox](https://outline.thedoodleproject.net/doc/dereks-task-inbox-qJpbaMEN3j) — `documentId: ae39277c-130c-4e95-90e0-80d7ed4138e4`
+- Board: company **TDP** at `https://m4.tail890bc.ts.net:8443` (Paperclip API or the
+  `create_task` tool), in the project that owns the work
 - Full spec: [Protocol — how agents file tasks](https://outline.thedoodleproject.net/doc/protocol-how-agents-file-tasks-lLeYcUvbS4) — canonical if it disagrees with this block
 
-**Which direction is which.** The inbox is work *for Derek*: approvals, decisions, merging to
-`main`, entering a credential, vendor-UI clicks (CCB, Stripe, Power Platform, Azure Portal,
-Exchange), phone calls, hand-verifying prod. Work *for agents* — bugs, features, refactors,
-investigations — is a **GitHub issue** in the owning repo, never an inbox item. If an agent
-could do it, do it. Status and findings belong in your reply, not the inbox.
+**Which direction is which.** A Paperclip task is work *for Derek*: approvals, decisions,
+merging to `main`, entering a credential, vendor-UI clicks (CCB, Stripe, Power Platform, Azure
+Portal, Exchange), phone calls, hand-verifying prod. Work *for agents* — bugs, features,
+refactors, investigations — is a **GitHub issue** in the owning repo. If an agent could do it,
+do it. Status and findings belong in your reply.
 
-**Filing an item**
+**Filing a task.** Search the board first; if it is already filed, comment on that task instead
+of filing a second copy. The description carries **Why**, **Do (Derek)**, **Done when** and
+**Context**, and must stand alone: Derek opens it cold days later and finishes it without asking
+a question. That means real GUIDs and record IDs, the Dataverse org name (`stfoafrisco-prod` vs
+`stfoafrisco-staging`), the PR/issue link, and copy-pasteable commands. Never put a secret value
+in a task; name the Key Vault secret instead. Set priority `high` (an agent or a parishioner is
+stuck), `medium` or `low`, and status `blocked` with an unblock action naming what Derek does.
+A decision also gets an `ask_user_questions` card with the real options. Give the task
+identifier in your reply. There is nothing to tick or sweep; closing the task is the whole of it.
 
-1. `mcp__outline__fetch` (`resource: "document"`, `id: "ae39277c-130c-4e95-90e0-80d7ed4138e4"`)
-   first. If the task is already filed, patch that item instead of adding a duplicate.
-2. `mcp__outline__update_document` with `editMode: "patch"`, `findText` = the target section
-   heading, `text` = that heading + a blank line + your new item, so it lands at the top of the
-   section. Sections: `## 🔴 Blocking` (an agent or a parishioner is stuck), `## 🟡 Normal`
-   (needed soon, nothing stuck), `## 🔵 Whenever`. Delete the `*Nothing pending.*` placeholder
-   when a section gets its first real item.
-
-```markdown
-- [ ] **<Imperative one-line title>** · `<repo>` · [#123](https://github.com/doodlemania2/<repo>/issues/123) · _YYYY-MM-DD_
-  - **Why:** what is broken or blocked until this happens
-  - **Do:** the exact steps or command to run
-  - **Done when:** the observable condition that means it worked
-  - **Context:** IDs, URLs, env/org, file paths — everything needed to act without asking
-  - **Filed by:** agent · <branch / worktree / session hint>
-```
-
-Every field is required, and the item must stand alone: Derek opens it cold days later with no
-memory of the session and finishes it without asking a question. That means real GUIDs and
-record IDs, the Dataverse org name (`stfoafrisco-prod` vs `stfoafrisco-staging`), the PR/issue
-link, and copy-pasteable commands — not "the affected family" or "the usual script". Never put
-a secret value in an item; name the Key Vault secret instead. One task per item.
-
-Never tick, reorder, or delete an item — checking off and archiving are Derek's alone. If a task
-you filed became unnecessary, patch it to `~~struck through~~` with the reason and date. If the
-Outline MCP is unavailable in your session (headless and cron runs sometimes lack it), say so
-explicitly and put the fully-formatted item inline in your reply rather than dropping it.
+If your session cannot reach the board (no `create_task` tool and no Paperclip credentials —
+the usual case for a local Claude Code session), say so explicitly and put the fully-formatted
+task inline in your reply rather than dropping it.
 
 <!-- END derek-task-inbox -->
+
+## Worktrees
+
+Follow the shared convention in `/Volumes/Data/repos/CLAUDE.md`:
+
+- Create: `/Volumes/Data/repos/_tools/wt new TDPdf <issue#>-<slug> [branch]`. It freshens the primary and cuts `/Volumes/Data/repos/TDPdf.worktrees/<issue#>-<slug>` from `origin/main`.
+- Reclaim: `/Volumes/Data/repos/_tools/wt done TDPdf <issue#>-<slug>` once the branch has landed on `main`.
+- Leave the primary checkout on `main` and clean. Do not use `git stash`, because all worktrees share one stash stack.
