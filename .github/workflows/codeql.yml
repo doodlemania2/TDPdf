@@ -35,6 +35,10 @@ jobs:
   analyze:
     name: Analyze (csharp)
     runs-on: tdpdf-pr
+    # Dependabot PRs stay as notices and never start CI; the `run-ci` label opts one in.
+    if: >-
+      github.event.pull_request.user.login != 'dependabot[bot]' ||
+      contains(github.event.pull_request.labels.*.name, 'run-ci')
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

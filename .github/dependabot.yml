@@ -5,9 +5,9 @@ updates:
     schedule:
       interval: weekly
     groups:
-      actions:
+      minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+      major:
+        patterns: ["*"]
+        update-types: ["major"]
