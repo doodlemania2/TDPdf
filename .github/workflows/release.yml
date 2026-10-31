@@ -47,8 +47,7 @@ jobs:
       # published: while that one is in certification, the API must not touch the product.
       HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' && vars.MSSTORE_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Resolve tag
         id: tag
         run: |
@@ -87,7 +86,7 @@ jobs:
       # install fails with "cp: cannot create directory ... Permission denied" — while still
       # reporting success, so the next step fails confusingly on the OLD SDK instead. Installing
       # into RUNNER_TEMP sidesteps it and is harmless on a hosted runner.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
@@ -339,7 +338,7 @@ jobs:
     needs: [release]
     if: failure()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           sparse-checkout: .github/actions
       - uses: ./.github/actions/ntfy-notify
