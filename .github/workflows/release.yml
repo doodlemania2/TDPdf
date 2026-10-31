@@ -42,6 +42,7 @@ jobs:
     env:
       HAS_AZSIGN:    ${{ secrets.SIGN_CLIENT_SECRET != '' }}
       HAS_FLEET:     ${{ secrets.FLEET_DISPATCH_TOKEN != '' }}
+      HAS_SITE:      ${{ secrets.SITE_DISPATCH_TOKEN != '' }}
       # vars.MSSTORE_ENABLED stays unset until the first, hand-made Store submission is
       # published: while that one is in certification, the API must not touch the product.
       HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' && vars.MSSTORE_ENABLED == 'true' }}
@@ -300,6 +301,18 @@ jobs:
           gh api repos/doodlemania2/tdpdf-fleet/dispatches \
             -f event_type=tdpdf-released -f "client_payload[tag]=$TAG"
           echo "Dispatched tdpdf-released for $TAG. Follow it at https://github.com/doodlemania2/tdpdf-fleet/actions"
+
+      # Same pattern for the private doodlemania2/tdpdf-site repo, so tdpdf.com's download page
+      # moves to this release at once. Optional: without SITE_DISPATCH_TOKEN (fine-grained,
+      # Contents: write on tdpdf-site only) that repo's own 15-minute check rebuilds the site anyway.
+      - name: Tell tdpdf-site to rebuild
+        if: env.HAS_SITE == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          gh api repos/doodlemania2/tdpdf-site/dispatches \
+            -f event_type=tdpdf-release -f "client_payload[tag]=$TAG"
 
       - name: Note why Intune was not dispatched
         if: env.HAS_FLEET == 'true' && github.event.inputs.skip_intune != 'true' && steps.fleet.outcome == 'skipped'
