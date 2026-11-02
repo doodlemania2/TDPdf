@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.1.1.1] - 2026-11-02
+
+### Fixed
+
+- **Settings made in the printer's own Properties dialog are applied again.** Since 2.1.0.0, stapling, hole punch, folding, output tray, collation, secure-print PINs, account codes and most of a driver's own finishing options were dropped as soon as the dialog closed, and the dialog reopened at the printer's defaults. The two-sided printing fix in 2.1.0.0 read and wrote the driver's settings at document scope, believing it to be the wider scope. It is the narrower one: document scope leaves out every job-level setting, and those are most of what that dialog is for. TDPdf uses job scope again, which also carries the document-level two-sided setting, so the 2.1.0.0 two-sided fix still holds.
+
 ## [2.1.0.0] - 2026-10-30
 
 Fixes from a curated sync with upstream KillerPDF v1.9.0 and the last v1.8.92 commits. Upstream 1.9.0 replaced its PDF engine, so none of its code applies here. As before, its changelog was read as a list of problems to look for in TDPdf's own code, and each item was approved individually.
@@ -1319,7 +1325,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.1.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.1.1.1...HEAD
+[2.1.1.1]: https://github.com/doodlemania2/TDPdf/compare/v2.1.0.0...v2.1.1.1
 [2.1.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.2.0...v2.1.0.0
 [2.0.2.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.1.0...v2.0.2.0
 [2.0.1.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.0.0...v2.0.1.0
