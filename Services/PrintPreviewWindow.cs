@@ -1128,9 +1128,11 @@ namespace TDPdf.Services
                     var bytes = new byte[size];
                     Marshal.Copy(devMode, bytes, 0, size);
                     using var conv = new PrintTicketConverter(printerName, PrintTicketConverter.MaxPrintSchemaVersion);
-                    // DocumentScope, which includes job scope: JobScope drops document-level
-                    // settings, and DocumentDuplex is where many drivers keep two-sided printing.
-                    _driverTicket = conv.ConvertDevModeToPrintTicket(bytes, PrintTicketScope.DocumentScope);
+                    // JobScope, the widest scope: a job-level ticket carries Job-, Document- and
+                    // Page-prefixed features, so DocumentDuplex is in it too. DocumentScope is the
+                    // narrower one and drops every Job* feature — stapling, hole punch, output bin,
+                    // collation, secure-print PIN, most vendor finishing — which is how 2.1.0.0 lost them.
+                    _driverTicket = conv.ConvertDevModeToPrintTicket(bytes, PrintTicketScope.JobScope);
 
                     AdoptDriverTicket(_driverTicket);
                 }
@@ -1164,7 +1166,9 @@ namespace TDPdf.Services
                 seed = WithDuplex(seed, _duplexMode);
 
                 using var conv = new PrintTicketConverter(printerName, PrintTicketConverter.MaxPrintSchemaVersion);
-                byte[] dm = conv.ConvertPrintTicketToDevMode(seed, BaseDevModeType.UserDefault, PrintTicketScope.DocumentScope);
+                // JobScope for the same reason as the conversion back: DocumentScope would strip the
+                // job-level choices from the seed, so the dialog reopened at the printer's defaults.
+                byte[] dm = conv.ConvertPrintTicketToDevMode(seed, BaseDevModeType.UserDefault, PrintTicketScope.JobScope);
                 if (dm.Length == 0 || dm.Length > size) return false;
                 Marshal.Copy(dm, 0, devMode, dm.Length);
                 return true;
