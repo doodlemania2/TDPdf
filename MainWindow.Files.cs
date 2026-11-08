@@ -2469,7 +2469,7 @@ namespace TDPdf
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
             if (!ShowPdfSaveDialog(dlg)) return;
             using var op = Telemetry.StartOperation("SaveFlattened");
-            SetFileOperationBusy(true, "Flattening...");
+            var ct = BeginCancellableOp("Flattening page 1...  (Esc to cancel)");
             string targetFile = dlg.FileName;
 
             // Retryable unit of work (see RunSaveWithRecoveryAsync / #106): the fragile part is the
@@ -2521,7 +2521,8 @@ namespace TDPdf
                         sourcePath = temp;
                     }
 
-                    await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, CancellationToken.None);
+                    await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, ct,
+                        (page, total) => SetWorkerStatus($"Flattening page {page} of {total}...  (Esc to cancel)"));
                 }
                 finally
                 {
@@ -2539,6 +2540,12 @@ namespace TDPdf
                 var flattenNote = _ctx.WasProtected ? " (password protection removed)" : string.Empty;
                 SetStatus($"Flattened PDF saved to {System.IO.Path.GetFileName(targetFile)}{flattenNote}");
             }
+            catch (OperationCanceledException)
+            {
+                // The destination is only touched by WriteAtomic's final move, which the token
+                // guards, so a cancel leaves any existing file exactly as it was.
+                SetStatus("Save Flattened canceled");
+            }
             catch (Exception ex)
             {
                 op.Fail(ex);
@@ -2547,12 +2554,12 @@ namespace TDPdf
                     ["Operation"]     = "SaveFlattened",
                     ["ExceptionType"] = ex.GetType().FullName ?? "Unknown",
                 });
-                SetFileOperationBusy(false);
+                EndCancellableOp();
                 TdpDialog.Show(this, $"Flatten failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
             {
-                SetFileOperationBusy(false);
+                EndCancellableOp();
                 ESignRefreshSignedState();   // restored from the pre-flatten snapshot: a signed tab stays signed
             }
         }

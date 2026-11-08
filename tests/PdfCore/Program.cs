@@ -171,6 +171,7 @@ Geometry.Run(Check, tmp);
 ImageGuard.Run(Check, tmp);
 Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
+FlattenDpi.Run(Check, tmp);
 Forms.Run(Check, tmp);
 FormSiblings.Run(Check, tmp);
 NameGroups.Run(Check, tmp);

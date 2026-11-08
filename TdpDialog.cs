@@ -108,10 +108,16 @@ namespace TDPdf
         /// </summary>
         private static (Window Window, StackPanel Body) CreateShell(Window? owner, string title)
         {
+            // Dialogs follow the app size (upstream 1.9.2 "DialogScale"). One place: the shell's
+            // content gets a LayoutTransform of the current app scale and the window's width is
+            // scaled to match, so every prompt built on this shell (password, save-on-close, quit,
+            // choice dialogs) scales with no per-dialog code. Clamped to the owner's work area.
+            double scale = CurrentScale(owner);
             var win = new Window
             {
                 Title = title,
-                Width = 380,
+                Width = 380 * scale,
+                MaxHeight = WorkAreaCap(owner)?.Height ?? double.PositiveInfinity,
                 SizeToContent = SizeToContent.Height,
                 WindowStyle = WindowStyle.None,
                 AllowsTransparency = true,
@@ -151,8 +157,30 @@ namespace TDPdf
             root.Children.Add(titleBar);
 
             outerBorder.Child = root;
+            if (Math.Abs(scale - 1.0) > 0.0005)
+                outerBorder.LayoutTransform = new ScaleTransform(scale, scale);
             win.Content = outerBorder;
             return (win, root);
+        }
+
+        // Scale of the main window's chrome, clamped so a 380 DIP shell (and the 460 DIP wide
+        // three-button variant) still fits the owner's monitor. 1.0 when no main window is up.
+        private static double CurrentScale(Window? owner)
+        {
+            double scale = (owner as MainWindow ?? Application.Current?.MainWindow as MainWindow)?._appScale ?? 1.0;
+            if (!double.IsFinite(scale) || scale <= 0) return 1.0;
+            if (WorkAreaCap(owner) is { } cap)
+                scale = Math.Min(scale, cap.Width / WidestShellWidth);
+            return Math.Max(0.5, scale);
+        }
+
+        private const double WidestShellWidth = 460;
+
+        // 90% of the owner's monitor work area, in DIPs.
+        private static Size? WorkAreaCap(Window? owner)
+        {
+            var area = (owner as MainWindow ?? Application.Current?.MainWindow as MainWindow)?.CurrentWorkAreaSizeDip();
+            return area is { } a ? new Size(Math.Floor(a.Width * 0.9), Math.Floor(a.Height * 0.9)) : null;
         }
 
         // Flat, themed button chrome. Replaces the stock WPF template so no default blue Aero
@@ -500,7 +528,7 @@ namespace TDPdf
             var warning = Brush("WarningOrange");
 
             var (win, root) = CreateShell(owner, title);
-            if (cancelLabel != null) win.Width = 460;
+            if (cancelLabel != null) win.Width = 460 * CurrentScale(owner);
 
             // Message body: icon column + wrapped message text.
             var msgGrid = new Grid { Margin = new Thickness(20, 16, 20, 8) };

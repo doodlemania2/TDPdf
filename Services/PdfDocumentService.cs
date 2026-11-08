@@ -84,12 +84,14 @@ namespace TDPdf.Services
             }, cancellationToken);
         }
 
-        public Task SaveFlattenedAsync(string sourcePath, string destinationPath, IReadOnlyList<PdfPageSize> pageSizes, CancellationToken cancellationToken)
+        public Task SaveFlattenedAsync(string sourcePath, string destinationPath, IReadOnlyList<PdfPageSize> pageSizes, CancellationToken cancellationToken, Action<int, int>? progress = null)
         {
             return Task.Run(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 int pageCount = pageSizes.Count;
+                progress?.Invoke(1, pageCount);   // visible from the first page, before any raster work
+                int started = 0;
 
                 // #366: which pages were ALREADY a JPEG scan, and so lose nothing by going back out
                 // as one. Read once, here, before any of the parallel work starts: PdfPig opens the
@@ -97,6 +99,8 @@ namespace TDPdf.Services
                 // written on this thread and only READ inside it. A file PdfPig cannot open comes
                 // back all-false, which is the old, lossless behaviour.
                 bool[] jpegHints = PdfPageImageEncoder.ReadJpegPageHints(sourcePath, pageCount);
+                // Upstream #462: each page keeps its own resolution (150 floor, 600 ceiling, pixel-capped).
+                double[] pageDpis = FlattenResolution.ReadPageDpis(sourcePath, [.. pageSizes.Select(p => (p.WidthPoint, p.HeightPoint))]);
 
                 // Rasterize pages across CPU cores. Docnet/PDFium (pdfium.dll) is NOT
                 // thread-safe, so the page render is serialized behind a lock; the
@@ -108,7 +112,9 @@ namespace TDPdf.Services
                 var docGate = new object();
                 var po = new ParallelOptions
                 {
-                    MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount),
+                    // At most four pages in flight: a page can now be up to 60 MP (600 DPI scans), so
+                    // one raster per core could reach gigabytes on a many-core machine.
+                    MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount, 1, 4),
                     CancellationToken = cancellationToken,
                 };
 
@@ -116,9 +122,12 @@ namespace TDPdf.Services
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    // Per-page pixel dimensions at 150 DPI, sized to the page box.
-                    int pw = Math.Max(1, (int)(pageSizes[i].WidthPoint * 150 / 72.0));
-                    int ph = Math.Max(1, (int)(pageSizes[i].HeightPoint * 150 / 72.0));
+                    progress?.Invoke(Math.Min(pageCount, Interlocked.Increment(ref started)), pageCount);
+
+                    // Per-page pixel dimensions at this page's own DPI, sized to the page box.
+                    double dpi = pageDpis[i];
+                    int pw = Math.Max(1, (int)(pageSizes[i].WidthPoint * dpi / 72.0));
+                    int ph = Math.Max(1, (int)(pageSizes[i].HeightPoint * dpi / 72.0));
                     // PageDimensions requires dimOne <= dimTwo (short-edge, long-edge).
                     int dimMin = Math.Min(pw, ph);
                     int dimMax = Math.Max(pw, ph);
