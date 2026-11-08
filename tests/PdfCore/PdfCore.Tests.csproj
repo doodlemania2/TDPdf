@@ -72,6 +72,7 @@
     <Compile Include="..\..\Services\PrintTicketDuplex.cs" />
     <Compile Include="..\..\Services\PrintSheetPlan.cs" />
     <Compile Include="..\..\Services\AtomicFileWriter.cs" />
+    <Compile Include="..\..\Services\SignatureStoreFile.cs" />
     <Compile Include="..\..\Services\FilePathPolicy.cs" />
     <Compile Include="..\..\Services\FileFingerprint.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />

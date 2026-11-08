@@ -114,8 +114,19 @@ namespace TDPdf
             if (_eSignPlacement is not null) { ESignPlacementMouseDown(e); return; }
             // Don't intercept clicks on form-field overlay controls (TextBox, checkbox, etc.)
             // — WPF must handle those natively so focus, toggling, and text entry work.
+            // While a signature is being carried the click PLACES it, even over a fill-in field (the
+            // field sits beneath the annotation layer): Handled keeps the field from also taking
+            // the click, and PlaceSignature spends the pending signature first thing.
             if (e.OriginalSource is DependencyObject formSrc && IsFormFieldElement(formSrc))
-                return;
+            {
+                if (_pendingSignature is null || _currentTool != EditTool.Signature)
+                    return;
+            }
+            else if (Keyboard.FocusedElement is TextBox focusedField && IsFormFieldElement(focusedField))
+            {
+                // A click anywhere outside a form field lets go of the one being typed in.
+                ReleaseFormFocus();
+            }
             // If a middle-mouse pan started before WPF routed the left-button event, swallow it.
             if (_isPanning) { e.Handled = true; return; }
             // Don't intercept clicks on an active text editing box
@@ -921,6 +932,7 @@ namespace TDPdf
         private void Canvas_MouseMove(object sender, MouseEventArgs e)
         {
             if (_eSignPlacement is { Dragging: true }) { ESignPlacementMouseMove(e); return; }
+            if (_pendingSignature is not null) UpdateSignatureGhost(e.GetPosition(_annotationCanvas));
             // Don't interfere with mouse interaction inside form-field overlays.
             if (e.OriginalSource is DependencyObject moveSrc && IsFormFieldElement(moveSrc))
                 return;

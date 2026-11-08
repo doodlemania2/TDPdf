@@ -173,6 +173,7 @@ Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 Forms.Run(Check, tmp);
 FormSiblings.Run(Check, tmp);
+NameGroups.Run(Check, tmp);
 FontRuns.Run(Check);
 TextEdit.Run(Check, tmp);
 Measure.Run(Check, tmp);
