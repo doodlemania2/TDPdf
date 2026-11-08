@@ -85,6 +85,8 @@ namespace PdfSharpCore.Pdf.Security
 
         public bool HaveOwnerPermission { get; protected set; }
 
+        public string RecoveredUserPassword { get; protected set; }
+
         public void Initialize(PdfDocument document, PdfDictionary encryptionDictionary)
         {
             doc = document;

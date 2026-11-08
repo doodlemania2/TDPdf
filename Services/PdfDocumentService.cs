@@ -12,6 +12,7 @@ using Docnet.Core;
 using Docnet.Core.Models;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
+using PdfSharpCore.Pdf.Security;
 using TDPdf.Diagnostics;
 
 using DrawingBitmap = System.Drawing.Bitmap;
@@ -295,7 +296,8 @@ namespace TDPdf.Services
                         // A file encrypted with an EMPTY user password opens without a prompt but is
                         // still protected, so the trailer scan is the only reliable signal here.
                         return new PdfOpenResult(document, path, path, false,
-                            wasProtected: FileHasEncryption(path));
+                            wasProtected: FileHasEncryption(path),
+                            protection: ReapplicableProtection(document));
                     }
                     catch (Exception ex) when (IsOwnerPasswordException(ex))
                     {
@@ -374,16 +376,22 @@ namespace TDPdf.Services
                     }
                 }
 
-                document = PdfReader.Open(path, password ?? string.Empty, PdfDocumentOpenMode.Modify);
+                // Upstream #470: a file whose USER password forbids editing used to dead-end here
+                // (the reader demanded the owner password, and the prompt only ever asks for one).
+                // TDPdf does not gate editing on /P, so a user-password open decrypts a working copy
+                // like any other; the protection travels on the result and is written back on save.
+                document = PdfReader.OpenAllowingUserPassword(path, password ?? string.Empty);
+                PdfProtection? protection = ReapplicableProtection(document);
                 var tempDec = Path.Combine(Path.GetTempPath(), $"tdpdf_dec_{Guid.NewGuid():N}.pdf");
                 document.Save(tempDec);
                 document.Close();
                 document = PdfReader.Open(tempDec, PdfDocumentOpenMode.Modify);
                 PreloadDocnet(tempDec, cancellationToken);
-                // The working copy is DECRYPTED: PdfSharpCore writes no /Encrypt unless a password is
-                // set on the document, so every later save of this session is unprotected by
-                // construction. WasProtected lets the UI say so instead of dropping it silently.
-                return new PdfOpenResult(document, path, tempDec, false, wasProtected: true);
+                // The working copy is DECRYPTED, and PdfSharpCore writes no /Encrypt unless a
+                // password is set on the document. When the original protection can be reproduced
+                // (protection != null) the save paths re-apply it; when it cannot, every
+                // save of this session is unprotected and WasProtected lets the UI say so.
+                return new PdfOpenResult(document, path, tempDec, false, wasProtected: true, protection: protection);
             }
             catch
             {
@@ -393,29 +401,20 @@ namespace TDPdf.Services
         }
 
         /// <summary>
-        /// True if the PDF file has an /Encrypt entry in its trailer. Scans the last 2 KB so it is
-        /// fast, and works regardless of how PdfSharpCore reports security state after
-        /// authenticating with an empty password — a file whose user password is empty (owner
-        /// restrictions only) opens with no prompt at all yet is still encrypted.
+        /// True if the PDF file has an /Encrypt entry in a trailer or cross-reference stream
+        /// dictionary. See <see cref="PdfEncryptionScan"/>. Shared with the batch/CLI resave harness —
+        /// see <c>BatchMode.BatchResaveOne</c>.
         /// </summary>
-        /// <remarks>
-        /// Latin-1 rather than Windows-1252 so no <c>CodePagesEncodingProvider</c> registration is
-        /// required (the app registers none, and a throw here would silently read as "not
-        /// encrypted"); the marker is pure ASCII, so the two decode it identically.
-        /// Shared with the batch/CLI resave harness — see <c>BatchMode.BatchResaveOne</c>.
-        /// </remarks>
-        internal static bool FileHasEncryption(string path)
+        internal static bool FileHasEncryption(string path) => PdfEncryptionScan.FileHasEncryption(path);
+
+        /// <summary>
+        /// The protection to write back on save, or null if the document was not encrypted or its
+        /// user password could not be established (an AES-256 file opened with its owner password).
+        /// </summary>
+        private static PdfProtection? ReapplicableProtection(PdfDocument document)
         {
-            try
-            {
-                using var fs = File.OpenRead(path);
-                long scan = Math.Min(2048, fs.Length);
-                fs.Seek(-scan, SeekOrigin.End);
-                var buf = new byte[scan];
-                _ = fs.Read(buf, 0, buf.Length);
-                return System.Text.Encoding.Latin1.GetString(buf).Contains("/Encrypt");
-            }
-            catch { return false; }
+            PdfProtection? p = document.OriginalProtection;
+            return p is { CanReapply: true } ? p : null;
         }
 
         // Heuristic: does this look like a password / encryption failure
@@ -735,8 +734,9 @@ namespace TDPdf.Services
     {
         public PdfOpenResult(PdfDocument document, string displayPath, string workingPath, bool openedReadOnly,
             bool recoveredFromRaster = false, bool wasProtected = false, bool restrictionsRemoved = false,
-            bool repairedByPdfium = false)
+            bool repairedByPdfium = false, PdfProtection? protection = null)
         {
+            Protection = protection;
             Document = document;
             DisplayPath = displayPath;
             WorkingPath = workingPath;
@@ -784,6 +784,14 @@ namespace TDPdf.Services
         /// says the file was repaired.
         /// </summary>
         public bool RepairedByPdfium { get; }
+
+        /// <summary>
+        /// The encryption of the source (user password, permissions, strength), when it can be written
+        /// back. Null for an unencrypted file, and for a protected one whose protection cannot be
+        /// reproduced (a PDFium-repaired or rasterized copy): those saves are unprotected and the UI
+        /// says so, exactly as before.
+        /// </summary>
+        public PdfProtection? Protection { get; }
     }
 
     internal sealed class PdfPageSize

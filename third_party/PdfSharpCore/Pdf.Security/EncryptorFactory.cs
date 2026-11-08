@@ -39,6 +39,17 @@ namespace PdfSharpCore.Pdf.Security
                              *        initialization vector that is randomly generated and placed as the first 16 bytes in the stream or string. 
                              *        The key size (Length) shall be 256 bits.
                              */
+                            if (filterName == "/Identity")
+                            {
+                                // TDPdf: the named /Identity crypt filter means "not encrypted".
+                                encryptor = new IdentityEncryptor();
+                                encryptor.Initialize(doc, dict);
+                                if (keyName == "/StrF")
+                                    stringEncryptor = encryptor;
+                                else
+                                    streamEncryptor = encryptor;
+                                continue;
+                            }
                             var filterDict = cf.Elements.GetDictionary(filterName);
                             if (filterDict != null)
                             {

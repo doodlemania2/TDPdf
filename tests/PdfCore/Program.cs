@@ -186,6 +186,7 @@ Duplicate.Run(Check, tmp);
 LetterSpacing.Run(Check);
 RtlLayout.Run(Check);
 XrefStreamSize.Run(Check);
+PasswordProtection.Run(Check);
 SelectCursor.Run(Check);
 PortableInstall.Run(Check);
 AtomicSave.Run(Check, tmp);
