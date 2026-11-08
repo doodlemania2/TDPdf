@@ -2732,7 +2732,22 @@ namespace TDPdf
                     // window never reads the live file out from under us.
                     string tempPrint = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
                     try { _doc.Save(tempPrint); printablePath = tempPrint; }
-                    catch { printablePath = _currentFile; }
+                    catch
+                    {
+                        // Falling back to the saved file is only faithful when nothing has changed since
+                        // it was saved. With unsaved edits (rotated, deleted or reordered pages) the
+                        // printout would silently be the OLD document, so say so and let the user decide.
+                        if (_isDirty && TdpDialog.Show(this,
+                                "TDPdf couldn't make a print copy of the open document, so this would print " +
+                                "the last saved version. Unsaved changes (such as rotated, deleted or " +
+                                "reordered pages) will not be in the printout.\n\nPrint the last saved version anyway?",
+                                "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                        {
+                            SetStatus("Print canceled");
+                            return;
+                        }
+                        printablePath = _currentFile;
+                    }
                 }
 
                 var preview = new TDPdf.Services.PrintPreviewWindow(this, printablePath, pageSizes);
