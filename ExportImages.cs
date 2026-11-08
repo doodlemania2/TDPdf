@@ -52,7 +52,10 @@ namespace TDPdf
                 Title = "Export Pages as Images",
                 FileName = SuggestBaseName() + "." + format,
                 CheckFileExists = false,
-                CheckPathExists = true
+                CheckPathExists = true,
+                // The typed name (base.png) is never written; the page files are, so the stock
+                // prompt would ask about the wrong file. We ask about the real ones below.
+                OverwritePrompt = false
             };
             if (dlg.ShowDialog(this) != true) return;
 
@@ -64,6 +67,20 @@ namespace TDPdf
                 TdpDialog.Show(this, "Pick a folder and a base file name for the exported images.",
                     "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
+            }
+
+            // Safe overwrite: name the files that would be replaced before touching any of them.
+            var planned = PageImageExporter.PlannedFilePaths(outDir, baseName, pages, pageCount, format);
+            var existing = planned.Where(System.IO.File.Exists).ToList();
+            if (existing.Count > 0)
+            {
+                string names = string.Join("\n", existing.Take(5).Select(f => "  " + System.IO.Path.GetFileName(f)));
+                string more = existing.Count > 5 ? $"\n  ...and {existing.Count - 5} more" : string.Empty;
+                string what = existing.Count == 1 ? "1 file already exists" : $"{existing.Count} files already exist";
+                var answer = TdpDialog.ShowYesNo(this,
+                    $"{what} in {DescribeFolder(outDir)}:\n{names}{more}\n\nReplace {(existing.Count == 1 ? "it" : "them")}?",
+                    "Replace", "Cancel", "Export Pages as Images", MessageBoxImage.Warning);
+                if (answer != MessageBoxResult.Yes) return;
             }
 
             using var op = Telemetry.StartOperation("ExportImages");

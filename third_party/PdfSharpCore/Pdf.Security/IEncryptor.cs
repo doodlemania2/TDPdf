@@ -6,6 +6,9 @@ namespace PdfSharpCore.Pdf.Security
 
         bool HaveOwnerPermission { get; }
 
+        /// <summary>The user password recovered from /O when the owner password validated (R2-R4 only), else null.</summary>
+        string RecoveredUserPassword { get; }
+
         void Initialize(PdfDocument document, PdfDictionary encryptionDict);
 
         void InitEncryptionKey(string password);

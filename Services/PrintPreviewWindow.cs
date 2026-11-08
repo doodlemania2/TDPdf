@@ -29,8 +29,9 @@ namespace TDPdf.Services
     ///
     /// The on-screen preview rasterizes at <see cref="RenderDpi"/> (kept light so large
     /// files stay responsive); the spooled output is re-rasterized fresh at
-    /// <see cref="PrintDpi"/> (300 DPI) at print time, one page at a time and only for the
-    /// pages actually printed, so memory stays bounded even on large documents.
+    /// <see cref="PrintDpi"/> (300 DPI) at print time, one SHEET at a time as the XPS writer
+    /// pulls pages (see <c>SheetPaginator</c>), so memory stays bounded to a single sheet however
+    /// long the document is.
     ///
     /// The caller is expected to hand us a flattened/printable PDF path (annotations
     /// already burned in) plus each page's size in points; we never touch the live
@@ -56,16 +57,16 @@ namespace TDPdf.Services
 
         // Layout options shared by the preview and the print path (what you see is what prints).
         private bool _grayscale;             // send the job as grayscale/B&W rather than color
-        // Held as the full Duplexing value rather than a bool so a short-edge flip chosen in the
-        // driver's own dialog survives into the job. The combo still offers the two entries it always
-        // did; short edge simply shows there as "two-sided".
+        // Held as the full Duplexing value so a short-edge flip survives into the job. The combo has
+        // one entry per value: One-sided / Two-sided (long edge) / Two-sided (short edge).
         private Duplexing _duplexMode = Duplexing.OneSided;
         // The printer offers two-sided only as document-scope DocumentDuplex, which the typed
         // Duplexing API cannot see or set. See PrintTicketDuplex.
         private bool _documentDuplex;
         private bool _syncingFromDriver;      // suppresses control handlers while AdoptDriverTicket writes
-        private int _scaleMode;              // 0 = fit to page, 1 = custom percentage
+        private int _scaleMode;              // PrintSheetPlan.Scale*: 0 fit, 1 actual size, 2 shrink oversized, 3 custom
         private double _customPct = 100;     // custom scale % (clamped 25-400)
+        private bool _reverse;               // send the sheets last-first (after N-up composition)
         private int _alignH = 1;             // horizontal page position: 0 = left, 1 = center, 2 = right
         private int _alignV = 1;             // vertical page position:   0 = top,  1 = center, 2 = bottom
         private double _marginPx;            // extra inset inside the printable area (DIPs)
@@ -369,9 +370,9 @@ namespace TDPdf.Services
             // controls never pushes Print/Cancel off the bottom on a short window.
             var panel = new StackPanel { Margin = new Thickness(16, 12, 12, 6) };
 
-            // The controls below are added flat and then retro-wrapped into three collapsible
+            // The controls below are added flat and then retro-wrapped into four collapsible
             // sections by WrapSection (the TransformWindow pattern), so each section's body still
-            // reads top-to-bottom in source order. PRINTER and OUTPUT open; LAYOUT starts folded
+            // reads top-to-bottom in source order. PRINTER, PAGES TO PRINT and OUTPUT open; LAYOUT starts folded
             // because its geometry options are set-and-forget for most jobs, and folding it keeps
             // the 268px column short enough that Copies/Pages are visible without scrolling.
 
@@ -453,6 +454,71 @@ namespace TDPdf.Services
 
             WrapSection(panel, secPrinter, "PRINTER", expanded: true);
 
+            // --- PAGES TO PRINT: which pages, how many copies, in what order ----
+            int secPages = panel.Children.Count;
+
+            panel.Children.Add(Label("Copies"));
+            _copiesBox = MakeTextBox("1");
+            _copiesBox.Margin = new Thickness(0);
+            _copiesBox.VerticalContentAlignment = VerticalAlignment.Center;
+            var (getCopies, setCopies) = NumericField(_copiesBox, 1, 9999);
+            _copiesGet = getCopies;
+            _copiesSet = setCopies;
+            var copiesSpin = BuildStepper(getCopies, setCopies);
+            var copiesRow  = new DockPanel { Margin = new Thickness(0, 4, 0, 12), LastChildFill = true };
+            DockPanel.SetDock(copiesSpin, Dock.Right);
+            copiesRow.Children.Add(copiesSpin);   // docked right, full field height
+            copiesRow.Children.Add(_copiesBox);   // fills the rest of the column width
+            panel.Children.Add(copiesRow);
+
+            panel.Children.Add(Label("Pages"));
+            _pagesBox = MakeTextBox("");
+            _pagesBox.Margin = new Thickness(0, 4, 0, 2);
+            // Typing a range re-filters the preview to just those pages (jump back to the first one), so the
+            // preview always shows exactly what the Print button will send (type "6" → preview shows page 6).
+            _pagesBox.TextChanged += (_, _) => { _previewIndex = 0; UpdatePreview(); };
+            panel.Children.Add(_pagesBox);
+            panel.Children.Add(new TextBlock
+            {
+                Text         = "e.g. 1-3,5  (blank = all)",
+                Foreground   = R("TextSecondary"),
+                FontSize     = 11,
+                Margin       = new Thickness(0, 0, 0, 6),
+                TextWrapping = TextWrapping.Wrap
+            });
+
+            // Odd/even subset: manual duplex for printers without a duplexer - print the odd pages,
+            // flip the stack, print the even pages. Applies on top of the Pages range above, and the
+            // preview follows because everything reads SelectedIndices().
+            var subset = new ComboBox { Margin = new Thickness(0, 0, 0, 12), Height = 26 };
+            ApplyComboStyle(subset);
+            subset.Items.Add("All pages");
+            subset.Items.Add("Odd pages only");
+            subset.Items.Add("Even pages only");
+            subset.SelectedIndex = 0;
+            subset.SelectionChanged += (s, _) =>
+            {
+                _subset = Math.Max(0, ((ComboBox)s).SelectedIndex);
+                _previewIndex = 0;
+                UpdatePreview();
+            };
+            panel.Children.Add(subset);
+
+            // Reverse order: reverses whole SHEETS after N-up composition (not page indices), so the
+            // tiles on a sheet keep their reading order. It applies after the range and odd/even filters,
+            // and the preview walks the same list, so sheet 1 really is the last one.
+            var reverse = new CheckBox
+            {
+                Content    = "Reverse order",
+                Foreground = R("TextPrimary"),
+                Margin     = new Thickness(0, 0, 0, 12)
+            };
+            reverse.Checked   += (_, _) => { _reverse = true;  _previewIndex = 0; UpdatePreview(); };
+            reverse.Unchecked += (_, _) => { _reverse = false; _previewIndex = 0; UpdatePreview(); };
+            panel.Children.Add(reverse);
+
+            WrapSection(panel, secPages, "PAGES TO PRINT", expanded: true);
+
             // --- LAYOUT: how the pages sit on the sheet -------------------------
             int secLayout = panel.Children.Count;
 
@@ -481,13 +547,16 @@ namespace TDPdf.Services
             var scale = new ComboBox { Margin = new Thickness(0, 4, 0, 6), Height = 26 };
             ApplyComboStyle(scale);
             scale.Items.Add("Fit to page");
+            scale.Items.Add("Actual size");
+            scale.Items.Add("Shrink oversized pages");
             scale.Items.Add("Custom %");
-            scale.SelectedIndex = 0;
             panel.Children.Add(scale);
 
             // Custom percentage: a compact box with a "%" suffix and a stepper, revealed only when
             // "Custom" is chosen so it doesn't take space in the default (fit) layout.
-            _scaleBox = MakeTextBox("100");
+            int savedPct = Math.Clamp(TDPdf.Properties.Settings.Default.PrintScalePercent, 25, 400);
+            _customPct = savedPct;
+            _scaleBox = MakeTextBox(savedPct.ToString());
             _scaleBox.Margin = new Thickness(0);
             _scaleBox.VerticalContentAlignment = VerticalAlignment.Center;
             var (getScale, setScale) = NumericField(_scaleBox, 25, 400);   // same numeric treatment as Copies
@@ -496,7 +565,7 @@ namespace TDPdf.Services
                 if (int.TryParse(((TextBox)s).Text?.Trim(), out int p) && p > 0)
                 {
                     _customPct = p;
-                    if (_scaleMode == 1) UpdatePreview();
+                    if (_scaleMode == PrintSheetPlan.ScaleCustom) UpdatePreview();
                 }
             };
             var scaleSpin = BuildStepper(getScale, setScale);
@@ -516,10 +585,15 @@ namespace TDPdf.Services
             scaleRow.Children.Add(scalePct);    // rightmost
             scaleRow.Children.Add(scaleSpin);   // left of %
             scaleRow.Children.Add(_scaleBox);   // fills the rest of the column width
+            // Restore the last scale BEFORE the handler is attached: the handler runs UpdatePreview, which
+            // needs controls that are built further down. The custom row follows the restored mode.
+            _scaleMode = Math.Clamp(TDPdf.Properties.Settings.Default.PrintScaleMode, 0, PrintSheetPlan.ScaleCustom);
+            scale.SelectedIndex = _scaleMode;
+            scaleRow.Visibility = _scaleMode == PrintSheetPlan.ScaleCustom ? Visibility.Visible : Visibility.Collapsed;
             scale.SelectionChanged += (s, _) =>
             {
-                _scaleMode = ((ComboBox)s).SelectedIndex;   // 0 = fit, 1 = custom
-                scaleRow.Visibility = _scaleMode == 1 ? Visibility.Visible : Visibility.Collapsed;
+                _scaleMode = Math.Max(0, ((ComboBox)s).SelectedIndex);
+                scaleRow.Visibility = _scaleMode == PrintSheetPlan.ScaleCustom ? Visibility.Visible : Visibility.Collapsed;
                 UpdatePreview();
             };
             panel.Children.Add(scaleRow);
@@ -613,14 +687,18 @@ namespace TDPdf.Services
             ApplyComboStyle(duplex);
             duplex.Items.Add("One-sided");
             duplex.Items.Add("Two-sided (long edge)");
-            _duplexMode = TDPdf.Properties.Settings.Default.PrintDuplex
-                ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
-            duplex.SelectedIndex = _duplexMode == Duplexing.OneSided ? 0 : 1;
+            duplex.Items.Add("Two-sided (short edge)");
+            // The saved edge wins; a user whose settings predate it has only the old on/off bool, which
+            // reads as long edge (what that bool always produced).
+            var savedSettings = TDPdf.Properties.Settings.Default;
+            _duplexMode = Enum.TryParse(PrintSheetPlan.ResolveDuplex(savedSettings.PrintDuplexEdge, savedSettings.PrintDuplex),
+                                        out Duplexing savedDuplex) ? savedDuplex : Duplexing.OneSided;
+            duplex.SelectedIndex = PrintSheetPlan.DuplexComboIndex(_duplexMode.ToString());
             duplex.SelectionChanged += (s, _) =>
             {
                 if (_syncingFromDriver) return;
-                _duplexMode = ((ComboBox)s).SelectedIndex == 1
-                    ? Duplexing.TwoSidedLongEdge : Duplexing.OneSided;
+                _duplexMode = Enum.TryParse(PrintSheetPlan.DuplexNameFromComboIndex(((ComboBox)s).SelectedIndex),
+                                            out Duplexing picked) ? picked : Duplexing.OneSided;
             };
             _duplexCombo = duplex;
             panel.Children.Add(duplex);
@@ -639,53 +717,6 @@ namespace TDPdf.Services
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 11
             });
-
-            panel.Children.Add(Label("Copies"));
-            _copiesBox = MakeTextBox("1");
-            _copiesBox.Margin = new Thickness(0);
-            _copiesBox.VerticalContentAlignment = VerticalAlignment.Center;
-            var (getCopies, setCopies) = NumericField(_copiesBox, 1, 9999);
-            _copiesGet = getCopies;
-            _copiesSet = setCopies;
-            var copiesSpin = BuildStepper(getCopies, setCopies);
-            var copiesRow  = new DockPanel { Margin = new Thickness(0, 4, 0, 12), LastChildFill = true };
-            DockPanel.SetDock(copiesSpin, Dock.Right);
-            copiesRow.Children.Add(copiesSpin);   // docked right, full field height
-            copiesRow.Children.Add(_copiesBox);   // fills the rest of the column width
-            panel.Children.Add(copiesRow);
-
-            panel.Children.Add(Label("Pages"));
-            _pagesBox = MakeTextBox("");
-            _pagesBox.Margin = new Thickness(0, 4, 0, 2);
-            // Typing a range re-filters the preview to just those pages (jump back to the first one), so the
-            // preview always shows exactly what the Print button will send (type "6" → preview shows page 6).
-            _pagesBox.TextChanged += (_, _) => { _previewIndex = 0; UpdatePreview(); };
-            panel.Children.Add(_pagesBox);
-            panel.Children.Add(new TextBlock
-            {
-                Text         = "e.g. 1-3,5  (blank = all)",
-                Foreground   = R("TextSecondary"),
-                FontSize     = 11,
-                Margin       = new Thickness(0, 0, 0, 6),
-                TextWrapping = TextWrapping.Wrap
-            });
-
-            // Odd/even subset: manual duplex for printers without a duplexer - print the odd pages,
-            // flip the stack, print the even pages. Applies on top of the Pages range above, and the
-            // preview follows because everything reads SelectedIndices().
-            var subset = new ComboBox { Margin = new Thickness(0, 0, 0, 12), Height = 26 };
-            ApplyComboStyle(subset);
-            subset.Items.Add("All pages");
-            subset.Items.Add("Odd pages only");
-            subset.Items.Add("Even pages only");
-            subset.SelectedIndex = 0;
-            subset.SelectionChanged += (s, _) =>
-            {
-                _subset = Math.Max(0, ((ComboBox)s).SelectedIndex);
-                _previewIndex = 0;
-                UpdatePreview();
-            };
-            panel.Children.Add(subset);
 
             WrapSection(panel, secOutput, "OUTPUT", expanded: true);
 
@@ -1202,11 +1233,9 @@ namespace TDPdf.Services
                 // (job-scope) property reads back as nothing or as a stale default.
                 if ((DocumentDuplexOf(t) ?? t.Duplexing) is { } d && d != Duplexing.Unknown)
                 {
-                    // Short edge is kept on the field even though the combo has no entry for it: the
-                    // driver asked for it, so the job gets it. The combo reads "two-sided" either way.
                     _duplexMode = d;
                     if (_duplexCombo != null)
-                        _duplexCombo.SelectedIndex = d == Duplexing.OneSided ? 0 : 1;
+                        _duplexCombo.SelectedIndex = PrintSheetPlan.DuplexComboIndex(d.ToString());
                 }
 
                 if (t.CopyCount is { } cc && cc >= 1) _copiesSet?.Invoke(cc);
@@ -1399,10 +1428,11 @@ namespace TDPdf.Services
             int ScaleMode,
             double CustomPercent,
             int AlignH,
-            int AlignV);
+            int AlignV,
+            bool Reverse);
 
         private PrintLayout CapturePrintLayout() =>
-            new(_nUp, _landscape, _marginPx, _scaleMode, _customPct, _alignH, _alignV);
+            new(_nUp, _landscape, _marginPx, _scaleMode, _customPct, _alignH, _alignV, _reverse);
 
         // The page indices the preview walks AND the Print button sends — whatever range is typed in the
         // Pages box (blank = every page; a range that matches no page = empty, which the preview and the
@@ -1428,7 +1458,7 @@ namespace TDPdf.Services
         private int SheetCount()
         {
             int sel = SelectedIndices().Count;
-            return sel == 0 ? 0 : (sel + _nUp - 1) / _nUp;
+            return sel == 0 ? 0 : (sel + _nUp - 1) / _nUp;   // reversal changes order, not count
         }
 
         // Builds one sheet (aw x ah DIPs, white) holding the given source pages. 1-up honours the
@@ -1459,14 +1489,15 @@ namespace TDPdf.Services
                 {
                     int idx = idxs[0];
                     double availW = aw - 2 * m, availH = ah - 2 * m;
-                    double s = layout.ScaleMode == 1
-                        ? (_pageSizes[idx].Width / PointPerInch * DipPerInch / Math.Max(1, bmp.PixelWidth))
-                            * (Math.Clamp(layout.CustomPercent, 25, 400) / 100.0)
-                        : Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
+                    double fitS    = Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
+                    // Real size: the page's own size in points, converted to DIPs, over its bitmap width.
+                    double actualS = _pageSizes[idx].Width / PointPerInch * DipPerInch / Math.Max(1, bmp.PixelWidth);
+                    double s = PrintSheetPlan.Factor(layout.ScaleMode, fitS, actualS, layout.CustomPercent);
                     double iw = bmp.PixelWidth * s, ih = bmp.PixelHeight * s;
-                    // In fit mode, snap to the printable area when within a pixel of filling it so the
-                    // white sheet doesn't peek through as a 1px hairline at the page edge.
-                    if (layout.ScaleMode == 0)
+                    // When the result is the fit scale, snap to the printable area when within a pixel of
+                    // filling it so the white sheet doesn't peek through as a 1px hairline at the page edge.
+                    // (N-up cells below always fit; the Scale combo is a 1-up setting, like Position.)
+                    if (PrintSheetPlan.IsFitLimited(layout.ScaleMode, fitS, actualS))
                     {
                         if (iw >= availW - 1.5) iw = availW + 1;
                         if (ih >= availH - 1.5) ih = availH + 1;
@@ -1533,14 +1564,14 @@ namespace TDPdf.Services
             }
             UpdatePrintEnabled(true);
 
-            int sheets = Math.Max(1, (selected.Count + _nUp - 1) / _nUp);
+            // The same sheet plan the print path uses, so a reversed job previews in the order it prints.
+            var plan   = PrintSheetPlan.Sheets(selected, _nUp, _reverse);
+            int sheets = Math.Max(1, plan.Count);
             int sheet  = Math.Max(0, Math.Min(_previewIndex, sheets - 1));
             _previewIndex = sheet;
 
-            // Source pages on this sheet, taken from the SELECTED set (one for 1-up, up to _nUp for N-up).
-            var idxs = new List<int>();
-            for (int i = sheet * _nUp; i < Math.Min(selected.Count, sheet * _nUp + _nUp); i++)
-                idxs.Add(selected[i]);
+            // Source pages on this sheet (one for 1-up, up to _nUp for N-up).
+            var idxs = plan[sheet];
 
             var paper = ComposeSheet(idxs, _areaW, _areaH, GetPageBitmap);
             if (paper != null)
@@ -1579,7 +1610,11 @@ namespace TDPdf.Services
                 var s = TDPdf.Properties.Settings.Default;
                 if (_queue != null) s.PrintPrinter = _queue.FullName;
                 s.PrintColor       = _grayscale ? "Grayscale" : "Color";
-                s.PrintDuplex      = _duplexMode != Duplexing.OneSided;
+                s.PrintDuplex      = _duplexMode != Duplexing.OneSided;   // kept for older builds / downgrade
+                s.PrintDuplexEdge  = _duplexMode is Duplexing.TwoSidedLongEdge or Duplexing.TwoSidedShortEdge
+                                     ? _duplexMode.ToString() : "OneSided";
+                s.PrintScaleMode    = _scaleMode;
+                s.PrintScalePercent = (int)Math.Clamp(_customPct, 25, 400);
                 s.Save();
             }
             catch { /* settings are best-effort */ }
@@ -1660,49 +1695,27 @@ namespace TDPdf.Services
                 else            { if (aw > ah) (aw, ah) = (ah, aw); }
                 if (aw <= 0 || ah <= 0) { aw = _areaW; ah = _areaH; }
 
-                // Re-rasterize ONLY the selected pages fresh at a true 300 DPI (never the lighter preview
-                // cache), off the UI thread. Frozen bitmaps cross threads freely, so the whole loop runs in
-                // Task.Run and reports "Preparing page X of N" back to the scrim, keeping the window painting
-                // throughout. Only the pages actually printed are rendered, so memory stays bounded.
-                var hi = new BitmapSource?[_pageCount];
-                int total = indices.Count;
-                await System.Threading.Tasks.Task.Run(() =>
+                // The sheets, in the order they go out (reversed whole sheets when "Reverse order" is on;
+                // the same plan the preview walks). Nothing is rasterized here: each sheet's pages are
+                // rendered fresh at a true 300 DPI only when the XPS writer asks for that sheet, then
+                // dropped, so peak memory is one sheet rather than every selected page at once (the old
+                // pre-render held ~33 MB per Letter page, ~3.3 GB for 100 pages). The render runs on the
+                // print thread below, so the UI thread stays free to paint the scrim.
+                var plan = PrintSheetPlan.Sheets(indices, printLayout.NUp, printLayout.Reverse);
+                void Progress(int n, int total)
                 {
-                    using var dr = DocLib.Instance.GetDocReader(_pdfPath, new PageDimensions(PrintDpi / PointPerInch));
-                    int done = 0;
-                    foreach (int idx in indices)
+                    try
                     {
-                        done++;
-                        if (idx < 0 || idx >= _pageCount) continue;
-                        try
-                        {
-                            using var pr = dr.GetPageReader(idx);
-                            int w = pr.GetPageWidth(), h = pr.GetPageHeight();
-                            // #141: with the annotations the file carries — printing used to omit them.
-                            // forPrint: each annotation's Print flag decides whether it is on paper.
-                            var raw = PdfiumInterop.RenderPageWithAnnotations(_pdfPath, idx, w, h, forPrint: true)
-                                      ?? pr.GetImage();
-                            if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) continue;
-                            var bmp = new WriteableBitmap(w, h, PrintDpi, PrintDpi, PixelFormats.Bgra32, null);
-                            bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);
-                            bmp.Freeze();
-                            hi[idx] = bmp;
-                        }
-                        catch { /* skip an unrenderable page rather than fail the whole job */ }
-                        int shown = done;
-                        try { statusText.Dispatcher.Invoke(() => statusText.Text = $"Preparing page {shown} of {total}…"); }
-                        catch { /* window closing */ }
+                        statusText.Dispatcher.BeginInvoke(
+                            () => statusText.Text = $"Printing sheet {n} of {total}\u2026");
                     }
-                });
+                    catch { /* window closing */ }
+                }
 
-                statusText.Text = "Sending to printer…";
-
-                // Compose the sheets and spool them from a dedicated STA print thread — see
-                // SpoolOnPrintThreadAsync for why this cannot stay on the UI thread. The single ticket
-                // still carries copies/color/duplex and orientation, so the output is identical to the
-                // old UI-thread path (copies stay driver-level via ticket.CopyCount).
-                bool? ok = await SpoolOnPrintThreadAsync(
-                   indices, aw, ah, hi, ticket, queueName, printLayout);
+                // Compose and spool from a dedicated STA print thread - see SpoolOnPrintThreadAsync for why
+                // this cannot stay on the UI thread. The single ticket still carries copies/color/duplex
+                // and orientation (copies stay driver-level via ticket.CopyCount).
+                bool? ok = await SpoolOnPrintThreadAsync(plan, aw, ah, ticket, queueName, printLayout, Progress);
 
                 if (ok == null)
                 {
@@ -1733,37 +1746,38 @@ namespace TDPdf.Services
         }
 
         /// <summary>
-        /// Composes the sheet sequence and spools it from a dedicated STA thread that owns its own
-        /// Dispatcher. Returns true once the job reaches the spooler, false if it was cancelled, and
-        /// null when no sheet could be composed (every selected page failed to render).
+        /// Spools the sheet sequence from a dedicated STA thread that owns its own Dispatcher. Returns
+        /// true once the job reaches the spooler, false if it was cancelled, and null when no sheet could
+        /// be composed (every selected page failed to render).
         /// </summary>
         /// <remarks>
         /// XpsDocumentWriter.WriteAsync is asynchronous only in that it returns straight away: the
-        /// serialization itself runs as dispatcher work items on the CALLING thread, and every selected
-        /// page has to be encoded into the XPS package there. Driven from the UI thread that starved
-        /// input — the scrim included, since the scrim needs that same thread to paint — for the whole
+        /// serialization itself runs as dispatcher work items on the CALLING thread, and every sheet
+        /// has to be encoded into the XPS package there. Driven from the UI thread that starved
+        /// input - the scrim included, since the scrim needs that same thread to paint - for the whole
         /// spool, long enough for Windows to mark the window Not Responding on a big job.
         ///
-        /// Frozen BitmapSources cross threads freely and ComposeSheet only reads plain layout fields, so
-        /// the FixedPages are built on, and stay on, this thread. Output is unaffected: same sheets, same
-        /// ticket, same spooler.
+        /// The sheets are now built on this thread too, on demand, by <see cref="SheetPaginator"/>:
+        /// PDFium renders a sheet's pages, ComposeSheet lays them out, the writer serializes the sheet,
+        /// and the bitmaps are garbage before the next sheet starts. WPF visuals are created on, and
+        /// stay on, this thread.
         /// </remarks>
         private Task<bool?> SpoolOnPrintThreadAsync(
-            List<int> indices, double aw, double ah,
-            BitmapSource?[] hi, PrintTicket ticket, string queueName, PrintLayout layout)
+            List<List<int>> plan, double aw, double ah,
+            PrintTicket ticket, string queueName, PrintLayout layout, Action<int, int> progress)
         {
             var done = new TaskCompletionSource<bool?>(TaskCreationOptions.RunContinuationsAsynchronously);
             var thread = new System.Threading.Thread(() =>
             {
                 var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
                 // WriteAsync completes back on this dispatcher, so it has to be pumping before the work
-                // starts — queue the job, then run the loop.
+                // starts - queue the job, then run the loop.
                 dispatcher.BeginInvoke(new Action(async () =>
                 {
                     try
                     {
                         done.TrySetResult(await ComposeAndSpool(
-                            indices, aw, ah, hi, ticket, queueName, layout));
+                            plan, aw, ah, ticket, queueName, layout, progress));
                     }
                     catch (Exception ex) { done.TrySetException(ex); }
                     finally { dispatcher.InvokeShutdown(); }
@@ -1779,43 +1793,20 @@ namespace TDPdf.Services
         }
 
         /// <summary>
-        /// Builds the sheet sequence and hands it to the spooler. Runs entirely on the print thread.
-        /// Returns null when no sheet could be composed.
+        /// Hands the sheet sequence to the spooler. Runs entirely on the print thread. Returns null when
+        /// no sheet could be composed.
         /// </summary>
         private async Task<bool?> ComposeAndSpool(
-            List<int> indices, double aw, double ah,
-            BitmapSource?[] hi, PrintTicket ticket, string queueName, PrintLayout layout)
+            List<List<int>> plan, double aw, double ah,
+            PrintTicket ticket, string queueName, PrintLayout layout, Action<int, int> progress)
         {
-            var fixedDoc = new FixedDocument();
-            // Group the selected pages into sheets of the frozen N-up setting and compose each from
-            // the pre-rendered bitmaps
-            // (margins + position + scale + tiling all handled inside ComposeSheet, shared with the
-            // preview). Copies/color/duplex ride the single ticket, so there is no manual copy loop here —
-            // the driver applies ticket.CopyCount, matching the previous UI-thread path.
-            for (int start = 0; start < indices.Count; start += layout.NUp)
-            {
-                var chunk = indices.Skip(start).Take(layout.NUp).ToList();
-                var sheet = ComposeSheet(
-                    chunk,
-                    aw,
-                    ah,
-                    i => i >= 0 && i < _pageCount ? hi[i] : null,
-                    layout);
-                if (sheet == null) continue;
+            using var paginator = new SheetPaginator(this, plan, new Size(aw, ah), layout, progress);
 
-                var fp = new FixedPage { Width = aw, Height = ah };
-                FixedPage.SetLeft(sheet, 0);
-                FixedPage.SetTop(sheet, 0);
-                fp.Children.Add(sheet);
-                fp.Measure(new Size(aw, ah));
-                fp.Arrange(new Rect(new Point(), new Size(aw, ah)));
-
-                var pc = new PageContent();
-                ((IAddChild)pc).AddChild(fp);
-                fixedDoc.Pages.Add(pc);
-            }
-
-            if (fixedDoc.Pages.Count == 0) return null;
+            // Render forward to the first sheet that comes out, so a job where nothing renders is
+            // refused before it reaches the spooler (the old pre-render did the same by returning null).
+            // That sheet is kept and handed back when the writer asks for it; sheets before it, which
+            // failed, print blank so the stack still lines up.
+            if (!paginator.Prime()) return null;
 
             // A PrintQueue holds a spooler handle opened by whichever thread created it, so this thread
             // opens its own by name rather than borrowing the one the dialog is holding.
@@ -1830,12 +1821,125 @@ namespace TDPdf.Services
                 else if (ev.Cancelled)     spooled.TrySetResult(false);
                 else                       spooled.TrySetResult(true);
             };
-            // Write the FixedDocument itself, NOT its DocumentPaginator: the paginator path makes the XPS
-            // serializer wrap each page's Visual in a fresh FixedPage, but the Visual already IS a
-            // FixedPage — "FixedPage cannot contain another FixedPage". The FixedDocument overload
-            // serializes the existing FixedPages directly.
-            writer.WriteAsync(fixedDoc, ticket);
+            // The paginator's pages are the sheet Grids themselves (NOT FixedPages, which the serializer
+            // would refuse to nest: "FixedPage cannot contain another FixedPage"), so the serializer
+            // wraps each one in its own FixedPage. The ticket is the same job ticket as before.
+            writer.WriteAsync(paginator, ticket);
             return await spooled.Task;
+        }
+
+        /// <summary>
+        /// A DocumentPaginator whose pages are print sheets, built when the XPS writer asks for them.
+        /// </summary>
+        /// <remarks>
+        /// Replaces the FixedDocument that held every composed sheet (and so every 300 DPI bitmap) until
+        /// the whole job was serialized. Here <see cref="GetPage"/> renders the sheet's source pages,
+        /// composes the sheet, and returns it; nothing is retained afterwards. Sheets that fail to render
+        /// come back blank rather than being skipped, which keeps duplex pairs aligned.
+        /// Used only on the print thread.
+        /// </remarks>
+        private sealed class SheetPaginator : DocumentPaginator, IDisposable
+        {
+            private readonly PrintPreviewWindow _owner;
+            private readonly List<List<int>> _sheets;
+            private readonly PrintLayout _layout;
+            private readonly Action<int, int> _progress;
+            private Size _pageSize;
+            private IDocReader? _reader;
+            private int _primedIndex = -1;
+            private Grid? _primedSheet;
+
+            public SheetPaginator(PrintPreviewWindow owner, List<List<int>> sheets, Size pageSize,
+                                  PrintLayout layout, Action<int, int> progress)
+            {
+                _owner = owner; _sheets = sheets; _pageSize = pageSize; _layout = layout; _progress = progress;
+            }
+
+            public override bool IsPageCountValid => true;
+            public override int PageCount => _sheets.Count;
+            public override Size PageSize { get => _pageSize; set => _pageSize = value; }
+            public override IDocumentPaginatorSource? Source => null;
+
+            /// <summary>Renders sheets from the front until one comes out; false when none does.</summary>
+            public bool Prime()
+            {
+                for (int i = 0; i < _sheets.Count; i++)
+                {
+                    var sheet = Compose(i);
+                    if (sheet == null) continue;
+                    _primedIndex = i;
+                    _primedSheet = sheet;
+                    return true;
+                }
+                return false;
+            }
+
+            public override DocumentPage GetPage(int pageNumber)
+            {
+                Grid? sheet = null;
+                if (pageNumber == _primedIndex && _primedSheet != null)
+                {
+                    sheet = _primedSheet;
+                    _primedSheet = null;
+                }
+                else if (pageNumber > _primedIndex)
+                {
+                    sheet = Compose(pageNumber);
+                }
+                // else: a sheet before the first good one (already tried and failed in Prime), or one that
+                // failed now - blank, so the page count and the duplex pairing stay as planned.
+
+                sheet ??= new Grid { Width = _pageSize.Width, Height = _pageSize.Height, Background = Brushes.White };
+                _progress(pageNumber + 1, _sheets.Count);
+                var size = new Size(_pageSize.Width, _pageSize.Height);
+                sheet.Measure(size);
+                sheet.Arrange(new Rect(new Point(), size));
+                var box = new Rect(new Point(), size);
+                return new DocumentPage(sheet, size, box, box);
+            }
+
+            private Grid? Compose(int sheetNumber)
+            {
+                if (sheetNumber < 0 || sheetNumber >= _sheets.Count) return null;
+                try
+                {
+                    return _owner.ComposeSheet(_sheets[sheetNumber], _pageSize.Width, _pageSize.Height,
+                                               RenderPrintPage, _layout);
+                }
+                catch { return null; /* an unrenderable sheet is skipped, not fatal to the job */ }
+            }
+
+            // Rasterizes one page fresh at a true 300 DPI (never the lighter preview cache). Returns a
+            // frozen bitmap; ComposeSheet's Image holds it only until the sheet is serialized and dropped.
+            private BitmapSource? RenderPrintPage(int idx)
+            {
+                if (idx < 0 || idx >= _owner._pageCount) return null;
+                try
+                {
+                    _reader ??= DocLib.Instance.GetDocReader(
+                        _owner._pdfPath, new PageDimensions(PrintDpi / PointPerInch));
+                    using var pr = _reader.GetPageReader(idx);
+                    int w = pr.GetPageWidth(), h = pr.GetPageHeight();
+                    // #141: with the annotations the file carries - printing used to omit them.
+                    // forPrint: each annotation's Print flag decides whether it is on paper.
+                    // The `?? pr.GetImage()` fallback is a last resort and prints WITHOUT annotations; it
+                    // only runs if the annotation-aware render itself returns nothing.
+                    var raw = PdfiumInterop.RenderPageWithAnnotations(_owner._pdfPath, idx, w, h, forPrint: true)
+                              ?? pr.GetImage();
+                    if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) return null;
+                    var bmp = new WriteableBitmap(w, h, PrintDpi, PrintDpi, PixelFormats.Bgra32, null);
+                    bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);
+                    bmp.Freeze();
+                    return bmp;
+                }
+                catch { return null; /* skip an unrenderable page rather than fail the whole job */ }
+            }
+
+            public void Dispose()
+            {
+                try { _reader?.Dispose(); } catch { /* best effort */ }
+                _reader = null;
+            }
         }
 
         /// <summary>

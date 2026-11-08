@@ -686,6 +686,8 @@ namespace TDPdf
             ctx.ContentEditor.ClearCache();
             ctx.AllSearchRects.Clear();
             ctx.SearchResultPages.Clear();
+            CancelSearch(ctx);
+            ctx.SearchIndex = null;
             ctx.Thumbnails = null;
             ctx.ViewCaptured = false;   // #399: nothing left to resume into
             _tabs.Remove(ctx);

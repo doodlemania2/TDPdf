@@ -86,6 +86,27 @@ namespace PdfSharpCore.Pdf.Security
         internal string _ownerPassword;
 
         /// <summary>
+        /// TDPdf: an /O value (raw, 32 bytes) to write back unchanged instead of deriving one from
+        /// an owner password. Lets a save re-protect a file whose owner password we never knew.
+        /// </summary>
+        internal string _preservedOwnerValue;
+
+        /// <summary>The user password recovered from /O when the owner password opened the file (R2-R4), else null.</summary>
+        internal string RecoveredUserPassword
+        {
+            get { return stringEncryptor != null ? stringEncryptor.RecoveredUserPassword : null; }
+        }
+
+        /// <summary>True when /EncryptMetadata is explicitly false: the document /Metadata stream is plain text.</summary>
+        bool MetadataIsClear
+        {
+            get
+            {
+                return Elements.ContainsKey(Keys.EncryptMetadata) && !Elements.GetBoolean(Keys.EncryptMetadata);
+            }
+        }
+
+        /// <summary>
         /// Gets or sets the user access permission represented as an integer in the P key.
         /// </summary>
         internal PdfUserAccessPermission Permission
@@ -166,7 +187,11 @@ namespace PdfSharpCore.Pdf.Security
                 else if ((value3 = item.Value as PdfArray) != null)
                     EncryptArray(value3);
             }
-            if (dict.Stream != null)
+            // TDPdf: with /EncryptMetadata false the /Type /Metadata stream was written in clear
+            // (upstream KillerPDF #470); running the cipher over it turns the XMP into garbage.
+            bool clearMetadata = dict.Stream != null && MetadataIsClear
+                                 && dict.Elements.GetName("/Type") == "/Metadata";
+            if (dict.Stream != null && !clearMetadata)
             {
                 byte[] bytes = dict.Stream.Value;
                 if (bytes.Length != 0)
@@ -558,7 +583,7 @@ namespace PdfSharpCore.Pdf.Security
             if (String.IsNullOrEmpty(_userPassword))
                 _userPassword = "";
             // Use user password twice if no owner password provided.
-            if (String.IsNullOrEmpty(_ownerPassword))
+            if (_preservedOwnerValue == null && String.IsNullOrEmpty(_ownerPassword))
                 _ownerPassword = _userPassword;
 
             // Correct permission bits
@@ -567,12 +592,20 @@ namespace PdfSharpCore.Pdf.Security
 
             PdfInteger pValue = new PdfInteger(permissions);
 
-            Debug.Assert(_ownerPassword.Length > 0, "Empty owner password.");
             byte[] userPad = PadPassword(_userPassword);
-            byte[] ownerPad = PadPassword(_ownerPassword);
 
             _md5.Initialize();
-            _ownerKey = ComputeOwnerKey(userPad, ownerPad, strongEncryption);
+            if (_preservedOwnerValue != null)
+            {
+                // TDPdf: keep the file's own /O, so its owner password keeps working.
+                _ownerKey = PdfEncoders.RawEncoding.GetBytes(_preservedOwnerValue);
+            }
+            else
+            {
+                Debug.Assert(_ownerPassword.Length > 0, "Empty owner password.");
+                byte[] ownerPad = PadPassword(_ownerPassword);
+                _ownerKey = ComputeOwnerKey(userPad, ownerPad, strongEncryption);
+            }
             byte[] documentID = PdfEncoders.RawEncoding.GetBytes(_document.Internals.FirstDocumentID);
             InitWithUserPassword(documentID, _userPassword, _ownerKey, permissions, strongEncryption);
 
@@ -586,6 +619,11 @@ namespace PdfSharpCore.Pdf.Security
             Elements[Keys.O] = oValue;
             Elements[Keys.U] = uValue;
             Elements[Keys.P] = pValue;
+
+            // TDPdf: a handler that came from an AES / V4 / V5 file still carries its crypt-filter
+            // and R5/R6 entries. We write RC4 (V1/V2), so they would contradict /V and /R.
+            foreach (string stale in new[] { "/CF", "/StmF", "/StrF", "/EFF", "/SubFilter", "/EncryptMetadata", "/OE", "/UE", "/Perms" })
+                Elements.Remove(stale);
             //#endif
         }
 

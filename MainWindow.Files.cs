@@ -171,6 +171,8 @@ namespace TDPdf
                 _renderDims.Clear();
                 InvalidateRenderCache();
                 _contentEditor.ClearCache();
+                CancelSearch(_ctx);   // its results describe the document that just went away
+                _ctx.SearchIndex = null;
                 _allSearchRects.Clear();
                 _searchResultPages.Clear();
                 _searchPageCursor = -1;
@@ -196,6 +198,7 @@ namespace TDPdf
                 {
                     _ctx.IsUntitled = false;   // a real on-disk open; merged/imported callers set this true afterward
                     _ctx.WasProtected = result.WasProtected;
+                    _ctx.Protection = result.Protection;
                 }
                 if (_doc.PageCount > 0)
                 {
@@ -2216,6 +2219,10 @@ namespace TDPdf
                 NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
+                // The user's own file keeps its password unless they asked to remove it (ProtectedSave).
+                // The temp snapshots stay plain: TDPdf reopens them without a password.
+                var saveToTarget = ProtectedSave.For(doc, removingPassword ? null : _ctx.Protection);
+
                 if (hasAnnotations)
                 {
                     var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
@@ -2225,7 +2232,7 @@ namespace TDPdf
                     ExceptionDispatchInfo? saveError = null;
                     try
                     {
-                        await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
+                        await _pdfDocumentService.SaveAtomicAsync(saveToTarget, targetFile, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -2238,7 +2245,7 @@ namespace TDPdf
                 }
                 else
                 {
-                    await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
+                    await _pdfDocumentService.SaveAtomicAsync(saveToTarget, targetFile, CancellationToken.None);
                     status = $"Saved {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
@@ -2252,14 +2259,25 @@ namespace TDPdf
                 _ctx.SignatureStrippedSinceSave = false;   // the file on disk is now unsigned as well
                 if (_ctx.WasProtected)
                 {
-                    // #149: the file on disk no longer carries its password — PdfSharpCore writes no
-                    // /Encrypt unless a password is set on the document, and TDPdf cannot re-encrypt.
-                    // Say so rather than dropping the protection silently, and clear the flag: from
-                    // here on this tab's file is unprotected.
-                    _ctx.WasProtected = false;
-                    status = removingPassword
-                        ? $"Password protection removed from {System.IO.Path.GetFileName(targetFile)}"
-                        : status + " (password protection removed)";
+                    if (!removingPassword && _ctx.Protection is { } kept)
+                    {
+                        // The save re-applied the source's password and permissions (ProtectedSave),
+                        // so the file is still protected and so is this tab.
+                        status += ProtectedSave.KeptNote(kept);
+                    }
+                    else
+                    {
+                        // #149: the file on disk no longer carries its password — either the user
+                        // asked (Remove Password), or this document's protection could not be
+                        // reproduced (a PDFium-repaired or rasterized copy). Say so rather than
+                        // dropping it silently, and clear the flags: from here on this tab's file
+                        // is unprotected.
+                        _ctx.WasProtected = false;
+                        _ctx.Protection = null;
+                        status = removingPassword
+                            ? $"Password protection removed from {System.IO.Path.GetFileName(targetFile)}"
+                            : status + " (password protection removed)";
+                    }
                 }
                 SetStatus(status);
             }
@@ -2283,8 +2301,9 @@ namespace TDPdf
 
         // #149 (upstream KillerPDF v1.6.6): saves the open document back over the user's file with
         // its password protection dropped. There is nothing to strip at save time — the working
-        // document has been decrypted since it was opened — so this IS an in-place save; what the
-        // command adds is an explicit, named way to ask for it (and the confirmation, because it
+        // document has been decrypted since it was opened — so this is an in-place save that simply
+        // does NOT re-apply the protection ordinary saves now keep (ProtectedSave); what the
+        // command adds is the explicit, named way to ask for that (and the confirmation, because it
         // rewrites the user's file irreversibly). Routed through SaveInPlaceAsync so it gets the
         // same NormalizeDocumentForSave scrubs and #106 repair retry as every other save.
         private async void RemovePassword_Click(object sender, RoutedEventArgs e)
@@ -2297,8 +2316,8 @@ namespace TDPdf
                 return;
             }
             // No on-disk home to write back over (merged / imported / raster-recovered): the user
-            // has to say where the unprotected copy goes. Save As drops the protection just the same.
-            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAs_Click(sender, e); return; }
+            // has to say where the unprotected copy goes.
+            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAsCore(removingPassword: true); return; }
 
             var res = TdpDialog.Show(this,
                 $"Save \"{System.IO.Path.GetFileName(_ctx.OriginalPath)}\" without its password protection?\n\n" +
@@ -2347,7 +2366,11 @@ namespace TDPdf
             }
         }
 
-        private async void SaveAs_Click(object sender, RoutedEventArgs e)
+        private void SaveAs_Click(object sender, RoutedEventArgs e) => SaveAsCore(removingPassword: false);
+
+        // removingPassword: File > Remove Password on a tab with no file of its own to overwrite
+        // asks for a copy WITHOUT the password; an ordinary Save As keeps it.
+        private async void SaveAsCore(bool removingPassword)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
@@ -2379,6 +2402,10 @@ namespace TDPdf
                 NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
+                // The user's own file keeps its password unless they asked to remove it (ProtectedSave).
+                // The temp snapshots stay plain: TDPdf reopens them without a password.
+                var saveToTarget = ProtectedSave.For(doc, removingPassword ? null : _ctx.Protection);
+
                 if (hasAnnotations)
                 {
                     var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
@@ -2388,7 +2415,7 @@ namespace TDPdf
                     ExceptionDispatchInfo? saveError = null;
                     try
                     {
-                        await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
+                        await _pdfDocumentService.SaveAtomicAsync(saveToTarget, targetFile, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -2401,7 +2428,7 @@ namespace TDPdf
                 }
                 else
                 {
-                    await _pdfDocumentService.SaveAtomicAsync(doc.Save, targetFile, CancellationToken.None);
+                    await _pdfDocumentService.SaveAtomicAsync(saveToTarget, targetFile, CancellationToken.None);
                     status = $"Saved to {System.IO.Path.GetFileName(targetFile)}";
                 }
             }
@@ -2430,9 +2457,18 @@ namespace TDPdf
                 if (IsRecentEligiblePath(targetFile)) AddRecentFile(targetFile);
                 if (_ctx.WasProtected)
                 {
-                    // #149: the saved copy carries no password — PdfSharpCore cannot re-encrypt it.
-                    _ctx.WasProtected = false;
-                    status += " (password protection removed)";
+                    if (!removingPassword && _ctx.Protection is { } kept)
+                    {
+                        // The copy was written with the source's password and permissions.
+                        status += ProtectedSave.KeptNote(kept);
+                    }
+                    else
+                    {
+                        // #149: the saved copy carries no password (asked for, or unreproducible).
+                        _ctx.WasProtected = false;
+                        _ctx.Protection = null;
+                        status += " (password protection removed)";
+                    }
                 }
                 SetStatus(status);
             }
@@ -2467,7 +2503,7 @@ namespace TDPdf
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
             if (!ShowPdfSaveDialog(dlg)) return;
             using var op = Telemetry.StartOperation("SaveFlattened");
-            SetFileOperationBusy(true, "Flattening...");
+            var ct = BeginCancellableOp("Flattening page 1...  (Esc to cancel)");
             string targetFile = dlg.FileName;
 
             // Retryable unit of work (see RunSaveWithRecoveryAsync / #106): the fragile part is the
@@ -2519,7 +2555,8 @@ namespace TDPdf
                         sourcePath = temp;
                     }
 
-                    await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, CancellationToken.None);
+                    await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, ct,
+                        (page, total) => SetWorkerStatus($"Flattening page {page} of {total}...  (Esc to cancel)"));
                 }
                 finally
                 {
@@ -2537,6 +2574,12 @@ namespace TDPdf
                 var flattenNote = _ctx.WasProtected ? " (password protection removed)" : string.Empty;
                 SetStatus($"Flattened PDF saved to {System.IO.Path.GetFileName(targetFile)}{flattenNote}");
             }
+            catch (OperationCanceledException)
+            {
+                // The destination is only touched by WriteAtomic's final move, which the token
+                // guards, so a cancel leaves any existing file exactly as it was.
+                SetStatus("Save Flattened canceled");
+            }
             catch (Exception ex)
             {
                 op.Fail(ex);
@@ -2545,12 +2588,12 @@ namespace TDPdf
                     ["Operation"]     = "SaveFlattened",
                     ["ExceptionType"] = ex.GetType().FullName ?? "Unknown",
                 });
-                SetFileOperationBusy(false);
+                EndCancellableOp();
                 TdpDialog.Show(this, $"Flatten failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
             {
-                SetFileOperationBusy(false);
+                EndCancellableOp();
                 ESignRefreshSignedState();   // restored from the pre-flatten snapshot: a signed tab stays signed
             }
         }
@@ -2732,7 +2775,22 @@ namespace TDPdf
                     // window never reads the live file out from under us.
                     string tempPrint = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
                     try { _doc.Save(tempPrint); printablePath = tempPrint; }
-                    catch { printablePath = _currentFile; }
+                    catch
+                    {
+                        // Falling back to the saved file is only faithful when nothing has changed since
+                        // it was saved. With unsaved edits (rotated, deleted or reordered pages) the
+                        // printout would silently be the OLD document, so say so and let the user decide.
+                        if (_isDirty && TdpDialog.Show(this,
+                                "TDPdf couldn't make a print copy of the open document, so this would print " +
+                                "the last saved version. Unsaved changes (such as rotated, deleted or " +
+                                "reordered pages) will not be in the printout.\n\nPrint the last saved version anyway?",
+                                "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                        {
+                            SetStatus("Print canceled");
+                            return;
+                        }
+                        printablePath = _currentFile;
+                    }
                 }
 
                 var preview = new TDPdf.Services.PrintPreviewWindow(this, printablePath, pageSizes);

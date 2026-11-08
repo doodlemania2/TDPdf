@@ -85,7 +85,11 @@ namespace TDPdf
             int    FieldKey = 0,
             // The widget's own /AS, which decides a check box's initial tick when the field's /V
             // names a sibling's on-state rather than this widget's.
-            string WidgetState = "");
+            string WidgetState = "",
+            // "Tx|name", "Ch|name" or "Btn|name": fields sharing one fully qualified name are one
+            // logical field (upstream #466), so an edit reaches all of them. "" when the field
+            // cannot pool by name (no name, push button, radio group).
+            string GroupId = "");
 
         /// <summary>
         /// Scans the current page's /Annots for Widget subtypes and overlays interactive
@@ -133,11 +137,15 @@ namespace TDPdf
             // Widgets that share one field, by FieldKey, so a change in one updates the others on
             // the page at once (siblings on other pages read the shared value when they render).
             // `syncing` stops a sibling's own change handler from echoing the update back.
-            var textSiblings  = new Dictionary<int, List<TextBox>>();
-            var comboSiblings = new Dictionary<int, List<(ComboBox combo, List<string> exports, List<string> options)>>();
-            var checkSiblings = new Dictionary<int, List<(TextBlock mark, string onVal)>>();
+            // Keyed by the name group where there is one (separate fields with the same fully
+            // qualified name), else by the field's own key.
+            _formNameIndex = null;   // fields may have been added, renamed or removed since the last render
+            var textSiblings  = new Dictionary<string, List<TextBox>>();
+            var comboSiblings = new Dictionary<string, List<(ComboBox combo, List<string> exports, List<string> options)>>();
+            var checkSiblings = new Dictionary<string, List<(TextBlock mark, string onVal)>>();
             bool syncing = false;
-            static void AddSibling<T>(Dictionary<int, List<T>> map, int key, T item)
+            static string SibKey(FormFieldInfo f) => f.GroupId.Length > 0 ? f.GroupId : "#" + f.FieldKey;
+            static void AddSibling<T>(Dictionary<string, List<T>> map, string key, T item)
             {
                 if (!map.TryGetValue(key, out var list)) map[key] = list = new();
                 list.Add(item);
@@ -201,18 +209,27 @@ namespace TDPdf
                     tb.GotFocus  += (_, _) => tb.BorderBrush = focusBrush;
                     tb.LostFocus += (_, _) => tb.BorderBrush = greenBrush;
                     int capturedKey = f.FieldKey;
-                    AddSibling(textSiblings, capturedKey, tb);
+                    string capturedSib = SibKey(f), capturedGroup = f.GroupId;
+                    AddSibling(textSiblings, capturedSib, tb);
+                    // Escape restores what the box held when it got focus (see FormTextBox_PreviewKeyDown).
+                    tb.GotFocus += (_, _) => _formFocusValues.AddOrUpdate(tb, tb.Text);
+                    tb.PreviewKeyDown += FormTextBox_PreviewKeyDown;
                     tb.TextChanged += (_, _) =>
                     {
                         if (syncing) return;
                         _formTextValues[capturedKey] = tb.Text;
+                        SpreadPendingByName(_formTextValues, capturedGroup, capturedKey, tb.Text, FormFieldSiblings.FitToComb);
                         MarkDirty();
-                        if (!textSiblings.TryGetValue(capturedKey, out var sibs) || sibs.Count < 2) return;
+                        if (!textSiblings.TryGetValue(capturedSib, out var sibs) || sibs.Count < 2) return;
                         syncing = true;
                         try
                         {
                             foreach (var other in sibs)
-                                if (!ReferenceEquals(other, tb) && other.Text != tb.Text) other.Text = tb.Text;
+                            {
+                                if (ReferenceEquals(other, tb)) continue;
+                                string shown = FormFieldSiblings.FitToComb(tb.Text, other.MaxLength);
+                                if (other.Text != shown) other.Text = shown;
+                            }
                         }
                         finally { syncing = false; }
                     };
@@ -244,7 +261,8 @@ namespace TDPdf
                     combo.SelectedIndex = selIdx;   // -1 when /V matches nothing: leave it unset
 
                     int capturedKey = f.FieldKey;
-                    AddSibling(comboSiblings, capturedKey, (combo, exports, f.Options));
+                    string capturedSib = SibKey(f), capturedGroup = f.GroupId;
+                    AddSibling(comboSiblings, capturedSib, (combo, exports, f.Options));
                     combo.SelectionChanged += (_, _) =>
                     {
                         if (syncing) return;
@@ -253,8 +271,9 @@ namespace TDPdf
                         // Write the export value, which is what other viewers read back.
                         string value = i < exports.Count ? exports[i] : f.Options[i];
                         _formTextValues[capturedKey] = value;
+                        SpreadPendingByName(_formTextValues, capturedGroup, capturedKey, value);
                         MarkDirty();
-                        if (!comboSiblings.TryGetValue(capturedKey, out var sibs) || sibs.Count < 2) return;
+                        if (!comboSiblings.TryGetValue(capturedSib, out var sibs) || sibs.Count < 2) return;
                         syncing = true;
                         try
                         {
@@ -306,16 +325,18 @@ namespace TDPdf
                         Child           = checkMark,
                         ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
                     };
-                    AddSibling(checkSiblings, f.FieldKey, (checkMark, f.OnValue));
+                    AddSibling(checkSiblings, SibKey(f), (checkMark, f.OnValue));
                     if (!f.IsReadOnly)
                     {
                         int capturedKey = f.FieldKey;
+                        string capturedSib = SibKey(f), capturedGroup = f.GroupId;
                         string capturedOn = f.OnValue;
                         box.MouseLeftButtonDown += (_, e) =>
                         {
                             string value = FormFieldSiblings.Toggle(checkMark.Visibility == Visibility.Visible, capturedOn);
                             _formCheckValues[capturedKey] = value;
-                            if (checkSiblings.TryGetValue(capturedKey, out var sibs))
+                            SpreadPendingByName(_formCheckValues, capturedGroup, capturedKey, value);
+                            if (checkSiblings.TryGetValue(capturedSib, out var sibs))
                                 foreach (var (mark, on) in sibs)
                                     mark.Visibility = FormFieldSiblings.IsOn(value, on) ? Visibility.Visible : Visibility.Collapsed;
                             MarkDirty();
@@ -410,6 +431,56 @@ namespace TDPdf
 
             if (anyField)
                 SetStatus($"Page {pageIndex + 1} of {_doc.PageCount} contains fillable form fields");
+        }
+
+        // Name index for the current document, rebuilt by every RenderFormFields.
+        private List<FormFieldSiblings.FieldRef>? _formNameIndex;
+        private PdfSharpCore.Pdf.PdfDocument? _formNameIndexDoc;
+
+        // The value each form text box held when it took focus, for Escape to restore.
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<TextBox, string> _formFocusValues = new();
+
+        /// <summary>
+        /// Copies a pending value to every other field sharing the origin's fully qualified name and
+        /// type, on any page (upstream #466). The origin is already written by the caller.
+        /// </summary>
+        private void SpreadPendingByName(Dictionary<int, string> store, string groupId, int originKey, string value,
+            Func<string, int, string>? fit = null)
+        {
+            if (_doc is null || string.IsNullOrEmpty(groupId)) return;
+            try
+            {
+                if (_formNameIndex is null || !ReferenceEquals(_formNameIndexDoc, _doc))
+                {
+                    _formNameIndex = FormFieldSiblings.BuildIndex(_doc);
+                    _formNameIndexDoc = _doc;
+                }
+                foreach (var sib in FormFieldSiblings.Siblings(_formNameIndex, groupId))
+                {
+                    if (sib.Key == originKey) continue;
+                    store[sib.Key] = fit is null ? value : fit(value, sib.CombLen);
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"SpreadPendingByName: {ex}"); }
+        }
+
+        /// <summary>
+        /// Escape in a form text box cancels the edit: the value it had on focus comes back and the
+        /// focus returns to the page, so the next key is a page shortcut again.
+        /// </summary>
+        private void FormTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Escape || sender is not TextBox tb) return;
+            if (_formFocusValues.TryGetValue(tb, out var original) && tb.Text != original) tb.Text = original;
+            ReleaseFormFocus();
+            e.Handled = true;
+        }
+
+        /// <summary>Takes the keyboard focus out of a form overlay and hands it to the page.</summary>
+        private void ReleaseFormFocus()
+        {
+            Keyboard.ClearFocus();
+            PagePreviewPanel.Focus();
         }
 
         /// <summary>
@@ -629,7 +700,8 @@ namespace TDPdf
 
                     result.Add(new FormFieldInfo(objNum, ft, isCheckBox, isRadio, isMultiLine,
                         name, curVal, onValue, isReadOnly, cx, cy, cw, ch, options,
-                        isComb, maxLen, isPushBtn, optionExports, isNumeric, fieldKey, widgetState));
+                        isComb, maxLen, isPushBtn, optionExports, isNumeric, fieldKey, widgetState,
+                        FormFieldSiblings.GroupIdOf(ann)));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
@@ -648,6 +720,7 @@ namespace TDPdf
             if (_doc is null) return;
             if (_formTextValues.Count == 0 && _formCheckValues.Count == 0 && _formRadioValues.Count == 0) return;
 
+            _formWriteFailures.Clear();
             try
             {
                 for (int p = 0; p < _doc.PageCount; p++)
@@ -665,6 +738,8 @@ namespace TDPdf
                         var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
                         if (!subtype.Contains("Widget")) continue;
 
+                        try
+                        {
                         int objNum = GetObjectNumber(elem);
                         if (objNum < 0) objNum = -(p * 10000 + i);
 
@@ -778,6 +853,13 @@ namespace TDPdf
                                 }
                             }
                         }
+                        }
+                        catch (Exception wex)
+                        {
+                            // One bad field must not cost the rest of the form; it is named to the
+                            // user after the save (ReportFormWriteFailures).
+                            NoteFormWriteFailure(ann, wex);
+                        }
                     }
                 }
 
@@ -791,6 +873,34 @@ namespace TDPdf
                 catch { }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"WriteFormValuesToDocument: {ex}"); }
+        }
+
+        // Names of fields whose value or appearance could not be written by the last
+        // WriteFormValuesToDocument; reported once after the save completes.
+        private readonly List<string> _formWriteFailures = new();
+
+        private void NoteFormWriteFailure(PdfDictionary widget, Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"form field write failed: {ex}");
+            string name = FormFieldSiblings.QualifiedName(widget);
+            if (string.IsNullOrEmpty(name)) name = "(unnamed field)";
+            if (!_formWriteFailures.Contains(name)) _formWriteFailures.Add(name);
+        }
+
+        /// <summary>
+        /// Tells the user which form fields could not be written by the save that just finished. The
+        /// save itself succeeded for every other field.
+        /// </summary>
+        private void ReportFormWriteFailures()
+        {
+            if (_formWriteFailures.Count == 0) return;
+            var names = _formWriteFailures.Take(10).ToList();
+            string list = string.Join("\n", names.Select(n => "  \u2022 " + n));
+            if (_formWriteFailures.Count > names.Count) list += $"\n  ...and {_formWriteFailures.Count - names.Count} more";
+            _formWriteFailures.Clear();
+            TdpDialog.Show(this,
+                "TDPdf could not write the value of these form fields, so they may be empty or show the old value in other viewers. Everything else was saved normally:\n\n" + list,
+                "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         /// <summary>Returns the on-state value (/AP /N key that is not /Off) for a button widget.</summary>
@@ -918,10 +1028,10 @@ namespace TDPdf
                 // Lines past the bottom of the box are clipped by the "re W n" above, the same
                 // way a viewer clips an over-full field.
                 var xobj = BuildFormXObject(fontName, fieldW, fieldH, sb.ToString());
-                if (xobj is null) return;
+                if (xobj is null) { NoteFormWriteFailure(widgetAnn, new InvalidOperationException("no appearance stream")); return; }
                 AttachAppearance(widgetAnn, xobj);
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GenerateTextFieldAppearance: {ex}"); }
+            catch (Exception ex) { NoteFormWriteFailure(widgetAnn, ex); }
         }
 
         /// <summary>
@@ -996,7 +1106,7 @@ namespace TDPdf
                 apDict.Elements["/N"] = nDict;
                 widgetAnn.Elements["/AP"] = apDict;
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GenerateCheckBoxAppearance: {ex}"); }
+            catch (Exception ex) { NoteFormWriteFailure(widgetAnn, ex); }
         }
 
         /// <summary>

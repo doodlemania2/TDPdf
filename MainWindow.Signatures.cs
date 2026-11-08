@@ -37,6 +37,12 @@ namespace TDPdf
         // Signatures
         // ============================================================
 
+        // A signatures.json that could not be read. It has been copied to _signatureDamagedBackup
+        // (null if even that failed); until the user adds a signature nothing is written over it.
+        private bool _signatureFileDamaged;
+        private string? _signatureDamagedBackup;
+        private bool _signatureDamageAnnounced;
+
         private void LoadSignatures()
         {
             try
@@ -58,16 +64,44 @@ namespace TDPdf
                     _savedSignatures = JsonSerializer.Deserialize<List<SavedSignature>>(json) ?? [];
                 }
             }
-            catch { _savedSignatures = []; }
+            catch
+            {
+                _savedSignatures = [];
+                if (File.Exists(SignatureFile))
+                {
+                    _signatureFileDamaged = true;
+                    _signatureDamagedBackup = SignatureStoreFile.TryBackUpDamaged(SignatureFile, DateTime.Now);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Says once, when the signature picker first opens, that the saved signatures could not be
+        /// read and where the damaged file went. Deferred so the picker draws first.
+        /// </summary>
+        private void AnnounceDamagedSignatureFile()
+        {
+            if (!_signatureFileDamaged || _signatureDamageAnnounced) return;
+            _signatureDamageAnnounced = true;
+            string msg = _signatureDamagedBackup is not null
+                ? $"Your saved signatures could not be read, so none are shown. The unreadable file was kept as:\n\n{_signatureDamagedBackup}\n\nSignatures you add now are saved normally."
+                : "Your saved signatures could not be read, and a backup copy of the unreadable file could not be made. " +
+                  "Signatures you add now will work for this session but will not be saved, so the original file is not overwritten.";
+            Dispatcher.BeginInvoke(new Action(() =>
+                TdpDialog.Show(this, msg, "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning)),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
 
         private void PersistSignatures()
         {
+            // An unreadable file stays untouched until there is something to put in its place and a
+            // backup of it exists; writing an empty list over it would destroy what might be recoverable.
+            if (_signatureFileDamaged && (_savedSignatures.Count == 0 || _signatureDamagedBackup is null)) return;
             try
             {
-                Directory.CreateDirectory(SignatureDir);
                 var json = JsonSerializer.Serialize(_savedSignatures, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SignatureFile, json);
+                SignatureStoreFile.WriteAtomic(SignatureFile, json);
+                _signatureFileDamaged = false;   // readable again; the backup keeps the old bytes
             }
             catch { /* best effort */ }
         }
@@ -75,6 +109,7 @@ namespace TDPdf
         private void ShowSignaturePopup()
         {
             HideSignaturePopup();
+            AnnounceDamagedSignatureFile();
 
             var stack = new StackPanel { Margin = new Thickness(4) };
 
@@ -113,8 +148,11 @@ namespace TDPdf
                         Padding = new Thickness(4),
                         Cursor = Cursors.Hand,
                         Height = 60,
-                        Width = 220
+                        Width = 220,
+                        Focusable = true   // Tab / arrows reach it; Enter or Space picks it
                     };
+                    AutomationProperties.SetName(item, string.IsNullOrWhiteSpace(sigCopy.Name) ? "Saved signature" : sigCopy.Name);
+                    AutomationProperties.SetHelpText(item, "Press Enter or Space to pick this signature, then click the page to place it.");
 
                     // Render mini signature preview
                     if (sigCopy.ImageData is not null)
@@ -153,13 +191,19 @@ namespace TDPdf
                         item.Child = canvas;
                     }
 
-                    item.MouseLeftButtonDown += (s, e) =>
+                    item.MouseLeftButtonDown += (s, e) => PickSignature(sigCopy);
+                    item.KeyDown += (s, e) =>
                     {
-                        _pendingSignature = sigCopy;
-                        HideSignaturePopup();
-                        _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                        SetStatus("Click on the page to place your signature picture");
+                        if (e.Key is Key.Enter or Key.Space)
+                        {
+                            e.Handled = true;
+                            PickSignature(sigCopy);
+                        }
                     };
+                    item.GotKeyboardFocus += (s, e) =>
+                        ((Border)s!).BorderBrush = (SolidColorBrush)FindResource("AccentGreen");
+                    item.LostKeyboardFocus += (s, e) =>
+                        ((Border)s!).BorderBrush = BrushResource("BorderDim");
                     item.MouseEnter += (s, e) =>
                         ((Border)s!).BorderBrush = (SolidColorBrush)FindResource("AccentGreen");
                     item.MouseLeave += (s, e) =>
@@ -1006,6 +1050,136 @@ namespace TDPdf
             }
         }
 
+        // ------------------------------------------------------------------
+        // Placement ghost (upstream #468): a faint copy of the pending signature follows the pointer
+        // over the page, the wheel resizes it, and a click drops it at that size.
+        // ------------------------------------------------------------------
+
+        private const double SigPlaceMinScale = 0.15, SigPlaceMaxScale = 2.0;
+        private double _sigPlaceScale = 0.5;
+        private Canvas? _sigGhost;
+        private bool _sigGhostLeaveHooked;
+
+        private void PickSignature(SavedSignature sig)
+        {
+            _pendingSignature = sig;
+            HideSignaturePopup();
+            _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
+            SetStatus("Click on the page to place your signature picture. Mouse wheel resizes it, Esc cancels");
+        }
+
+        /// <summary>Drops a pending signature without placing it.</summary>
+        private void CancelSignaturePlacement()
+        {
+            _pendingSignature = null;
+            RemoveSignatureGhost();
+            _annotationCanvas.Cursor = Cursors.Hand;
+            SetStatus("Signature placement cancelled");
+        }
+
+        private void RemoveSignatureGhost()
+        {
+            if (_sigGhost is null) return;
+            _annotationCanvas.Children.Remove(_sigGhost);
+            _sigGhost = null;
+        }
+
+        /// <summary>Builds (or rebuilds at a new scale) the ghost for the pending signature.</summary>
+        private Canvas? BuildSignatureGhost(SavedSignature sig, double scale)
+        {
+            double w = SigCanvasW(sig) * scale, h = SigCanvasH(sig) * scale;
+            if (!double.IsFinite(w) || !double.IsFinite(h) || w <= 0 || h <= 0) return null;
+            var host = new Canvas
+            {
+                Width = w, Height = h,
+                Opacity = 0.45,
+                IsHitTestVisible = false,
+                Tag = "SignatureGhost"
+            };
+            if (sig.ImageData is not null)
+            {
+                try
+                {
+                    var bmp = new BitmapImage();
+                    using (var ms = new MemoryStream(Convert.FromBase64String(sig.ImageData)))
+                    {
+                        bmp.BeginInit();
+                        bmp.StreamSource = ms;
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.EndInit();
+                    }
+                    if (bmp.CanFreeze) bmp.Freeze();
+                    host.Children.Add(new System.Windows.Controls.Image
+                    {
+                        Source = bmp, Width = w, Height = h,
+                        Stretch = Stretch.Uniform, IsHitTestVisible = false
+                    });
+                }
+                catch { return null; }
+            }
+            else
+            {
+                foreach (var stroke in sig.Strokes)
+                {
+                    if (stroke.Count < 2) continue;
+                    var poly = new Polyline
+                    {
+                        Stroke = Brushes.Black,
+                        StrokeThickness = 2 * scale,   // as the placed signature draws it
+                        StrokeLineJoin = PenLineJoin.Round,
+                        StrokeStartLineCap = PenLineCap.Round,
+                        StrokeEndLineCap = PenLineCap.Round,
+                        IsHitTestVisible = false
+                    };
+                    foreach (var pt in stroke) poly.Points.Add(new Point(pt.X * scale, pt.Y * scale));
+                    host.Children.Add(poly);
+                }
+            }
+            return host;
+        }
+
+        /// <summary>Moves the ghost to the pointer, creating it when needed. Called from Canvas_MouseMove.</summary>
+        private void UpdateSignatureGhost(Point pos)
+        {
+            if (_pendingSignature is null || _currentTool != EditTool.Signature) { RemoveSignatureGhost(); return; }
+            if (!_sigGhostLeaveHooked)
+            {
+                _sigGhostLeaveHooked = true;
+                _annotationCanvas.MouseLeave += (_, _) => RemoveSignatureGhost();
+            }
+            // A re-render clears the canvas, taking the ghost with it; put it back.
+            if (_sigGhost is not null && !_annotationCanvas.Children.Contains(_sigGhost)) _sigGhost = null;
+            if (_sigGhost is null)
+            {
+                _sigGhost = BuildSignatureGhost(_pendingSignature, _sigPlaceScale);
+                if (_sigGhost is null) return;
+                Panel.SetZIndex(_sigGhost, 1000);
+                _annotationCanvas.Children.Add(_sigGhost);
+            }
+            Canvas.SetLeft(_sigGhost, pos.X);
+            Canvas.SetTop(_sigGhost, pos.Y);
+        }
+
+        /// <summary>
+        /// Wheel over the page while carrying a signature resizes the ghost. Returns true when the
+        /// wheel was consumed; Ctrl+wheel is left alone so it still zooms the document.
+        /// </summary>
+        private bool TryResizeSignatureGhost(MouseWheelEventArgs e)
+        {
+            if (_pendingSignature is null || _currentTool != EditTool.Signature) return false;
+            if (Keyboard.Modifiers != ModifierKeys.None || !_annotationCanvas.IsMouseOver) return false;
+            double next = Math.Clamp(_sigPlaceScale * Math.Pow(1.0015, e.Delta), SigPlaceMinScale, SigPlaceMaxScale);
+            if (next != _sigPlaceScale)
+            {
+                _sigPlaceScale = next;
+                var at = e.GetPosition(_annotationCanvas);
+                RemoveSignatureGhost();       // rebuilt at the new size by the update below
+                UpdateSignatureGhost(at);
+                SetStatus($"Signature size {(int)Math.Round(_sigPlaceScale * 100)}%. Click to place, Esc to cancel");
+            }
+            return true;
+        }
+
         private void PlaceSignature(Point pos, int pageIdx)
         {
             if (_pendingSignature is null) return;
@@ -1013,7 +1187,11 @@ namespace TDPdf
             Telemetry.TrackEvent("Annotation.PlaceStarted",
                 new Dictionary<string, string> { ["Type"] = "Signature" });
             var sig = _pendingSignature;
-            double scale = 0.5;
+            double scale = Math.Clamp(_sigPlaceScale, SigPlaceMinScale, SigPlaceMaxScale);
+            // Spent before anything below can re-enter (a focused form field losing focus re-renders
+            // the page): one click stamps exactly one signature.
+            _pendingSignature = null;
+            RemoveSignatureGhost();
 
             var annot = new SignatureAnnotation
             {

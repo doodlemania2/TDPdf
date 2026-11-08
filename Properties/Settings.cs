@@ -164,6 +164,34 @@ namespace TDPdf.Properties
             set => this[nameof(PrintDuplex)] = value;
         }
 
+        // Last two-sided binding edge: "OneSided", "TwoSidedLongEdge" or "TwoSidedShortEdge". Empty
+        // (never saved) falls back to PrintDuplex above, read as long edge, so users keep their choice.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string PrintDuplexEdge
+        {
+            get => (string)this[nameof(PrintDuplexEdge)];
+            set => this[nameof(PrintDuplexEdge)] = value;
+        }
+
+        // Last 1-up print scale: 0 fit, 1 actual size, 2 shrink oversized, 3 custom (see PrintSheetPlan).
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public int PrintScaleMode
+        {
+            get => (int)this[nameof(PrintScaleMode)];
+            set => this[nameof(PrintScaleMode)] = value;
+        }
+
+        // Last custom print scale percentage (25-400).
+        [UserScopedSetting]
+        [DefaultSettingValue("100")]
+        public int PrintScalePercent
+        {
+            get => (int)this[nameof(PrintScalePercent)];
+            set => this[nameof(PrintScalePercent)] = value;
+        }
+
         // Recently picked custom annotation colors (most-recent first, capped in code).
         // Comma-separated #RRGGBB hex values; surfaced as the "Recent" row in the color picker.
         [UserScopedSetting]

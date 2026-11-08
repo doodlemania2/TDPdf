@@ -78,6 +78,23 @@ namespace TDPdf.Services
             => $"{baseName}-page-{(pageIndex + 1).ToString().PadLeft(digits, '0')}.{format}";
 
         /// <summary>
+        /// The files <see cref="Export"/> will write for <paramref name="pageIndices"/> (null =
+        /// every page) of a <paramref name="pageCount"/>-page document, in page order. Out-of-range
+        /// indices are skipped, as Export skips them.
+        /// </summary>
+        internal static List<string> PlannedFilePaths(
+            string outputDir, string baseName, IReadOnlyList<int>? pageIndices, int pageCount, string format)
+        {
+            int digits = PageNumberDigits(pageCount);
+            var pages = pageIndices ?? [.. Enumerable.Range(0, pageCount)];
+            var paths = new List<string>();
+            foreach (int idx in pages)
+                if (idx >= 0 && idx < pageCount)
+                    paths.Add(Path.Combine(outputDir, PageFileName(baseName, idx, digits, format)));
+            return paths;
+        }
+
+        /// <summary>
         /// Encodes a raw PDFium BGRA page buffer to PNG or JPEG via WPF's codecs.
         /// </summary>
         /// <remarks>
@@ -169,7 +186,10 @@ namespace TDPdf.Services
                 if (raw is null || raw.Length == 0 || w <= 0 || h <= 0) continue;
 
                 var bytes = Encode(raw, w, h, format, transparent, dpi);
-                File.WriteAllBytes(Path.Combine(outputDir, PageFileName(baseName, idx, digits, format)), bytes);
+                // Staged beside the target and moved into place, so a failed write (disk full, locked
+                // file) keeps the old image instead of truncating it.
+                AtomicFileWriter.Write(staging => File.WriteAllBytes(staging, bytes),
+                    Path.Combine(outputDir, PageFileName(baseName, idx, digits, format)), cancellationToken);
                 written++;
             }
             return written;

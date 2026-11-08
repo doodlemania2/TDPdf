@@ -1564,6 +1564,13 @@ namespace TDPdf
             // a save has written this tab's file unprotected.
             public bool WasProtected;
 
+            // The protection the source file carried (user password, permissions, strength), when it
+            // can be written back. While set, saves of this tab's own file re-apply it, so Save and
+            // Save As keep the password instead of dropping it; File > Remove Password clears it.
+            // Null for an unprotected file, and for a protected one whose protection could not be
+            // reproduced (those saves are unprotected and say so).
+            public PdfSharpCore.Pdf.Security.PdfProtection? Protection;
+
             // True for docs with no real on-disk home yet (merged-on-drop, imported images).
             // The working path is a temp file, so Ctrl+S must route to Save As instead of
             // silently overwriting the temp copy.
@@ -1628,6 +1635,12 @@ namespace TDPdf
             public readonly Dictionary<int, List<(double left, double bottom, double right, double top)>> AllSearchRects = new();
             public readonly List<int> SearchResultPages = new();
             public int SearchPageCursor = -1;
+
+            // Background search (upstream 1.9.1). Per tab: the query running for THIS document,
+            // which result set is current, and the extracted page text kept between queries.
+            public CancellationTokenSource? SearchCts;
+            public int SearchGeneration;
+            public TDPdf.Services.PdfTextSearch.Index? SearchIndex;
 
             // View state restored when this tab is re-activated.
             public IReadOnlyList<BitmapSource?>? Thumbnails;
@@ -4144,6 +4157,7 @@ namespace TDPdf
             {
                 HideSignaturePopup();
                 _pendingSignature = null;
+                RemoveSignatureGhost();
             }
 
             if (tool != EditTool.Crop)
@@ -4960,13 +4974,78 @@ namespace TDPdf
             if (_doc is null || _selectedFormWidget is null) return;
             string name = TDPdf.Services.PdfFormBuilder.NameOf(_selectedFormWidget);
 
-            PushDocUndo();
+            // Work out which pending values belong to this field BEFORE it is removed, while its
+            // widgets can still be found.
+            var pendingKeys = FormKeysOfField(_selectedFormWidget);
+            string radioName = NearestPartialName(_selectedFormWidget);
+
+            PushDocUndo();   // writes pending values into the document first, so Undo brings them back
             bool removed = TDPdf.Services.PdfFormBuilder.RemoveField(_doc, _selectedFormWidget);
             if (!removed) { SetStatus("Form: that field could not be removed"); return; }
+
+            // The field is gone, so its typed values must not linger: they would be re-applied to a
+            // reused object number, and a radio group's name would keep a selection for nothing.
+            foreach (int k in pendingKeys) { _formTextValues.Remove(k); _formCheckValues.Remove(k); }
+            if (radioName.Length > 0 && !AnyWidgetNamed(radioName)) _formRadioValues.Remove(radioName);
 
             MarkDirty();
             SelectFormWidget(null);
             SetStatus(string.IsNullOrEmpty(name) ? "Field deleted" : $"Deleted \"{name}\"");
+        }
+
+        /// <summary>The pending-value keys (FormFieldSiblings.FieldKey) of every widget of the widget's field.</summary>
+        private HashSet<int> FormKeysOfField(PdfSharpCore.Pdf.PdfDictionary widget)
+        {
+            var keys = new HashSet<int>();
+            if (_doc is null) return keys;
+            var field = TDPdf.Services.PdfFormBuilder.FieldOf(widget);
+            for (int p = 0; p < _doc.PageCount; p++)
+            {
+                var annots = _doc.Pages[p].Elements.GetArray("/Annots");
+                if (annots is null) continue;
+                for (int i = 0; i < annots.Elements.Count; i++)
+                {
+                    var elem = annots.Elements[i];
+                    var w = elem as PdfSharpCore.Pdf.PdfDictionary ?? (elem as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
+                    if (w is null || !ReferenceEquals(TDPdf.Services.PdfFormBuilder.FieldOf(w), field)) continue;
+                    int n = GetObjectNumber(elem);
+                    if (n < 0) n = -(p * 10000 + i);
+                    keys.Add(TDPdf.Services.FormFieldSiblings.FieldKey(w, n));
+                }
+            }
+            return keys;
+        }
+
+        /// <summary>The first /T found walking up from the widget (a radio group's name).</summary>
+        private static string NearestPartialName(PdfSharpCore.Pdf.PdfDictionary widget)
+        {
+            PdfSharpCore.Pdf.PdfDictionary? node = widget;
+            for (int d = 0; node is not null && d < 64; d++)
+            {
+                if (node.Elements["/T"] is PdfSharpCore.Pdf.PdfString t && t.Value.Length > 0) return t.Value;
+                var pi = node.Elements["/Parent"];
+                node = pi as PdfSharpCore.Pdf.PdfDictionary ?? (pi as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
+            }
+            return "";
+        }
+
+        /// <summary>True when any remaining widget's nearest partial name is <paramref name="name"/>.</summary>
+        private bool AnyWidgetNamed(string name)
+        {
+            if (_doc is null) return false;
+            for (int p = 0; p < _doc.PageCount; p++)
+            {
+                var annots = _doc.Pages[p].Elements.GetArray("/Annots");
+                if (annots is null) continue;
+                for (int i = 0; i < annots.Elements.Count; i++)
+                {
+                    var elem = annots.Elements[i];
+                    var w = elem as PdfSharpCore.Pdf.PdfDictionary ?? (elem as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
+                    if (w is null || w.Elements["/Subtype"]?.ToString()?.Contains("Widget") != true) continue;
+                    if (NearestPartialName(w) == name) return true;
+                }
+            }
+            return false;
         }
 
         private void HideFormSettings()
@@ -7756,19 +7835,51 @@ namespace TDPdf
             }
         }
 
+        private System.Windows.Threading.DispatcherTimer? _searchDebounce;
+
         private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            // The previous query is superseded the moment the text changes; stop its work now
+            // rather than when the debounce fires.
+            CancelSearch(_ctx);
+
             var text = _searchBox?.Text ?? "";
             if (text.Length >= 2)
-                RunSearch(text);
+            {
+                // Debounce typing: one search for a burst of keystrokes.
+                if (_searchDebounce is null)
+                {
+                    _searchDebounce = new System.Windows.Threading.DispatcherTimer
+                    {
+                        Interval = TimeSpan.FromMilliseconds(250)
+                    };
+                    _searchDebounce.Tick += (_, _) =>
+                    {
+                        _searchDebounce!.Stop();
+                        var q = _searchBox?.Text ?? "";
+                        if (q.Length >= 2) RunSearch(q);
+                    };
+                }
+                _searchDebounce.Stop();
+                _searchDebounce.Start();
+            }
             else
             {
+                _searchDebounce?.Stop();
                 ClearSearchHighlights();
                 _allSearchRects.Clear();
                 _searchResultPages.Clear();
                 _searchPageCursor = -1;
                 UpdateSearchRedactState();
             }
+        }
+
+        /// <summary>Stops <paramref name="ctx"/>'s running search and invalidates any result still on its way back.</summary>
+        private static void CancelSearch(DocumentContext ctx)
+        {
+            ctx.SearchGeneration++;
+            try { ctx.SearchCts?.Cancel(); } catch (ObjectDisposedException) { }
+            ctx.SearchCts = null;
         }
 
         /// <summary>The bulk-redact button only means anything while there are hits to act on.</summary>
@@ -7778,42 +7889,79 @@ namespace TDPdf
                 _searchRedactBtn.IsEnabled = _allSearchRects.Count > 0;
         }
 
-        private void RunSearch(string query)
+        /// <summary>
+        /// Searches the active tab's document on a worker thread. The extraction and matching
+        /// (<see cref="TDPdf.Services.PdfTextSearch.Index"/>) run off the UI thread with their own
+        /// PdfPig instance; only the result is brought back, and only if it is still the current
+        /// query of the document it was computed for. Results are stored on THAT tab's context,
+        /// never the active one, so switching tabs mid-search cannot cross them over.
+        /// </summary>
+        private async void RunSearch(string query)
         {
-            ClearSearchHighlights();
-            _allSearchRects.Clear();
-            _searchResultPages.Clear();
-            _searchPageCursor = -1;
+            var ctx = _ctx;
+            CancelSearch(ctx);   // also bumps the generation: results of older queries are dropped
 
-            if (string.IsNullOrWhiteSpace(query) || _currentFile is null)
+            ClearSearchHighlights();
+            ctx.AllSearchRects.Clear();
+            ctx.SearchResultPages.Clear();
+            ctx.SearchPageCursor = -1;
+
+            string? file = ctx.CurrentFile;
+            if (string.IsNullOrWhiteSpace(query) || file is null)
             {
                 if (_searchStatus != null) _searchStatus.Text = "";
                 UpdateSearchRedactState();
                 return;
             }
 
+            UpdateSearchRedactState();
+            if (_searchStatus != null) _searchStatus.Text = "Searching...";
+
+            var cts = new CancellationTokenSource();
+            ctx.SearchCts = cts;
+            int generation = ctx.SearchGeneration;
+            var token = cts.Token;
+
+            TDPdf.Services.PdfTextSearch.SearchOutcome? outcome = null;
+            bool failed = false;
             try
             {
-                string lowerQuery = query.ToLowerInvariant();
-                int totalHits = 0;
+                var index = ctx.SearchIndex = TDPdf.Services.PdfTextSearch.Index.For(ctx.SearchIndex, file);
+                outcome = await Task.Run(() => index.Search(query.ToLowerInvariant(), token), token);
+            }
+            catch (OperationCanceledException) { }
+            catch { failed = true; }
+            finally
+            {
+                if (ReferenceEquals(ctx.SearchCts, cts)) ctx.SearchCts = null;
+                cts.Dispose();
+            }
 
-                using var pigDoc = PdfPigDoc.Open(_currentFile);
-                for (int pi = 0; pi < pigDoc.NumberOfPages; pi++)
+            // Superseded, or the document changed under it: not this tab's answer any more.
+            if (token.IsCancellationRequested || ctx.SearchGeneration != generation
+                || ctx.CurrentFile != file || ctx.Doc is null)
+                return;
+
+            bool active = ReferenceEquals(ctx, _ctx);
+            if (failed || outcome is null)
+            {
+                if (active)
                 {
-                    var page = pigDoc.GetPage(pi + 1);
-                    // One box per matched line of glyphs, never the words around them (#187).
-                    // A match that wraps is one match but two boxes, so count the matches.
-                    var matches = TDPdf.Services.PdfTextSearch.FindMatches(page, lowerQuery);
-                    if (matches.Count > 0)
-                    {
-                        _allSearchRects[pi] = TDPdf.Services.PdfTextSearch.Flatten(matches);
-                        _searchResultPages.Add(pi);
-                        totalHits += matches.Count;
-                    }
+                    if (_searchStatus != null) _searchStatus.Text = "Search error";
+                    UpdateSearchRedactState();
                 }
+                return;
+            }
 
-                UpdateSearchRedactState();
+            foreach (var kv in outcome.Rects) ctx.AllSearchRects[kv.Key] = kv.Value;
+            ctx.SearchResultPages.AddRange(outcome.Pages);
 
+            // A background tab keeps its results; the status line and the page jump belong to the visible one.
+            if (!active) return;
+
+            UpdateSearchRedactState();
+            try
+            {
                 if (_searchResultPages.Count == 0)
                 {
                     if (_searchStatus != null) _searchStatus.Text = "No matches";
@@ -7825,6 +7973,7 @@ namespace TDPdf
                 _searchPageCursor = _searchResultPages.FindIndex(p => p >= startPage);
                 if (_searchPageCursor < 0) _searchPageCursor = 0;
 
+                int totalHits = outcome.Hits;
                 if (_searchStatus != null)
                     _searchStatus.Text = totalHits == 1
                         ? $"1 match ({_searchResultPages.Count} page)"
@@ -7941,6 +8090,7 @@ namespace TDPdf
         /// </remarks>
         private bool TryPunctuationShortcut(KeyEventArgs e)
         {
+            if (IsAltGrChord()) return false;   // AltGr types a character; it is never a zoom chord
             var mods = Keyboard.Modifiers;
             const ModifierKeys ctrlShift = ModifierKeys.Control | ModifierKeys.Shift;
 
@@ -8023,6 +8173,21 @@ namespace TDPdf
                 return;
             }
 
+            // Escape in a form text box cancels that edit before any window-level Esc step-down.
+            if (e.Key == Key.Escape && Keyboard.FocusedElement is TextBox formTb && IsFormFieldElement(formTb))
+            {
+                FormTextBox_PreviewKeyDown(formTb, e);
+                return;
+            }
+
+            // Escape while carrying a signature drops it (and its pointer ghost).
+            if (e.Key == Key.Escape && _pendingSignature is not null)
+            {
+                CancelSignaturePlacement();
+                e.Handled = true;
+                return;
+            }
+
             // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
             // modifier layer on the board. (upstream KillerPDF v1.6.4)
             KbSyncLayerFromModifiers();
@@ -8037,6 +8202,10 @@ namespace TDPdf
                 e.Handled = true;
                 return;
             }
+
+            // AltGr is reported as Ctrl+Alt. In a text surface it types a character (@ { [ \\ ~ on
+            // many layouts), so none of the chords below may see it.
+            if (IsAltGrChord() && IsTypingTarget()) return;
 
             // Don't intercept keys when typing in a TextBox
             if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
@@ -8377,6 +8546,17 @@ namespace TDPdf
         /// the editable zoom combo. Checked by control type rather than by field identity so a new
         /// text surface is protected the moment it exists.
         /// </summary>
+        /// <summary>
+        /// True for AltGr: Windows reports it as Ctrl+Alt, and while the synthetic Ctrl half is the
+        /// only modifier WPF has registered the right Alt key is still physically down.
+        /// </summary>
+        private static bool IsAltGrChord()
+        {
+            var mods = Keyboard.Modifiers;
+            if ((mods & ModifierKeys.Control) == 0) return false;
+            return (mods & ModifierKeys.Alt) != 0 || Keyboard.IsKeyDown(Key.RightAlt);
+        }
+
         private static bool IsTypingTarget() =>
             Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase
                 or System.Windows.Controls.PasswordBox
@@ -8408,6 +8588,10 @@ namespace TDPdf
         private void PushDocUndo()
         {
             if (_doc is null) return;
+            // Undoing a document change reloads the document and drops every pending form value
+            // (ClearFormState), so what has been typed but not yet written has to go INTO the
+            // snapshot or Undo would silently empty those fields.
+            if (HasPendingFormValues) WriteFormValuesToDocument();
             using var ms = new System.IO.MemoryStream();
             _doc.Save(ms);
             _undoStack.Clear();
@@ -9414,6 +9598,7 @@ namespace TDPdf
                 byte[]? currentBytes = null;
                 if (_doc is not null)
                 {
+                    if (HasPendingFormValues) WriteFormValuesToDocument();   // redo must not lose them either
                     using var ms = new System.IO.MemoryStream();
                     _doc.Save(ms);
                     currentBytes = ms.ToArray();
@@ -10014,6 +10199,9 @@ namespace TDPdf
             // Persist interactive form-field values into the AcroForm before baking
             // annotations, so filled fields are saved alongside drawn annotations.
             WriteFormValuesToDocument();
+            // Named to the user once the save in progress has finished, not mid-write.
+            if (_formWriteFailures.Count > 0)
+                Dispatcher.BeginInvoke(new Action(ReportFormWriteFailures), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
             // Strip link annotation borders so they don't render as colored rectangles
             // (e.g. strikethrough-like lines) in other PDF viewers.
@@ -10721,6 +10909,9 @@ namespace TDPdf
 
         private void PagePreview_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
+            // Carrying a signature: the plain wheel sizes it (Ctrl+wheel below still zooms).
+            if (TryResizeSignatureGhost(e)) { e.Handled = true; return; }
+
             if (Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;

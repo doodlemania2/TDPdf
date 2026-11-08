@@ -48,6 +48,27 @@ namespace TDPdf
         private const double AppScaleMin = 0.7, AppScaleMax = 2.5, AppScaleStep = 0.05;
 
         /// <summary>
+        /// Size in DIPs of the work area (taskbar excluded) of the monitor this window is on, or
+        /// null if it cannot be read. Used by <see cref="TdpDialog"/> to keep a scaled dialog on screen.
+        /// </summary>
+        internal Size? CurrentWorkAreaSizeDip()
+        {
+            try
+            {
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (hwnd == IntPtr.Zero) return null;
+                IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                var info = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(MONITORINFO)) };
+                if (!GetMonitorInfo(mon, ref info)) return null;
+                var dpi = VisualTreeHelper.GetDpi(this);
+                var r = info.rcWork;
+                double w = (r.right - r.left) / dpi.DpiScaleX, h = (r.bottom - r.top) / dpi.DpiScaleY;
+                return w > 0 && h > 0 ? new Size(w, h) : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
         /// Converts a LOGICAL sidebar width (the constants the collapse logic reasons in) to the
         /// SCREEN px the unscaled SidebarCol expects. Identity at 100%.
         /// </summary>
