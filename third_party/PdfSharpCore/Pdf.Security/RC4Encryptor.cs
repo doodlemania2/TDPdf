@@ -102,7 +102,21 @@ namespace PdfSharpCore.Pdf.Security
             var userPass = PdfEncoders.RawEncoding.GetString(ov);
             ValidateUserPassword(userPass);
             if (PasswordValid)
+            {
                 HaveOwnerPermission = true;
+                // TDPdf: /O is the padded user password under the owner key (algorithm 3), so a
+                // valid owner password hands the user password back. Strip the pad to recover it;
+                // it is what lets a save re-protect the file without asking for it again.
+                var len = ov.Length;
+                for (var k = 0; k <= ov.Length; k++)
+                {
+                    var matches = true;
+                    for (var j = k; j < ov.Length && matches; j++)
+                        matches = ov[j] == passwordPadding[j - k];
+                    if (matches) { len = k; break; }
+                }
+                RecoveredUserPassword = userPass.Substring(0, len);
+            }
         }
 
         /// <summary>

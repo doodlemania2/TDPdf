@@ -702,6 +702,16 @@ namespace PdfSharpCore.Pdf
         internal PdfSecuritySettings _securitySettings;
 
         /// <summary>
+        /// TDPdf: what the file's encryption was when it was opened (null if it was not encrypted),
+        /// so the app can write the same protection back. See <see cref="PdfProtection"/>.
+        /// </summary>
+        public PdfProtection OriginalProtection
+        {
+            get { return _originalProtection; }
+        }
+        internal PdfProtection _originalProtection;
+
+        /// <summary>
         /// Gets the document font table that holds all fonts used in the current document.
         /// </summary>
         internal PdfFontTable FontTable

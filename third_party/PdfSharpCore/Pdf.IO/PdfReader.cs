@@ -371,6 +371,29 @@ namespace PdfSharpCore.Pdf.IO
         /// </summary>
         public static PdfDocument Open(Stream stream, string password, PdfDocumentOpenMode openmode, PdfPasswordProvider passwordProvider, PdfReadAccuracy accuracy)
         {
+            return OpenCore(stream, password, openmode, passwordProvider, accuracy, false);
+        }
+
+        /// <summary>
+        /// TDPdf: opens an encrypted document for modification when <paramref name="password"/> is
+        /// only the USER password. The stock reader refuses that (it throws OwnerPasswordRequired)
+        /// because the owner may have forbidden editing; TDPdf does not enforce /P, it decrypts a
+        /// working copy and writes the original protection back on save. The document reports
+        /// SecuritySettings.HasOwnerPermissions == false.
+        /// </summary>
+        public static PdfDocument OpenAllowingUserPassword(string path, string password)
+        {
+            using (Stream stream = new FileStream(path, FileMode.Open, FileAccess.Read))
+            {
+                PdfDocument document = OpenCore(stream, password, PdfDocumentOpenMode.Modify, null, PdfReadAccuracy.Strict, true);
+                if (document != null)
+                    document._fullPath = Path.GetFullPath(path);
+                return document;
+            }
+        }
+
+        static PdfDocument OpenCore(Stream stream, string password, PdfDocumentOpenMode openmode, PdfPasswordProvider passwordProvider, PdfReadAccuracy accuracy, bool allowUserPasswordModify)
+        {
             PdfDocument document;
             try
             {
@@ -431,7 +454,7 @@ namespace PdfSharpCore.Pdf.IO
                                 throw new PdfReaderException(PSSR.InvalidPassword);
                         }
                     }
-                    else if (validity == PasswordValidity.UserPassword && openmode == PdfDocumentOpenMode.Modify)
+                    else if (validity == PasswordValidity.UserPassword && openmode == PdfDocumentOpenMode.Modify && !allowUserPasswordModify)
                     {
                         if (passwordProvider != null)
                         {
@@ -445,6 +468,10 @@ namespace PdfSharpCore.Pdf.IO
                         else
                             throw new PdfReaderException(PSSR.OwnerPasswordRequired);
                     }
+
+                    // TDPdf: remember the protection so a save can put it back.
+                    document._originalProtection = PdfProtection.Capture(securityHandler, password, validity);
+                    document.SecuritySettings._hasOwnerPermissions = validity == PasswordValidity.OwnerPassword;
                 }
                 else
                 {

@@ -1564,6 +1564,13 @@ namespace TDPdf
             // a save has written this tab's file unprotected.
             public bool WasProtected;
 
+            // The protection the source file carried (user password, permissions, strength), when it
+            // can be written back. While set, saves of this tab's own file re-apply it, so Save and
+            // Save As keep the password instead of dropping it; File > Remove Password clears it.
+            // Null for an unprotected file, and for a protected one whose protection could not be
+            // reproduced (those saves are unprotected and say so).
+            public PdfSharpCore.Pdf.Security.PdfProtection? Protection;
+
             // True for docs with no real on-disk home yet (merged-on-drop, imported images).
             // The working path is a temp file, so Ctrl+S must route to Save As instead of
             // silently overwriting the temp copy.
