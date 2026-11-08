@@ -4144,6 +4144,7 @@ namespace TDPdf
             {
                 HideSignaturePopup();
                 _pendingSignature = null;
+                RemoveSignatureGhost();
             }
 
             if (tool != EditTool.Crop)
@@ -4960,13 +4961,78 @@ namespace TDPdf
             if (_doc is null || _selectedFormWidget is null) return;
             string name = TDPdf.Services.PdfFormBuilder.NameOf(_selectedFormWidget);
 
-            PushDocUndo();
+            // Work out which pending values belong to this field BEFORE it is removed, while its
+            // widgets can still be found.
+            var pendingKeys = FormKeysOfField(_selectedFormWidget);
+            string radioName = NearestPartialName(_selectedFormWidget);
+
+            PushDocUndo();   // writes pending values into the document first, so Undo brings them back
             bool removed = TDPdf.Services.PdfFormBuilder.RemoveField(_doc, _selectedFormWidget);
             if (!removed) { SetStatus("Form: that field could not be removed"); return; }
+
+            // The field is gone, so its typed values must not linger: they would be re-applied to a
+            // reused object number, and a radio group's name would keep a selection for nothing.
+            foreach (int k in pendingKeys) { _formTextValues.Remove(k); _formCheckValues.Remove(k); }
+            if (radioName.Length > 0 && !AnyWidgetNamed(radioName)) _formRadioValues.Remove(radioName);
 
             MarkDirty();
             SelectFormWidget(null);
             SetStatus(string.IsNullOrEmpty(name) ? "Field deleted" : $"Deleted \"{name}\"");
+        }
+
+        /// <summary>The pending-value keys (FormFieldSiblings.FieldKey) of every widget of the widget's field.</summary>
+        private HashSet<int> FormKeysOfField(PdfSharpCore.Pdf.PdfDictionary widget)
+        {
+            var keys = new HashSet<int>();
+            if (_doc is null) return keys;
+            var field = TDPdf.Services.PdfFormBuilder.FieldOf(widget);
+            for (int p = 0; p < _doc.PageCount; p++)
+            {
+                var annots = _doc.Pages[p].Elements.GetArray("/Annots");
+                if (annots is null) continue;
+                for (int i = 0; i < annots.Elements.Count; i++)
+                {
+                    var elem = annots.Elements[i];
+                    var w = elem as PdfSharpCore.Pdf.PdfDictionary ?? (elem as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
+                    if (w is null || !ReferenceEquals(TDPdf.Services.PdfFormBuilder.FieldOf(w), field)) continue;
+                    int n = GetObjectNumber(elem);
+                    if (n < 0) n = -(p * 10000 + i);
+                    keys.Add(TDPdf.Services.FormFieldSiblings.FieldKey(w, n));
+                }
+            }
+            return keys;
+        }
+
+        /// <summary>The first /T found walking up from the widget (a radio group's name).</summary>
+        private static string NearestPartialName(PdfSharpCore.Pdf.PdfDictionary widget)
+        {
+            PdfSharpCore.Pdf.PdfDictionary? node = widget;
+            for (int d = 0; node is not null && d < 64; d++)
+            {
+                if (node.Elements["/T"] is PdfSharpCore.Pdf.PdfString t && t.Value.Length > 0) return t.Value;
+                var pi = node.Elements["/Parent"];
+                node = pi as PdfSharpCore.Pdf.PdfDictionary ?? (pi as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
+            }
+            return "";
+        }
+
+        /// <summary>True when any remaining widget's nearest partial name is <paramref name="name"/>.</summary>
+        private bool AnyWidgetNamed(string name)
+        {
+            if (_doc is null) return false;
+            for (int p = 0; p < _doc.PageCount; p++)
+            {
+                var annots = _doc.Pages[p].Elements.GetArray("/Annots");
+                if (annots is null) continue;
+                for (int i = 0; i < annots.Elements.Count; i++)
+                {
+                    var elem = annots.Elements[i];
+                    var w = elem as PdfSharpCore.Pdf.PdfDictionary ?? (elem as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
+                    if (w is null || w.Elements["/Subtype"]?.ToString()?.Contains("Widget") != true) continue;
+                    if (NearestPartialName(w) == name) return true;
+                }
+            }
+            return false;
         }
 
         private void HideFormSettings()
@@ -7941,6 +8007,7 @@ namespace TDPdf
         /// </remarks>
         private bool TryPunctuationShortcut(KeyEventArgs e)
         {
+            if (IsAltGrChord()) return false;   // AltGr types a character; it is never a zoom chord
             var mods = Keyboard.Modifiers;
             const ModifierKeys ctrlShift = ModifierKeys.Control | ModifierKeys.Shift;
 
@@ -8023,6 +8090,21 @@ namespace TDPdf
                 return;
             }
 
+            // Escape in a form text box cancels that edit before any window-level Esc step-down.
+            if (e.Key == Key.Escape && Keyboard.FocusedElement is TextBox formTb && IsFormFieldElement(formTb))
+            {
+                FormTextBox_PreviewKeyDown(formTb, e);
+                return;
+            }
+
+            // Escape while carrying a signature drops it (and its pointer ghost).
+            if (e.Key == Key.Escape && _pendingSignature is not null)
+            {
+                CancelSignaturePlacement();
+                e.Handled = true;
+                return;
+            }
+
             // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
             // modifier layer on the board. (upstream KillerPDF v1.6.4)
             KbSyncLayerFromModifiers();
@@ -8037,6 +8119,10 @@ namespace TDPdf
                 e.Handled = true;
                 return;
             }
+
+            // AltGr is reported as Ctrl+Alt. In a text surface it types a character (@ { [ \\ ~ on
+            // many layouts), so none of the chords below may see it.
+            if (IsAltGrChord() && IsTypingTarget()) return;
 
             // Don't intercept keys when typing in a TextBox
             if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
@@ -8377,6 +8463,17 @@ namespace TDPdf
         /// the editable zoom combo. Checked by control type rather than by field identity so a new
         /// text surface is protected the moment it exists.
         /// </summary>
+        /// <summary>
+        /// True for AltGr: Windows reports it as Ctrl+Alt, and while the synthetic Ctrl half is the
+        /// only modifier WPF has registered the right Alt key is still physically down.
+        /// </summary>
+        private static bool IsAltGrChord()
+        {
+            var mods = Keyboard.Modifiers;
+            if ((mods & ModifierKeys.Control) == 0) return false;
+            return (mods & ModifierKeys.Alt) != 0 || Keyboard.IsKeyDown(Key.RightAlt);
+        }
+
         private static bool IsTypingTarget() =>
             Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase
                 or System.Windows.Controls.PasswordBox
@@ -8408,6 +8505,10 @@ namespace TDPdf
         private void PushDocUndo()
         {
             if (_doc is null) return;
+            // Undoing a document change reloads the document and drops every pending form value
+            // (ClearFormState), so what has been typed but not yet written has to go INTO the
+            // snapshot or Undo would silently empty those fields.
+            if (HasPendingFormValues) WriteFormValuesToDocument();
             using var ms = new System.IO.MemoryStream();
             _doc.Save(ms);
             _undoStack.Clear();
@@ -9414,6 +9515,7 @@ namespace TDPdf
                 byte[]? currentBytes = null;
                 if (_doc is not null)
                 {
+                    if (HasPendingFormValues) WriteFormValuesToDocument();   // redo must not lose them either
                     using var ms = new System.IO.MemoryStream();
                     _doc.Save(ms);
                     currentBytes = ms.ToArray();
@@ -10014,6 +10116,9 @@ namespace TDPdf
             // Persist interactive form-field values into the AcroForm before baking
             // annotations, so filled fields are saved alongside drawn annotations.
             WriteFormValuesToDocument();
+            // Named to the user once the save in progress has finished, not mid-write.
+            if (_formWriteFailures.Count > 0)
+                Dispatcher.BeginInvoke(new Action(ReportFormWriteFailures), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
             // Strip link annotation borders so they don't render as colored rectangles
             // (e.g. strikethrough-like lines) in other PDF viewers.
@@ -10721,6 +10826,9 @@ namespace TDPdf
 
         private void PagePreview_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
+            // Carrying a signature: the plain wheel sizes it (Ctrl+wheel below still zooms).
+            if (TryResizeSignatureGhost(e)) { e.Handled = true; return; }
+
             if (Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
