@@ -198,6 +198,7 @@ RedactAnnotations.Run(Check, tmp);
 PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);
 TextSearch.Run(Check, tmp);
+SearchNormalise.Run(Check);
 InvertedText.Run(Check, tmp);
 NightModeImages.Run(Check, tmp);
 Documenso.Run(Check, tmp);
