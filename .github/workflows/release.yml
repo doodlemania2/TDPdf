@@ -286,10 +286,11 @@ jobs:
 
       # Intune deployment lives in the private repo doodlemania2/tdpdf-fleet (#178). This
       # tells it a signed release is out; it downloads the exe from the release, verifies hash,
-      # signature and version, and updates the Intune app. Optional: without
-      # FLEET_DISPATCH_TOKEN the fleet's 15-minute check picks the release up anyway. The token
-      # (not set; nothing needs it) would be a fine-grained one with Contents: write on tdpdf-fleet only. Secrets are not passed
-      # to workflows from forks, and this workflow only runs on tags and workflow_dispatch.
+      # signature and version, and updates the Intune app. FLEET_DISPATCH_TOKEN is set (2026-11-08)
+      # to the owner's gh login token: GitHub has no API to mint the narrower fine-grained token
+      # (Contents: write on tdpdf-fleet only). The fleet's own schedule is a fallback only; GitHub
+      # ran it every 3-5 hours, not every 15 minutes. Secrets are not passed to workflows from
+      # forks, and this workflow only runs on tags and workflow_dispatch.
       - name: Tell tdpdf-fleet to deploy
         id: fleet
         if: env.HAS_FLEET == 'true' && github.event.inputs.skip_intune != 'true' && steps.sign.outputs.signed == 'true'
