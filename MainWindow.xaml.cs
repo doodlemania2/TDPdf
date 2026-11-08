@@ -1629,6 +1629,12 @@ namespace TDPdf
             public readonly List<int> SearchResultPages = new();
             public int SearchPageCursor = -1;
 
+            // Background search (upstream 1.9.1). Per tab: the query running for THIS document,
+            // which result set is current, and the extracted page text kept between queries.
+            public CancellationTokenSource? SearchCts;
+            public int SearchGeneration;
+            public TDPdf.Services.PdfTextSearch.Index? SearchIndex;
+
             // View state restored when this tab is re-activated.
             public IReadOnlyList<BitmapSource?>? Thumbnails;
             public int SelectedPageIndex = -1;
@@ -7756,19 +7762,51 @@ namespace TDPdf
             }
         }
 
+        private System.Windows.Threading.DispatcherTimer? _searchDebounce;
+
         private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            // The previous query is superseded the moment the text changes; stop its work now
+            // rather than when the debounce fires.
+            CancelSearch(_ctx);
+
             var text = _searchBox?.Text ?? "";
             if (text.Length >= 2)
-                RunSearch(text);
+            {
+                // Debounce typing: one search for a burst of keystrokes.
+                if (_searchDebounce is null)
+                {
+                    _searchDebounce = new System.Windows.Threading.DispatcherTimer
+                    {
+                        Interval = TimeSpan.FromMilliseconds(250)
+                    };
+                    _searchDebounce.Tick += (_, _) =>
+                    {
+                        _searchDebounce!.Stop();
+                        var q = _searchBox?.Text ?? "";
+                        if (q.Length >= 2) RunSearch(q);
+                    };
+                }
+                _searchDebounce.Stop();
+                _searchDebounce.Start();
+            }
             else
             {
+                _searchDebounce?.Stop();
                 ClearSearchHighlights();
                 _allSearchRects.Clear();
                 _searchResultPages.Clear();
                 _searchPageCursor = -1;
                 UpdateSearchRedactState();
             }
+        }
+
+        /// <summary>Stops <paramref name="ctx"/>'s running search and invalidates any result still on its way back.</summary>
+        private static void CancelSearch(DocumentContext ctx)
+        {
+            ctx.SearchGeneration++;
+            try { ctx.SearchCts?.Cancel(); } catch (ObjectDisposedException) { }
+            ctx.SearchCts = null;
         }
 
         /// <summary>The bulk-redact button only means anything while there are hits to act on.</summary>
@@ -7778,42 +7816,79 @@ namespace TDPdf
                 _searchRedactBtn.IsEnabled = _allSearchRects.Count > 0;
         }
 
-        private void RunSearch(string query)
+        /// <summary>
+        /// Searches the active tab's document on a worker thread. The extraction and matching
+        /// (<see cref="TDPdf.Services.PdfTextSearch.Index"/>) run off the UI thread with their own
+        /// PdfPig instance; only the result is brought back, and only if it is still the current
+        /// query of the document it was computed for. Results are stored on THAT tab's context,
+        /// never the active one, so switching tabs mid-search cannot cross them over.
+        /// </summary>
+        private async void RunSearch(string query)
         {
-            ClearSearchHighlights();
-            _allSearchRects.Clear();
-            _searchResultPages.Clear();
-            _searchPageCursor = -1;
+            var ctx = _ctx;
+            CancelSearch(ctx);   // also bumps the generation: results of older queries are dropped
 
-            if (string.IsNullOrWhiteSpace(query) || _currentFile is null)
+            ClearSearchHighlights();
+            ctx.AllSearchRects.Clear();
+            ctx.SearchResultPages.Clear();
+            ctx.SearchPageCursor = -1;
+
+            string? file = ctx.CurrentFile;
+            if (string.IsNullOrWhiteSpace(query) || file is null)
             {
                 if (_searchStatus != null) _searchStatus.Text = "";
                 UpdateSearchRedactState();
                 return;
             }
 
+            UpdateSearchRedactState();
+            if (_searchStatus != null) _searchStatus.Text = "Searching...";
+
+            var cts = new CancellationTokenSource();
+            ctx.SearchCts = cts;
+            int generation = ctx.SearchGeneration;
+            var token = cts.Token;
+
+            TDPdf.Services.PdfTextSearch.SearchOutcome? outcome = null;
+            bool failed = false;
             try
             {
-                string lowerQuery = query.ToLowerInvariant();
-                int totalHits = 0;
+                var index = ctx.SearchIndex = TDPdf.Services.PdfTextSearch.Index.For(ctx.SearchIndex, file);
+                outcome = await Task.Run(() => index.Search(query.ToLowerInvariant(), token), token);
+            }
+            catch (OperationCanceledException) { }
+            catch { failed = true; }
+            finally
+            {
+                if (ReferenceEquals(ctx.SearchCts, cts)) ctx.SearchCts = null;
+                cts.Dispose();
+            }
 
-                using var pigDoc = PdfPigDoc.Open(_currentFile);
-                for (int pi = 0; pi < pigDoc.NumberOfPages; pi++)
+            // Superseded, or the document changed under it: not this tab's answer any more.
+            if (token.IsCancellationRequested || ctx.SearchGeneration != generation
+                || ctx.CurrentFile != file || ctx.Doc is null)
+                return;
+
+            bool active = ReferenceEquals(ctx, _ctx);
+            if (failed || outcome is null)
+            {
+                if (active)
                 {
-                    var page = pigDoc.GetPage(pi + 1);
-                    // One box per matched line of glyphs, never the words around them (#187).
-                    // A match that wraps is one match but two boxes, so count the matches.
-                    var matches = TDPdf.Services.PdfTextSearch.FindMatches(page, lowerQuery);
-                    if (matches.Count > 0)
-                    {
-                        _allSearchRects[pi] = TDPdf.Services.PdfTextSearch.Flatten(matches);
-                        _searchResultPages.Add(pi);
-                        totalHits += matches.Count;
-                    }
+                    if (_searchStatus != null) _searchStatus.Text = "Search error";
+                    UpdateSearchRedactState();
                 }
+                return;
+            }
 
-                UpdateSearchRedactState();
+            foreach (var kv in outcome.Rects) ctx.AllSearchRects[kv.Key] = kv.Value;
+            ctx.SearchResultPages.AddRange(outcome.Pages);
 
+            // A background tab keeps its results; the status line and the page jump belong to the visible one.
+            if (!active) return;
+
+            UpdateSearchRedactState();
+            try
+            {
                 if (_searchResultPages.Count == 0)
                 {
                     if (_searchStatus != null) _searchStatus.Text = "No matches";
@@ -7825,6 +7900,7 @@ namespace TDPdf
                 _searchPageCursor = _searchResultPages.FindIndex(p => p >= startPage);
                 if (_searchPageCursor < 0) _searchPageCursor = 0;
 
+                int totalHits = outcome.Hits;
                 if (_searchStatus != null)
                     _searchStatus.Text = totalHits == 1
                         ? $"1 match ({_searchResultPages.Count} page)"

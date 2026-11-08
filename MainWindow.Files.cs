@@ -171,6 +171,8 @@ namespace TDPdf
                 _renderDims.Clear();
                 InvalidateRenderCache();
                 _contentEditor.ClearCache();
+                CancelSearch(_ctx);   // its results describe the document that just went away
+                _ctx.SearchIndex = null;
                 _allSearchRects.Clear();
                 _searchResultPages.Clear();
                 _searchPageCursor = -1;
