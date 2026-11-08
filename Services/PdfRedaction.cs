@@ -20,7 +20,7 @@ namespace TDPdf.Services
     /// the destination file is never written and the caller gets an error rather than a
     /// document the user would reasonably believe was safe.
     /// </remarks>
-    internal static class PdfRedaction
+    internal static partial class PdfRedaction
     {
         internal sealed class Request
         {
@@ -85,6 +85,9 @@ namespace TDPdf.Services
 
             /// <summary>Pages that were rasterised, and so no longer carry text.</summary>
             internal IReadOnlyList<int> Rasterized { get; set; } = Array.Empty<int>();
+
+            /// <summary>Private editor data, thumbnails, structure descriptions and bookmark titles cleaned.</summary>
+            internal ResidueReport Residue { get; set; } = new();
         }
 
         internal static Result Apply(string srcPath, string destPath, Request request)
@@ -96,9 +99,16 @@ namespace TDPdf.Services
 
             string rasterized = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
             string annotated = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
+            string residue = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
 
             try
             {
+                // The text under the marks, read while it still exists. Bookmark titles are cleaned
+                // against it; null (unreadable source) makes any existing title a refusal later.
+                IReadOnlyList<string>? removedTerms;
+                try { removedTerms = CollectRemovedTerms(srcPath, request.RectsByPage); }
+                catch { removedTerms = null; }
+
                 // A page is redacted one way or the other, never both: rasterising it replaces
                 // everything on it anyway, so removing objects there first would be work thrown
                 // away — and it would trip the image refusal below on the very pages the caller has
@@ -173,12 +183,25 @@ namespace TDPdf.Services
                     result.Rasterized = raster.OrderBy(i => i).ToList();
                 }
 
-                // 5. Scrub what lives outside the page content. Redacting a name from the body
+                // 5a. Private editor data, page thumbnails, structure-tree descriptions and bookmark
+                //     titles: each can hold a second copy of what the marks covered. Always runs,
+                //     whatever ScrubMetadata says, because it is part of the marks, not of the metadata.
+                string afterResidue = afterRaster;
+                if (!TryScrubResidue(afterRaster, residue, request.RectsByPage, removedTerms,
+                        out var residueReport, out bool residueWrote, out string? residueError))
+                {
+                    result.Error = residueError ?? "the hidden copies of the marked content could not be removed";
+                    return result;
+                }
+                if (residueWrote) afterResidue = residue;
+                result.Residue = residueReport;
+
+                // 5b. Scrub what lives outside the page content. Redacting a name from the body
                 //    while leaving it in the Title is a common and embarrassing miss.
-                string verifyPath = afterRaster;
+                string verifyPath = afterResidue;
                 if (request.ScrubMetadata)
                 {
-                    if (TryScrubMetadata(afterRaster, scrubbed, out string? scrubError))
+                    if (TryScrubMetadata(afterResidue, scrubbed, out string? scrubError))
                         verifyPath = scrubbed;
                     else
                     {
@@ -207,6 +230,15 @@ namespace TDPdf.Services
                     return result;
                 }
 
+                var residual = FindResidue(verifyPath, request.RectsByPage, removedTerms);
+                if (residual.Count > 0)
+                {
+                    result.Error =
+                        $"redaction could not be confirmed because {residual.Count} hidden copy(ies) of the " +
+                        $"marked content remain ({string.Join("; ", residual.Distinct().Take(5))}), so the file was not written";
+                    return result;
+                }
+
                 File.Copy(verifyPath, destPath, overwrite: true);
                 result.Ok = true;
                 return result;
@@ -222,6 +254,7 @@ namespace TDPdf.Services
                 TryDelete(rasterized);
                 TryDelete(annotated);
                 TryDelete(scrubbed);
+                TryDelete(residue);
             }
         }
 
