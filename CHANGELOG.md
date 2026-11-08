@@ -6,6 +6,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.2.0.0] - 2026-11-07
+
+Fixes and features from a curated sync with upstream KillerPDF v1.9.1 and v1.9.2. As before, upstream's changelog was read as a list of problems to look for in TDPdf's own code, each applicable item was approved individually, and nothing was copied from upstream's engine. Several fixes below are defects of TDPdf's own that the comparison turned up.
+
+### Security
+
+- **Redaction removes the hidden copies of what it covers.** Structure-tree descriptions (alternate text, actual text, expansions and titles) on marked pages, private editor data (`/PieceInfo`), page thumbnails, and bookmark titles that contain text removed under a mark are now cleaned, and the post-redaction check refuses to write the file if any of them remain. A structure tree too deep or too large to clean completely refuses the redaction (upstream 1.9.1).
+
+### Added
+
+- **Print: Reverse order, and a choice of long-edge or short-edge binding** for two-sided printing. Reverse flips whole sheets, so N-up still reads in order. A short-edge choice made in the printer's Properties dialog now shows in the combo. Copies, pages, odd/even and reverse sit in their own Pages to print section (upstream 1.9.2).
+- **Print: Actual size and Shrink oversized pages**, and the print window remembers the scale, custom percentage and two-sided edge between jobs (upstream #464).
+- **Placing a signature shows a faint copy at the pointer, and the mouse wheel resizes it before you click.** Escape cancels placement, Ctrl+wheel still zooms, and saved signatures can be picked with the keyboard (upstream #468).
+- **Save Flattened shows its progress from the first page, and Esc cancels it.** A canceled flatten leaves the destination untouched and says so (upstream 1.9.2).
+
+### Changed
+
+- **Saving a password-protected PDF keeps its password and permissions.** Save and Save As used to write it unprotected. **Remove Password** is now the only way to drop protection. TDPdf's PDF writer supports only RC4 encryption, so an AES-protected file is saved as 128-bit RC4, and the status line says so. For an AES-256 file opened with the user password, the original owner password cannot be carried over, so the saved copy gets a new owner password nobody holds; its permissions still apply (upstream 1.9.2).
+- **Save Flattened keeps each page's own resolution** (150 to 600 DPI, from the page's largest image) instead of rendering every page at 150 DPI, so scans no longer lose detail (upstream #462).
+- **Message boxes and prompts, including password prompts, follow the app size** and stay within the screen (upstream 1.9.2).
+- **Search runs in the background.** Typing no longer freezes a large document; a new keystroke cancels the previous search, and results stay with the tab they were found in (upstream 1.9.1).
+
+### Fixed
+
+- **A PDF with separate open and owner passwords can be opened with the open password.** Entering it failed with "owner password required", leaving no way to open the file (upstream #470).
+- **Protected PDFs whose metadata was left unencrypted open correctly**, and an Identity crypt filter is read as plain data (upstream #470).
+- **Encryption is recognized in web-optimized (linearized) files and files with large cross-reference streams.** TDPdf looked for it only in the last 2 KB of the file (upstream 1.9.2).
+- **Printing a long document no longer holds every page in memory.** Each sheet is rendered when the printer driver asks for it and released afterwards; before, every selected page was held at 300 DPI first, about 3 GB for 100 pages. A sheet that fails to render prints blank instead of being skipped, so two-sided pages stay paired. Found during this sync; not an upstream item.
+- **If TDPdf cannot write its print copy and the document has unsaved changes, it asks before printing the last saved version.** It used to print the old file silently, without unsaved page rotations, deletions or reorders. Found during this sync.
+- **A damaged `signatures.json` no longer wipes your saved signatures.** It is backed up beside itself, you are told once, and it is not overwritten until you add a signature. The file is now written atomically (upstream 1.9.2; TDPdf's own data-loss path).
+- **Form fields that share a name stay in sync** on every page, comb fields included. Deleting a field drops what was typed into it, document Undo and Redo keep typed-but-unsaved form values, and a field that fails to save is named afterwards instead of failing silently (upstream #466).
+- **Escape cancels a form-field edit**, clicking outside a field releases it, and AltGr combinations type their characters instead of triggering shortcuts (upstream 1.9.1).
+- **Placing a signature over a form field no longer also focuses the field** (upstream 1.9.1).
+- **Search finds words written with fi/fl/ff ligatures, soft hyphens or zero-width characters, and words hyphenated across a line break**, while literal hyphens still match (upstream 1.9.1).
+- **Export Pages as Images asks before replacing the files it actually writes** (`name-page-001.png` and so on, not the name typed in the dialog), and a failed write keeps the old file (upstream 1.9.1).
+
+### Not taken
+
+- Enforcing a PDF owner's permission flags (print, copy and export limits that need the owner password): not approved for this release.
+- Dragging a saved signature onto the page: click to pick, then click to place, still works.
+- Refusing to save a file whose encryption entry was lost while its content is still encrypted: there is no cheap, reliable way to tell, and a false refusal would block saves.
+- Command-line, engine, preflight, accessibility review, paragraph editing, scan text editing, ZIP import, Explorer previews, comment export and Store packaging items: TDPdf has no equivalent, or upstream's fix is in code TDPdf does not share.
+- Sidebar state across restarts, queued fit and zoom while loading, tab close button styling, UserUnit scaling and merge handling of duplicate annotation names: applicable but not selected this time.
+
 ## [2.1.1.1] - 2026-11-02
 
 ### Fixed
@@ -1325,7 +1369,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.1.1.1...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.2.0.0...HEAD
+[2.2.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.1.1.1...v2.2.0.0
 [2.1.1.1]: https://github.com/doodlemania2/TDPdf/compare/v2.1.0.0...v2.1.1.1
 [2.1.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.2.0...v2.1.0.0
 [2.0.2.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.1.0...v2.0.2.0
