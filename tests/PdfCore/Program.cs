@@ -195,6 +195,7 @@ InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);
 RedactAnnotations.Run(Check, tmp);
+RedactResidue.Run(Check, tmp);
 PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);
 TextSearch.Run(Check, tmp);
