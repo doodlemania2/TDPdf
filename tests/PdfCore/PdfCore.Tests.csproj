@@ -8,7 +8,7 @@
     WHY THIS EXISTS
     TDPdf is a Windows WPF app and cannot run on the machines this repo usually lives on, so
     the PDF-editing core would otherwise ship unexercised. But PDFium itself is cross-platform,
-    and bblanchon publishes the SAME revision the app ships (154.0.8035) for macOS and Linux.
+    and bblanchon publishes the SAME revision the app ships (159.0.8138) for macOS and Linux.
     So this compiles the real Services/PdfiumInterop.cs - not a copy - and drives it against
     that native.
 
@@ -26,21 +26,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PdfCore.Tests</AssemblyName>
-    <!-- The file under test is written for the app's nullable settings, not this project's. -->
-    <NoWarn>CS8600;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- All three natives so this runs wherever the repo is checked out; the resolver in
          Program.cs loads whichever one this machine can. -->
-    <PackageReference Include="bblanchon.PDFium.macOS" Version="154.0.8035" />
-    <PackageReference Include="bblanchon.PDFium.Linux" Version="154.0.8035" />
-    <PackageReference Include="bblanchon.PDFium.Win32" Version="154.0.8035" />
-    <PackageReference Include="PdfPig" Version="0.1.14" />
+    <PackageReference Include="bblanchon.PDFium.macOS" Version="159.0.8138" />
+    <PackageReference Include="bblanchon.PDFium.Linux" Version="159.0.8138" />
+    <PackageReference Include="bblanchon.PDFium.Win32" Version="159.0.8138" />
+    <PackageReference Include="PdfPig" Version="0.1.16" />
     <!-- Test runner only: the app gets System.Security.Cryptography.Pkcs from the WindowsDesktop
          shared framework (net10.0-windows), which this plain net10.0 console does not reference.
          Nothing here ships, so it needs no THIRD-PARTY-NOTICES entry. -->
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
     <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
     <Compile Include="..\..\Services\PdfiumInterop.cs" />

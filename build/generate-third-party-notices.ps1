@@ -16,7 +16,7 @@
     Licence-scanning tools read NuGet package metadata, and the two largest obligations here
     are invisible to that:
 
-      * pdfium.dll arrives inside Docnet.Core under runtimes/<rid>/native/ and carries its own
+      * pdfium.dll arrives via bblanchon.PDFium.Win32 under runtimes/<rid>/native/ and carries its own
         1,300-line aggregate notice covering PDFium plus libpng, LibTIFF, agg23, FreeType,
         lcms, OpenJPEG, zlib, libjpeg-turbo, IJG and ICU. No scanner will find it.
       * leptonica and the tesseract engine are EmbeddedResource blobs in TDPdf.csproj,
@@ -62,24 +62,24 @@ $mitComponents = @(
     @{ Name = 'Docnet.Core (managed wrapper only)'; Version = '2.6.0'; Url = 'https://github.com/GowenGit/docnet'; Holder = 'Copyright (c) 2018 GowenGit' }
     @{ Name = 'SharpZipLib';                       Version = '1.4.2';  Url = 'https://github.com/icsharpcode/SharpZipLib'; Holder = 'Copyright (c) 2000-2018 SharpZipLib Contributors' }
     @{ Name = 'CommunityToolkit.Mvvm';             Version = '8.4.2';  Url = 'https://github.com/CommunityToolkit/dotnet'; Holder = 'Copyright (c) .NET Foundation and Contributors' }
-    @{ Name = 'Microsoft.Extensions.* and System.* runtime packages'; Version = '10.0.0'; Url = 'https://github.com/dotnet/runtime'; Holder = 'Copyright (c) .NET Foundation and Contributors' }
+    @{ Name = 'Microsoft.Extensions.* and System.* runtime packages'; Version = '10.0.14'; Url = 'https://github.com/dotnet/runtime'; Holder = 'Copyright (c) .NET Foundation and Contributors' }
 )
 
 $apacheComponents = @(
-    @{ Name = 'PdfPig';                    Version = '0.1.14';        Url = 'https://github.com/UglyToad/PdfPig' }
+    @{ Name = 'PdfPig';                    Version = '0.1.16';        Url = 'https://github.com/UglyToad/PdfPig' }
     @{ Name = 'Tesseract (.NET wrapper)';  Version = '5.2.0';         Url = 'https://github.com/charlesw/tesseract' }
     @{ Name = 'Tesseract OCR engine (tesseract50.dll, embedded)'; Version = '5.0';  Url = 'https://github.com/tesseract-ocr/tesseract' }
     @{ Name = 'SixLabors.ImageSharp';      Version = '4.1.3';         Url = 'https://github.com/SixLabors/ImageSharp' }
-    @{ Name = 'SixLabors.Fonts';           Version = '1.0.0-beta17';  Url = 'https://github.com/SixLabors/Fonts' }
-    @{ Name = 'OpenTelemetry .NET';        Version = '1.17.0';        Url = 'https://github.com/open-telemetry/opentelemetry-dotnet' }
-    @{ Name = 'bblanchon.PDFium.Win32 (PDFium build and packaging)'; Version = '154.0.8035'; Url = 'https://github.com/bblanchon/pdfium-binaries' }
+    @{ Name = 'SixLabors.Fonts';           Version = '3.2.0';  Url = 'https://github.com/SixLabors/Fonts' }
+    @{ Name = 'OpenTelemetry .NET';        Version = '1.20.1';        Url = 'https://github.com/open-telemetry/opentelemetry-dotnet' }
+    @{ Name = 'bblanchon.PDFium.Win32 (PDFium build and packaging)'; Version = '159.0.8138'; Url = 'https://github.com/bblanchon/pdfium-binaries' }
     @{ Name = 'Tesseract trained data (downloaded on demand, not bundled)'; Version = 'n/a'; Url = 'https://github.com/tesseract-ocr/tessdata_fast' }
 )
 
 # ── Licence texts ──────────────────────────────────────────────────────────────────────────
 
 # Apache-2.0, taken from a package that ships it verbatim rather than retyped.
-$apacheText = Get-PackageFile -Package 'opentelemetry' -Version '1.17.0' -RelativePath 'LICENSE.TXT'
+$apacheText = Get-PackageFile -Package 'opentelemetry' -Version '1.20.1' -RelativePath 'LICENSE.TXT'
 
 # The PDFium aggregate. Copied whole and never summarised: it is itself a bundle of eleven
 # upstream licences, and abridging it would drop notices that must be reproduced.
@@ -92,13 +92,13 @@ $apacheText = Get-PackageFile -Package 'opentelemetry' -Version '1.17.0' -Relati
 $pdfiumText = Get-PackageFile -Package 'docnet.core' -Version '2.6.0' -RelativePath 'runtimes/win-x64/native/LICENSE'
 
 # Carried forward from packages that ship their own downstream notices.
-$otelThirdParty = Get-PackageFile -Package 'opentelemetry' -Version '1.17.0' -RelativePath 'THIRD-PARTY-NOTICES.TXT'
+$otelThirdParty = Get-PackageFile -Package 'opentelemetry' -Version '1.20.1' -RelativePath 'THIRD-PARTY-NOTICES.TXT'
 $mvvmThirdParty = Get-PackageFile -Package 'communitytoolkit.mvvm' -Version '8.4.2' -RelativePath 'ThirdPartyNotices.txt'
 
 # Microsoft Edge WebView2 SDK: the managed wrappers (Microsoft.Web.WebView2.Core/.Wpf/.WinForms)
 # and the embedded native WebView2Loader.dll. BSD-3-Clause, read verbatim from the package, plus
 # the package's own notices file. The WebView2 Runtime (the browser engine) is NOT distributed.
-$webView2Version = '1.0.4191.47'
+$webView2Version = '1.0.4314.35'
 $webView2Text = Get-PackageFile -Package 'microsoft.web.webview2' -Version $webView2Version -RelativePath 'LICENSE.txt'
 $webView2ThirdParty = Get-PackageFile -Package 'microsoft.web.webview2' -Version $webView2Version -RelativePath 'NOTICE.txt'
 
@@ -196,7 +196,7 @@ Add-Line 'These ship as native libraries inside the executable and are extracted
 Add-Line ''
 Add-Line '| Component | Version | Licence | Upstream |'
 Add-Line '|---|---|---|---|'
-Add-Line '| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 154.0.8035 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |'
+Add-Line '| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 159.0.8138 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |'
 Add-Line '| Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |'
 Add-Line '| Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |'
 Add-Line ('| Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | {0} | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |' -f $webView2Version)

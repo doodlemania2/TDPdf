@@ -43,10 +43,10 @@ These ship as native libraries inside the executable and are extracted at runtim
 
 | Component | Version | Licence | Upstream |
 |---|---|---|---|
-| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 154.0.8035 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |
+| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 159.0.8138 | BSD-3-Clause, plus the aggregate below | https://pdfium.googlesource.com/pdfium/ |
 | Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |
 | Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |
-| Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | 1.0.4191.47 | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |
+| Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | 1.0.4314.35 | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |
 
 ### 1.1 PDFium
 
@@ -1399,7 +1399,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### 1.3 Microsoft Edge WebView2 SDK
 
-Microsoft.Web.WebView2 1.0.4191.47: the native `WebView2Loader.dll` and the managed wrappers
+Microsoft.Web.WebView2 1.0.4314.35: the native `WebView2Loader.dll` and the managed wrappers
 `Microsoft.Web.WebView2.Core`, `.Wpf` and `.WinForms`, which host the signing service's
 pages inside TDPdf. The browser engine itself — the Microsoft Edge WebView2 Runtime — is
 part of Windows and is **not** distributed with TDPdf. The package's own third-party
@@ -1441,13 +1441,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 | Component | Version | Upstream |
 |---|---|---|
-| PdfPig | 0.1.14 | https://github.com/UglyToad/PdfPig |
+| PdfPig | 0.1.16 | https://github.com/UglyToad/PdfPig |
 | Tesseract (.NET wrapper) | 5.2.0 | https://github.com/charlesw/tesseract |
 | Tesseract OCR engine (tesseract50.dll, embedded) | 5.0 | https://github.com/tesseract-ocr/tesseract |
 | SixLabors.ImageSharp | 4.1.3 | https://github.com/SixLabors/ImageSharp |
-| SixLabors.Fonts | 1.0.0-beta17 | https://github.com/SixLabors/Fonts |
-| OpenTelemetry .NET | 1.17.0 | https://github.com/open-telemetry/opentelemetry-dotnet |
-| bblanchon.PDFium.Win32 (PDFium build and packaging) | 154.0.8035 | https://github.com/bblanchon/pdfium-binaries |
+| SixLabors.Fonts | 3.2.0 | https://github.com/SixLabors/Fonts |
+| OpenTelemetry .NET | 1.20.1 | https://github.com/open-telemetry/opentelemetry-dotnet |
+| bblanchon.PDFium.Win32 (PDFium build and packaging) | 159.0.8138 | https://github.com/bblanchon/pdfium-binaries |
 | Tesseract trained data (downloaded on demand, not bundled) | n/a | https://github.com/tesseract-ocr/tessdata_fast |
 
 The Tesseract trained-data models are **not** bundled. TDPdf downloads them from the
@@ -1761,7 +1761,7 @@ OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Microsoft.Extensions.* and System.* runtime packages 10.0.0
+### Microsoft.Extensions.* and System.* runtime packages 10.0.14
 
 https://github.com/dotnet/runtime
 
