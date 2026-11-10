@@ -32,9 +32,7 @@ namespace TDPdf.Diagnostics
         {
             get
             {
-                bool isSystem;
-                try { isSystem = WindowsIdentity.GetCurrent().IsSystem; }
-                catch { isSystem = false; }
+                bool isSystem = IsSystemContext();
 
                 string baseDir = isSystem
                     ? Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)
@@ -42,6 +40,12 @@ namespace TDPdf.Diagnostics
 
                 return System.IO.Path.Combine(baseDir, "TDPdf", "install.log");
             }
+        }
+
+        private static bool IsSystemContext()
+        {
+            try { return WindowsIdentity.GetCurrent().IsSystem; }
+            catch { return false; }
         }
 
         public static void Write(string message) => WriteLevel("INFO", message);
@@ -82,7 +86,18 @@ namespace TDPdf.Diagnostics
             {
                 string path = Path;
                 string dir = System.IO.Path.GetDirectoryName(path)!;
-                Directory.CreateDirectory(dir);
+                if (IsSystemContext())
+                {
+                    // SYSTEM writing into %ProgramData%\TDPdf: any user could have made that folder
+                    // (or made it a junction) first. Create/harden it ourselves, or if somebody else
+                    // owns it, log nothing rather than append to a target they chose.
+                    if (!TelemetryStore.EnsureTrustedDirectory() || !PrivilegedPathGuard.IsSafeToWrite(path))
+                        return;
+                }
+                else
+                {
+                    Directory.CreateDirectory(dir);
+                }
 
                 lock (_gate)
                 {
@@ -103,6 +118,8 @@ namespace TDPdf.Diagnostics
             {
                 var fi = new FileInfo(path);
                 if (!fi.Exists || fi.Length < MaxBytes) return;
+                // Rewriting with FileMode.Create is the dangerous half: re-check under SYSTEM.
+                if (IsSystemContext() && !PrivilegedPathGuard.IsSafeToWrite(path)) return;
 
                 // Read tail, rewrite. Cheap and adequate for diagnostic volume.
                 byte[] all = File.ReadAllBytes(path);

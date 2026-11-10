@@ -101,6 +101,8 @@
     <Compile Include="..\..\Services\PdfFontStyle.cs" />
     <Compile Include="..\..\Services\InstallerExitCodes.cs" />
     <Compile Include="..\..\Diagnostics\StatusRingBuffer.cs" />
+    <Compile Include="..\..\Diagnostics\PrivilegedPathGuard.cs" />
+    <Compile Include="..\..\Services\TempFiles.cs" />
   </ItemGroup>
 
 </Project>

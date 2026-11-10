@@ -214,8 +214,7 @@ namespace TDPdf
                     target.AddLast(new UndoEntry(UndoKind.Document, DocBytes: currentBytes));
 
                 int selectedIdx = PageList.SelectedIndex;
-                var tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"tdpdf_undo_{Guid.NewGuid():N}.pdf");
+                var tempPath = NewTempPath("undo");
                 System.IO.File.WriteAllBytes(tempPath, entry.DocBytes);
                 _doc?.Close();
                 _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);

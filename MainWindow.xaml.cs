@@ -1497,7 +1497,21 @@ namespace TDPdf
         private sealed class DocumentContext
         {
             public PdfDocument? Doc;
-            public string? CurrentFile;          // working path (may be a temp copy after edits)
+            // Working path (may be a temp copy after edits). Setting it to one of TDPdf's own
+            // %TEMP% files makes this tab the owner of that file: it is deleted with the tab (or the
+            // window) instead of being left behind with the document's decrypted content.
+            public string? CurrentFile
+            {
+                get => _workingFile;
+                set
+                {
+                    _workingFile = value;
+                    if (TDPdf.Services.TempFilePolicy.IsOurs(value)) TempFiles.Track(value);
+                }
+            }
+            private string? _workingFile;
+            // Every %TEMP% file this tab wrote and still depends on; see TempFileSet.
+            public readonly TDPdf.Services.TempFileSet TempFiles = new();
             // The user's real on-disk document: what session restore reopens, what goes in the
             // recent list, and — crucially — what a plain (in-place) Save writes to.
             // This is NOT CurrentFile: the WORKING path gets repointed at a copy under %TEMP% by the
@@ -1530,6 +1544,11 @@ namespace TDPdf
             // Null for an unprotected file, and for a protected one whose protection could not be
             // reproduced (those saves are unprotected and say so).
             public PdfSharpCore.Pdf.Security.PdfProtection? Protection;
+
+            // The user has already agreed, this session, to an in-place save that removes or weakens
+            // this file's protection (ProtectedSave.Assess), so Ctrl+S does not ask again. Per tab:
+            // another document gets its own question.
+            public bool ProtectionChangeAccepted;
 
             // True for docs with no real on-disk home yet (merged-on-drop, imported images).
             // The working path is a temp file, so Ctrl+S must route to Save As instead of
@@ -2063,6 +2082,19 @@ namespace TDPdf
             }
             catch { /* never hold up the sign-out over the session list */ }
             return false;
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            // The window is gone for good (OnClosing was not cancelled): take every tab's working
+            // copies with it. Locked leftovers are collected by the next launch's sweep.
+            foreach (var tab in _tabs.ToList())
+            {
+                try { tab.Doc?.Close(); } catch { }
+                tab.TempFiles.DeleteAll();
+            }
+            _ctx.TempFiles.DeleteAll();   // the active tab is not always in _tabs yet
+            base.OnClosed(e);
         }
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -5075,9 +5107,9 @@ namespace TDPdf
             finally
             {
                 SetFileOperationBusy(false);
-                TryDeleteTemp(source);
+                TDPdf.Services.TempFilePolicy.TryDelete(source);
                 if (System.IO.File.Exists(result) && !string.Equals(result, _currentFile, StringComparison.OrdinalIgnoreCase))
-                    TryDeleteTemp(result);
+                    TDPdf.Services.TempFilePolicy.TryDelete(result);
             }
         }
 
@@ -5155,9 +5187,15 @@ namespace TDPdf
             }
         }
 
-        private static void TryDeleteTemp(string path)
+        /// <summary>
+        /// A fresh <c>%TEMP%</c> path for a working copy, owned by the active tab: it is deleted when
+        /// that tab (or the window) closes. See <see cref="TDPdf.Services.TempFileSet"/>.
+        /// </summary>
+        private string NewTempPath(string tag)
         {
-            try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* temp file; best effort */ }
+            string path = TDPdf.Services.TempFilePolicy.NewPath(tag);
+            _ctx.TempFiles.Track(path);
+            return path;
         }
 
         /// <summary>
@@ -6892,8 +6930,7 @@ namespace TDPdf
                 foreach (var k in _formCheckValues.Keys.Where(k => k < 0).ToList()) _formCheckValues.Remove(k);
                 WriteFormValuesToDocument();
             }
-            var tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                $"tdpdf_temp_{Guid.NewGuid():N}.pdf");
+            var tempPath = NewTempPath("temp");
             doc.Save(tempPath);
             var reopened = OpenWorkingCopy(ref tempPath);
 
@@ -7063,10 +7100,9 @@ namespace TDPdf
             string? docPath = null;
             if (_doc is not null)
             {
-                docPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"tdpdf_temp_{Guid.NewGuid():N}.pdf");
+                docPath = NewTempPath("temp");
                 try { _doc.Save(docPath); }
-                catch { TryDeleteTempFile(docPath); docPath = null; }
+                catch { TDPdf.Services.TempFilePolicy.TryDelete(docPath); _ctx.TempFiles.Release(docPath); docPath = null; }
             }
             return new PageOperationSnapshot(
                 docPath,
@@ -7080,7 +7116,7 @@ namespace TDPdf
         /// <summary>The edit succeeded (or changed nothing): drop the rollback copy.</summary>
         private static void EndPageOperation(PageOperationSnapshot snapshot)
         {
-            if (snapshot.DocumentPath is not null) TryDeleteTempFile(snapshot.DocumentPath);
+            if (snapshot.DocumentPath is not null) TDPdf.Services.TempFilePolicy.TryDelete(snapshot.DocumentPath);
         }
 
         /// <summary>
@@ -7121,11 +7157,6 @@ namespace TDPdf
                 $"{failureTitle} failed:\n{ex.Message}" +
                 (restored ? "\n\nThe document was left as it was before." : ""),
                 "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-
-        private static void TryDeleteTempFile(string path)
-        {
-            try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* best effort */ }
         }
 
         // ============================================================

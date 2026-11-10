@@ -146,7 +146,7 @@ namespace TDPdf
             if (ok)
             {
                 SetStatus($"Moved \"{displayName}\" to another window.");
-                RemoveTabSilently(ctx);
+                RemoveTabSilently(ctx, keepFile: path);
             }
             else
             {
@@ -174,7 +174,7 @@ namespace TDPdf
                 psi.ArgumentList.Add(path!);
                 Process.Start(psi);
                 SetStatus($"Opened \"{displayName}\" in a new window.");
-                RemoveTabSilently(ctx);
+                RemoveTabSilently(ctx, keepFile: path);
             }
             catch (Exception ex)
             {

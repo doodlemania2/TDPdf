@@ -430,10 +430,10 @@ namespace TDPdf
             }
             finally
             {
-                TryDeleteTemp(source);
+                TDPdf.Services.TempFilePolicy.TryDelete(source);
                 if (System.IO.File.Exists(result)
                     && !string.Equals(result, _currentFile, StringComparison.OrdinalIgnoreCase))
-                    TryDeleteTemp(result);
+                    TDPdf.Services.TempFilePolicy.TryDelete(result);
             }
         }
 

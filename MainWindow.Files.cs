@@ -2034,7 +2034,7 @@ namespace TDPdf
                         "Overwrite", "Save As...", "Cancel",
                         "File Changed on Disk", MessageBoxImage.Warning, defaultToCancel: true);
                     if (answer == MessageBoxResult.Yes) return true;
-                    if (answer == MessageBoxResult.No) SaveAs_Click(this, new RoutedEventArgs());
+                    if (answer == MessageBoxResult.No) await SaveAsCore(removingPassword: false);
                     return false;
                 }
                 case FileChangeState.Missing:
@@ -2044,12 +2044,38 @@ namespace TDPdf
                         "Save the document somewhere else?",
                         "Save As...", "Cancel",
                         "File Not Found", MessageBoxImage.Warning);
-                    if (answer == MessageBoxResult.Yes) SaveAs_Click(this, new RoutedEventArgs());
+                    if (answer == MessageBoxResult.Yes) await SaveAsCore(removingPassword: false);
                     return false;
                 }
                 default:
                     return true;
             }
+        }
+
+        /// <summary>
+        /// Before a save in place that would remove or weaken the file's password protection (an
+        /// AES-256 file opened with its owner password is written back with no password; one opened
+        /// with the user password becomes 128-bit RC4): say exactly what will happen and let the
+        /// user save anyway, save elsewhere, or cancel. Asked once per document session. Returns
+        /// true to go ahead. "Save As" starts Save As and returns false.
+        /// </summary>
+        private bool ConfirmProtectionChange(string targetFile)
+        {
+            var impact = ProtectedSave.Assess(_ctx.WasProtected, _ctx.Protection);
+            if (impact == ProtectedSave.Impact.None || _ctx.ProtectionChangeAccepted) return true;
+
+            var answer = TdpDialog.ShowYesNoCancel(this,
+                ProtectedSave.ImpactMessage(impact, System.IO.Path.GetFileName(targetFile), _ctx.Protection),
+                "Save Anyway", "Save As...", "Cancel",
+                impact == ProtectedSave.Impact.Removed ? "Password Protection Will Be Removed" : "Encryption Will Be Weakened",
+                MessageBoxImage.Warning, defaultToCancel: true);
+            if (answer == MessageBoxResult.Yes)
+            {
+                _ctx.ProtectionChangeAccepted = true;
+                return true;
+            }
+            if (answer == MessageBoxResult.No) SaveAs_Click(this, new RoutedEventArgs());
+            return false;
         }
 
         /// <summary>
@@ -2069,6 +2095,7 @@ namespace TDPdf
             // before getting here; the fallback keeps this method total.
             string targetFile = _ctx.OriginalPath ?? _currentFile;
             if (!await ConfirmSaveOverOutsideChangesAsync(targetFile)) return;
+            if (!removingPassword && !ConfirmProtectionChange(targetFile)) return;
             string status = "";
 
             // The unit of work retried by RunSaveWithRecoveryAsync. Reads _doc fresh each call so a
@@ -2086,8 +2113,7 @@ namespace TDPdf
 
                 if (hasAnnotations)
                 {
-                    var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                        $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                    var tempClean = NewTempPath("clean");
                     await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
                     DrawAnnotationsOnDocument();
                     ExceptionDispatchInfo? saveError = null;
@@ -2178,7 +2204,7 @@ namespace TDPdf
             }
             // No on-disk home to write back over (merged / imported / raster-recovered): the user
             // has to say where the unprotected copy goes.
-            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAsCore(removingPassword: true); return; }
+            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { await SaveAsCore(removingPassword: true); return; }
 
             var res = TdpDialog.Show(this,
                 $"Save \"{System.IO.Path.GetFileName(_ctx.OriginalPath)}\" without its password protection?\n\n" +
@@ -2227,11 +2253,11 @@ namespace TDPdf
             }
         }
 
-        private void SaveAs_Click(object sender, RoutedEventArgs e) => SaveAsCore(removingPassword: false);
+        private async void SaveAs_Click(object sender, RoutedEventArgs e) => await SaveAsCore(removingPassword: false);
 
         // removingPassword: File > Remove Password on a tab with no file of its own to overwrite
         // asks for a copy WITHOUT the password; an ordinary Save As keeps it.
-        private async void SaveAsCore(bool removingPassword)
+        private async Task SaveAsCore(bool removingPassword)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
@@ -2269,8 +2295,7 @@ namespace TDPdf
 
                 if (hasAnnotations)
                 {
-                    var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                        $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                    var tempClean = NewTempPath("clean");
                     await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
                     DrawAnnotationsOnDocument();
                     ExceptionDispatchInfo? saveError = null;
@@ -2381,7 +2406,7 @@ namespace TDPdf
                 // save-over-signature warning could not fire because nothing looked signed any more.
                 // Snapshot first, restore in the finally (a retry from RunSaveWithRecoveryAsync must
                 // never start from an already-stripped document).
-                var tempPristine = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_pristine_{Guid.NewGuid():N}.pdf");
+                var tempPristine = NewTempPath("pristine");
                 await _pdfDocumentService.SaveAsync(() => doc.Save(tempPristine), CancellationToken.None);
                 try
                 {
@@ -2391,8 +2416,8 @@ namespace TDPdf
                     bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
                     if (hasAnnotations)
                     {
-                        var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
-                        var tempBurned = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_burned_{Guid.NewGuid():N}.pdf");
+                        var tempClean = NewTempPath("clean");
+                        var tempBurned = NewTempPath("burned");
                         await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
                         DrawAnnotationsOnDocument();
                         ExceptionDispatchInfo? saveError = null;
@@ -2411,7 +2436,7 @@ namespace TDPdf
                     }
                     else
                     {
-                        var temp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_src_{Guid.NewGuid():N}.pdf");
+                        var temp = NewTempPath("src");
                         await _pdfDocumentService.SaveAsync(() => doc.Save(temp), CancellationToken.None);
                         sourcePath = temp;
                     }
@@ -2622,19 +2647,19 @@ namespace TDPdf
 
                 if (hasAnnotations)
                 {
-                    string cleanPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                    string cleanPath = NewTempPath("clean");
                     _doc.Save(cleanPath);
                     restorePath = cleanPath;
 
                     DrawAnnotationsOnDocument();
-                    printablePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
+                    printablePath = NewTempPath("print");
                     _doc.Save(printablePath);
                 }
                 else
                 {
                     // No annotations: save a throwaway printable copy so the preview
                     // window never reads the live file out from under us.
-                    string tempPrint = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
+                    string tempPrint = NewTempPath("print");
                     try { _doc.Save(tempPrint); printablePath = tempPrint; }
                     catch
                     {
