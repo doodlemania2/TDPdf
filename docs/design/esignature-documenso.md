@@ -246,7 +246,7 @@ Entry point is **Settings → Document signing**, and the first-run path from th
 
 **Connect flow** — a themed `DocumensoConnectWindow`. There is no dialog XAML anywhere in this repo (only 5 `.xaml` files exist: `App.xaml`, `MainWindow.xaml`, and the three `Themes/*.xaml`), so every dialog is built imperatively in C#. Two chrome recipes are available; use the **custom-chrome** one, matching the signature creator:
 
-- **Custom chrome** — `OpenSignatureCreator()` at `/Volumes/Data/repos/TDPdf/MainWindow.Signatures.cs:365`: `WindowStyle = WindowStyle.None`, `AllowsTransparency = true`, `Background = Brushes.Transparent`, an `outerChrome` `Border` (`BgDark` + `AccentGreenDim` 1px + `CornerRadius(6)`), a `titleBar` `Border` (`BgPanel`, `Padding(14,8,8,8)`, `CornerRadius(5,5,0,0)`, `MouseLeftButtonDown → win.DragMove()`), title `TextBlock` in `AccentGreen`/SemiBold/13/Consolas, and a 28×28 `Segoe MDL2 Assets` close glyph that goes `DangerRed` on hover. `TdpDialog.CreateShell` (`TdpDialog.cs:74`) is the same recipe at width 380. The unused `SignatureBorderBrush` / `DialogCloseNormalBrush` / `DialogCloseHoverBrush` statics were removed in 2.3.0.0; resolve `BorderDim` / `TextSecondary` / `DangerRed` from the theme instead.
+- **Custom chrome** — `OpenSignatureCreator()` at `/Volumes/Data/repos/TDPdf/MainWindow.Signatures.cs:365`: `WindowStyle = WindowStyle.None`, `AllowsTransparency = true`, `Background = Brushes.Transparent`, an `outerChrome` `Border` (`BgDark` + `AccentGreenDim` 1px + `CornerRadius(6)`), a `titleBar` `Border` (`BgPanel`, `Padding(14,8,8,8)`, `CornerRadius(5,5,0,0)`, `MouseLeftButtonDown → win.DragMove()`), title `TextBlock` in `AccentGreen`/SemiBold/13/Consolas, and a 28×28 `Segoe MDL2 Assets` close glyph that goes `DangerRed` on hover. `TdpDialog.CreateShell` (`TdpDialog.cs:74`) is the same recipe at width 380. The unused `SignatureBorderBrush` / `DialogCloseNormalBrush` / `DialogCloseHoverBrush` statics were removed in 2.2.1.0; resolve `BorderDim` / `TextSecondary` / `DangerRed` from the theme instead.
 - **Native frame** — `ShowSettingsDialog()` keeps the OS frame and only sets `Background`/`Foreground`. Fine for Settings (which already looks that way); wrong for a new modal.
 
 Brush resolution: inside `MainWindow` partials use `BrushResource(string)` (`MainWindow.xaml.cs:2021`, `(SolidColorBrush)FindResource(key)` — **throws on a bad key**). In a standalone class under `Services/`, copy `TdpDialog.Brush(string)` (`TdpDialog.cs:39`), which is `TryFindResource(key) as SolidColorBrush ?? SystemBrush(key)` with a `SystemColors.*` fallback — that fallback is what keeps a dialog legible if a theme dictionary is missing. Keys to use: `BgDark`, `BgPanel`, `BgHover`, `BorderDim`, `AccentGreen`, `AccentGreenDim`, `DangerRed`, `WarningOrange`, `TextPrimary`, `TextSecondary`, `TextMuted`, `DisabledForeground`. Buttons: `Style = (Style)FindResource("DarkButton")`.
@@ -369,7 +369,7 @@ Follow the existing `[UserScopedSetting] [DefaultSettingValue(...)]` pattern (`/
 |---|---|---|---|
 | `DocumensoBaseUrl` | `string` | `""` | tier-3 user-entered URL |
 | `DocumensoDefaultSigningOrder` | `bool` | `False` | sequential vs parallel signing default in the send wizard |
-| ~~`DocumensoIncludeSelfAsSigner`~~ | | | dropped in 2.3.0.0: it was never read by the send wizard |
+| ~~`DocumensoIncludeSelfAsSigner`~~ | | | dropped in 2.2.1.0: it was never read by the send wizard |
 | `DocumensoWarnOnSignedSave` | `bool` | `True` | the don't-ask-again for the §5.5 scrub warning |
 
 **These must tolerate being reset without warning.** `App.config` declares the section with `allowExeDefinition="MachineToLocalUser"`, so `user.config` lands at `%LOCALAPPDATA%\<company>\<exe>_<hash>\<version>\user.config`, and `EnsureSettingsHealthy` in `/Volumes/Data/repos/TDPdf/App.xaml.cs:258-420` force-parses it on startup and, on failure, logs `"SETTINGS CORRUPT - resetting user.config"` and calls `Settings.Default.Reload()`. A reset therefore silently reverts `DocumensoBaseUrl` to `""` → the feature falls back to the policy tier, or goes *Unavailable*. That is acceptable (nothing is lost but a typed URL) **only because the credential is not in `user.config`** — one more reason it is not.
@@ -450,7 +450,7 @@ MainWindow.ESignature.cs               menu handlers, enablement, canvas field p
                                        download-and-open, status-bar wiring
 ```
 
-`Services/` already houses standalone themed windows (`PrintPreviewWindow.cs`, `ThirdPartyLicensesWindow.cs`, `TransformWindow.cs`, and `Diagnostics/CrashDialog.cs`), so window classes belong there. **No DI container. `ViewModels/MainWindowViewModel.cs` no longer exists** (deleted in 2.3.0.0).
+`Services/` already houses standalone themed windows (`PrintPreviewWindow.cs`, `ThirdPartyLicensesWindow.cs`, `TransformWindow.cs`, and `Diagnostics/CrashDialog.cs`), so window classes belong there. **No DI container. `ViewModels/MainWindowViewModel.cs` no longer exists** (deleted in 2.2.1.0).
 
 Two facts about the split that matter in practice:
 - **`partial class MainWindow` is not limited to `MainWindow.*.cs`.** `MainWindow.Ocr.cs:18` and `MainWindow.Cli.cs:45` are also partials of it (which is how `MainWindow.Cli.cs:700` calls `MakeDownloadClient()` without declaring it). So `MainWindow.ESignature.cs` automatically shares every private member — `BrushResource`, `MakeDownloadClient`, `_doc`, `_ctx`, `_currentFile`, `SetStatus`, the manual element refs. Nothing needs to be made `internal`.
@@ -701,7 +701,7 @@ Drag-a-rectangle placement (§5.4a) is the better UX and reuses `MainWindow.Canv
 - [ ] If a toolbar button is ever added: matching hidden label `TextBlock` in `ToolbarA11yLabels` (`MainWindow.xaml:1232-1246`) plus `AutomationProperties.Name`/`HelpText`/`AccessKey`/`LabeledBy` and a `TabIndex`. (This design says **no** toolbar button — §5.3.)
 - [ ] `SaveFileDialog` is the one exception already used repo-wide for file picking (`MainWindow.Files.cs:2123`) — keep consistent, don't introduce new chrome.
 - [ ] No new HTTP stack, no DI container, no new JSON library. `new HttpClient { Timeout = … }` + `System.Text.Json`.
-- [ ] `ViewModels/MainWindowViewModel.cs` was deleted in 2.3.0.0 (stub never wired).
+- [ ] `ViewModels/MainWindowViewModel.cs` was deleted in 2.2.1.0 (stub never wired).
 - [ ] Nullable clean; build stays at **4 warnings / 0 errors**, checked with `--no-incremental`.
 - [ ] `_isDirty` respected; save paths routed through the existing dirty-check prompts; the new signed-document guard added to all three save paths.
 - [ ] New `x:Name`d XAML elements re-fetched via `FindName(...)!` into `_camelCase` fields in the `// Manual element refs` block.

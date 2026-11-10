@@ -2,7 +2,7 @@ using TDPdf.Diagnostics;
 using TDPdf.Services;
 
 /// <summary>
-/// Pins the 2.3.0.0 cleanup items that are plain logic: temp working-file naming, tracking and
+/// Pins the 2.2.1.0 cleanup items that are plain logic: temp working-file naming, tracking and
 /// sweeping, the Sanitizer's UNC rule, the privileged-path guard's pure checks, and the
 /// protected-save impact assessment.
 /// </summary>

@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
-## [2.3.0.0] - 2026-11-09
+## [2.2.1.0] - 2026-11-09
 
 A cleanup release. Three reviews (security, code quality, maintenance) read the whole codebase, and every finding below was approved individually. Most of it you will never see; the parts you will are a safer way to open files from strangers, a Remove crop button, and correct page shapes for rotated pages in continuous view.
 
@@ -1400,8 +1400,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.3.0.0...HEAD
-[2.3.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.2.0.0...v2.3.0.0
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.2.1.0...HEAD
+[2.2.1.0]: https://github.com/doodlemania2/TDPdf/compare/v2.2.0.0...v2.2.1.0
 [2.2.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.1.1.1...v2.2.0.0
 [2.1.1.1]: https://github.com/doodlemania2/TDPdf/compare/v2.1.0.0...v2.1.1.1
 [2.1.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.2.0...v2.1.0.0

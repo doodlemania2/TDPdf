@@ -20,12 +20,12 @@ Modified
   Fonts.OpenType/TableDirectoryEntry.cs     re-encoded UTF-16 -> UTF-8; content identical to upstream
   Pdf/PdfDocument.cs                        never rewrite an imported document's Info dictionary (PDF/A); record the encryption the file had when opened
   Pdf/PdfPage.cs                            distinguish code-set from file-set orientation (#184); drop the unconditional /Group /Transparency
-  Pdf/PdfPages.cs                           depth/cycle/size guards (2.3.0.0)
-  Pdf/PdfOutline.cs                         depth/cycle/size guards (2.3.0.0)
+  Pdf/PdfPages.cs                           depth/cycle/size guards (2.2.1.0)
+  Pdf/PdfOutline.cs                         depth/cycle/size guards (2.2.1.0)
   Pdf.Advanced/PdfCIDFont.cs                re-encoded UTF-16 -> UTF-8; content identical to upstream
   Pdf.Advanced/PdfExtGStateTable.cs         ExtGState carrying only /BM (#200)
-  Pdf.Filters/FlateDecode.cs                depth/cycle/size guards (2.3.0.0)
-  Pdf.IO/Parser.cs                          cross-reference stream default /Index covers max(/Size, entries in the data) (KillerPDF #406); depth/cycle/size guards (2.3.0.0)
+  Pdf.Filters/FlateDecode.cs                depth/cycle/size guards (2.2.1.0)
+  Pdf.IO/Parser.cs                          cross-reference stream default /Index covers max(/Size, entries in the data) (KillerPDF #406); depth/cycle/size guards (2.2.1.0)
   Pdf.IO/PdfReader.cs                       open an encrypted file for modification with its password and remember the protection so a save restores it; no /ModDate stamp on open
   Pdf.IO/PdfWriter.cs                       no Verbose layout in DEBUG; correct boolean literals; always an LF between stream data and endstream
   Pdf.Security/EncryptorBase.cs             RecoveredUserPassword property (re-protect on save)

@@ -5,7 +5,7 @@ using PdfSharpCore.Pdf.IO;
 using TDPdf.Services;
 
 /// <summary>
-/// Crafted-PDF guards (cleanup 2.3.0.0): a .NET StackOverflowException cannot be caught, so one
+/// Crafted-PDF guards (cleanup 2.2.1.0): a .NET StackOverflowException cannot be caught, so one
 /// hostile file used to be able to kill every open tab. Each case here would have crashed the process
 /// or hung before the guard; the test run surviving at all is the main assertion.
 /// </summary>
