@@ -1297,25 +1297,5 @@ namespace TDPdf
             _polySnapDot = null;
             _polyPage = -1;
         }
-
-        /// <summary>
-        /// True when <paramref name="pos"/> is inside the polygon (even-odd rule) or within
-        /// <paramref name="edgeTol"/> of one of its edges, closing edge included.
-        /// </summary>
-        private static bool HitTestPolygon(IReadOnlyList<Point> pts, Point pos, double edgeTol, bool filled)
-        {
-            if (pts.Count < 2) return false;
-            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
-                if (DistancePointToSegment(pos, pts[j], pts[i]) <= edgeTol) return true;
-            if (!filled) return false;
-            bool inside = false;
-            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
-            {
-                if (pts[i].Y > pos.Y != pts[j].Y > pos.Y &&
-                    pos.X < (pts[j].X - pts[i].X) * (pos.Y - pts[i].Y) / (pts[j].Y - pts[i].Y) + pts[i].X)
-                    inside = !inside;
-            }
-            return inside;
-        }
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using PdfSharpCore.Pdf;
 
 namespace TDPdf.Services
@@ -110,5 +111,37 @@ namespace TDPdf.Services
         /// </remarks>
         internal static string Format(double points) =>
             $"{ToInches(points):0.##} in · {ToMillimetres(points):0.#} mm · {points:0.#} pt";
+
+        /// <summary>
+        /// True when <paramref name="pos"/> is inside the polygon (even-odd rule) or within
+        /// <paramref name="edgeTol"/> of one of its edges, closing edge included.
+        /// </summary>
+        internal static bool HitTestPolygon(IReadOnlyList<(double X, double Y)> pts, (double X, double Y) pos, double edgeTol, bool filled)
+        {
+            if (pts.Count < 2) return false;
+            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
+                if (DistancePointToSegment(pos, pts[j], pts[i]) <= edgeTol) return true;
+            if (!filled) return false;
+            bool inside = false;
+            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
+            {
+                if (pts[i].Y > pos.Y != pts[j].Y > pos.Y &&
+                    pos.X < (pts[j].X - pts[i].X) * (pos.Y - pts[i].Y) / (pts[j].Y - pts[i].Y) + pts[i].X)
+                    inside = !inside;
+            }
+            return inside;
+        }
+
+        internal static double DistancePointToSegment((double X, double Y) p, (double X, double Y) a, (double X, double Y) b)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y;
+            double len2 = dx * dx + dy * dy;
+            if (len2 < 1e-6)
+                return Math.Sqrt((p.X - a.X) * (p.X - a.X) + (p.Y - a.Y) * (p.Y - a.Y));
+            double t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / len2;
+            t = Math.Clamp(t, 0.0, 1.0);
+            double cx = a.X + t * dx, cy = a.Y + t * dy;
+            return Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy));
+        }
     }
 }

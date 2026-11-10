@@ -5577,13 +5577,13 @@ namespace TDPdf
                     if (shp.Kind == ShapeKind.Polygon)
                     {
                         // Outline polygons are grabbed by their edges; filled ones anywhere inside.
-                        return HitTestPolygon(shp.Points, pos,
+                        return MeasureGeometry.HitTestPolygon(shp.Points.Select(q => (q.X, q.Y)).ToList(), (pos.X, pos.Y),
                                               Math.Max(6.0, shp.StrokeWidth + 4), shp.HasFill);
                     }
                     if (shp.Kind == ShapeKind.Line)
                     {
                         // Distance from point to line segment, threshold = max(6, strokeWidth+4) px.
-                        double d = DistancePointToSegment(pos, shp.Start, shp.End);
+                        double d = MeasureGeometry.DistancePointToSegment((pos.X, pos.Y), (shp.Start.X, shp.Start.Y), (shp.End.X, shp.End.Y));
                         return d <= Math.Max(6.0, shp.StrokeWidth + 4);
                     }
                     if (shp.Kind == ShapeKind.Ellipse)
@@ -7025,18 +7025,6 @@ namespace TDPdf
                     break;
                 }
             }
-        }
-
-        private static double DistancePointToSegment(Point p, Point a, Point b)
-        {
-            double dx = b.X - a.X, dy = b.Y - a.Y;
-            double len2 = dx * dx + dy * dy;
-            if (len2 < 1e-6)
-                return Math.Sqrt((p.X - a.X) * (p.X - a.X) + (p.Y - a.Y) * (p.Y - a.Y));
-            double t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / len2;
-            t = Math.Clamp(t, 0.0, 1.0);
-            double cx = a.X + t * dx, cy = a.Y + t * dy;
-            return Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy));
         }
 
         private static BitmapSource? LoadImageEditBitmap(ImageEditAnnotation edit)

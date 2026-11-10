@@ -96,6 +96,13 @@
     <Compile Include="..\..\Services\DocumensoBrowserSignIn.cs" />
     <Compile Include="..\..\Services\DocumensoWebNavigation.cs" />
     <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
+    <Compile Include="..\..\Services\PdfSaveNormalizer.cs" />
+    <Compile Include="..\..\Services\PdfFormText.cs" />
+    <Compile Include="..\..\Services\FormOcrPolicy.cs" />
+    <Compile Include="..\..\Services\WheelPageFlipGate.cs" />
+    <Compile Include="..\..\Services\PdfFontStyle.cs" />
+    <Compile Include="..\..\Services\InstallerExitCodes.cs" />
+    <Compile Include="..\..\Diagnostics\StatusRingBuffer.cs" />
   </ItemGroup>
 
 </Project>

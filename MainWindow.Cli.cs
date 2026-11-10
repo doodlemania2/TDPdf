@@ -32,7 +32,7 @@ namespace TDPdf
     //
     // Each command reuses the same pipeline its GUI equivalent runs - the merge
     // named-destination rewrite (BuildNamedDestMap / RewriteNamedDestLinks), the
-    // pre-save scrubs (NormalizeDocumentForSave + StripLinkAnnotationBorders),
+    // pre-save scrubs (PdfSaveNormalizer.Normalize + StripLinkAnnotationBorders),
     // the PDFium decrypt (PdfiumInterop.TryPdfiumRepair), the 150-DPI
     // rasterize (mirrors PdfDocumentService.SaveFlattenedAsync), and the OCR
     // text-layer builder (BuildSearchablePdf) - so CLI output is the kind of
@@ -280,7 +280,7 @@ namespace TDPdf
                 }
             }
 
-            NormalizeDocumentForSave(outPdf);
+            PdfSaveNormalizer.Normalize(outPdf);
             CliEnsureParentDir(outPath);
             outPdf.Save(outPath);
             con.WriteLine($"Merged {inputs.Count} files ({outPdf.PageCount} pages) -> {outPath}");
@@ -307,7 +307,7 @@ namespace TDPdf
             using var newDoc = new PdfDocument();
             foreach (var idx in indices)
                 newDoc.AddPage(importDoc.Pages[idx]);
-            NormalizeDocumentForSave(newDoc);
+            PdfSaveNormalizer.Normalize(newDoc);
             CliEnsureParentDir(outPath);
             newDoc.Save(outPath);
             con.WriteLine($"Extracted {indices.Count} pages -> {outPath}");
@@ -335,7 +335,7 @@ namespace TDPdf
             {
                 using var single = new PdfDocument();
                 single.AddPage(importDoc.Pages[i]);
-                NormalizeDocumentForSave(single);
+                PdfSaveNormalizer.Normalize(single);
                 single.Save(Path.Combine(outDir, $"{baseName}-page-{(i + 1).ToString().PadLeft(digits, '0')}.pdf"));
             }
             con.WriteLine($"Split {importDoc.PageCount} pages into {outDir}");
@@ -364,7 +364,7 @@ namespace TDPdf
             if (!string.IsNullOrEmpty(password))
             {
                 using var doc = PdfReader.Open(inPath, password!, PdfDocumentOpenMode.Modify);
-                NormalizeDocumentForSave(doc);
+                PdfSaveNormalizer.Normalize(doc);
                 doc.Save(outPath);
                 con.WriteLine($"Decrypted -> {outPath}");
                 return 0;
@@ -438,7 +438,7 @@ namespace TDPdf
         // ============================================================
         // --flatten <in.pdf> <out.pdf> [--dpi n]
         // ============================================================
-        // The headless twin of the GUI's Save Flattened: NormalizeDocumentForSave,
+        // The headless twin of the GUI's Save Flattened: PdfSaveNormalizer.Normalize,
         // then rasterize every page through Docnet/PDFium and rebuild a PNG-per-page
         // PDF sized in points - the same algorithm as PdfDocumentService.SaveFlattenedAsync
         // (150 dpi default), generalized here to honor --dpi.
@@ -468,7 +468,7 @@ namespace TDPdf
                 string norm = CliTempFile("cliflat");
                 using (var doc = PdfReader.Open(inPath, PdfDocumentOpenMode.Modify))
                 {
-                    NormalizeDocumentForSave(doc);
+                    PdfSaveNormalizer.Normalize(doc);
                     for (int i = 0; i < doc.PageCount; i++)
                         pageSizes.Add((doc.Pages[i].Width.Point, doc.Pages[i].Height.Point));
                     doc.Save(norm);
@@ -732,7 +732,7 @@ namespace TDPdf
             if (!string.IsNullOrEmpty(password))
             {
                 using var pdoc = PdfReader.Open(inPath, password!, PdfDocumentOpenMode.Modify);
-                NormalizeDocumentForSave(pdoc);
+                PdfSaveNormalizer.Normalize(pdoc);
                 pdoc.Save(dec);
                 return dec;
             }
