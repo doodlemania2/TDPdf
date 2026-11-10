@@ -89,8 +89,10 @@ internal static class InvertedText
         {
             var (l, b, r, t) = E(w);
             // PdfPig splits vertical text one letter per word; each is one em across, not 0.
+            // 35%, not 25%: DejaVu Sans (the Linux runner's only font) gives "Q" a tail that
+            // makes it 17.7pt across against a 14pt upright height. Arial is well inside.
             Check($"extent: quarter-turned letter \"{w.Text}\" is as wide as upright text is tall",
-                  Math.Abs((r - l) - em) < em * 0.25 && t - b > 1, $"w {r - l:F1} h {t - b:F1} vs {em:F1}");
+                  Math.Abs((r - l) - em) < em * 0.35 && t - b > 1, $"w {r - l:F1} h {t - b:F1} vs {em:F1}");
         }
         var ub0 = upright[0].BoundingBox;
         Check("extent: an upright box is exactly its raw Left/Bottom/Right/Top",
