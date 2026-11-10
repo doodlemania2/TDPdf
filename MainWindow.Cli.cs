@@ -689,9 +689,13 @@ namespace TDPdf
             if (File.Exists(dest)) return true;
 
             bool hq = TDPdf.Properties.Settings.Default.OcrHighQuality;
-            string url = (hq
-                ? "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/"
-                : "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/") + lang + ".traineddata";
+            // Only the languages with a pinned commit + SHA-256 (OcrModelCatalog) are downloaded.
+            string? url = OcrModelCatalog.UrlFor(lang, hq);
+            if (url is null)
+            {
+                con.WriteLine($"Language '{lang}' is not available for download. Supported: {string.Join(", ", OcrModelCatalog.Codes)}.");
+                return false;
+            }
             con.WriteLine($"Downloading OCR language '{lang}' ({(hq ? "high quality" : "standard")})...");
             try
             {
@@ -704,6 +708,11 @@ namespace TDPdf
                     using (var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
                     using (var f = File.Create(part))
                         await s.CopyToAsync(f).ConfigureAwait(false);
+                    if (!OcrModelCatalog.Verify(part, lang, hq))
+                    {
+                        try { File.Delete(part); } catch { /* best-effort */ }
+                        throw new InvalidDataException("the download failed its SHA-256 integrity check and was discarded");
+                    }
                     if (File.Exists(dest)) File.Delete(dest);
                     File.Move(part, dest);
                 }).GetAwaiter().GetResult();

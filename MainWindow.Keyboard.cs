@@ -265,7 +265,7 @@ namespace TDPdf
 
             if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
             {
-                OcrPagesToClipboard(SelectedPageIndicesForOcr());
+                ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr()));
                 e.Handled = true;
             }
             else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)

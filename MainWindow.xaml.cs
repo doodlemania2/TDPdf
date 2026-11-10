@@ -2696,7 +2696,7 @@ namespace TDPdf
             menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard", "\uE8C8"));
             menu.Items.Add(MakeMenuItem(
                 PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
-                (s, e) => OcrPagesToClipboard(SelectedPageIndicesForOcr()),
+                (s, e) => ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr())),
                 "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
             menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
             menu.Items.Add(new Separator());
@@ -5238,14 +5238,6 @@ namespace TDPdf
             double rx1, double ry1, double rx2, double ry2) =>
             PdfPageGeometry.RectToCanvas(box, rotation, canvasW, canvasH, rx1, ry1, rx2, ry2);
 
-        /// <summary>
-        /// The visual-frame → XGraphics matrix for a page. Lives in
-        /// <see cref="PdfPageGeometry.VisualToXGraphics"/> (see the full derivation there) so the
-        /// OCR text layer and the tests can share it; this name is kept for the annotation bake.
-        /// </summary>
-        private static XMatrix? VisualToPageMatrix(int rotation, PdfPageGeometry.PageBox box, double pageHeightPt) =>
-            PdfPageGeometry.VisualToXGraphics(rotation, box, pageHeightPt);
-
         // ============================================================
         // Selection
         // ============================================================
@@ -7763,9 +7755,7 @@ namespace TDPdf
                 if (_doc is null || _doc.PageCount == 0 || _continuousPageW <= 0) return;
                 int idx = Math.Clamp(PageList.SelectedIndex, 0, _doc.PageCount - 1);
                 var slotPage = _doc.Pages[idx];
-                double pw = slotPage.Width.Point, ph = slotPage.Height.Point;
-                int rot = ((slotPage.Rotate % 360) + 360) % 360;
-                if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
+                var (pw, ph) = PdfPageGeometry.DisplaySize(slotPage);   // same slot geometry as BuildContinuousView
                 double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
                 _zoomFitMode = ZoomFitMode.Page;
                 _manualZoomIntent = false;   // #201

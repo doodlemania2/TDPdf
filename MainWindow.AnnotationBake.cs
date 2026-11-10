@@ -208,17 +208,16 @@ namespace TDPdf
                 //    were burned a quarter turn out of place and scaled on swapped axes (#169).
                 // TDPdf keeps the angle on the page itself (RotatePages_Click writes /Rotate and
                 // reloads), so the page dictionary is the authority — there is no separate map.
-                int rot = PdfPageGeometry.Rotation(page);
-                var box = GetVisiblePageBox(page);
-                bool quarterTurn = rot is 90 or 270;   // visual extent is the box's dims swapped
-                double sx = (quarterTurn ? box.Height : box.Width) / renderW;
-                double sy = (quarterTurn ? box.Width : box.Height) / renderH;
+                // RasterToXGraphics is the one place that turns a PDFium pixel into a visual-frame
+                // point (scale against DisplaySize) and supplies the matrix back into XGraphics space;
+                // the OCR text layer uses it too. tests/PdfCore pins it against the old inline maths.
+                var (sx, sy, visualToPage) = PdfPageGeometry.RasterToXGraphics(page, renderW, renderH);
 
                 using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
                 // ...then turn the whole drawing back into the frame XGraphics writes in, so every
                 // draw call below keeps working in canvas-scaled coordinates exactly as it always has.
-                if (VisualToPageMatrix(rot, box, page.Height.Point) is XMatrix visualToPage)
-                    gfx.MultiplyTransform(visualToPage, XMatrixOrder.Prepend);
+                if (visualToPage is XMatrix m)
+                    gfx.MultiplyTransform(m, XMatrixOrder.Prepend);
 
                 foreach (var annot in InPaintOrder(annots))
                 {

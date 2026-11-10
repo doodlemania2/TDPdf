@@ -276,19 +276,9 @@ namespace TDPdf
             }
         }
 
-        // The page's visible size in points, honouring both a CropBox (a cropped page reports its real, smaller
-        // size) and /Rotate (a 90/270-rotated page has its width/height swapped when rendered by PDFium).
-        private static (double wpt, double hpt) VisiblePageSize(PdfPage page)
-        {
-            // GetVisiblePageBox (MainWindow.xaml.cs) is the one place that resolves a page's rendered
-            // box: CropBox-over-MediaBox, page-tree inheritance, and no create-on-read side effects.
-            // It reports the UNROTATED box, so the /Rotate swap below is applied exactly once — the
-            // old local helper read page.Width/Height, which PdfSharpCore already swaps for 90/270
-            // pages, so a rotated page with no CropBox got swapped twice and reported the wrong size.
-            var box = GetVisiblePageBox(page);
-            int rot = ((page.Rotate % 360) + 360) % 360;
-            return (rot == 90 || rot == 270) ? (box.Height, box.Width) : (box.Width, box.Height);
-        }
+        // The page's visible size in points: CropBox-over-MediaBox, page-tree inheritance, and the
+        // /Rotate quarter-turn swap, all in PdfPageGeometry.DisplaySize.
+        private static (double wpt, double hpt) VisiblePageSize(PdfPage page) => PdfPageGeometry.DisplaySize(page);
 
         // Saves the document with ALL rendered pages' annotations burned in, to a temp PDF, and returns its
         // path (null when nothing is pending — the caller then renders the normal source). Non-destructive:

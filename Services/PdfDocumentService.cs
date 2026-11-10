@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Docnet.Core;
 using Docnet.Core.Models;
+using Docnet.Core.Readers;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
 using PdfSharpCore.Pdf.Security;
@@ -133,7 +134,7 @@ namespace TDPdf.Services
                     int dimMin = Math.Min(pw, ph);
                     int dimMax = Math.Max(pw, ph);
 
-                    byte[] bgra; int rw, rh;
+                    byte[]? bgra; int rw, rh;
                     lock (docGate)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -147,8 +148,7 @@ namespace TDPdf.Services
                         // output. Falls back to the old raster if PDFium can't take the direct path.
                         // Rendered as for print: a flattened copy is the page as it would print, so
                         // screen-only annotations and buttons stay out and print-only ones go in.
-                        bgra = PdfiumInterop.RenderPageWithAnnotations(sourcePath, i, rw, rh, forPrint: true)
-                               ?? pageReader.GetImage();
+                        bgra = PageRaster.RenderBgra(pageReader, sourcePath, i, rw, rh, forPrint: true);
                     }
 
                     if (bgra == null || bgra.Length == 0 || rw <= 0 || rh <= 0) return;
@@ -254,9 +254,8 @@ namespace TDPdf.Services
                     // copy of the same text. The secondary tiles and the Continuous strip get NO
                     // overlays in TDPdf, so they deliberately keep their fields baked — see the
                     // includeFormFields docs on RenderPageWithAnnotations.
-                    var rawBytes = PdfiumInterop.RenderPageWithAnnotations(path, pageIndex, width, height,
-                                       includeFormFields: false)
-                                   ?? pageReader.GetImage();
+                    var rawBytes = PageRaster.RenderBgra(pageReader, path, pageIndex, width, height,
+                                       includeFormFields: false);
                     cancellationToken.ThrowIfCancellationRequested();
 
                     if (width <= 0 || height <= 0 || rawBytes == null || rawBytes.Length == 0)
@@ -273,9 +272,7 @@ namespace TDPdf.Services
                     double bitmapDpiX = 96.0 * width / dipW;
                     double bitmapDpiY = 96.0 * height / dipH;
 
-                    var bitmap = new WriteableBitmap(width, height, bitmapDpiX, bitmapDpiY, PixelFormats.Bgra32, null);
-                    bitmap.WritePixels(new Int32Rect(0, 0, width, height), rawBytes, width * 4, 0);
-                    bitmap.Freeze();
+                    var bitmap = PageRaster.ToFrozenBitmap(rawBytes, width, height, bitmapDpiX, bitmapDpiY);
                     return new PdfRenderResult(bitmap, width, height, dipW, dipH);
                 }
             }, cancellationToken);
@@ -528,8 +525,7 @@ namespace TDPdf.Services
                             int ph = pageReader.GetPageHeight();
                             // #141: with annotations — this rebuilds the document from its pixels, so
                             // markup the source carried must survive the recovery.
-                            var bgra = PdfiumInterop.RenderPageWithAnnotations(path, i, pw, ph)
-                                       ?? pageReader.GetImage();
+                            var bgra = PageRaster.RenderBgra(pageReader, path, i, pw, ph);
                             if (bgra == null || bgra.Length == 0 || pw <= 0 || ph <= 0)
                                 continue;
 
@@ -610,7 +606,7 @@ namespace TDPdf.Services
         /// become lazy/virtualized per page, revisit this; until then do not "fix" the
         /// inconsistency with the other rasterize sites.
         /// </remarks>
-        private static BitmapSource? RenderPageBitmap(dynamic docReader, int pageIndex)
+        private static BitmapSource? RenderPageBitmap(IDocReader docReader, int pageIndex)
         {
             try
             {
@@ -618,13 +614,7 @@ namespace TDPdf.Services
                 {
                     int width = pageReader.GetPageWidth();
                     int height = pageReader.GetPageHeight();
-                    var raw = pageReader.GetImage();
-                    if (width <= 0 || height <= 0 || raw == null || raw.Length == 0) return null;
-
-                    var bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
-                    bitmap.WritePixels(new Int32Rect(0, 0, width, height), raw, width * 4, 0);
-                    bitmap.Freeze();
-                    return bitmap;
+                    return PageRaster.ToFrozenBitmap(pageReader.GetImage(), width, height, 96, 96);
                 }
             }
             catch
