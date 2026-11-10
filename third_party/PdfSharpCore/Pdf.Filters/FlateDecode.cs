@@ -76,10 +76,24 @@ namespace PdfSharpCore.Pdf.Filters
             return ms.ToArray();
         }
 
+        // TDPdf patch: decompression-bomb cap. A few KB of Flate can inflate to many GB and exhaust memory.
+        // 512 MB per stream is far above legitimate content (a 12000 x 12000 px 24-bit raster is 432 MB, and
+        // page rendering goes through PDFium, not this decoder; this path serves edit/merge/save).
+        public const long MaxDecodedLength = 512L * 1024 * 1024;
+
         /// <summary>
         /// Decodes the specified data.
         /// </summary>
         public override byte[] Decode(byte[] data, FilterParms parms)
+        {
+            return Decode(data, parms, MaxDecodedLength);
+        }
+
+        /// <summary>
+        /// Decodes the specified data, throwing InvalidOperationException once the inflated size passes
+        /// <paramref name="maxOutput"/> bytes (TDPdf patch; the cap is a parameter so tests need not inflate 512 MB).
+        /// </summary>
+        public byte[] Decode(byte[] data, FilterParms parms, long maxOutput)
         {
             if (data.Length == 0) return data;
 
@@ -93,7 +107,11 @@ namespace PdfSharpCore.Pdf.Filters
             {
                 cbRead = iis.Read(abResult, 0, abResult.Length);
                 if (cbRead > 0)
+                {
                     msOutput.Write(abResult, 0, cbRead);
+                    if (msOutput.Length > maxOutput)
+                        throw new InvalidOperationException("Flate stream expands beyond " + (maxOutput >> 20) + " MB; refusing to decode.");
+                }
             }
             while (cbRead > 0);
             iis.Close();

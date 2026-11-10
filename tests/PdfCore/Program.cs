@@ -174,6 +174,7 @@ Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 FlattenDpi.Run(Check, tmp);
 Forms.Run(Check, tmp);
 FormSiblings.Run(Check, tmp);
+HostileInput.Run(Check, tmp);
 NameGroups.Run(Check, tmp);
 FontRuns.Run(Check);
 TextEdit.Run(Check, tmp);

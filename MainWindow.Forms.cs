@@ -495,7 +495,7 @@ namespace TDPdf
             var green = (SolidColorBrush)FindResource("AccentGreen");
             var wash = new SolidColorBrush(Color.FromArgb(28, green.Color.R, green.Color.G, green.Color.B));
 
-            int selectedObj = _selectedFormWidget is null ? int.MinValue : GetObjectNumber(_selectedFormWidget);
+            int selectedObj = _selectedFormWidget is null ? int.MinValue : PdfItems.ObjectNumber(_selectedFormWidget);
 
             foreach (var f in fields)
             {
@@ -572,7 +572,7 @@ namespace TDPdf
                 for (int i = 0; i < annotsArr.Elements.Count; i++)
                 {
                     PdfItem? elem = annotsArr.Elements[i];
-                    PdfDictionary? ann = elem as PdfDictionary ?? DerefItem(elem) as PdfDictionary;
+                    PdfDictionary? ann = elem as PdfDictionary ?? PdfItems.Deref(elem) as PdfDictionary;
                     if (ann is null) continue;
 
                     var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
@@ -603,8 +603,9 @@ namespace TDPdf
                     var options = new List<string>();
                     var optionExports = new List<string>();
 
-                    PdfDictionary? node = ann;
-                    while (node is not null)
+                    // TDPdf patch note: every parent-chain walk here goes through PdfItems.Ancestors, which
+                    // caps the depth and stops on a repeated node, so a /Parent cycle cannot hang the overlay.
+                    foreach (var node in PdfItems.Ancestors(ann))
                     {
                         if (string.IsNullOrEmpty(ft) && node.Elements["/FT"] is not null)
                             ft = node.Elements["/FT"]?.ToString() ?? "";
@@ -639,10 +640,6 @@ namespace TDPdf
                                 }
                             }
                         }
-
-                        var parentItem = node.Elements["/Parent"];
-                        if (parentItem is null) break;
-                        node = parentItem as PdfDictionary ?? DerefItem(parentItem) as PdfDictionary;
                     }
 
                     if (string.IsNullOrEmpty(ft)) ft = "/Tx";
@@ -678,21 +675,18 @@ namespace TDPdf
                     bool isNumeric = false;
                     try
                     {
-                        node = ann;
-                        while (node is not null && !isNumeric)
+                        foreach (var node in PdfItems.Ancestors(ann))
                         {
                             var aaDict = node.Elements.GetDictionary("/AA");
                             var fmtDict = aaDict?.Elements.GetDictionary("/F");
                             if (fmtDict?.Elements["/JS"] is PdfString jsStr)
                                 isNumeric = FormOcrPolicy.LooksNumeric(jsStr.Value);
-                            var api = node.Elements["/Parent"];
-                            if (api is null) break;
-                            node = api as PdfDictionary ?? DerefItem(api) as PdfDictionary;
+                            if (isNumeric) break;
                         }
                     }
                     catch { /* a malformed /AA must never break field parsing */ }
 
-                    int objNum = GetObjectNumber(elem);
+                    int objNum = PdfItems.ObjectNumber(elem);
                     if (objNum < 0)
                         objNum = -(pageIndex * 10000 + i); // synthetic key for inline dicts
                     int fieldKey = FormFieldSiblings.FieldKey(ann, objNum);
@@ -732,7 +726,7 @@ namespace TDPdf
                     for (int i = 0; i < annotsArr.Elements.Count; i++)
                     {
                         PdfItem? elem = annotsArr.Elements[i];
-                        PdfDictionary? ann = elem as PdfDictionary ?? DerefItem(elem) as PdfDictionary;
+                        PdfDictionary? ann = elem as PdfDictionary ?? PdfItems.Deref(elem) as PdfDictionary;
                         if (ann is null) continue;
 
                         var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
@@ -740,18 +734,14 @@ namespace TDPdf
 
                         try
                         {
-                        int objNum = GetObjectNumber(elem);
+                        int objNum = PdfItems.ObjectNumber(elem);
                         if (objNum < 0) objNum = -(p * 10000 + i);
 
                         // Walk parent chain to find the canonical field dict (owns /FT).
                         PdfDictionary? fieldDict = ann;
-                        PdfDictionary? node = ann;
-                        while (node is not null)
+                        foreach (var node in PdfItems.Ancestors(ann))
                         {
                             if (node.Elements["/FT"] is not null) { fieldDict = node; break; }
-                            var pi = node.Elements["/Parent"];
-                            if (pi is null) break;
-                            node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
                         }
 
                         // Field rect for AP stream sizing.
@@ -767,13 +757,9 @@ namespace TDPdf
 
                         // Resolve /DA for font name/size (walk parent chain).
                         string? daStr = null;
-                        node = ann;
-                        while (node is not null && daStr is null)
+                        foreach (var node in PdfItems.Ancestors(ann))
                         {
-                            if (node.Elements["/DA"] is PdfString ds) daStr = ds.Value;
-                            var pi = node.Elements["/Parent"];
-                            if (pi is null) break;
-                            node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
+                            if (node.Elements["/DA"] is PdfString ds) { daStr = ds.Value; break; }
                         }
 
                         // Upstream v1.7.1 (#180): /Ff is inheritable exactly like /DA, and bit 13
@@ -789,14 +775,11 @@ namespace TDPdf
                         // which /Ff wins, so non-comb fields resolve identically to before.
                         int fieldFlags = 0;
                         int combLen = 0;
-                        node = ann;
-                        while (node is not null && (fieldFlags == 0 || combLen == 0))
+                        foreach (var node in PdfItems.Ancestors(ann))
                         {
                             if (fieldFlags == 0 && node.Elements["/Ff"] is PdfInteger fi) fieldFlags = fi.Value;
                             if (combLen == 0 && node.Elements["/MaxLen"] is PdfInteger ml) combLen = ml.Value;
-                            var pi = node.Elements["/Parent"];
-                            if (pi is null) break;
-                            node = pi as PdfDictionary ?? DerefItem(pi) as PdfDictionary;
+                            if (fieldFlags != 0 && combLen != 0) break;
                         }
                         // Multiline is a /Tx-only flag — a /Ch choice field uses that bit position
                         // for nothing — so gate on the field type the way GetPageFormFields does,
@@ -837,13 +820,10 @@ namespace TDPdf
                             {
                                 // Find /T on the parent field node.
                                 string fieldName2 = "";
-                                var n2 = fieldDict;
-                                while (n2 is not null && string.IsNullOrEmpty(fieldName2))
+                                foreach (var n2 in PdfItems.Ancestors(fieldDict))
                                 {
                                     if (n2.Elements["/T"] is PdfString ts2) fieldName2 = ts2.Value;
-                                    var pi2 = n2.Elements["/Parent"];
-                                    if (pi2 is null) break;
-                                    n2 = pi2 as PdfDictionary ?? DerefItem(pi2) as PdfDictionary;
+                                    if (!string.IsNullOrEmpty(fieldName2)) break;
                                 }
                                 if (_formRadioValues.TryGetValue(fieldName2, out var radioSel))
                                 {

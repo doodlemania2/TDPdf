@@ -158,7 +158,7 @@ namespace TDPdf.Services
             var widgets = new List<PdfDictionary> { field };
             if (field.Elements.GetArray("/Kids") is { } kids)
                 for (int i = 0; i < kids.Elements.Count; i++)
-                    if (Deref(kids.Elements[i]) is { } kid) widgets.Add(kid);
+                    if (PdfItems.DerefDict(kids.Elements[i]) is { } kid) widgets.Add(kid);
 
             bool removed = false;
             for (int p = 0; p < doc.PageCount; p++)
@@ -166,7 +166,7 @@ namespace TDPdf.Services
                 var annots = doc.Pages[p].Elements.GetArray("/Annots");
                 if (annots is null) continue;
                 for (int i = annots.Elements.Count - 1; i >= 0; i--)
-                    if (widgets.Any(w => ReferenceEquals(Deref(annots.Elements[i]), w)))
+                    if (widgets.Any(w => ReferenceEquals(PdfItems.DerefDict(annots.Elements[i]), w)))
                     {
                         annots.Elements.RemoveAt(i);
                         removed = true;
@@ -176,7 +176,7 @@ namespace TDPdf.Services
             var fields = doc.Internals.Catalog.Elements.GetDictionary("/AcroForm")?.Elements.GetArray("/Fields");
             if (fields is not null)
                 for (int i = fields.Elements.Count - 1; i >= 0; i--)
-                    if (ReferenceEquals(Deref(fields.Elements[i]), field))
+                    if (ReferenceEquals(PdfItems.DerefDict(fields.Elements[i]), field))
                     {
                         fields.Elements.RemoveAt(i);
                         removed = true;
@@ -236,8 +236,6 @@ namespace TDPdf.Services
             else field.Elements["/Ff"] = new PdfInteger(flags);
         }
 
-        private static PdfDictionary? Deref(PdfItem? item) =>
-            item as PdfDictionary ?? (item as PdfReference)?.Value as PdfDictionary;
 
         // ── The field kinds ──────────────────────────────────────────────────────────────
 
