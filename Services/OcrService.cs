@@ -59,13 +59,6 @@ namespace TDPdf.Services
             _engine = new TesseractEngine(dataPath, language, EngineMode.Default);
         }
 
-        /// <summary>OCR an image file on disk (PNG, TIFF, JPEG, BMP).</summary>
-        public OcrResult RecognizeImageFile(string imagePath)
-        {
-            using var pix = Pix.LoadFromFile(imagePath);
-            return Run(pix);
-        }
-
         /// <summary>OCR an encoded image already in memory (e.g. PNG bytes).</summary>
         public OcrResult RecognizeImageBytes(byte[] encodedImage)
         {

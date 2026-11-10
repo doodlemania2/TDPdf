@@ -47,6 +47,7 @@ namespace TDPdf.Services
         private readonly string _pdfPath;
         private readonly IReadOnlyList<Size> _pageSizes;   // in points
         private readonly int _pageCount;
+        private IDocReader? _previewReader;                // shared by every GetPageBitmap call; UI thread only
         private readonly BitmapSource?[] _cache;           // lazily rasterized previews (RenderDpi)
 
         private readonly List<PrintQueue> _queues = [];
@@ -173,6 +174,8 @@ namespace TDPdf.Services
         {
             base.OnClosed(e);
             try { _server?.Dispose(); } catch { /* best effort */ }
+            try { _previewReader?.Dispose(); } catch { /* best effort */ }
+            _previewReader = null;
         }
 
         // Resolves a themed brush, falling back to a sensible system brush when the
@@ -1395,21 +1398,18 @@ namespace TDPdf.Services
 
             try
             {
-                using var docReader = DocLib.Instance.GetDocReader(
+                // One reader for every uncached page of this preview (UI thread only), released in OnClosed.
+                _previewReader ??= DocLib.Instance.GetDocReader(
                     _pdfPath, new PageDimensions(RenderDpi / PointPerInch));
-                using var pr = docReader.GetPageReader(idx);
+                using var pr = _previewReader.GetPageReader(idx);
                 int w = pr.GetPageWidth();
                 int h = pr.GetPageHeight();
                 // #141: with the annotations the file carries — what the preview shows has to match
                 // what the spooled sheet prints. White background matches the white sheet. Rendered
                 // as for print, so annotation Print flags decide what shows here too.
-                var raw = PdfiumInterop.RenderPageWithAnnotations(_pdfPath, idx, w, h, forPrint: true)
-                          ?? pr.GetImage();
-                if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) return null;
-
-                var bmp = new WriteableBitmap(w, h, RenderDpi, RenderDpi, PixelFormats.Bgra32, null);
-                bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);
-                bmp.Freeze();
+                var raw = PageRaster.RenderBgra(pr, _pdfPath, idx, w, h, forPrint: true);
+                var bmp = PageRaster.ToFrozenBitmap(raw, w, h, RenderDpi, RenderDpi);
+                if (bmp is null) return null;
                 _cache[idx] = bmp;
                 return bmp;
             }
@@ -1924,13 +1924,8 @@ namespace TDPdf.Services
                     // forPrint: each annotation's Print flag decides whether it is on paper.
                     // The `?? pr.GetImage()` fallback is a last resort and prints WITHOUT annotations; it
                     // only runs if the annotation-aware render itself returns nothing.
-                    var raw = PdfiumInterop.RenderPageWithAnnotations(_owner._pdfPath, idx, w, h, forPrint: true)
-                              ?? pr.GetImage();
-                    if (w <= 0 || h <= 0 || raw == null || raw.Length == 0) return null;
-                    var bmp = new WriteableBitmap(w, h, PrintDpi, PrintDpi, PixelFormats.Bgra32, null);
-                    bmp.WritePixels(new Int32Rect(0, 0, w, h), raw, w * 4, 0);
-                    bmp.Freeze();
-                    return bmp;
+                    var raw = PageRaster.RenderBgra(pr, _owner._pdfPath, idx, w, h, forPrint: true);
+                    return PageRaster.ToFrozenBitmap(raw, w, h, PrintDpi, PrintDpi);
                 }
                 catch { return null; /* skip an unrenderable page rather than fail the whole job */ }
             }

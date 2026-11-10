@@ -698,8 +698,7 @@ namespace TDPdf
                         // form overlays (RenderFormFields) exist only on _annotationCanvas, so
                         // this surface has nothing to draw the values with. Hiding the widgets
                         // would blank every filled field instead of un-ghosting it.
-                        var rawBytes = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
-                                       ?? pageReader.GetImage();
+                        var rawBytes = PageRaster.RenderBgra(pageReader, currentFile, i, w, h);
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
                         // Measured here rather than on the UI thread below, so the parse never
                         // stalls the tile pass.
@@ -730,8 +729,8 @@ namespace TDPdf
                 // the plain full-page flip). The buffer is ours and is about to become a throwaway
                 // display bitmap, so flip it in place — nothing else ever sees these bytes.
                 if (_docInvert) InvertBgraInPlaceExcept(rawBytes, w, h, keep);
-                var bitmap = new WriteableBitmap(w, h, 96.0 * dpiScaleX, 96.0 * dpiScaleY, PixelFormats.Bgra32, null);
-                bitmap.WritePixels(new Int32Rect(0, 0, w, h), rawBytes, w * 4, 0);
+                var bitmap = PageRaster.ToFrozenBitmap(rawBytes, w, h, 96.0 * dpiScaleX, 96.0 * dpiScaleY);
+                if (bitmap is null) continue;
 
                 var img = new Image { Source = bitmap, Stretch = Stretch.None };
                 RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);

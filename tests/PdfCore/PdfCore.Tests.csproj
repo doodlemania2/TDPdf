@@ -82,6 +82,7 @@
     <Compile Include="..\..\Services\PdfImages.cs" />
     <Compile Include="..\..\Services\InkDot.cs" />
     <Compile Include="..\..\Services\FlattenResolution.cs" />
+    <Compile Include="..\..\Services\OcrModelCatalog.cs" />
     <!-- Electronic Signature: the WPF-free parts. The registry reads in DocumensoConfig are
          guarded by OperatingSystem.IsWindows(), and Settings.Default is shimmed in Shims.cs. -->
     <Compile Include="..\..\Services\DocumensoConfig.cs" />

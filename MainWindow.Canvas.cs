@@ -1369,7 +1369,7 @@ namespace TDPdf
                     var selectBounds = new Rect(
                         Math.Min(pos.X, _selectStart.X), Math.Min(pos.Y, _selectStart.Y),
                         dragW, dragH);
-                    if (ocrRegion) OcrRegion(pageIdx, selectBounds);
+                    if (ocrRegion) ObserveOcr(OcrRegion(pageIdx, selectBounds));
                     else ExtractTextFromRegion(pageIdx, selectBounds);
                 }
                 return;

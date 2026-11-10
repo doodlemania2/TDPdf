@@ -358,19 +358,17 @@ namespace TDPdf
 
             var (renderW, renderH) = _renderDims[curPage];
 
-            try
-            {
-                using var pigDoc = PdfPigDoc.Open(_currentFile!);
-                var page = pigDoc.GetPage(curPage + 1);
-                double pdfW = page.Width;
-                double pdfH = page.Height;
-                double sx = renderW / pdfW;
-                double sy = renderH / pdfH;
+            if (_doc is null || curPage < 0 || curPage >= _doc.PageCount) return;
 
-                foreach (var (left, bottom, right, top) in _allSearchRects[curPage])
-                    AddSearchHighlight(left, bottom, right, top, sx, sy, renderH);
-            }
-            catch { }
+            // The page as displayed (CropBox + /Rotate), read from the open document instead of
+            // re-opening the working file with PdfPig on every page change.
+            var (pdfW, pdfH) = PdfPageGeometry.DisplaySize(_doc.Pages[curPage]);
+            if (pdfW <= 0 || pdfH <= 0) return;
+            double sx = renderW / pdfW;
+            double sy = renderH / pdfH;
+
+            foreach (var (left, bottom, right, top) in _allSearchRects[curPage])
+                AddSearchHighlight(left, bottom, right, top, sx, sy, renderH);
         }
 
         private void SearchNextResult()
