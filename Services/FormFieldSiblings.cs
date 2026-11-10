@@ -26,7 +26,7 @@ namespace TDPdf.Services
             for (int depth = 0; node is not null && depth < MaxDepth; depth++)
             {
                 if (node.Elements["/T"] is PdfString) return node;
-                node = Deref(node.Elements["/Parent"]);
+                node = PdfItems.DerefDict(node.Elements["/Parent"]);
             }
             return widget;
         }
@@ -59,7 +59,7 @@ namespace TDPdf.Services
             {
                 if (ReferenceEquals(node, field)) break;
                 if (node.Elements.ContainsKey("/V")) node.Elements["/V"] = value;
-                node = Deref(node.Elements["/Parent"]);
+                node = PdfItems.DerefDict(node.Elements["/Parent"]);
             }
             field.Elements["/V"] = value;
         }
@@ -111,7 +111,7 @@ namespace TDPdf.Services
             for (int depth = 0; node is not null && depth < MaxDepth; depth++)
             {
                 if (node.Elements["/T"] is PdfString t && t.Value.Length > 0) parts.Add(t.Value);
-                node = Deref(node.Elements["/Parent"]);
+                node = PdfItems.DerefDict(node.Elements["/Parent"]);
             }
             parts.Reverse();
             return string.Join(".", parts);
@@ -132,7 +132,7 @@ namespace TDPdf.Services
             {
                 if (ft.Length == 0 && node.Elements["/FT"] is { } ftItem) ft = ftItem.ToString() ?? "";
                 if (!haveFlags && node.Elements["/Ff"] is PdfInteger fi) { flags = fi.Value; haveFlags = true; }
-                node = Deref(node.Elements["/Parent"]);
+                node = PdfItems.DerefDict(node.Elements["/Parent"]);
             }
             if (ft.Length == 0) ft = "/Tx";
             string kind = ft.Contains("Tx") ? "Tx" : ft.Contains("Ch") ? "Ch" : ft.Contains("Btn") ? "Btn" : "";
@@ -175,7 +175,7 @@ namespace TDPdf.Services
                 for (int i = 0; i < annots.Elements.Count; i++)
                 {
                     var elem = annots.Elements[i];
-                    var widget = Deref(elem);
+                    var widget = PdfItems.DerefDict(elem);
                     if (widget is null) continue;
                     if (widget.Elements["/Subtype"]?.ToString()?.Contains("Widget") != true) continue;
                     string gid = GroupIdOf(widget);
@@ -199,7 +199,7 @@ namespace TDPdf.Services
             {
                 if (!haveFlags && node.Elements["/Ff"] is PdfInteger fi) { flags = fi.Value; haveFlags = true; }
                 if (maxLen == 0 && node.Elements["/MaxLen"] is PdfInteger ml) maxLen = ml.Value;
-                node = Deref(node.Elements["/Parent"]);
+                node = PdfItems.DerefDict(node.Elements["/Parent"]);
             }
             bool multi = (flags & 4096) != 0, comb = (flags & (1 << 24)) != 0;
             return comb && !multi && maxLen > 0 ? maxLen : 0;
@@ -211,8 +211,5 @@ namespace TDPdf.Services
         // "/Yes" from a PdfName and "Yes" from a PdfString name the same state.
         private static bool SameName(string a, string b) =>
             string.Equals(a.TrimStart('/'), b.TrimStart('/'), StringComparison.Ordinal);
-
-        private static PdfDictionary? Deref(PdfItem? item) =>
-            item as PdfDictionary ?? (item as PdfReference)?.Value as PdfDictionary;
     }
 }

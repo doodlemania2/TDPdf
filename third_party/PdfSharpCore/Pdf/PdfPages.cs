@@ -542,7 +542,9 @@ namespace PdfSharpCore.Pdf
             // Promote inheritable values down the page tree
             PdfPage.InheritedValues values = new PdfPage.InheritedValues();
             PdfPage.InheritValues(this, ref values);
-            PdfDictionary[] pages = GetKids(Reference, values, null);
+            // TDPdf patch: visited set + depth cap so a /Kids cycle (or a 100k-deep chain) cannot overflow the
+            // stack, which .NET cannot catch. A repeated node is skipped; the file still opens.
+            PdfDictionary[] pages = GetKids(Reference, values, null, new HashSet<PdfDictionary>(), 0);
 
             // Replace /Pages in catalog by this object
             // xrefRoot.Value = this;
@@ -570,10 +572,17 @@ namespace PdfSharpCore.Pdf
         /// <summary>
         /// Recursively converts the page tree into a flat array.
         /// </summary>
-        PdfDictionary[] GetKids(PdfReference iref, PdfPage.InheritedValues values, PdfDictionary parent)
+        // TDPdf patch: maximum /Pages nesting followed when flattening. Real files nest a handful of levels.
+        internal const int MaxPageTreeDepth = 256;
+
+        PdfDictionary[] GetKids(PdfReference iref, PdfPage.InheritedValues values, PdfDictionary parent,
+            HashSet<PdfDictionary> visited, int depth)
         {
             // TODO: inherit inheritable keys...
-            PdfDictionary kid = (PdfDictionary)iref.Value;
+            // TDPdf patch: cycle / depth guard (see FlattenPageTree).
+            if (depth > MaxPageTreeDepth || !(iref.Value is PdfDictionary kid0) || !visited.Add(kid0))
+                return new PdfDictionary[0];
+            PdfDictionary kid = kid0;
 
 #if true
             string type = kid.Elements.GetName(Keys.Type);
@@ -610,8 +619,11 @@ namespace PdfSharpCore.Pdf
                 kids = xref3.Value as PdfArray;
             }
 
-            foreach (PdfReference xref2 in kids)
-                list.AddRange(GetKids(xref2, values, kid));
+            // TDPdf patch: a /Kids entry that is not a reference is skipped rather than throwing.
+            if (kids != null)
+                foreach (PdfItem item in kids)
+                    if (item is PdfReference xref2)
+                        list.AddRange(GetKids(xref2, values, kid, visited, depth + 1));
             int count = list.Count;
             Debug.Assert(count == kid.Elements.GetInteger("/Count"));
             return list.ToArray();

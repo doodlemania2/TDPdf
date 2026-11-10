@@ -1078,7 +1078,7 @@ namespace TDPdf
 
             // Open twice: Import mode for AddPage, ReadOnly for catalog access.
             using var srcRead = PdfReader.Open(file, PdfDocumentOpenMode.ReadOnly);
-            var namedDestMap = BuildNamedDestMap(srcRead);
+            var namedDestMap = PdfNamedDestinations.BuildMap(srcRead);
 
             using var src = PdfReader.Open(file, PdfDocumentOpenMode.Import);
             for (int i = 0; i < src.PageCount; i++)
@@ -1087,182 +1087,7 @@ namespace TDPdf
             // Rewrite named-destination links in the newly added pages so they
             // resolve correctly after the catalog is not imported.
             if (namedDestMap.Count > 0)
-                RewriteNamedDestLinks(doc, pageOffset, namedDestMap);
-        }
-
-        /// <summary>
-        /// Builds a map of named destination string → 0-based page index from a source document's
-        /// /Dests dictionary and /Names /Dests name tree.
-        /// </summary>
-        private static Dictionary<string, int> BuildNamedDestMap(PdfDocument src)
-        {
-            var map = new Dictionary<string, int>(StringComparer.Ordinal);
-            try
-            {
-                var catalog = src.Internals.Catalog;
-
-                // Legacy flat /Dests dictionary
-                var destsDict = catalog.Elements.GetDictionary("/Dests");
-                if (destsDict != null)
-                {
-                    foreach (var key in destsDict.Elements.Keys)
-                    {
-                        PdfItem? val = DerefItem(destsDict.Elements[key] ?? new PdfInteger(-1));
-                        int? idx = ResolveDestPageIndexInDoc(src, val);
-                        if (idx.HasValue) map[key.TrimStart('/')] = idx.Value;
-                    }
-                }
-
-                // Modern /Names /Dests name tree
-                var namesDict = catalog.Elements.GetDictionary("/Names");
-                var destTree  = namesDict?.Elements.GetDictionary("/Dests");
-                if (destTree != null)
-                    WalkNameTree(src, destTree, map);
-            }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"BuildNamedDestMap: {ex}"); }
-            return map;
-        }
-
-        private static void WalkNameTree(PdfDocument src, PdfDictionary node, Dictionary<string, int> map)
-        {
-            var namesArr = node.Elements.GetArray("/Names");
-            if (namesArr != null)
-            {
-                for (int i = 0; i + 1 < namesArr.Elements.Count; i += 2)
-                {
-                    var keyItem = namesArr.Elements[i];
-                    string key  = keyItem is PdfString ks ? ks.Value : keyItem?.ToString()?.TrimStart('/') ?? "";
-                    if (string.IsNullOrEmpty(key)) continue;
-                    PdfItem? val = DerefItem(namesArr.Elements[i + 1]);
-                    int? idx = ResolveDestPageIndexInDoc(src, val);
-                    if (idx.HasValue) map[key] = idx.Value;
-                }
-            }
-
-            var kids = node.Elements.GetArray("/Kids");
-            if (kids != null)
-            {
-                for (int i = 0; i < kids.Elements.Count; i++)
-                {
-                    if (DerefItem(kids.Elements[i]) is PdfDictionary kid)
-                        WalkNameTree(src, kid, map);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Resolves a destination value (PdfArray or PdfDictionary with /D) to a page index
-        /// within the given source document by matching the page object number.
-        /// </summary>
-        private static int? ResolveDestPageIndexInDoc(PdfDocument src, PdfItem? val)
-        {
-            PdfArray? arr = val as PdfArray;
-            if (arr is null && val is PdfDictionary vd)
-                arr = vd.Elements.GetArray("/D");
-            if (arr is null || arr.Elements.Count == 0) return null;
-
-            var first = arr.Elements[0];
-            int objNum = GetObjectNumber(first);
-            if (objNum > 0)
-            {
-                for (int i = 0; i < src.PageCount; i++)
-                {
-                    var pgRef = src.Pages[i].Reference;
-                    if (pgRef != null && pgRef.ObjectNumber == objNum) return i;
-                }
-            }
-            else if (first is PdfInteger pi && pi.Value >= 0 && pi.Value < src.PageCount)
-            {
-                return pi.Value;
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Walks all link annotations in pages [pageOffset, doc.PageCount) and rewrites any
-        /// named-destination /D values to explicit [pageRef /Fit] arrays using the merged
-        /// document's page references. This is needed because PdfSharpCore's import does not
-        /// copy the source document's /Names /Dests catalog entries.
-        /// </summary>
-        private static void RewriteNamedDestLinks(PdfDocument doc, int pageOffset,
-            Dictionary<string, int> namedDestMap)
-        {
-            for (int pi = pageOffset; pi < doc.PageCount; pi++)
-            {
-                try
-                {
-                    var page    = doc.Pages[pi];
-                    var annotsArr = page.Elements.GetArray("/Annots");
-                    if (annotsArr is null) continue;
-
-                    for (int ai = 0; ai < annotsArr.Elements.Count; ai++)
-                    {
-                        PdfItem? elem = annotsArr.Elements[ai];
-                        PdfDictionary? ann = elem as PdfDictionary
-                            ?? (DerefItemStatic(elem) as PdfDictionary);
-                        if (ann is null) continue;
-
-                        var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
-                        if (!subtype.Contains("Link")) continue;
-
-                        // Check /A /D (GoTo action)
-                        var actionDict = ann.Elements.GetDictionary("/A");
-                        if (actionDict != null)
-                        {
-                            var s = actionDict.Elements["/S"]?.ToString() ?? "";
-                            if (s.Contains("GoTo"))
-                            {
-                                var destItem = actionDict.Elements["/D"];
-                                string? name = ExtractDestName(destItem);
-                                if (name != null && namedDestMap.TryGetValue(name, out int srcIdx))
-                                {
-                                    int targetIdx = pageOffset + srcIdx;
-                                    if (targetIdx < doc.PageCount)
-                                        actionDict.Elements["/D"] = MakeExplicitDest(doc, targetIdx);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // Bare /Dest on annotation
-                            var destItem = ann.Elements["/Dest"];
-                            string? name = ExtractDestName(destItem);
-                            if (name != null && namedDestMap.TryGetValue(name, out int srcIdx))
-                            {
-                                int targetIdx = pageOffset + srcIdx;
-                                if (targetIdx < doc.PageCount)
-                                    ann.Elements["/Dest"] = MakeExplicitDest(doc, targetIdx);
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RewriteNamedDestLinks p{pi}: {ex}"); }
-            }
-        }
-
-        private static string? ExtractDestName(PdfItem? item)
-        {
-            if (item is null) return null;
-            if (item is PdfString ps) return ps.Value;
-            if (item is PdfName   pn) return pn.Value.TrimStart('/');
-            return null;
-        }
-
-        private static PdfArray MakeExplicitDest(PdfDocument doc, int pageIndex)
-        {
-            var arr = new PdfArray(doc);
-            arr.Elements.Add(doc.Pages[pageIndex].Reference);
-            arr.Elements.Add(new PdfName("/Fit"));
-            return arr;
-        }
-
-        // Static version of DerefItem for use in static helpers.
-        private static PdfItem DerefItemStatic(PdfItem item)
-        {
-            var valueProp = item.GetType().GetProperty("Value",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (valueProp?.GetValue(item) is PdfObject resolved) return resolved;
-            return item;
+                PdfNamedDestinations.RewriteLinks(doc, pageOffset, namedDestMap);
         }
 
         private void Split_Click(object sender, RoutedEventArgs e)
@@ -2775,6 +2600,13 @@ namespace TDPdf
                     if (Directory.Exists(p)) { expanded = true; CollectOpenable(p, found); }
                     else if (p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                     {
+                        string? zipRefusal = ZipLimits.Refusal(p);
+                        if (zipRefusal != null)
+                        {
+                            TdpDialog.Show(this, $"\"{System.IO.Path.GetFileName(p)}\" was not opened because {zipRefusal}.",
+                                "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                            continue;
+                        }
                         var dir = ExtractZipToTemp(p);
                         if (dir != null) { expanded = true; tempDirs.Add(dir); CollectOpenable(dir, found); }
                     }

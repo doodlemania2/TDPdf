@@ -267,12 +267,12 @@ namespace TDPdf
                     int pageOffset = outPdf.PageCount;
                     Dictionary<string, int> namedDestMap;
                     using (var srcRead = PdfReader.Open(f, PdfDocumentOpenMode.ReadOnly))
-                        namedDestMap = BuildNamedDestMap(srcRead);
+                        namedDestMap = PdfNamedDestinations.BuildMap(srcRead);
                     using var src = PdfReader.Open(f, PdfDocumentOpenMode.Import);
                     for (int i = 0; i < src.PageCount; i++)
                         outPdf.AddPage(src.Pages[i]);
                     if (namedDestMap.Count > 0)
-                        RewriteNamedDestLinks(outPdf, pageOffset, namedDestMap);
+                        PdfNamedDestinations.RewriteLinks(outPdf, pageOffset, namedDestMap);
                 }
                 else
                 {

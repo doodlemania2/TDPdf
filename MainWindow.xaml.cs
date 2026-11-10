@@ -3372,7 +3372,7 @@ namespace TDPdf
                 for (int i = 0; i < annotsArr.Elements.Count; i++)
                 {
                     PdfItem? elem = annotsArr.Elements[i];
-                    PdfDictionary? ann = elem as PdfDictionary ?? DerefItem(elem) as PdfDictionary;
+                    PdfDictionary? ann = elem as PdfDictionary ?? PdfItems.Deref(elem) as PdfDictionary;
                     if (ann is null) continue;
 
                     var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
@@ -3560,7 +3560,7 @@ namespace TDPdf
                 for (int i = 0; i < annotsArr.Elements.Count; i++)
                 {
                     PdfItem? elem = annotsArr.Elements[i];
-                    PdfDictionary? ann = elem as PdfDictionary ?? DerefItem(elem) as PdfDictionary;
+                    PdfDictionary? ann = elem as PdfDictionary ?? PdfItems.Deref(elem) as PdfDictionary;
                     if (ann is null) continue;
                     var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
                     if (!subtype.Contains("Link")) continue;
@@ -3580,15 +3580,14 @@ namespace TDPdf
         /// <summary>
         /// Resolves a /Dest value (PdfArray, PdfString, or PdfName) to a 0-based page index.
         /// Returns null if the destination cannot be resolved.
-        /// Note: PdfReference is internal to PdfSharpCore so we use reflection for ObjectNumber
-        /// and var-inferred types instead of the type name.
         /// </summary>
         private int? ResolveDest(PdfItem? destItem)
         {
             if (destItem is null || _doc is null) return null;
 
-            // Dereference indirect object if needed (PdfReference is internal, use duck-typing).
-            destItem = DerefItem(destItem);
+            // Dereference indirect object if needed.
+            if (PdfItems.Deref(destItem) is not { } resolvedDest) return null;
+            destItem = resolvedDest;
 
             PdfArray? arr = null;
 
@@ -3599,15 +3598,14 @@ namespace TDPdf
             else if (destItem is PdfString || destItem is PdfName)
             {
                 // Named destination — look up in the document catalog
-                arr = ResolveNamedDest(destItem);
+                arr = PdfNamedDestinations.Resolve(_doc, destItem);
             }
 
             if (arr is null || arr.Elements.Count == 0) return null;
 
             // First element of the destination array is an indirect page reference.
-            // PdfReference.ObjectNumber is public but its type is internal; use reflection.
             var pageRefItem = arr.Elements[0];
-            int elemObjNum = GetObjectNumber(pageRefItem);
+            int elemObjNum = PdfItems.ObjectNumber(pageRefItem);
             if (elemObjNum > 0)
             {
                 return PageIndexByObjectNumber(_doc).TryGetValue(elemObjNum, out int idx) ? idx : null;
@@ -3672,106 +3670,6 @@ namespace TDPdf
             _linkPageMap = null;
             _linkPageMapDoc = null;
             _linkPageMapCount = 0;
-        }
-
-        /// <summary>
-        /// Dereferences a PdfItem if it is an indirect reference (PdfReference is internal;
-        /// we detect it by looking for a public "Value" property returning PdfObject).
-        /// </summary>
-        private static PdfItem DerefItem(PdfItem item)
-        {
-            var valueProp = item.GetType().GetProperty("Value",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (valueProp?.GetValue(item) is PdfObject resolved)
-                return resolved;
-            return item;
-        }
-
-        /// <summary>
-        /// Returns the PDF object number of a PdfItem that is an indirect reference, or -1.
-        /// Handles the internal PdfReference type via reflection.
-        /// </summary>
-        private static int GetObjectNumber(PdfItem? item)
-        {
-            if (item is null) return -1;
-            var prop = item.GetType().GetProperty("ObjectNumber",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            return prop?.GetValue(item) is int n ? n : -1;
-        }
-
-        /// <summary>
-        /// Resolves a named destination (string or name) to a destination array using the
-        /// catalog's /Dests dictionary or /Names /Dests name tree.
-        /// </summary>
-        private PdfArray? ResolveNamedDest(PdfItem nameItem)
-        {
-            if (_doc is null) return null;
-            string name = nameItem switch
-            {
-                PdfString s => s.Value,
-                PdfName   n => n.Value.TrimStart('/'),
-                _           => ""
-            };
-            if (string.IsNullOrEmpty(name)) return null;
-
-            var catalog = _doc.Internals.Catalog;
-
-            // Legacy /Dests dictionary (direct mapping)
-            var dests = catalog.Elements.GetDictionary("/Dests");
-            if (dests != null)
-            {
-                PdfItem? val = DerefItem(dests.Elements[name] ?? dests.Elements["/" + name] ?? new PdfInteger(-1));
-                if (val is PdfArray da) return da;
-                if (val is PdfDictionary dd) return dd.Elements.GetArray("/D");
-            }
-
-            // Modern /Names /Dests name tree
-            var names = catalog.Elements.GetDictionary("/Names");
-            var destTree = names?.Elements.GetDictionary("/Dests");
-            if (destTree != null)
-                return ResolveNameTree(destTree, name);
-
-            return null;
-        }
-
-        /// <summary>
-        /// Walks a PDF name tree to find the destination array for the given name.
-        /// </summary>
-        private static PdfArray? ResolveNameTree(PdfDictionary node, string name)
-        {
-            // Leaf node: flat /Names array [key val key val ...]
-            var namesArr = node.Elements.GetArray("/Names");
-            if (namesArr != null)
-            {
-                for (int i = 0; i + 1 < namesArr.Elements.Count; i += 2)
-                {
-                    var key = namesArr.Elements[i];
-                    string keyStr = key is PdfString ks ? ks.Value : key?.ToString() ?? "";
-                    if (keyStr == name)
-                    {
-                        PdfItem? val = DerefItem(namesArr.Elements[i + 1]);
-                        if (val is PdfArray va) return va;
-                        if (val is PdfDictionary vd) return vd.Elements.GetArray("/D");
-                    }
-                }
-            }
-
-            // Intermediate node: recurse into /Kids
-            var kids = node.Elements.GetArray("/Kids");
-            if (kids != null)
-            {
-                for (int i = 0; i < kids.Elements.Count; i++)
-                {
-                    PdfItem? kid = DerefItem(kids.Elements[i]);
-                    if (kid is PdfDictionary kd)
-                    {
-                        var result = ResolveNameTree(kd, name);
-                        if (result != null) return result;
-                    }
-                }
-            }
-
-            return null;
         }
 
         // ============================================================
@@ -4385,8 +4283,8 @@ namespace TDPdf
             if (annots is null) return null;
             for (int i = 0; i < annots.Elements.Count; i++)
             {
-                var ann = annots.Elements[i] as PdfDictionary ?? DerefItem(annots.Elements[i]) as PdfDictionary;
-                if (ann is not null && GetObjectNumber(annots.Elements[i]) == hitObj) return ann;
+                var ann = annots.Elements[i] as PdfDictionary ?? PdfItems.Deref(annots.Elements[i]) as PdfDictionary;
+                if (ann is not null && PdfItems.ObjectNumber(annots.Elements[i]) == hitObj) return ann;
             }
             return null;
         }
@@ -4459,7 +4357,7 @@ namespace TDPdf
                     var elem = annots.Elements[i];
                     var w = elem as PdfSharpCore.Pdf.PdfDictionary ?? (elem as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
                     if (w is null || !ReferenceEquals(TDPdf.Services.PdfFormBuilder.FieldOf(w), field)) continue;
-                    int n = GetObjectNumber(elem);
+                    int n = PdfItems.ObjectNumber(elem);
                     if (n < 0) n = -(p * 10000 + i);
                     keys.Add(TDPdf.Services.FormFieldSiblings.FieldKey(w, n));
                 }
@@ -4470,13 +4368,8 @@ namespace TDPdf
         /// <summary>The first /T found walking up from the widget (a radio group's name).</summary>
         private static string NearestPartialName(PdfSharpCore.Pdf.PdfDictionary widget)
         {
-            PdfSharpCore.Pdf.PdfDictionary? node = widget;
-            for (int d = 0; node is not null && d < 64; d++)
-            {
+            foreach (var node in PdfItems.Ancestors(widget))
                 if (node.Elements["/T"] is PdfSharpCore.Pdf.PdfString t && t.Value.Length > 0) return t.Value;
-                var pi = node.Elements["/Parent"];
-                node = pi as PdfSharpCore.Pdf.PdfDictionary ?? (pi as PdfSharpCore.Pdf.Advanced.PdfReference)?.Value as PdfSharpCore.Pdf.PdfDictionary;
-            }
             return "";
         }
 

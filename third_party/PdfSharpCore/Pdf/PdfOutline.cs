@@ -457,28 +457,46 @@ namespace PdfSharpCore.Pdf
             // ReSharper restore HeuristicUnreachableCode
         }
 
+        // TDPdf patch: guards for hostile outline trees. Each PdfOutline(dict) constructor recurses into
+        // InitializeChildren, so an outline whose /First points back at an ancestor overflows the stack, and a
+        // /Next cycle loops forever growing a list. Items are tracked by their PdfReference (one instance per
+        // indirect object), NOT by dictionary: `new PdfOutline(dict)` transforms the dictionary into a new
+        // object and repoints the reference, so a dictionary seen again is a different instance.
+        // The set of references being built (per thread) catches an ancestor reached again; a per-chain set
+        // catches a /Next cycle; the cap bounds a legitimately absurd nesting depth.
+        const int MaxOutlineDepth = 256;
+        [ThreadStatic] static System.Collections.Generic.HashSet<PdfReference> _building;
+
         void InitializeChildren()
         {
-            PdfReference firstRef = Elements.GetReference(Keys.First);
-            PdfReference lastRef = Elements.GetReference(Keys.Last);
-            PdfReference current = firstRef;
-            while (current != null)
-            {
-                // Create item and add it to outline items dictionary.
-                PdfOutline item = new PdfOutline((PdfDictionary)current.Value);
-                Outlines.Add(item);
+            PdfReference current = Elements.GetReference(Keys.First);
+            if (current == null)
+                return;
 
-                current = item.Elements.GetReference(Keys.Next);
-#if DEBUG_
-                if (current == null)
+            var building = _building ?? (_building = new System.Collections.Generic.HashSet<PdfReference>(System.Collections.Generic.ReferenceEqualityComparer.Instance));
+            PdfReference self = Reference;
+            if (building.Count >= MaxOutlineDepth || (self != null && !building.Add(self)))
+                return;
+            try
+            {
+                var siblings = new System.Collections.Generic.HashSet<PdfReference>(System.Collections.Generic.ReferenceEqualityComparer.Instance);
+                while (current != null)
                 {
-                    if (item.Reference != lastRef)
-                    {
-                        // Word produces PDFs that come to this case.
-                        GetType();
-                    }
+                    // Stop at a node that is an ancestor being built, was already seen in this chain, or is not a dictionary.
+                    if (building.Contains(current) || !siblings.Add(current) || !(current.Value is PdfDictionary dict))
+                        break;
+
+                    // Create item and add it to outline items dictionary.
+                    PdfOutline item = new PdfOutline(dict);
+                    Outlines.Add(item);
+
+                    current = item.Elements.GetReference(Keys.Next);
                 }
-#endif
+            }
+            finally
+            {
+                if (self != null)
+                    building.Remove(self);
             }
         }
 

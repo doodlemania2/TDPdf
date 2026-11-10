@@ -11,14 +11,6 @@ namespace TDPdf.Services
     /// </summary>
     internal static class PdfSaveNormalizer
     {
-        private static PdfItem Deref(PdfItem item)
-        {
-            var valueProp = item.GetType().GetProperty("Value",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (valueProp?.GetValue(item) is PdfObject resolved) return resolved;
-            return item;
-        }
-
         // Pre-save document normalization (ports upstream KillerPDF v1.6.3/v1.6.4 conformance
         // fixes). Every TDPdf save fully rewrites the file through PdfSharpCore, so we scrub three
         // classes of structural corruption immediately before writing. All three are semantic
@@ -46,7 +38,7 @@ namespace TDPdf.Services
                 var cat = doc.Internals.Catalog;
                 var item = cat.Elements["/Outlines"];
                 if (item is null) return;
-                if (Deref(item) is not PdfDictionary o || o.Elements["/First"] is null)
+                if (PdfItems.Deref(item) is not PdfDictionary o || o.Elements["/First"] is null)
                     cat.Elements.Remove("/Outlines");
             }
             catch { /* malformed catalog - leave the save as-is */ }
@@ -117,7 +109,7 @@ namespace TDPdf.Services
         private static PdfPageGeometry.PageBox? ReadOwnPageBox(PdfItem? item)
         {
             if (item is null) return null;
-            if (item is not PdfArray and not PdfRectangle) item = Deref(item);
+            if (item is not PdfArray and not PdfRectangle) item = PdfItems.Deref(item);
 
             if (item is PdfRectangle rect)
                 return Normalize(rect.X1, rect.Y1, rect.X2, rect.Y2);
