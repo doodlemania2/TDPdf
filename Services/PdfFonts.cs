@@ -182,7 +182,7 @@ namespace TDPdf.Services
                 {
                     // One description per face inside the collection, and the ARRAY INDEX is the
                     // face index - which is exactly what ExtractTtcFace needs later.
-                    var descriptions = FontDescription.LoadFontCollectionDescriptions(path);
+                    var descriptions = FontDescription.LoadFontCollectionDescriptions(path).Span;
                     for (int i = 0; i < descriptions.Length; i++) AddFace(descriptions[i], path, i);
                 }
                 else

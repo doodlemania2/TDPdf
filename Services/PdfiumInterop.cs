@@ -9,7 +9,7 @@ namespace TDPdf.Services
 {
     // ── Direct PDFium P/Invoke ───────────────────────────────────────────────────────────────
     // The ONE home for every direct pdfium.dll call in TDPdf (extracted from
-    // Services/PdfDocumentService.cs). pdfium.dll ships with Docnet.Core; PDFium is already
+    // Services/PdfDocumentService.cs). pdfium.dll ships with bblanchon.PDFium.Win32; PDFium is already
     // initialised by Docnet, which we force via DocLib.Instance before any direct P/Invoke.
     //
     // THREADING (upstream KillerPDF v1.6.4): PDFium is single-threaded. Docnet serializes every

@@ -22,8 +22,7 @@ Thumbs.db
 .DS_Store
 
 *.exe
-bin/
-obj/
+*_wpftmp.csproj
 __pycache__/
 
 # Secrets and local credentials (repo hygiene 2026-10-30)
