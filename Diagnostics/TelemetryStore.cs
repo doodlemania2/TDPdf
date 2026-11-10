@@ -84,20 +84,6 @@ namespace TDPdf.Diagnostics
             catch { /* swallow */ }
         }
 
-        /// <summary>
-        /// Clear the disabled-marker sentinel so the next launch can
-        /// auto-provision again from the build-time-embedded key.
-        /// </summary>
-        public static void ClearDisabledMarker()
-        {
-            try
-            {
-                if (File.Exists(DisabledMarkerPath))
-                    File.Delete(DisabledMarkerPath);
-            }
-            catch { /* swallow */ }
-        }
-
         // ============================================================
         // ACL hardening — explicit, not inherited.
         //

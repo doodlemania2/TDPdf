@@ -519,18 +519,12 @@ namespace TDPdf.Services
         [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetFont", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr FPDFTextObj_GetFontRaw(IntPtr textObject);
 
-        [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetFontSize", CallingConvention = CallingConvention.Cdecl)]
-        private static extern bool FPDFTextObj_GetFontSizeRaw(IntPtr textObject, out float size);
-
         [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetIsEmbedded", CallingConvention = CallingConvention.Cdecl)]
         private static extern int FPDFFont_GetIsEmbeddedRaw(IntPtr font);
 
         [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetFontData", CallingConvention = CallingConvention.Cdecl)]
         private static extern bool FPDFFont_GetFontDataRaw(
             IntPtr font, byte[]? buffer, UIntPtr buflen, out UIntPtr outBuflen);
-
-        [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetBaseFontName", CallingConvention = CallingConvention.Cdecl)]
-        private static extern UIntPtr FPDFFont_GetBaseFontNameRaw(IntPtr font, byte[]? buffer, UIntPtr length);
 
         /// <summary>A rectangle in PDF page space: points, origin bottom-left.</summary>
         internal readonly record struct PdfRect(double Left, double Bottom, double Right, double Top)

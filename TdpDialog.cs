@@ -59,7 +59,7 @@ namespace TDPdf
             };
         }
 
-        private static SolidColorBrush FrozenSolidColorBrush(System.Windows.Media.Color color)
+        internal static SolidColorBrush FrozenSolidColorBrush(System.Windows.Media.Color color)
         {
             var brush = new SolidColorBrush(color);
             if (brush.CanFreeze) brush.Freeze();

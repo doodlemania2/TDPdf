@@ -38,13 +38,13 @@ namespace TDPdf
         private const int TransformPreviewPx = 1100;
         private const int TransformApplyPx   = 2200;
 
-        private void ToolTransform_Click(object sender, RoutedEventArgs e)
+        private async void ToolTransform_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null) { SetStatus("Open a PDF first."); return; }
-            OpenTransformWindow();
+            await OpenTransformWindow();
         }
 
-        private void OpenTransformWindow()
+        private async Task OpenTransformWindow()
         {
             if (_doc is null || _currentFile is null) return;
             // Transform bakes the live annotation layer into both its preview and the applied page
@@ -116,7 +116,7 @@ namespace TDPdf
                 return;
             }
 
-            ApplyPageTransform(indices, win.Angle, win.Scale, win.FixedPage, win.FlipH, win.FlipV,
+            await ApplyPageTransform(indices, win.Angle, win.Scale, win.FixedPage, win.FlipH, win.FlipV,
                 win.PerspectiveCorners, win.LevelBlack, win.LevelWhite, win.LevelGamma);
         }
 
@@ -132,7 +132,7 @@ namespace TDPdf
         // behind it. So phase one only RENDERS, into one-page temp PDFs, touching nothing; phase two
         // swaps them all in at once. Cancelling during phase one now leaves the document untouched,
         // and the undo snapshot is not pushed for a transform that never happened.
-        private async void ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
+        private async Task ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
             bool flipH, bool flipV, Point[] perspectiveCorners,
             int levelBlack = 0, int levelWhite = 255, double levelGamma = 1.0)
         {

@@ -1020,7 +1020,7 @@ namespace TDPdf
         {
             Telemetry.TrackEvent("File.Open");
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Open PDF", Multiselect = true };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             // OpenFileAsync (inside OpenInTabAsync) already handles the common failure cases itself
             // (bad file, wrong password) with its own dialog and keeps going. But OpenInTabAsync's
@@ -1052,7 +1052,7 @@ namespace TDPdf
             Telemetry.TrackEvent("File.Merge");
             if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Select PDF to merge", Multiselect = true };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
             // RunPageOperation commits the active text box and rolls back a partial merge.
             RunPageOperation("Merge", () =>
             {
@@ -2614,7 +2614,7 @@ namespace TDPdf
                 Title = "Export Tables to CSV",
                 FileName = baseName + ".csv"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             using var op = Telemetry.StartOperation("ExportTablesCsv");
             SetFileOperationBusy(true, "Exporting tables...");

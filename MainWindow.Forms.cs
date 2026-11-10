@@ -129,7 +129,7 @@ namespace TDPdf
             // PDF page and represent document content, so they stay light regardless of
             // the app theme rather than using chrome brushes.
             var fieldBg    = new SolidColorBrush(Color.FromArgb(200, 255, 253, 231));
-            var focusBrush = new SolidColorBrush(Color.FromRgb(0x22, 0xc5, 0x5e));
+            var focusBrush = greenBrush;
 
             // Collect radio buttons per group so we can wire mutual exclusion after the loop.
             var radioGroups = new Dictionary<string, List<(Ellipse dot, string onVal)>>();

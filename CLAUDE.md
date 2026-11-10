@@ -70,7 +70,7 @@ Single-window WPF app with MVVM foundations but no DI. Most UI behavior lives on
 
 These files were produced by a pure move-only split; the banner comments (`// ====`) inside them are the original region markers, so a region's members are still in their original order. Private nested types (`DocumentContext`, `UndoEntry`, `RenderedPage`, `LinkInfo`, `FormFieldInfo`, …) may be declared in any partial — most remain in `MainWindow.xaml.cs`.
 
-- `ViewModels/MainWindowViewModel.cs` is a foundation-only stub — per its header comment, do NOT wire it into MainWindow yet; migration happens in separate PRs (issue #18). `Services/` is likewise a placeholder for future extractions (only `ZoomViewModel` and the few existing services are live).
+- There is no `MainWindowViewModel` (the never-instantiated stub was deleted in 2.3.0.0). `ViewModels/` holds only `ZoomViewModel`; `Services/` is a placeholder for future extractions.
 - `Models/Annotations.cs` holds the entire annotation data model: `PageAnnotation` subclasses (`TextAnnotation`, `InkAnnotation`, `HighlightAnnotation`, `TextEditAnnotation`, `ImageEditAnnotation`, `CropAnnotation`, `SignatureAnnotation`) plus `SavedSignature` for JSON persistence.
 
 **Three PDF libraries, each used for what it's best at — don't swap them:**
