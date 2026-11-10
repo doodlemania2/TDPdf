@@ -210,11 +210,11 @@ namespace TDPdf
                     {
                         Interval = TimeSpan.FromMilliseconds(250)
                     };
-                    _searchDebounce.Tick += (_, _) =>
+                    _searchDebounce.Tick += async (_, _) =>
                     {
                         _searchDebounce!.Stop();
                         var q = _searchBox?.Text ?? "";
-                        if (q.Length >= 2) RunSearch(q);
+                        if (q.Length >= 2) await RunSearch(q);
                     };
                 }
                 _searchDebounce.Stop();
@@ -253,7 +253,7 @@ namespace TDPdf
         /// query of the document it was computed for. Results are stored on THAT tab's context,
         /// never the active one, so switching tabs mid-search cannot cross them over.
         /// </summary>
-        private async void RunSearch(string query)
+        private async Task RunSearch(string query)
         {
             var ctx = _ctx;
             CancelSearch(ctx);   // also bumps the generation: results of older queries are dropped
@@ -404,8 +404,8 @@ namespace TDPdf
             double ch = (top - bottom) * sy;
             var rect = new Rectangle
             {
-                Fill = FrozenSolidColorBrush(Color.FromArgb(80, 255, 165, 0)),
-                Stroke = FrozenSolidColorBrush(Color.FromArgb(160, 255, 165, 0)),
+                Fill = TdpDialog.FrozenSolidColorBrush(Color.FromArgb(80, 255, 165, 0)),
+                Stroke = TdpDialog.FrozenSolidColorBrush(Color.FromArgb(160, 255, 165, 0)),
                 StrokeThickness = 1,
                 Width = Math.Max(cw, 4),
                 Height = Math.Max(ch, 4),

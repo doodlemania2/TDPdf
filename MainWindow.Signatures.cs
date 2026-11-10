@@ -1009,7 +1009,7 @@ namespace TDPdf
                 Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
                 Title = "Import Signature Image"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             try
             {
@@ -1233,7 +1233,7 @@ namespace TDPdf
                 Title = "Insert Image",
                 Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tiff;*.tif|All files|*.*"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             try
             {

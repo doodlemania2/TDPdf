@@ -143,7 +143,7 @@ namespace TDPdf
                 var tb = new TextBox
                 {
                     Text = hit.Text,
-                    Background = FrozenSolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
+                    Background = TdpDialog.FrozenSolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
                     Foreground = new SolidColorBrush(_textColor),
                     BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                     BorderThickness = new Thickness(2),
@@ -612,7 +612,7 @@ namespace TDPdf
                 Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
                 Title = "Select replacement image"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             PushPageSnapshot(edit.PageIndex);
             edit.ReplacementImagePath = dlg.FileName;
@@ -906,8 +906,8 @@ namespace TDPdf
                 Tag = new PlacedTextContext { PageIndex = pageIdx, Existing = existing }
             };
             tb.Background = _textWhiteout
-                ? FrozenSolidColorBrush(_textFillColor)
-                : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
+                ? TdpDialog.FrozenSolidColorBrush(_textFillColor)
+                : TdpDialog.FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
             AutomationProperties.SetName(tb, "Annotation text");
             AutomationProperties.SetHelpText(tb, "Type annotation text. Press Enter to save or Escape to cancel.");
             double maxX = Math.Max(0, _textEditorCanvas.Width - width);
@@ -1044,8 +1044,8 @@ namespace TDPdf
         {
             if (_activeTextBox is null || _activeTextBox.Tag is not PlacedTextContext) return;
             _activeTextBox.Background = _textWhiteout
-                ? FrozenSolidColorBrush(_textFillColor)
-                : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
+                ? TdpDialog.FrozenSolidColorBrush(_textFillColor)
+                : TdpDialog.FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
         }
 
         /// <summary>

@@ -64,12 +64,6 @@ namespace TDPdf.Services
             new(StringComparer.Ordinal) { "/DeviceRGB", "/DeviceGray" };
 
         /// <summary>
-        /// True when <paramref name="page"/> can be handed to PDFium's content generator without
-        /// losing anything. Fail-closed: an unreadable page reports unsafe.
-        /// </summary>
-        public static bool IsRegenerationSafe(PdfPage page) => Inspect(page) == ContentHazard.None;
-
-        /// <summary>
         /// Everything on <paramref name="page"/> that content regeneration would destroy.
         /// Never throws — a page it cannot parse comes back as <see cref="ContentHazard.Unparseable"/>.
         /// </summary>

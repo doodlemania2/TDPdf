@@ -140,7 +140,7 @@ namespace TDPdf
             var swatch = new Border
             {
                 Width = 18, Height = 18,
-                Background = FrozenSolidColorBrush(c),
+                Background = TdpDialog.FrozenSolidColorBrush(c),
                 CornerRadius = new CornerRadius(3),
                 Margin = new Thickness(1),
                 Cursor = Cursors.Hand,
@@ -346,6 +346,7 @@ namespace TDPdf
             if (_cropPopup is not null)
             {
                 _cropPopup.Visibility = Visibility.Visible;
+                UpdateRemoveCropEnabled();
                 return;
             }
 
@@ -369,6 +370,8 @@ namespace TDPdf
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 8, 0)
             };
+            _cropApplyAllCheck.Checked += (s, e) => UpdateRemoveCropEnabled();
+            _cropApplyAllCheck.Unchecked += (s, e) => UpdateRemoveCropEnabled();
             panel.Children.Add(_cropApplyAllCheck);
 
             var applyBtn = new Button
@@ -388,6 +391,15 @@ namespace TDPdf
             };
             resetBtn.Click += (s, e) => ClearCropSelection();
             panel.Children.Add(resetBtn);
+
+            _removeCropBtn = new Button
+            {
+                Content = "Remove crop",
+                Style = (Style)FindResource("ToolbarButton"),
+                ToolTip = "Remove the existing crop (this page, or every page when \"Apply to all pages\" is checked)"
+            };
+            _removeCropBtn.Click += (s, e) => RemoveCrop();
+            panel.Children.Add(_removeCropBtn);
 
             var cancelBtn = new Button
             {
@@ -420,6 +432,71 @@ namespace TDPdf
                 Panel.SetZIndex(_cropPopup, 101);
                 previewArea.Children.Add(_cropPopup);
             }
+            UpdateRemoveCropEnabled();
+        }
+
+        /// <summary>The pages the crop popup currently targets: every page when "Apply to all pages" is
+        /// checked, otherwise the selected page, the same scope Apply crop uses.</summary>
+        private int[] CropTargetPages()
+        {
+            if (_doc is null) return [];
+            if (_cropApplyAllCheck?.IsChecked == true)
+                return [.. Enumerable.Range(0, _doc.PageCount)];
+            int cur = PageList.SelectedIndex;
+            return cur >= 0 && cur < _doc.PageCount ? [cur] : [];
+        }
+
+        /// <summary>True when the page's visible box is a real crop, i.e. its /CropBox (own or inherited)
+        /// differs from the /MediaBox. Raw dictionary reads only; the PdfPage box getters plant empty boxes.</summary>
+        private static bool PageHasCrop(PdfPage page)
+        {
+            var crop = PdfPageGeometry.ReadInheritedPageBox(page, "/CropBox");
+            if (crop is not { Width: > 1, Height: > 1 } c) return false;
+            var media = PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox");
+            return media is not { } m || Math.Abs(c.X - m.X) > 0.01 || Math.Abs(c.Y - m.Y) > 0.01
+                || Math.Abs(c.Width - m.Width) > 0.01 || Math.Abs(c.Height - m.Height) > 0.01;
+        }
+
+        private void UpdateRemoveCropEnabled()
+        {
+            if (_removeCropBtn is null) return;
+            var doc = _doc;
+            _removeCropBtn.IsEnabled = doc is not null && CropTargetPages().Any(i => PageHasCrop(doc.Pages[i]));
+        }
+
+        /// <summary>Removes the crop from the targeted pages by deleting /CropBox (never touching /MediaBox),
+        /// through the same document-undo path as other page-geometry edits.</summary>
+        private void RemoveCrop()
+        {
+            if (_doc is null || _currentFile is null) return;
+            var targets = CropTargetPages().Where(i => PageHasCrop(_doc.Pages[i])).ToArray();
+            if (targets.Length == 0) { UpdateRemoveCropEnabled(); return; }
+
+            RunPageOperation("Remove crop", () =>
+            {
+                var doc = _doc!;
+                PushDocUndo();
+                foreach (int pi in targets)
+                {
+                    var page = doc.Pages[pi];
+                    page.Elements.Remove("/CropBox");
+                    // A crop inherited from a /Pages ancestor survives removing the page's own entry;
+                    // pin the page to its media box so the crop really is gone.
+                    if (PdfPageGeometry.ReadInheritedPageBox(page, "/CropBox") is not null &&
+                        PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox") is { } m)
+                    {
+                        var arr = new PdfArray();
+                        arr.Elements.Add(new PdfReal(m.X));
+                        arr.Elements.Add(new PdfReal(m.Y));
+                        arr.Elements.Add(new PdfReal(m.Right));
+                        arr.Elements.Add(new PdfReal(m.Top));
+                        page.Elements["/CropBox"] = arr;
+                    }
+                }
+                SaveTempAndReload();
+                SetStatus($"Removed crop from {targets.Length} page{(targets.Length == 1 ? "" : "s")}");
+            });
+            UpdateRemoveCropEnabled();
         }
 
         private void HideCropPopup()
@@ -1159,7 +1236,7 @@ namespace TDPdf
 
                 _polyPreview = new Polyline
                 {
-                    Stroke = FrozenSolidColorBrush(_shapeStrokeColor),
+                    Stroke = TdpDialog.FrozenSolidColorBrush(_shapeStrokeColor),
                     StrokeThickness = _shapeStrokeWidth,
                     StrokeLineJoin = PenLineJoin.Round,
                     IsHitTestVisible = false
@@ -1170,7 +1247,7 @@ namespace TDPdf
                 // dashed, so it reads as provisional next to the committed edges.
                 _polyRubber = new Polyline
                 {
-                    Stroke = FrozenSolidColorBrush(Color.FromArgb(
+                    Stroke = TdpDialog.FrozenSolidColorBrush(Color.FromArgb(
                         (byte)Math.Max(70, _shapeStrokeColor.A / 2),
                         _shapeStrokeColor.R, _shapeStrokeColor.G, _shapeStrokeColor.B)),
                     StrokeThickness = Math.Max(1, _shapeStrokeWidth / 2),

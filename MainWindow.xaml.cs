@@ -163,14 +163,7 @@ namespace TDPdf
         private PlacedAnnotation? _dragAnnot;
 
         // Crop tool
-        private Rect _cropCanvasRect;
-        private Rectangle? _cropPreviewRect;
-        private Border? _cropConfirmBar;
         private readonly Button _toolCropBtn = null!;
-        private readonly List<Rectangle> _cropHandles = new();
-        private string? _activeCropHandleTag;
-        private Point _cropHandleDragStart;
-        private Rect _cropRectAtHandleDrag;
 
         // Form field tool
         private readonly Button _toolFormBtn = null!;
@@ -341,7 +334,6 @@ namespace TDPdf
         private TextBox? _searchBox;
         private TextBlock? _searchStatus;
         private Button? _searchRedactBtn;
-        private readonly List<Rect> _searchHighlights = [];
 
         // Signatures
         private List<SavedSignature> _savedSignatures = [];
@@ -349,6 +341,7 @@ namespace TDPdf
         private Border? _signaturePopup;
         private Border? _cropPopup;
         private CheckBox? _cropApplyAllCheck;
+        private Button? _removeCropBtn;
         // Signatures are stored under %LocalAppData%\TDPdf\ so the file stays
         // writable when the EXE is installed machine-wide under %ProgramFiles%
         // (no admin rights on that directory). A legacy file next to the EXE
@@ -358,9 +351,6 @@ namespace TDPdf
         private static readonly string SignatureFile = System.IO.Path.Combine(SignatureDir, "signatures.json");
         private static readonly string LegacySignatureFile = System.IO.Path.Combine(
             AppDomain.CurrentDomain.BaseDirectory, "signatures.json");
-        private static readonly SolidColorBrush SignatureBorderBrush = FrozenSolidColorBrush(Color.FromRgb(0x44, 0x44, 0x44));
-        private static readonly SolidColorBrush DialogCloseNormalBrush = FrozenSolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
-        private static readonly SolidColorBrush DialogCloseHoverBrush = FrozenSolidColorBrush(Color.FromRgb(0xef, 0x44, 0x44));
 
         // Manual element refs (XAML codegen doesn't resolve these)
         private Canvas _annotationCanvas = null!;
@@ -813,13 +803,6 @@ namespace TDPdf
                 System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
                 typeface, fontSize, Brushes.Black, dpi);
             return (s => Ft(s).Width, s => Ft(s).WidthIncludingTrailingWhitespace);
-        }
-
-        private static SolidColorBrush FrozenSolidColorBrush(Color color)
-        {
-            var brush = new SolidColorBrush(color);
-            if (brush.CanFreeze) brush.Freeze();
-            return brush;
         }
 
         /// <summary>
@@ -2637,6 +2620,17 @@ namespace TDPdf
             return (SolidColorBrush)FindResource(key);
         }
 
+        /// <summary>
+        /// The theme's AccentGreen at the given alpha, for translucent selection / drag washes. Looked up
+        /// at creation time like every other overlay brush, so a wash built after a theme switch uses the
+        /// new theme's accent (a hardcoded dark-theme green is unreadable on the Light theme).
+        /// </summary>
+        private SolidColorBrush AccentWash(byte alpha)
+        {
+            var c = BrushResource("AccentGreen").Color;
+            return new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
+        }
+
         // ============================================================
         // Context menu
         // ============================================================
@@ -3872,8 +3866,6 @@ namespace TDPdf
             {
                 HideCropPopup();
                 ClearCropSelection();
-                // Dismiss crop confirm bar when switching away from Crop
-                HideCropConfirmBar();
             }
 
             // The ruler is transient by definition, so leaving the tool takes it with it — that is
@@ -4152,287 +4144,6 @@ namespace TDPdf
             SetTool(EditTool.Signature);
             ShowSignaturePopup();
         }
-
-        // ============================================================
-        // Crop tool
-        // ============================================================
-
-        private void ShowCropConfirmBar()
-        {
-            HideCropConfirmBar();
-            if (_doc is null) return;
-
-            int currentPage = PageList.SelectedIndex;
-            bool multiPage = _doc.PageCount > 1;
-
-            var bar = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(230, 30, 30, 30)),
-                BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(8, 6, 8, 6)
-            };
-
-            var panel = new StackPanel { Orientation = Orientation.Horizontal };
-
-            var label = new TextBlock
-            {
-                Text = "Apply crop to:",
-                Foreground = (SolidColorBrush)FindResource("TextSecondary"),
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 8, 0)
-            };
-            panel.Children.Add(label);
-
-            var btnStyle = new Style(typeof(Button));
-            btnStyle.Setters.Add(new Setter(Button.BackgroundProperty, new SolidColorBrush(Color.FromArgb(40, 74, 222, 128))));
-            btnStyle.Setters.Add(new Setter(Button.ForegroundProperty, (SolidColorBrush)FindResource("AccentGreen")));
-            btnStyle.Setters.Add(new Setter(Button.BorderThicknessProperty, new Thickness(1)));
-            btnStyle.Setters.Add(new Setter(Button.BorderBrushProperty, (SolidColorBrush)FindResource("AccentGreen")));
-            btnStyle.Setters.Add(new Setter(Button.PaddingProperty, new Thickness(10, 4, 10, 4)));
-            btnStyle.Setters.Add(new Setter(Button.MarginProperty, new Thickness(0, 0, 6, 0)));
-            btnStyle.Setters.Add(new Setter(Button.CursorProperty, Cursors.Hand));
-            btnStyle.Setters.Add(new Setter(Button.FontFamilyProperty, new FontFamily("Segoe UI")));
-            btnStyle.Setters.Add(new Setter(Button.FontSizeProperty, 12.0));
-
-            var thisPageBtn = new Button { Content = "This Page", Style = btnStyle, ToolTip = "Crop this page (Enter)" };
-            thisPageBtn.Click += (_, _) => ApplyCrop([currentPage]);
-            panel.Children.Add(thisPageBtn);
-
-            if (multiPage)
-            {
-                var allPagesBtn = new Button { Content = "All Pages", Style = btnStyle, ToolTip = "Crop all pages" };
-                allPagesBtn.Click += (_, _) => ApplyCrop([..Enumerable.Range(0, _doc.PageCount)]);
-                panel.Children.Add(allPagesBtn);
-            }
-
-            // "Remove Crop" — only shown if current page already has a CropBox
-            bool hasCropBox = _doc.Pages[currentPage].Elements.ContainsKey("/CropBox");
-            if (hasCropBox)
-            {
-                var dimBtnStyle = new Style(typeof(Button), btnStyle);
-                dimBtnStyle.Setters.Add(new Setter(Button.ForegroundProperty,
-                    new SolidColorBrush(Color.FromRgb(0xff, 0x80, 0x80))));
-                dimBtnStyle.Setters.Add(new Setter(Button.BorderBrushProperty,
-                    new SolidColorBrush(Color.FromRgb(0xff, 0x80, 0x80))));
-
-                var removeBtn = new Button
-                {
-                    Content = "Remove Crop",
-                    Style = dimBtnStyle,
-                    ToolTip = multiPage ? "Remove CropBox from this page" : "Remove existing CropBox"
-                };
-                removeBtn.Click += (_, _) => RemoveCropBox([currentPage]);
-                panel.Children.Add(removeBtn);
-
-                if (multiPage)
-                {
-                    var removeAllBtn = new Button
-                    {
-                        Content = "Remove All",
-                        Style = dimBtnStyle,
-                        ToolTip = "Remove CropBox from all pages"
-                    };
-                    removeAllBtn.Click += (_, _) => RemoveCropBox([..Enumerable.Range(0, _doc.PageCount)]);
-                    panel.Children.Add(removeAllBtn);
-                }
-            }
-
-            var cancelBtn = new Button
-            {
-                Content = "Cancel",
-                Style = btnStyle,
-                ToolTip = "Cancel (Escape)",
-                Foreground = (SolidColorBrush)FindResource("TextSecondary"),
-                BorderBrush = (SolidColorBrush)FindResource("TextSecondary"),
-                Background = Brushes.Transparent
-            };
-            cancelBtn.Click += (_, _) => HideCropConfirmBar();
-            panel.Children.Add(cancelBtn);
-
-            bar.Child = panel;
-            _cropConfirmBar = bar;
-
-            // Position below the crop rect; if near the bottom, flip above it instead.
-            const double barHeight = 38; // approximate height of the confirm bar
-            double barLeft = Math.Max(4, _cropCanvasRect.X);
-            double barTopBelow = _cropCanvasRect.Y + _cropCanvasRect.Height + 8;
-            double barTopAbove = _cropCanvasRect.Y - barHeight - 8;
-            double barTop = barTopBelow + barHeight < _annotationCanvas.ActualHeight
-                ? barTopBelow
-                : Math.Max(4, barTopAbove);
-            Canvas.SetLeft(bar, barLeft);
-            Canvas.SetTop(bar, barTop);
-            _annotationCanvas.Children.Add(bar);
-            AddCropHandles();
-        }
-
-        private void HideCropConfirmBar()
-        {
-            if (_cropConfirmBar is not null)
-            {
-                _annotationCanvas.Children.Remove(_cropConfirmBar);
-                _cropConfirmBar = null;
-            }
-            if (_cropPreviewRect is not null)
-            {
-                _annotationCanvas.Children.Remove(_cropPreviewRect);
-                _cropPreviewRect = null;
-            }
-            RemoveCropHandles();
-        }
-
-        private void AddCropHandles()
-        {
-            RemoveCropHandles();
-            const double hSize = 8;
-            var tags = new[] { "NW", "NE", "SE", "SW" };
-            var cursors = new[] { Cursors.SizeNWSE, Cursors.SizeNESW, Cursors.SizeNWSE, Cursors.SizeNESW };
-            var green = (SolidColorBrush)FindResource("AccentGreen");
-
-            for (int i = 0; i < 4; i++)
-            {
-                var h = new Rectangle
-                {
-                    Width = hSize,
-                    Height = hSize,
-                    Fill = green,
-                    Stroke = Brushes.White,
-                    StrokeThickness = 1,
-                    Tag = tags[i],
-                    Cursor = cursors[i],
-                };
-                _cropHandles.Add(h);
-                _annotationCanvas.Children.Add(h);
-            }
-            PositionCropHandles();
-        }
-
-        private void RemoveCropHandles()
-        {
-            foreach (var h in _cropHandles)
-                _annotationCanvas.Children.Remove(h);
-            _cropHandles.Clear();
-            _activeCropHandleTag = null;
-        }
-
-        private void PositionCropHandles()
-        {
-            if (_cropHandles.Count < 4) return;
-            const double hSize = 8;
-            var corners = new (double x, double y)[]
-            {
-                (_cropCanvasRect.X - hSize / 2,     _cropCanvasRect.Y - hSize / 2),
-                (_cropCanvasRect.Right - hSize / 2, _cropCanvasRect.Y - hSize / 2),
-                (_cropCanvasRect.Right - hSize / 2, _cropCanvasRect.Bottom - hSize / 2),
-                (_cropCanvasRect.X - hSize / 2,     _cropCanvasRect.Bottom - hSize / 2),
-            };
-            for (int i = 0; i < 4; i++)
-            {
-                Canvas.SetLeft(_cropHandles[i], corners[i].x);
-                Canvas.SetTop(_cropHandles[i], corners[i].y);
-            }
-        }
-
-        private void UpdateCropRectVisuals()
-        {
-            if (_cropPreviewRect is null) return;
-            Canvas.SetLeft(_cropPreviewRect, _cropCanvasRect.X);
-            Canvas.SetTop(_cropPreviewRect, _cropCanvasRect.Y);
-            _cropPreviewRect.Width = _cropCanvasRect.Width;
-            _cropPreviewRect.Height = _cropCanvasRect.Height;
-            PositionCropHandles();
-            RepositionCropConfirmBar();
-        }
-
-        private void RepositionCropConfirmBar()
-        {
-            if (_cropConfirmBar is null) return;
-            const double barHeight = 38;
-            double barLeft = Math.Max(4, _cropCanvasRect.X);
-            double barTopBelow = _cropCanvasRect.Y + _cropCanvasRect.Height + 8;
-            double barTopAbove = _cropCanvasRect.Y - barHeight - 8;
-            double barTop = barTopBelow + barHeight < _annotationCanvas.ActualHeight
-                ? barTopBelow : Math.Max(4, barTopAbove);
-            Canvas.SetLeft(_cropConfirmBar, barLeft);
-            Canvas.SetTop(_cropConfirmBar, barTop);
-        }
-
-        private void RemoveCropBox(int[] pageIndices)
-        {
-            if (_doc is null || _currentFile is null) return;
-            // RunPageOperation shows the error and restores the document (and the undo entry
-            // pushed below) if the reload fails; this used to report only on the status line.
-            RunPageOperation("Remove crop", () =>
-            {
-                var doc = _doc!;
-                PushDocUndo();
-                foreach (int pi in pageIndices)
-                {
-                    if (pi < 0 || pi >= doc.PageCount) continue;
-                    doc.Pages[pi].Elements.Remove("/CropBox");
-                }
-                HideCropConfirmBar();
-                SetTool(EditTool.Select);
-                SaveTempAndReload();
-                SetStatus($"Removed CropBox from {pageIndices.Length} page{(pageIndices.Length == 1 ? "" : "s")}");
-            });
-        }
-
-        private void ApplyCrop(int[] pageIndices)
-        {
-            if (_doc is null || _currentFile is null) { SetStatus("Crop: no document open"); return; }
-            int currentPage = PageList.SelectedIndex;
-            if (currentPage < 0) { SetStatus("Crop: no page selected"); return; }
-            if (!_renderDims.ContainsKey(currentPage)) { SetStatus("Crop: page dimensions unavailable"); return; }
-
-            // As RemoveCropBox: a failure now gets the error dialog and the document back.
-            RunPageOperation("Crop", () =>
-            {
-                var doc = _doc!;
-                PushDocUndo();
-
-                var (renderW, renderH) = _renderDims[currentPage];
-                var cr = _cropCanvasRect;
-
-                foreach (int pi in pageIndices)
-                {
-                    if (pi < 0 || pi >= doc.PageCount) continue;
-                    var page = doc.Pages[pi];
-                    double pdfW = page.Width.Point;
-                    double pdfH = page.Height.Point;
-
-                    // Convert canvas rect (top-left origin) to PDF rect (bottom-left origin, points)
-                    double x1 = cr.X * pdfW / renderW;
-                    double y1 = pdfH - (cr.Y + cr.Height) * pdfH / renderH;
-                    double x2 = (cr.X + cr.Width) * pdfW / renderW;
-                    double y2 = pdfH - cr.Y * pdfH / renderH;
-
-                    // Clamp to media box
-                    x1 = Math.Max(0, x1); y1 = Math.Max(0, y1);
-                    x2 = Math.Min(pdfW, x2); y2 = Math.Min(pdfH, y2);
-
-                    // Write CropBox directly into the page dictionary — more reliable than the
-                    // CropBox property setter across PdfSharpCore versions.
-                    var arr = new PdfSharpCore.Pdf.PdfArray();
-                    arr.Elements.Add(new PdfSharpCore.Pdf.PdfReal(x1));
-                    arr.Elements.Add(new PdfSharpCore.Pdf.PdfReal(y1));
-                    arr.Elements.Add(new PdfSharpCore.Pdf.PdfReal(x2));
-                    arr.Elements.Add(new PdfSharpCore.Pdf.PdfReal(y2));
-                    page.Elements["/CropBox"] = arr;
-                }
-
-                HideCropConfirmBar();
-                SetTool(EditTool.Select);
-                SaveTempAndReload();
-                SetStatus($"Cropped {pageIndices.Length} page{(pageIndices.Length == 1 ? "" : "s")}");
-            });
-        }
-
-
 
         // ============================================================
         // Form field tool (AcroForm authoring)
@@ -5621,7 +5332,7 @@ namespace TDPdf
             {
                 BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                 BorderThickness = new Thickness(2),
-                Background = FrozenSolidColorBrush(Color.FromArgb(20, 74, 222, 128)),
+                Background = AccentWash(20),
                 Width = bounds.Width + 8,
                 Height = bounds.Height + 8,
                 IsHitTestVisible = false
@@ -6181,7 +5892,7 @@ namespace TDPdf
             }
             // Optional opaque whiteout painted behind the text.
             if (ta.HasFill)
-                tb.Background = FrozenSolidColorBrush(ta.GetFillColor());
+                tb.Background = TdpDialog.FrozenSolidColorBrush(ta.GetFillColor());
             Canvas.SetLeft(tb, ta.Position.X);
             Canvas.SetTop(tb, ta.Position.Y);
             _annotationCanvas.Children.Add(tb);
@@ -6292,8 +6003,8 @@ namespace TDPdf
             const double pad = 2;   // the TextBlock path's Padding, and the burn-in's own pad
             return new SpacedTextVisual(
                 lines, typeface, ta.FontSize,
-                FrozenSolidColorBrush(ta.GetColor()),
-                ta.HasFill ? FrozenSolidColorBrush(ta.GetFillColor()) : null,
+                TdpDialog.FrozenSolidColorBrush(ta.GetColor()),
+                ta.HasFill ? TdpDialog.FrozenSolidColorBrush(ta.GetFillColor()) : null,
                 pad, layout.LineHeight, layout.Baseline, dpi, ta.Underline)
             {
                 Width = layout.Size.Width,
@@ -6501,7 +6212,7 @@ namespace TDPdf
             if (!IsFinitePositive(d)) return null;
             var dot = new Ellipse
             {
-                Fill = FrozenSolidColorBrush(ia.GetColor()),
+                Fill = TdpDialog.FrozenSolidColorBrush(ia.GetColor()),
                 Width = d,
                 Height = d,
                 IsHitTestVisible = false
@@ -6538,7 +6249,7 @@ namespace TDPdf
                     // it is a subclass, and plain highlights must keep their single-rect render.
                     case MarkupAnnotation mk:
                     {
-                        var mkBrush = FrozenSolidColorBrush(mk.GetColor());
+                        var mkBrush = TdpDialog.FrozenSolidColorBrush(mk.GetColor());
                         foreach (var pr in mk.PaintRects())
                         {
                             if (!IsFinitePositive(pr.Width) || !IsFinitePositive(pr.Height)) continue;
@@ -6559,7 +6270,7 @@ namespace TDPdf
                         if (!IsFinitePositive(ha.Bounds.Width) || !IsFinitePositive(ha.Bounds.Height)) continue;
                         var rect = new Rectangle
                         {
-                            Fill = FrozenSolidColorBrush(ha.GetColor()),
+                            Fill = TdpDialog.FrozenSolidColorBrush(ha.GetColor()),
                             Width = ha.Bounds.Width,
                             Height = ha.Bounds.Height,
                             IsHitTestVisible = false
@@ -6576,7 +6287,7 @@ namespace TDPdf
                         if (ia.Points.Count < 2) continue;
                         var poly = new Polyline
                         {
-                            Stroke = FrozenSolidColorBrush(ia.GetColor()),
+                            Stroke = TdpDialog.FrozenSolidColorBrush(ia.GetColor()),
                             StrokeThickness = ia.StrokeWidth,
                             StrokeLineJoin = PenLineJoin.Round,
                             StrokeStartLineCap = PenLineCap.Round,
@@ -6606,7 +6317,7 @@ namespace TDPdf
                         var etb = new TextBlock
                         {
                             Text = tea.NewContent,
-                            Foreground = FrozenSolidColorBrush(tea.GetColor()),
+                            Foreground = TdpDialog.FrozenSolidColorBrush(tea.GetColor()),
                             FontFamily = new FontFamily(tea.FontName),
                             FontSize = tea.FontSize,
                             FontWeight = tea.Bold ? FontWeights.Bold : FontWeights.Normal,
@@ -6951,8 +6662,8 @@ namespace TDPdf
 
         private void RenderShapeAnnotation(ShapeAnnotation shp)
         {
-            var stroke = FrozenSolidColorBrush(shp.GetStrokeColor());
-            SolidColorBrush? fill = shp.HasFill ? FrozenSolidColorBrush(shp.GetFillColor()) : null;
+            var stroke = TdpDialog.FrozenSolidColorBrush(shp.GetStrokeColor());
+            SolidColorBrush? fill = shp.HasFill ? TdpDialog.FrozenSolidColorBrush(shp.GetFillColor()) : null;
             switch (shp.Kind)
             {
                 case ShapeKind.Rectangle:
@@ -8276,6 +7987,7 @@ namespace TDPdf
                 ClearSelection();
                 ClearTextSelection();
                 ClearCropSelection();
+                UpdateRemoveCropEnabled();
                 // A measurement belongs to the page it was taken on — pages can differ in size, so
                 // carrying one across would be a number about a page nobody is looking at.
                 ClearMeasurement();

@@ -894,7 +894,7 @@ namespace TDPdf
         /// already have: <see cref="AppendPdfFileToDoc"/> (File ▸ Merge, including named-destination link
         /// rewriting) and <see cref="AddImagePagesFromFile"/> (one page per image frame).
         /// </summary>
-        private async void AppendFilesToCurrentDoc(string[] files)
+        private async Task AppendFilesToCurrentDoc(string[] files)
         {
             if (_doc is null) return;
             var doc = _doc;
@@ -999,7 +999,7 @@ namespace TDPdf
             }
         }
 
-        private void PageList_Drop(object sender, DragEventArgs e)
+        private async void PageList_Drop(object sender, DragEventArgs e)
         {
             HidePageDropLine();
             // #172: a FileDrop appends; anything carrying the internal page payload falls through to
@@ -1007,7 +1007,11 @@ namespace TDPdf
             if (_doc is not null && !e.Data.GetDataPresent(typeof(int[])))
             {
                 var files = DroppedOpenablePaths(e);
-                if (files.Length > 0) { AppendFilesToCurrentDoc(files); e.Handled = true; }
+                if (files.Length > 0)
+                {
+                    e.Handled = true;   // before the first await: the drop is consumed synchronously
+                    await AppendFilesToCurrentDoc(files);
+                }
                 return;
             }
             if (_doc is null || e.Data.GetData(typeof(int[])) is not int[] block || block.Length == 0)

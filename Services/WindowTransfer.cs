@@ -242,20 +242,30 @@ namespace TDPdf.Services
             IsHitTestVisible = false;
             Content = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(235, 30, 30, 30)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x4a, 0xde, 0x80)),
+                Background = ThemedBrush("BgPanel", Color.FromRgb(30, 30, 30), 235),
+                BorderBrush = ThemedBrush("AccentGreen", Color.FromRgb(0x4a, 0xde, 0x80), 255),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(10, 6, 10, 6),
                 Child = new TextBlock
                 {
                     Text = label,
-                    Foreground = Brushes.White,
+                    Foreground = ThemedBrush("TextPrimary", Colors.White, 255),
                     FontFamily = new FontFamily("Segoe UI"),
                     FontSize = 12
                 }
             };
             SourceInitialized += (_, _) => MakeClickThrough();
+        }
+
+        /// <summary>A theme brush (re-resolved each time a ghost is built, so it follows the active theme)
+        /// at the given alpha; the literal fallback is only for a theme dictionary that failed to load.</summary>
+        private static SolidColorBrush ThemedBrush(string key, Color fallback, byte alpha)
+        {
+            var c = (Application.Current?.TryFindResource(key) as SolidColorBrush)?.Color ?? fallback;
+            var brush = new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
+            brush.Freeze();
+            return brush;
         }
 
         private void MakeClickThrough()
