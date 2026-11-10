@@ -139,7 +139,7 @@ namespace TDPdf
         private async Task<string> PrepareImageExportSourceAsync()
         {
             var doc = _doc ?? throw new InvalidOperationException("No document is open.");
-            NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
+            PdfSaveNormalizer.Normalize(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
 
             bool hasPending = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
             if (!hasPending)

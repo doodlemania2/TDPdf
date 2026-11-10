@@ -216,6 +216,8 @@ DocumensoSelfSign.Run(Check);
 DocumensoSelfSignLive.Run(Check, tmp);
 DocumensoConnect.Run(Check);
 DocumensoWeb.Run(Check);
+SaveNormalize.Run(Check);
+PureLogic.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
