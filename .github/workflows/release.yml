@@ -12,6 +12,12 @@ name: release
 # Every optional stage is gated on its secrets being present, so the workflow
 # degrades to exactly its previous behaviour (build + release, unsigned) rather
 # than failing, if a secret is missing or rotated out.
+#
+# Hardening (2026-11): the tag is validated before anything else and reaches shell only
+# through env; the commit released must be reachable from origin/main; a manual dispatch
+# checks out refs/tags/<tag> (never the dispatch ref); the tag must equal the csproj
+# AssemblyVersion; the PdfCore test harness must print ALL PASS before anything is signed
+# or published.
 
 on:
   push:
@@ -47,32 +53,90 @@ jobs:
       # published: while that one is in certification, the API must not touch the product.
       HAS_STORE:     ${{ secrets.MSSTORE_CLIENT_ID != '' && secrets.MSSTORE_PRODUCT_ID != '' && vars.MSSTORE_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Resolve tag
+      # The tag is the only attacker-influenced value in this workflow (workflow_dispatch
+      # input, or the pushed tag name). It is read through env, never interpolated into the
+      # script, and validated against the same pattern store.yml uses before it is exported.
+      - name: Resolve and validate tag
         id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+){3}$ ]] || { echo "::error::Not a release tag (want vN.N.N.N): $TAG"; exit 1; }
+          echo "name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # Always the tag's own commit. On a tag push that is the pushed ref; on a manual
+      # dispatch it stops a re-run started from a feature branch from building (and
+      # signing) that branch under a release tag's name. Full history so the on-main check
+      # below can see origin/main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.name }}
+          fetch-depth: 0
+
+      - name: Require the tagged commit to be on main
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SHA" origin/main || {
+            echo "::error::$TAG ($SHA) is not reachable from origin/main. Releases are cut from main only; merge first, then tag."
+            exit 1
+          }
+          echo "$TAG -> $SHA is on main"
+
+      # A plain tag push never replaces a published release: re-pushing or force-moving a tag
+      # would otherwise re-sign and --clobber the assets people already downloaded and that
+      # tdpdf-fleet and the Store have verified. workflow_dispatch is the deliberate,
+      # documented way to re-release a tag in place (used 2026-08-20 for v1.22.1.0), so it
+      # is exempt, and so is a re-run of a failed attempt (the release was created partway
+      # through the first attempt, and re-running is how a Store or signing hiccup is retried).
+      - name: Refuse to overwrite an existing release on a tag push
+        if: github.event_name == 'push' && github.run_attempt == 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::A release for $TAG already exists. Use workflow_dispatch to re-release a tag in place."
+            exit 1
           fi
 
-      # The release version comes from the csproj, not the tag. tdpdf-fleet then refuses to
-      # deploy a binary whose file version does not match the tag.
+      # The release version comes from the csproj, not the tag, and must equal the tag:
+      # tdpdf-fleet refuses to deploy a binary whose file version does not match it.
       - name: Read project version
         id: ver
         run: |
-          V=$(grep -oPm1 '(?<=<AssemblyVersion>)[^<]+' TDPdf.csproj)
+          set -euo pipefail
+          V=$(grep -oPm1 '(?<=<AssemblyVersion>)[^<]+' TDPdf.csproj || true)
           [ -n "$V" ] || { echo "::error::Could not read <AssemblyVersion> from TDPdf.csproj"; exit 1; }
+          [[ "$V" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || { echo "::error::Unexpected <AssemblyVersion> '$V'"; exit 1; }
+          [ "v$V" = "$TAG" ] || { echo "::error::Tag $TAG does not match <AssemblyVersion> v$V in TDPdf.csproj. Bump the csproj (and changelog/notes) or fix the tag."; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Project version: $V"
+
+      # The ImageSharp community licence (third_party/PdfSharpCore/sixlabors.lic) is a single
+      # line of ';'-separated fields including ExpiryDateUtc=. When it lapses, Release builds
+      # of PdfSharpCore fail, so warn well before that.
+      - name: Check ImageSharp licence expiry
+        run: |
+          EXP="$(grep -oPm1 '(?<=ExpiryDateUtc=)[0-9]{4}-[0-9]{2}-[0-9]{2}' third_party/PdfSharpCore/sixlabors.lic || true)"
+          if [ -z "$EXP" ]; then echo "::warning::Could not read ExpiryDateUtc from third_party/PdfSharpCore/sixlabors.lic"; exit 0; fi
+          DAYS=$(( ( $(date -u -d "$EXP" +%s) - $(date -u +%s) ) / 86400 ))
+          echo "Six Labors licence expires $EXP ($DAYS days)"
+          if [ "$DAYS" -le 60 ]; then
+            echo "::warning::The Six Labors ImageSharp licence expires $EXP ($DAYS days). Renew it at licensing.sixlabors.com and replace third_party/PdfSharpCore/sixlabors.lic."
+          fi
 
       # Guards the release-notes omission that has historically been the only
       # reason tagged builds fail — caught here with a clear message rather
       # than 10 minutes later inside `gh release create`.
       - name: Check release notes exist
         run: |
-          NOTES=".github/release-notes/${{ steps.tag.outputs.name }}.md"
+          NOTES=".github/release-notes/${TAG}.md"
           [ -f "$NOTES" ] || { echo "::error::Missing $NOTES — release.yml passes it to --notes-file. Commit it and re-tag."; exit 1; }
           echo "Found $NOTES"
 
@@ -86,11 +150,27 @@ jobs:
       # install fails with "cp: cannot create directory ... Permission denied" — while still
       # reporting success, so the next step fails confusingly on the OLD SDK instead. Installing
       # into RUNNER_TEMP sidesteps it and is harmless on a hosted runner.
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: '10.0.x'
+
+      # The PdfCore harness is the only test suite. It runs here, before anything is signed
+      # or published, and must both exit 0 and print ALL PASS (a run that matched nothing
+      # would exit 0 too). Its font resolver (tests/PdfCore/Program.cs) needs DejaVu or
+      # Liberation on Linux; the ARC image may not carry them, so install DejaVu if neither
+      # is present. Native PDFium comes from the bblanchon.PDFium.Linux package.
+      - name: Test (PdfCore harness)
+        run: |
+          set -euo pipefail
+          if [ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ] && [ ! -f /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq fonts-dejavu-core
+          fi
+          set -o pipefail
+          dotnet run --project tests/PdfCore/PdfCore.Tests.csproj -c Release 2>&1 | tee test-output.txt
+          grep -q "ALL PASS" test-output.txt || { echo "::error::Test harness did not print ALL PASS"; exit 1; }
 
       - name: Publish (Release, win-x64, single-file, self-contained)
         run: |
@@ -186,7 +266,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp publish/TDPdf.exe "dist/TDPdf-${{ steps.tag.outputs.name }}-win-x64.exe"
+          cp publish/TDPdf.exe "dist/TDPdf-${TAG}-win-x64.exe"
           # GPLv3 corresponding-source zip, produced by the BundleSource target.
           cp publish/*-src.zip dist/ 2>/dev/null || echo "::warning::No source zip found — check the BundleSource target."
           # Third-party notices. Also embedded in the exe (Help > Third-Party Licenses), but BSD-3
@@ -201,12 +281,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.name }}"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --title "TDPdf $TAG" \
-              --notes-file .github/release-notes/$TAG.md \
-              --target "${GITHUB_SHA}"
+              --notes-file ".github/release-notes/${TAG}.md" \
+              --target "$SHA"
           fi
           gh release upload "$TAG" dist/* --clobber
 
@@ -235,7 +314,6 @@ jobs:
         id: storeurl
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed == 'true' && github.event.inputs.skip_store != 'true'
         env:
-          TAG: ${{ steps.tag.outputs.name }}
           AZURE_TENANT_ID: ${{ secrets.SIGN_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.SIGN_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.SIGN_CLIENT_SECRET }}
@@ -276,9 +354,10 @@ jobs:
           MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
           MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
           MSSTORE_PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
+          STORE_URL: ${{ steps.storeurl.outputs.url }}
         # Repoints the existing package's installer URL, commits, waits for readiness, submits.
         # Calls the Store submission API directly; see the script for why not the msstore CLI.
-        run: python3 build/store/publish-store.py "${{ steps.storeurl.outputs.url }}"
+        run: python3 build/store/publish-store.py "$STORE_URL"
 
       - name: Note why the Store step was skipped
         if: env.HAS_STORE == 'true' && steps.sign.outputs.signed != 'true'
@@ -296,7 +375,6 @@ jobs:
         if: env.HAS_FLEET == 'true' && github.event.inputs.skip_intune != 'true' && steps.sign.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ secrets.FLEET_DISPATCH_TOKEN }}
-          TAG: ${{ steps.tag.outputs.name }}
         run: |
           gh api repos/doodlemania2/tdpdf-fleet/dispatches \
             -f event_type=tdpdf-released -f "client_payload[tag]=$TAG"
@@ -309,7 +387,6 @@ jobs:
         if: env.HAS_SITE == 'true'
         env:
           GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
-          TAG: ${{ steps.tag.outputs.name }}
         run: |
           gh api repos/doodlemania2/tdpdf-site/dispatches \
             -f event_type=tdpdf-release -f "client_payload[tag]=$TAG"
@@ -320,13 +397,15 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           {
-            echo "### TDPdf ${{ steps.tag.outputs.name }}"
+            echo "### TDPdf ${TAG:-unknown}"
             echo ""
             echo "| Stage | Result |"
             echo "|---|---|"
-            echo "| Version (from csproj) | ${{ steps.ver.outputs.version }} |"
+            echo "| Version (from csproj) | ${VERSION:-n/a} |"
             echo "| Signed | ${{ steps.sign.outputs.signed == 'true' && 'yes — Azure Artifact Signing (publicly trusted)' || 'NO — unsigned' }} |"
             echo "| Intune | ${{ steps.fleet.outcome == 'success' && 'dispatched to tdpdf-fleet' || 'not dispatched' }} |"
             echo "| Store | ${{ steps.store.outcome == 'success' && 'submitted' || (steps.store.outcome == 'failure' && 'FAILED — see the Store step log; the release and Intune were not affected' || 'skipped') }} |"
@@ -339,7 +418,7 @@ jobs:
     needs: [release]
     if: failure()
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github/actions
       - uses: ./.github/actions/ntfy-notify
