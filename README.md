@@ -68,7 +68,7 @@ dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=
 
 Output lands in `bin/Release/net10.0-windows/win-x64/publish/`. The publish step produces a self-contained single-file `TDPdf.exe` plus a versioned `TDPdf-<version>-src.zip` for GPL3 corresponding-source distribution.
 
-Requires Windows and the .NET 9 SDK to build.
+Requires Windows and the .NET 10 SDK to build.
 
 ## Privacy
 

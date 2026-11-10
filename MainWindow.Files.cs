@@ -763,7 +763,7 @@ namespace TDPdf
         // layout pass. While a hold is live, plain SetStatus calls are dropped; the hold refreshes
         // on every wheel notch and expires on its own, after which normal statuses flow again.
         // The hold is short and covers only that stomp — the readout's own five-second lifetime is
-        // ShowScaleReadout's job (AppScale.cs). Put here rather than at the ~200 SetStatus callers
+        // ShowScaleReadout's job (MainWindow.AppScale.cs). Put here rather than at the ~200 SetStatus callers
         // because SetBusy / SetFileOperationBusy / SetWorkerStatus all funnel through this line.
         private DateTime _statusHoldUntil = DateTime.MinValue;
 
@@ -785,7 +785,7 @@ namespace TDPdf
 
         // ---- Transient status readouts -------------------------------------------------------
         // One snapshot / hold / restore for every "flash something on the status line, then put back
-        // what was there" caller: the app-scale readout (AppScale.cs) and the #status-line file size
+        // what was there" caller: the app-scale readout (MainWindow.AppScale.cs) and the #status-line file size
         // below. Whatever was showing before the FIRST flash of a burst is snapshotted and put back,
         // but only if the readout is still the text on screen — so a real status written after the
         // hold lapsed is never replaced by a stale one. The restore assigns StatusText directly
@@ -856,7 +856,7 @@ namespace TDPdf
         // is a number you want sitting in the corner of your eye while you lay a page out. The
         // click gesture on StatusText is untouched.
         //
-        // Like everything else down there it lives in the UNSCALED footer — AppScale.cs leaves the
+        // Like everything else down there it lives in the UNSCALED footer — MainWindow.AppScale.cs leaves the
         // title bar and status bar alone on purpose, so the chip holds still under the cursor while
         // it is being clicked through the units — and it never touches the document, so no dirty
         // flag is involved.

@@ -89,7 +89,7 @@ namespace TDPdf.Services
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>HTTP shape</b> follows the two existing call sites (<c>Ocr.cs</c>'s download client and
+    /// <b>HTTP shape</b> follows the two existing call sites (<c>MainWindow.Ocr.cs</c>'s download client and
     /// <c>UpdateCheck</c>): a short-lived <see cref="HttpClient"/> per operation, an explicit
     /// timeout, an explicit User-Agent, <c>System.Text.Json</c>, and a
     /// <see cref="CancellationToken"/> on everything. No shared client, no factory, no retry

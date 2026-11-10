@@ -16,7 +16,7 @@ namespace TDPdf.Services
     }
 
     /// <summary>
-    /// How a crop should be segmented. Deliberately neutral: the callers in Ocr.cs describe the
+    /// How a crop should be segmented. Deliberately neutral: the callers in MainWindow.Ocr.cs describe the
     /// SHAPE of what they are reading, and the Tesseract page-segmentation modes stay contained in
     /// this file alongside every other reference to the engine.
     /// </summary>

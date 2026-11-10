@@ -6,6 +6,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.3.0.0] - 2026-11-09
+
+A cleanup release. Three reviews (security, code quality, maintenance) read the whole codebase, and every finding below was approved individually. Most of it you will never see; the parts you will are a safer way to open files from strangers, a Remove crop button, and correct page shapes for rotated pages in continuous view.
+
+### Security
+
+- **A crafted PDF can no longer crash or freeze TDPdf.** A page tree, bookmark list or named-destination tree that loops back on itself, or thousands of nested arrays, used to overflow the stack and close every open tab without saving. A form field whose parent points at itself froze the window. All of these are now bounded: the file opens (or is repaired) and the rest of it works.
+- **Decompression limits.** A compressed stream that expands past 512 MB, and a dropped zip over 2 GB or 10,000 entries, are refused instead of filling memory or disk.
+- **Decrypted and pre-redaction copies no longer stay in your temp folder.** Opening a password-protected file, redacting, and every page edit left full working copies in `%TEMP%`, unprotected and unredacted, indefinitely. Each tab now deletes its copies when it closes and when TDPdf exits, and copies left by a crash are cleared at the next start.
+- **Saving a protected PDF in place asks before it weakens or removes the encryption.** An AES-256 file opened with its owner password used to be overwritten unprotected on Ctrl+S, and one opened with its open password was rewritten as 128-bit RC4; the status bar said so only afterwards. You now choose Save anyway, Save As, or Cancel, once per document.
+- **Intune (SYSTEM) installs no longer write or delete files in a folder an ordinary user can control.** The install log and telemetry files under `%ProgramData%\TDPdf` are used only when that folder is owned by SYSTEM or Administrators and is not a link elsewhere, closing a route to local privilege escalation. The telemetry opt-out file is honoured only when an administrator created it.
+- **Crash reports scrub file paths that contain spaces.** The tail of a network or drive path with a space in it (`\\server\Legal Docs\client.pdf`) could survive the scrubber.
+- **OCR language packs are verified.** Downloads are pinned to a fixed version of the Tesseract data and checked against a SHA-256 before use. The command-line `--lang` option accepts only the supported languages.
+- **Release pipeline.** A release is built only from a tag on `main`, the tag must match the project version, a first tag push never overwrites a published release, the test suite must pass before anything is signed, and the tag reaches shell commands only through validated environment variables.
+
+### Added
+
+- **Remove crop.** The crop tool's popup has a Remove crop button for the selected page, or every page with Apply to all pages. It is undoable. The old remove-crop bar could never appear because of a duplicated code path; it has been deleted.
+
+### Fixed
+
+- **Rotated pages keep their shape in continuous view.** Pages with a 90 or 270 degree rotation had their width and height swapped twice, so their slots were the wrong shape and Fit Page in continuous view zoomed to the wrong size.
+- **Search highlights no longer reopen the file on every page change**, and the selection, focus and tab-drag colours follow the Light and High Contrast themes instead of the dark theme's green.
+- **File dialogs open in front of TDPdf** instead of sometimes behind it or on another monitor.
+- **Making a searchable PDF no longer leaves the document open after an error, or saves a partial file after Cancel.**
+
+### Changed
+
+- **Updated components:** PDFium 159, PdfPig 0.1.16, SixLabors.Fonts 3.2.0, OpenTelemetry 1.20.1, WebView2 1.0.4314.35, and the .NET 10.0.14 libraries. Third-party notices are regenerated.
+- **Internal cleanup with no change in behaviour.** `MainWindow.xaml.cs` is split from 12,800 to about 8,000 lines across feature files; seven copies of the page-rendering code, five OCR page loops, seven PDF reference resolvers and two named-destination walkers each became one shared helper; unused code, styles and settings were removed; the build has no warnings; and the test suite grew from about 1,360 to about 1,590 checks, including every malicious-file case above. Release builds now run the tests first.
+
 ## [2.2.0.0] - 2026-11-07
 
 Fixes and features from a curated sync with upstream KillerPDF v1.9.1 and v1.9.2. As before, upstream's changelog was read as a list of problems to look for in TDPdf's own code, each applicable item was approved individually, and nothing was copied from upstream's engine. Several fixes below are defects of TDPdf's own that the comparison turned up.
@@ -1369,7 +1400,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.2.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.3.0.0...HEAD
+[2.3.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.2.0.0...v2.3.0.0
 [2.2.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.1.1.1...v2.2.0.0
 [2.1.1.1]: https://github.com/doodlemania2/TDPdf/compare/v2.1.0.0...v2.1.1.1
 [2.1.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.0.2.0...v2.1.0.0
@@ -1382,8 +1414,8 @@ _Historical entries to be backfilled._
 [1.30.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.7.0...v1.30.0.0
 [1.29.7.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.6.0...v1.29.7.0
 [1.29.6.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.5.0...v1.29.6.0
-[1.29.5.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.4.0...v1.29.5.0
-[1.29.4.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.3.0...v1.29.4.0
+[1.29.5.0]: https://github.com/doodlemania2/TDPdf/commit/e7a614deca2fd5464cd1ec7553b9ff349ae65666
+[1.29.4.0]: https://github.com/doodlemania2/TDPdf/commit/7c49047ea651a278a8145c69f547e1fcef2e88a8
 [1.29.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.2.0...v1.29.3.0
 [1.29.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.1.0...v1.29.2.0
 [1.29.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.29.0.1...v1.29.1.0
@@ -1410,30 +1442,29 @@ _Historical entries to be backfilled._
 [1.20.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.19.0.0...v1.20.0.0
 [1.19.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.18.0.0...v1.19.0.0
 [1.18.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.17.0.0...v1.18.0.0
-[1.17.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.16.0.0...v1.17.0.0
-[1.16.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.15.0.0...v1.16.0.0
-[1.15.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.14.0.0...v1.15.0.0
-[1.14.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.13.0.0...v1.14.0.0
-[1.13.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.12.0.0...v1.13.0.0
-[1.12.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.11.0.0...v1.12.0.0
-[1.11.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.10.0.0...v1.11.0.0
-[1.10.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.2.0...v1.10.0.0
-[1.9.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.1.0...v1.9.2.0
-[1.9.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.9.0.0...v1.9.1.0
-[1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.2.0...v1.8.3.0
-[1.8.2.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.1.0...v1.8.2.0
-[1.8.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.0.0...v1.8.1.0
-[1.9.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.3.0...v1.9.0.0
-[1.8.3.0]: https://github.com/doodlemania2/TDPdf/compare/v1.8.0.0...v1.8.3.0
-[1.8.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.3.1.0...v1.8.0.0
-[1.3.1.0]: https://github.com/doodlemania2/TDPdf/compare/v1.3.0.0...v1.3.1.0
-[1.3.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.2.0.0...v1.3.0.0
-[1.2.0.0]: https://github.com/doodlemania2/TDPdf/compare/v1.1.0.1...v1.2.0.0
-[1.1.0.1]: https://github.com/doodlemania2/TDPdf/compare/v1.1.0.0...v1.1.0.1
-[1.0.0.6]: https://github.com/doodlemania2/TDPdf/compare/v1.0.0.5...v1.0.0.6
-[1.0.0.5]: https://github.com/doodlemania2/TDPdf/compare/v1.0.0.4...v1.0.0.5
-[1.0.0.4]: https://github.com/doodlemania2/TDPdf/compare/v1.0.0.3...v1.0.0.4
-[1.0.0.3]: https://github.com/doodlemania2/TDPdf/compare/v1.0.0.2...v1.0.0.3
+[1.17.0.0]: https://github.com/doodlemania2/TDPdf/commit/5e5e0bfcb9d7f2812a1fd4b61856bf1423e094ad
+[1.16.0.0]: https://github.com/doodlemania2/TDPdf/commit/58dea913f62781a1027d09bda5497e502858fbc6
+[1.15.0.0]: https://github.com/doodlemania2/TDPdf/commit/7feeee11035f652fe81c22ce8e47f7297a589f28
+[1.14.0.0]: https://github.com/doodlemania2/TDPdf/commit/aa2e0c3801c6f3bd024bf6530cdd871c29f90f14
+[1.13.0.0]: https://github.com/doodlemania2/TDPdf/commit/e52d67c83974f26d699913fc617ba799e0296dd5
+[1.12.0.0]: https://github.com/doodlemania2/TDPdf/commit/078454bba113c54077213fee050bc36f033b87e7
+[1.11.0.0]: https://github.com/doodlemania2/TDPdf/commit/1206a8478c06b453b603ff7fef75e3249aa18a02
+[1.10.0.0]: https://github.com/doodlemania2/TDPdf/commit/2e5a7bd08a0a42a9e51b6747ab9bb4dfc1da503d
+[1.9.2.0]: https://github.com/doodlemania2/TDPdf/commit/dbcba559663da128f65841baad18cb436af2de4f
+[1.9.1.0]: https://github.com/doodlemania2/TDPdf/commit/ad0f05597c18204ba166f1ee40cd34addf365e27
+[1.8.3.0]: https://github.com/doodlemania2/TDPdf/commit/8f82e9a2f4edbe388ed281ef8348e480c63871db
+[1.8.2.0]: https://github.com/doodlemania2/TDPdf/commit/1724c8b900676356bf3f456e1cbbfd6bbe90edfe
+[1.8.1.0]: https://github.com/doodlemania2/TDPdf/commit/c6dd8abb1b2005d82e1bd6c24203d13def8843ce
+[1.9.0.0]: https://github.com/doodlemania2/TDPdf/commit/64ea7124158003ecdf8c39adc10b501ddca282e4
+[1.8.0.0]: https://github.com/doodlemania2/TDPdf/commit/4dd2089d00e7164a32ac27ee9ce92d709446b251
+[1.3.1.0]: https://github.com/doodlemania2/TDPdf/blob/main/CHANGELOG.md
+[1.3.0.0]: https://github.com/doodlemania2/TDPdf/blob/main/CHANGELOG.md
+[1.2.0.0]: https://github.com/doodlemania2/TDPdf/commit/e26f415c7b195e93cbace63d06f24348a4ca4307
+[1.1.0.1]: https://github.com/doodlemania2/TDPdf/commit/166831656cfeb292d6fdc1821cc7a6728072533d
+[1.0.0.6]: https://github.com/doodlemania2/TDPdf/commit/b7d6861217e8d8442f602a90557568cde4d744ec
+[1.0.0.5]: https://github.com/doodlemania2/TDPdf/commit/f73da1296cd244c320b155c2e51d0cad7e74de25
+[1.0.0.4]: https://github.com/doodlemania2/TDPdf/commit/18f79723412ee2fd2044ab9a71333b47b99f9406
+[1.0.0.3]: https://github.com/doodlemania2/TDPdf/commit/ff5f7ee315802e294b820ff7d651972e4f49080f
 [1.0.0.2]: https://github.com/doodlemania2/TDPdf/compare/v1.0.0.1...v1.0.0.2
 [1.0.0.1]: https://github.com/doodlemania2/TDPdf/compare/v1.0.0-tdpdf...v1.0.0.1
 [1.0.0-tdpdf]: https://github.com/doodlemania2/TDPdf/releases/tag/v1.0.0-tdpdf

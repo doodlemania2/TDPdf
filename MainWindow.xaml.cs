@@ -32,7 +32,7 @@ namespace TDPdf
         public static readonly RoutedUICommand SaveAsCommand = new("Save As", "SaveAs", typeof(MainWindow));
         public static readonly RoutedUICommand AboutCommand = new("About TDPdf", "About", typeof(MainWindow));
         public static readonly RoutedUICommand InvertColorsCommand = new("Invert Colors", "InvertColors", typeof(MainWindow));
-        // App-wide UI scale (AppScale.cs) — the chrome, not the document pane. Separate commands
+        // App-wide UI scale (MainWindow.AppScale.cs) — the chrome, not the document pane. Separate commands
         // from the Zoom* trio above so the two can never be wired to the same gesture by accident.
         public static readonly RoutedUICommand AppScaleUpCommand = new("App Size Larger", "AppScaleUp", typeof(MainWindow));
         public static readonly RoutedUICommand AppScaleDownCommand = new("App Size Smaller", "AppScaleDown", typeof(MainWindow));
@@ -303,7 +303,7 @@ namespace TDPdf
         // permanent toggle strip the column shrinks to; it never reaches 0.
         // The two constants are LOGICAL px (what the sidebar content lays out in); SidebarCol
         // itself is outside the app-scale LayoutTransform, so its widths are SCREEN px. SbPx()
-        // (AppScale.cs) converts, and the two fields below are already screen px — ApplyAppScale
+        // (MainWindow.AppScale.cs) converts, and the two fields below are already screen px — ApplyAppScale
         // rescales them whenever the app scale changes.
         private const double SidebarStripWidth = 24;
         private const double SidebarDefaultWidth = 180;   // matches SidebarCol's XAML width
@@ -473,7 +473,7 @@ namespace TDPdf
         private Border _statusBarBorder = null!;
 
         // Sidebar column's inner grid — one of the four hosts the app-wide UI scale's
-        // LayoutTransform is applied to (AppScale.cs); the others are MainMenu, _toolbarBorder,
+        // LayoutTransform is applied to (MainWindow.AppScale.cs); the others are MainMenu, _toolbarBorder,
         // and _tabStripBorder.
         private Grid _sidebarOuterGrid = null!;
 
@@ -1649,7 +1649,7 @@ namespace TDPdf
             // ── Flowing text selection (upstream KillerPDF v1.6.5, #127) ──
             // Per-document, like Chip above: the character cache is keyed on THIS document's
             // working path, and a caret is an index into one of ITS pages, so neither may ever leak
-            // across a tab switch. See TextSelection.cs.
+            // across a tab switch. See MainWindow.TextSelection.cs.
             public readonly TDPdf.Services.TextRunService TextRuns = new();
             public bool TxtSelActive;                      // a flowing drag is in progress
             public bool TxtSelHasRange;                    // a committed selection is on screen
@@ -3875,7 +3875,7 @@ namespace TDPdf
             // being added later.)
             // SidebarCol is in the UNSCALED outer grid, so every width here is SCREEN px while the
             // constants below are LOGICAL px; SbPx bridges the two at the current app scale
-            // (AppScale.cs). _sidebarExpandedWidth is read from ActualWidth, so it is already
+            // (MainWindow.AppScale.cs). _sidebarExpandedWidth is read from ActualWidth, so it is already
             // screen px and ApplyAppScale rescales it when the scale changes.
             if (collapse && _sidebarCol.ActualWidth > SbPx(SidebarStripWidth))
                 _sidebarExpandedWidth = _sidebarCol.ActualWidth;

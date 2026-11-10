@@ -35,7 +35,7 @@ namespace TDPdf
     //
     // Every method here is static and headless: it never constructs a Window or
     // touches UI state. Console output rides on AttachConsole (GUI-subsystem exe,
-    // see BatchMode.cs); lines can interleave with the shell prompt. Exit codes
+    // see MainWindow.BatchMode.cs); lines can interleave with the shell prompt. Exit codes
     // are the scripting contract: 0 = success, 1 = operation failed, 2 = bad usage.
     public partial class MainWindow
     {
@@ -64,7 +64,7 @@ namespace TDPdf
             exitCode = 0;
             if (args is null || args.Length == 0) return false;
 
-            // The validation resave keeps its dedicated runner in BatchMode.cs.
+            // The validation resave keeps its dedicated runner in MainWindow.BatchMode.cs.
             if (args.Any(a => Eq(a, "--batch-resave")))
                 return TryRunBatch(args, out exitCode);
 
@@ -640,7 +640,7 @@ namespace TDPdf
         // ============================================================
         // --ocr <in.pdf> <out.pdf> [--lang code]
         // ============================================================
-        // Reuses the GUI's searchable-PDF core (BuildSearchablePdf in Ocr.cs):
+        // Reuses the GUI's searchable-PDF core (BuildSearchablePdf in MainWindow.Ocr.cs):
         // Docnet render, Tesseract per page, invisible text drawn over each word.
         // The GUI's model-download gate is dialog-driven, so the CLI has its own
         // silent equivalent honoring the OcrHighQuality setting.

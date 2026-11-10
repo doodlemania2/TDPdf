@@ -77,7 +77,7 @@ namespace TDPdf
             if (FindName("ZoomInButton") is Button zoomInBtn) zoomInBtn.ToolTip = $"Zoom In (Ctrl+{zin})";
             if (FindName("KsAppSizeKeys") is TextBlock appSizeKeys) appSizeKeys.Text = $"Ctrl+Shift+{zin} / {zout}";
             // The rendered keyboard board relabels its own punctuation caps as it is built
-            // (KbCapText in KeyboardMapOverlay.cs) — it is created lazily, on first use.
+            // (KbCapText in MainWindow.KeyboardMapOverlay.cs) — it is created lazily, on first use.
         }
 
         protected override void OnPreviewKeyDown(KeyEventArgs e)

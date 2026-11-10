@@ -373,7 +373,7 @@ namespace TDPdf
         /// #174: source-levels pass for rescuing pale scans. Remaps the input range [black..white] onto
         /// [0..255] through a midtone gamma, per RGB channel, leaving alpha alone. This is the only
         /// per-pixel stage in the transform pipeline; it follows the same CopyPixels -> mutate ->
-        /// WritePixels shape as the night-mode invert in DocInvert.cs. Identity settings (and anything
+        /// WritePixels shape as the night-mode invert in MainWindow.DocInvert.cs. Identity settings (and anything
         /// that would overflow a byte[]) return the source untouched.
         /// </summary>
         internal static BitmapSource ApplyLevels(BitmapSource src, int black, int white, double gamma)

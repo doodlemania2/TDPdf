@@ -246,7 +246,7 @@ namespace TDPdf.Services
         /// raster itself; the place to watch is any loop that renders many pages of one file — the
         /// continuous-view base / window / re-sharpen passes.
         /// Two rasterize paths deliberately do NOT use this, both for reasons written down where
-        /// they live: OCR (see the note at the top of Ocr.cs) and the sidebar thumbnails (see
+        /// they live: OCR (see the note at the top of MainWindow.Ocr.cs) and the sidebar thumbnails (see
         /// PdfDocumentService.RenderPageBitmap), which are eager over the whole document on the
         /// file-open path and would pay this per-page cost unbounded.
         /// </remarks>

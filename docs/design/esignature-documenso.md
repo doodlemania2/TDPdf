@@ -453,17 +453,17 @@ MainWindow.ESignature.cs               menu handlers, enablement, canvas field p
 `Services/` already houses standalone themed windows (`PrintPreviewWindow.cs`, `ThirdPartyLicensesWindow.cs`, `TransformWindow.cs`, and `Diagnostics/CrashDialog.cs`), so window classes belong there. **No DI container. `ViewModels/MainWindowViewModel.cs` no longer exists** (deleted in 2.3.0.0).
 
 Two facts about the split that matter in practice:
-- **`partial class MainWindow` is not limited to `MainWindow.*.cs`.** `Ocr.cs:18` and `Cli.cs:45` are also partials of it (which is how `Cli.cs:700` calls `MakeDownloadClient()` without declaring it). So `MainWindow.ESignature.cs` automatically shares every private member — `BrushResource`, `MakeDownloadClient`, `_doc`, `_ctx`, `_currentFile`, `SetStatus`, the manual element refs. Nothing needs to be made `internal`.
+- **`partial class MainWindow` is not limited to `MainWindow.*.cs`.** `MainWindow.Ocr.cs:18` and `MainWindow.Cli.cs:45` are also partials of it (which is how `MainWindow.Cli.cs:700` calls `MakeDownloadClient()` without declaring it). So `MainWindow.ESignature.cs` automatically shares every private member — `BrushResource`, `MakeDownloadClient`, `_doc`, `_ctx`, `_currentFile`, `SetStatus`, the manual element refs. Nothing needs to be made `internal`.
 - **`MainWindow.Undo.cs` (76 lines) is the template for a minimal new partial** — file header comment, one `partial class MainWindow`, no regions.
 
 Current sizes on `release/2.0.0`: `MainWindow.xaml.cs` 11,351 · `.Files.cs` 2,546 · `.Canvas.cs` 1,717 · `.TextEditing.cs` 1,279 · `.Forms.cs` 1,218 · `.Signatures.cs` 1,096 · `.ContinuousView.cs` 728 · `.Sidebar.cs` 656 · `.Bookmarks.cs` 587 · `.Undo.cs` 76 lines.
 
 ### 5.2 HTTP — reuse the existing shape exactly
 
-*(Correction to the brief: `Services/OcrNativeBootstrap.cs` contains no HTTP at all — it only does embedded-resource self-extraction. `Cli.cs` has no `System.Net.Http` using either; it reaches `MakeDownloadClient()` because it is another `partial class MainWindow`. The OCR download lives in `Ocr.cs`.)*
+*(Correction to the brief: `Services/OcrNativeBootstrap.cs` contains no HTTP at all — it only does embedded-resource self-extraction. `MainWindow.Cli.cs` has no `System.Net.Http` using either; it reaches `MakeDownloadClient()` because it is another `partial class MainWindow`. The OCR download lives in `MainWindow.Ocr.cs`.)*
 
 Two existing HTTP call sites, and they agree:
-- `/Volumes/Data/repos/TDPdf/Ocr.cs:262` — `MakeDownloadClient()`: `new HttpClient { Timeout = TimeSpan.FromSeconds(100) }`, `DefaultRequestHeaders.UserAgent.ParseAdd("TDPdf-OCR")`, streamed with `HttpCompletionOption.ResponseHeadersRead` and a `CancellationToken`, `.part` file + atomic `File.Move`.
+- `/Volumes/Data/repos/TDPdf/MainWindow.Ocr.cs:262` — `MakeDownloadClient()`: `new HttpClient { Timeout = TimeSpan.FromSeconds(100) }`, `DefaultRequestHeaders.UserAgent.ParseAdd("TDPdf-OCR")`, streamed with `HttpCompletionOption.ResponseHeadersRead` and a `CancellationToken`, `.part` file + atomic `File.Move`.
 - `/Volumes/Data/repos/TDPdf/Services/UpdateCheck.cs:143` — `using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) }`, explicit `User-Agent`, `System.Text.Json` `JsonDocument.Parse`.
 
 So: **a short-lived `HttpClient` per operation, explicit `Timeout`, explicit `User-Agent`, `System.Text.Json`, `CancellationToken` on everything.** No shared static client, no `SocketsHttpHandler`, no `IHttpClientFactory`, no Polly, no Refit, no new package. `System.Text.Json` is already used across ten files and `Newtonsoft` appears nowhere — reflection-based `JsonSerializer` is fine (source-gen is unnecessary: `PublishTrimmed` is off).
@@ -488,7 +488,7 @@ internal sealed class DocumensoClient
     Task                          CancelAsync(string envelopeId, string? reason, CancellationToken ct);
 }
 ```
-Upload uses `MultipartFormDataContent` with a `payload` part (`application/json`) and one or more `files` parts (`application/pdf`). Downloads reuse the `Ocr.cs` `.part`-then-`File.Move` pattern so a half-written signed PDF never appears on disk.
+Upload uses `MultipartFormDataContent` with a `payload` part (`application/json`) and one or more `files` parts (`application/pdf`). Downloads reuse the `MainWindow.Ocr.cs` `.part`-then-`File.Move` pattern so a half-written signed PDF never appears on disk.
 
 Timeouts: 15 s for probe/metadata calls, 120 s for upload and download.
 
@@ -545,7 +545,7 @@ private void FileMenu_SubmenuOpened(object sender, RoutedEventArgs e)
    - **Placement (preferred).** *"Place signature fields"* dismisses the dialog into a canvas placement mode: the user drags a rectangle per field and picks the recipient + type from a small popup. Existing canvas geometry converts to Documenso's percentage space — `pageX = x / pageWidth * 100`, `pageY = y / pageHeight * 100` (Documenso's origin is **top-left**, `page` is **1-indexed**; TDPdf's page coordinates are top-left too in the canvas overlay, but confirm against `Services/PdfPageGeometry.cs` at implementation time). The gesture is the same one the existing signature **stamp** already uses, so it is familiar and reuses `MainWindow.Canvas.cs` hit-testing.
    - **Placeholders (free).** If the PDF already contains `{{signature, r1}}` text, `POST /envelope/create` finds it and creates the fields itself — zero placement UI. Detect it with PdfPig (already used for text extraction) and show *"This document contains 2 signature placeholders — they will be used automatically."*
    - If neither, warn: *"No signature fields — recipients will be asked to place their own signature."* (That is valid Documenso behaviour, just worth saying.)
-5. **[Send]** → `create` → `recipient/create-many` → `field/create-many` → `distribute`, wrapped in `using var op = Telemetry.StartOperation("DocumensoSend")`, all `await`ed off the UI thread with a progress line in the status bar and an Esc-to-cancel `CancellationToken` (the `Ocr.cs` pattern).
+5. **[Send]** → `create` → `recipient/create-many` → `field/create-many` → `distribute`, wrapped in `using var op = Telemetry.StartOperation("DocumensoSend")`, all `await`ed off the UI thread with a progress line in the status bar and an Esc-to-cancel `CancellationToken` (the `MainWindow.Ocr.cs` pattern).
    Fields **cannot** be changed after distribute, so ordering matters and a partial failure must not leave a half-built envelope: on any failure after `create`, call `POST /envelope/delete` to clean up, and report *"Nothing was sent."*
 6. Success: record `{envelopeId, title, recipients, sentAt}` in a local tracking list (§5.6), show *"Sent to 2 recipients for signature."*, and offer **[Copy signing link]** for any recipient.
 
@@ -563,7 +563,7 @@ Be honest in the copy: *"Signing happens on the Documenso page in your browser."
 `/Volumes/Data/repos/TDPdf/MainWindow.Files.cs:1963` strips `/V` from every signature field and removes `/Perms` on **every** TDPdf save. The reasoning is sound (a full rewrite voids the digest) but the consequence for this feature is sharp: *download a completed, signed PDF → open it → press Ctrl+S → the signature is gone, silently.*
 
 Required handling, all in `MainWindow.ESignature.cs` + a small hook in `.Files.cs`:
-1. **Download to a chosen location, then open.** The downloaded file goes through `SaveFileDialog` (default name `{title} (signed).pdf`) and is then opened in a new tab. Write via `.part` + `File.Move` (the `Ocr.cs:272` pattern) — and note the existing warning at `/Volumes/Data/repos/TDPdf/Services/PdfDocumentService.cs:59` that **cloud-sync folders refuse `File.Replace`**; a user saving a signed PDF into OneDrive is the common case, so use `File.Move` with an explicit delete-then-move fallback rather than `File.Replace`.
+1. **Download to a chosen location, then open.** The downloaded file goes through `SaveFileDialog` (default name `{title} (signed).pdf`) and is then opened in a new tab. Write via `.part` + `File.Move` (the `MainWindow.Ocr.cs:272` pattern) — and note the existing warning at `/Volumes/Data/repos/TDPdf/Services/PdfDocumentService.cs:59` that **cloud-sync folders refuse `File.Replace`**; a user saving a signed PDF into OneDrive is the common case, so use `File.Move` with an explicit delete-then-move fallback rather than `File.Replace`.
 2. **Flag the context.** Add a `bool HasDigitalSignature` to `DocumentContext`, set on open when the catalog has an `/AcroForm` field with `/FT /Sig` and a non-null `/V` (cheap PdfSharpCore dictionary read — no cryptography).
 3. **Warn once before a save that would scrub.** In `SaveInPlace`/`SaveAs`/`SaveFlattened`, when `HasDigitalSignature`, show a themed confirm: *"This document carries a digital signature. Saving rewrites the file and will remove it. The signed original is unaffected if you Save As to a new name."* → Save anyway / Cancel. Reuse `TdpDialog.ShowWithCheckbox` (`/Volumes/Data/repos/TDPdf/TdpDialog.cs:401`) for a *don't ask again* that writes a new `Settings` flag.
 4. **Show it in the UI.** A small "Signed" indicator in the status bar / tab, and a row in `Document Info` (F12).

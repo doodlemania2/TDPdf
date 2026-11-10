@@ -130,7 +130,7 @@ namespace TDPdf
             // caches the resolver on the first font operation and then refuses to swap it
             // ("Must not change font resolver after is was once used"). Every XFont in the app is
             // reached from here: the annotation burn (MainWindow), the searchable-PDF text layer
-            // (Ocr.cs), and the headless CLI below. The stock resolver sees only *.ttf, so without
+            // (MainWindow.Ocr.cs), and the headless CLI below. The stock resolver sees only *.ttf, so without
             // this the save path cannot embed the .ttc families every CJK script relies on.
             // Indexing is lazy, so this costs nothing on the headless install/uninstall paths.
             Services.TdpFontResolver.Install();
@@ -260,7 +260,7 @@ namespace TDPdf
                 }
             }
 
-            // Headless CLI commands (see Cli.cs; --batch-resave in BatchMode.cs). Checked
+            // Headless CLI commands (see MainWindow.Cli.cs; --batch-resave in MainWindow.BatchMode.cs). Checked
             // AFTER the install/telemetry flags above but BEFORE the single-instance mutex
             // and any window, so a --command runs headless, works while a GUI instance is
             // open, never forwards to it, and returns a process exit code. A launch with no

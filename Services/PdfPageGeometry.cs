@@ -376,7 +376,7 @@ namespace TDPdf.Services
         /// size, always normalized so Width/Height are positive. The origin matters — [0 0 612 792] is
         /// the common case but [9 9 621 801] is legal, and content/annotation coordinates are absolute
         /// in user space, so anything mapping into the rendered bitmap must subtract the box origin
-        /// rather than assume (0,0). /Rotate is NOT applied; see Transform.cs VisiblePageSize.
+        /// rather than assume (0,0). /Rotate is NOT applied; see MainWindow.Transform.cs VisiblePageSize.
         /// </summary>
         internal readonly record struct PageBox(double X, double Y, double Width, double Height)
         {

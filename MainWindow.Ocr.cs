@@ -1080,7 +1080,7 @@ namespace TDPdf
 
         private string SuggestSearchableName() => SuggestBaseName() + "-searchable.pdf";
 
-        // Shared with the image export (ExportImages.cs); TryDeleteFile above is its cleanup twin.
+        // Shared with the image export (MainWindow.ExportImages.cs); TryDeleteFile above is its cleanup twin.
         private static string MakeTempPdfPath(string purpose) =>
             Path.Combine(Path.GetTempPath(), $"tdpdf_{purpose}_{Guid.NewGuid():N}.pdf");
     }

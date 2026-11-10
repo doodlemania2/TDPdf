@@ -6,7 +6,7 @@ namespace TDPdf
     /// One image's placement on a page, as FRACTIONS of the page AS RENDERED (the visible box, with
     /// /Rotate applied) with a top-left origin, so a single cached set serves every render
     /// resolution. Produced by <see cref="TDPdf.Services.PdfImages.GetFracRects"/> and consumed by
-    /// <c>MainWindow.InvertBgraInPlaceExcept</c> (DocInvert.cs). Declared here, beside its producer,
+    /// <c>MainWindow.InvertBgraInPlaceExcept</c> (MainWindow.DocInvert.cs). Declared here, beside its producer,
     /// rather than beside that WPF consumer so tests/PdfCore can compile the real producer and
     /// check its boxes against a PDFium render.
     /// </summary>

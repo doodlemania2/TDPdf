@@ -11,14 +11,14 @@ TDPdf is a Windows-only WPF PDF editor shipped as a single self-contained `TDPdf
 - Dev build (Windows): `dotnet build -c Release`
 - Cross-compiling from macOS/Linux (where this repo often lives): add `-p:EnableWindowsTargeting=true`. The app itself only runs on Windows (WPF + native `pdfium.dll` P/Invoke).
 - Publish single-EXE: `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true` → `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`. Publish also runs the `BundleSource` MSBuild target (`build/bundle-source.ps1`) producing the GPLv3 corresponding-source zip; it uses `git ls-files`, so untracked files are silently excluded.
-- Full signed release: `./release.ps1` (Windows; needs Certum cert + signtool), or `./release.ps1 -SkipSign` for a dry run.
-- **There is no test suite or linter.** `dotnet build` warnings are the only lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
+- Local build: `./release.ps1` (Windows) is an **unsigned** local build only (no Certum, no signtool). Signed releases come only from pushing a tag, which runs `.github/workflows/release.yml`.
+- **Tests: `tests/PdfCore`** is a macOS/Linux/Windows-runnable console harness (~1,593 checks) covering the pure logic in `Services/` and the PDF round-trips. Run `dotnet run --project tests/PdfCore/PdfCore.Tests.csproj -c Release`; it must print **ALL PASS**. It gates `release.yml` (nothing is signed unless it passes). Add tests for any pure logic you add or move in `Services/`: compile the service file into the test project with a `<Compile Include>` in `tests/PdfCore/PdfCore.Tests.csproj` and register the suite in `tests/PdfCore/Program.cs`. There is no linter; `dotnet build` warnings are the lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
 - Single-file publish uses SDK properties in `TDPdf.csproj` (`IncludeNativeLibrariesForSelfExtract`, compression); do not reintroduce Costura/Fody bundling. `PublishTrimmed` and Native AOT are intentionally off — WPF and the PDF libraries are not trim-safe.
-- **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and reports only the 2 `MSB3243` warnings — a false clean that hides every `CS*` warning you just introduced. The real baseline is **4 warnings, 0 errors** (2x `MSB3243`, 2x `CS8602` at `Services/PdfDocumentService.cs:646`, each doubled by the `wpftmp` project). It was 6 until 1.24.1.0 removed the `_applyingFitZoom` field and its `CS0414`.
+- **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and can report a false clean that hides every `CS*` warning you just introduced. The baseline is **0 warnings, 0 errors** (it was 4 before 2.3.0.0 cleared the `MSB3243` and `CS8602` ones); keep it there.
 
 ### Release checklist
 
-Bumping the version touches **three** files. They must all land in the **same PR**, because `main` is push-protected and a follow-up fix needs a whole second PR:
+Bumping the version touches **three** files (plus the licence check below when it applies). They must all land in the **same PR**, because `main` is push-protected and a follow-up fix needs a whole second PR:
 
 1. `TDPdf.csproj` — `<Version>`, `<AssemblyVersion>`, `<FileVersion>`, all three together.
 2. `CHANGELOG.md` — a `## [x.y.z.w] - YYYY-MM-DD` section (Keep a Changelog / SemVer) **and** the compare links at the bottom.
@@ -31,7 +31,8 @@ Then, to actually cut a release:
 - Merging to `main` builds **nothing**. The only CI on push is `codeql.yml` (required check `Analyze (csharp)`, ~6 min).
 - **Runner rule.** Anything triggered by `pull_request` runs on the isolated `tdpdf-pr` scale set (`codeql.yml`): ephemeral, no sudo, no docker, no secrets, internet-only egress. Never add a secret to a PR-triggered job. The self-hosted `tdpdf` runner is on the internal network with passwordless sudo, so it only takes triggers outside contributors cannot reach: tag pushes and `workflow_dispatch`. The fork-PR approval policy is `all_external_contributors`. Derek wants every job on our own runners: `release.yml`, `store.yml` and `pages.yml` are on `tdpdf`; `codeql.yml` is on `tdpdf-pr`; `screenshots.yml` / `esign-smoke.yml` need an interactive Windows desktop, so they run on GitHub-hosted `windows-2022`, and so does tdpdf-fleet's deploy job (`windows-latest`). That is Derek's decision (2026-10-19): no self-hosted Windows runner, because a Windows VM needs its own licence and hosted Windows runners come licensed. Don't propose one again.
 - A binary is produced only by `.github/workflows/release.yml`, which is **tag-triggered** (`push: tags: [v*]`) and runs on the self-hosted **`tdpdf`** runner. Tag style is annotated: `git tag -a v1.21.0.0 -m "TDPdf 1.21.0.0"`.
-- **Pushing the tag now does the whole thing.** `release.yml` signs the EXE, publishes the GitHub Release (exe + GPLv3 source zip + `SHA256SUMS.txt`), updates the Store, and tells the private `doodlemania2/tdpdf-fleet` repo to deploy to Intune — see *Automated release pipeline* below. `./release.ps1` remains the manual Windows path (Certum via SimplySign, `-SkipSign` for a dry run).
+- **`release.yml` gates** (all run before anything is signed or published): the tag must match `vN.N.N.N` and equal the csproj `<AssemblyVersion>`; the tagged commit must be reachable from `origin/main`; on a tag push it refuses to overwrite an existing GitHub release (a `workflow_dispatch` re-release of a tag still works, which is the documented way to redo one in place); the `tests/PdfCore` harness must print ALL PASS; and it warns (does not fail) when the ImageSharp licence is within 60 days of expiry.
+- **Pushing the tag now does the whole thing.** `release.yml` signs the EXE, publishes the GitHub Release (exe + GPLv3 source zip + `SHA256SUMS.txt`), updates the Store, and tells the private `doodlemania2/tdpdf-fleet` repo to deploy to Intune — see *Automated release pipeline* below. `./release.ps1` is only an unsigned local build.
 
 #### Automated release pipeline
 
@@ -52,7 +53,7 @@ Each stage is gated on its secret being present, so a missing or rotated secret 
 
 ## Architecture
 
-Single-window WPF app with MVVM foundations but no DI. Most UI behavior lives on the `MainWindow` class, which is **split across one `partial class` per feature area** — `MainWindow.xaml.cs` (~11,400 lines) plus the files below. `MainWindow.xaml.cs` is still the largest by far and still holds everything that has not been extracted: window chrome, menus, settings, view modes, link overlays, tools (crop, redaction, shapes, form-field authoring), settings bars, selection, search, keyboard shortcuts, annotation management and rendering, measure, dirty tracking, cross-window tab drag, save-to-PDF, zoom, drag/drop, MRU, print, themes, install/uninstall. New UI features go in the partial that owns the area, or in `MainWindow.xaml.cs` when no partial fits.
+Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`. Most UI behavior lives on the `MainWindow` class, which is **split across one `partial class` per feature area** — `MainWindow.xaml.cs` (~8,000 lines) plus the files below. `MainWindow.xaml.cs` is still the largest by far and still holds everything that has not been extracted: window chrome, menus, settings, view modes, link overlays, tools (crop, redaction, shapes, form-field authoring), selection, annotation management and rendering, measure, dirty tracking, zoom, drag/drop, MRU, print, themes, install/uninstall. New UI features go in the partial that owns the area, or in `MainWindow.xaml.cs` when no partial fits.
 
 | File | Holds |
 |---|---|
@@ -65,19 +66,39 @@ Single-window WPF app with MVVM foundations but no DI. Most UI behavior lives on
 | `MainWindow.Sidebar.cs` | The page sidebar (PageList) / page viewer and multi-document tab switching |
 | `MainWindow.Bookmarks.cs` | Bookmark editing (#133): add / rename / child / reorder / retarget / delete |
 | `MainWindow.Undo.cs` | Snapshot-based undo helpers |
+| `MainWindow.Search.cs` | Search bar (Ctrl+F) and match navigation |
+| `MainWindow.Keyboard.cs` | Keyboard shortcut dispatch |
+| `MainWindow.KeyboardMapOverlay.cs` | Visual keyboard for the F1 / Ctrl+? shortcuts overlay |
+| `MainWindow.ToolSettings.cs` | Tool settings bars (draw, crop, text, shape) and the colour palette / picker |
+| `MainWindow.TabDrag.cs` | Cross-window tab drag (uses `Services/WindowTransfer.cs`) |
+| `MainWindow.AnnotationBake.cs` | Baking annotations into the saved PDF |
+| `MainWindow.TextSelection.cs` | Flowing text selection and line-hugging markup |
+| `MainWindow.Ocr.cs` | OCR (Tesseract): recognize text on a page/region, searchable-PDF export |
+| `MainWindow.Transform.cs` | Transform tool (fine-angle rotate, scale, flip, straighten) |
+| `MainWindow.DocInvert.cs` | Invert document colours / night mode |
+| `MainWindow.ExportImages.cs` | Export pages as PNG/JPEG |
+| `MainWindow.AppScale.cs` | App-wide UI chrome scale |
+| `MainWindow.BatchMode.cs` | Headless `--batch-resave` CLI mode |
+| `MainWindow.Cli.cs` | Dispatcher for every headless CLI command |
+| `MainWindow.ESignature.cs` | Electronic Signature (Documenso): File menu handlers, settings section, connect-on-demand |
+| `MainWindow.ESignatureFields.cs` | Electronic Signature: field placement mode on the canvas |
+| `MainWindow.ESignatureRequests.cs` | Electronic Signature: Signature Requests, downloads, signed-document state |
+| `MainWindow.ESignatureSelfSign.cs` | Electronic Signature: Sign This Document |
+| `MainWindow.ESignatureVerify.cs` | Electronic Signature: Verify Signatures and Document Info digital signatures |
+| `MainWindow.ESignatureWeb.cs` | Electronic Signature: the signing service's pages inside TDPdf (WebView2) |
 
 `TdpDialog.cs` is **not** a `MainWindow` partial — it is the standalone themed `MessageBox` replacement, which used to sit at the bottom of `MainWindow.xaml.cs`.
 
 These files were produced by a pure move-only split; the banner comments (`// ====`) inside them are the original region markers, so a region's members are still in their original order. Private nested types (`DocumentContext`, `UndoEntry`, `RenderedPage`, `LinkInfo`, `FormFieldInfo`, …) may be declared in any partial — most remain in `MainWindow.xaml.cs`.
 
-- There is no `MainWindowViewModel` (the never-instantiated stub was deleted in 2.3.0.0). `ViewModels/` holds only `ZoomViewModel`; `Services/` is a placeholder for future extractions.
+- There is no `MainWindowViewModel` (the never-instantiated stub was deleted in 2.3.0.0). `ViewModels/` holds only `ZoomViewModel`. `Services/` holds the extracted, UI-independent logic (mostly pure and covered by `tests/PdfCore`): PDF read/write helpers (`PdfItems`, `PdfNamedDestinations`, `PdfSaveNormalizer`, `PdfFormText`, `PageRaster`), `TempFiles`, `ZipLimits`, `OcrModelCatalog`, the Documenso client, printing, and so on. `Diagnostics/PrivilegedPathGuard` guards privileged file paths.
 - `Models/Annotations.cs` holds the entire annotation data model: `PageAnnotation` subclasses (`TextAnnotation`, `InkAnnotation`, `HighlightAnnotation`, `TextEditAnnotation`, `ImageEditAnnotation`, `CropAnnotation`, `SignatureAnnotation`) plus `SavedSignature` for JSON persistence.
 
 **Three PDF libraries, each used for what it's best at — don't swap them:**
 
 | Library | Role |
 |---|---|
-| Docnet.Core (PDFium) | Page rasterization for on-screen rendering and the 150 DPI "Save Flattened" export. Supplies native `pdfium.dll`. |
+| Docnet.Core (PDFium) | Page rasterization for on-screen rendering and the 150 DPI "Save Flattened" export. Docnet provides the managed wrapper only; `bblanchon.PDFium.Win32` supplies the native `pdfium.dll`. |
 | PdfSharpCore | Page geometry, merge/split, writing annotations into the saved PDF. |
 | PdfPig (aliased `PdfPigDoc`) | Text extraction: search, drag-select copy, font matching for inline text edits. |
 
@@ -98,7 +119,7 @@ These files were produced by a pure move-only split; the banner comments (`// ==
 - Set `_isDirty = true` on any change that mutates the document, and route open/close paths through the existing dirty-check prompts.
 - **App icon.** `Resources/tdpdf-icon.ico` is generated by `build/generate-app-icon.py` (needs Pillow, build-time only — the checked-in `.ico` is what the build consumes). It lifts the gold mark out of `Resources/splash-logo.png` at generation time, so changing the brand logo and re-running keeps them in sync. Three artworks, not one scaled down: 48px and up carry ruled lines, 32px drops them, 24px and below give the mark most of the page — a thin-stroked glyph goes sub-pixel at 16px otherwise. The ICO container is hand-written for that reason; Pillow's writer rescales one source and cannot take per-size artwork.
 - **Third-party notices.** TDPdf ships as one self-contained exe, so MIT/BSD/Apache notices must travel inside the binary. `THIRD-PARTY-NOTICES.md` is generated by `build/generate-third-party-notices.ps1`, embedded via `EmbeddedResource`, shown under Help > Third-Party Licenses, and attached to each release. **Regenerate it whenever a `PackageReference` changes in `TDPdf.csproj` or `third_party/PdfSharpCore/PdfSharpCore.csproj`** — nothing fails if you forget, the notices just go stale. The native payloads (PDFium's 1,300-line aggregate, Leptonica, the Tesseract engine) are invisible to licence scanners and are curated by hand in that script.
-- **ImageSharp licence.** SixLabors.ImageSharp 4.x (via `third_party/PdfSharpCore`) fails a **Release** build without a Six Labors licence. `third_party/PdfSharpCore/sixlabors.lic` is TDPdf's free community licence, scoped to the assemblies `TDPdf`, `PdfSharpCore` and `PdfCore.Tests`, and expires **2028-01-14**: renew it at licensing.sixlabors.com before then. Six Labors allows committing it publicly. Don't delete it, and don't drop back to ImageSharp 2.x/3.x, which carry unfixed advisories.
+- **ImageSharp licence.** SixLabors.ImageSharp 4.x (via `third_party/PdfSharpCore`) fails a **Release** build without a Six Labors licence. `third_party/PdfSharpCore/sixlabors.lic` is TDPdf's free community licence, scoped to the assemblies `TDPdf`, `PdfSharpCore` and `PdfCore.Tests`, and expires **2028-01-14**: renew it at licensing.sixlabors.com before then (`release.yml` warns when a release is cut within 60 days of expiry). Six Labors allows committing it publicly. Don't delete it, and don't drop back to ImageSharp 2.x/3.x, which carry unfixed advisories.
 - Versioning: see the **Release checklist** under Build / publish / release. Three files move together, and `main` is push-protected, so they must all be in the same PR — there is no fixing one up afterwards without a second PR.
 - GPLv3 compliance: keep `LICENSE` and `NOTICE` intact, preserve upstream copyright headers, never reintroduce upstream personal branding. New dialog titles / product strings must say "TDPdf".
 
