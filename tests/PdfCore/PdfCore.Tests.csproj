@@ -96,6 +96,8 @@
     <Compile Include="..\..\Services\DocumensoBrowserSignIn.cs" />
     <Compile Include="..\..\Services\DocumensoWebNavigation.cs" />
     <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
+    <Compile Include="..\..\Diagnostics\PrivilegedPathGuard.cs" />
+    <Compile Include="..\..\Services\TempFiles.cs" />
   </ItemGroup>
 
 </Project>

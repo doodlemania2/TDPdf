@@ -301,6 +301,11 @@ namespace TDPdf
             // that upgrades rather than leaving it sitting in %ProgramData% indefinitely.
             TelemetryStore.RemoveLegacyStore();
 
+            // Collect working copies a crash or kill left in %TEMP% (decrypted and pre-edit
+            // content). Off the UI thread, best-effort, and never touches a file another
+            // process has open or one a running TDPdf could still be using.
+            _ = Task.Run(SweepStaleTempFiles);
+
             // Opt-in telemetry (see Diagnostics/Telemetry.cs). No-op unless an OTLP collector
             // is provisioned. Initialized up front so a crash during the rest of startup is
             // captured.
@@ -624,6 +629,22 @@ namespace TDPdf
             return Enum.TryParse(value, ignoreCase: true, out Theme theme) ? theme : Theme.System;
         }
 
+
+        private static void SweepStaleTempFiles()
+        {
+            try
+            {
+                bool others;
+                using (var self = System.Diagnostics.Process.GetCurrentProcess())
+                {
+                    var all = System.Diagnostics.Process.GetProcessesByName(self.ProcessName);
+                    try { others = all.Any(p => p.Id != self.Id); }
+                    finally { foreach (var p in all) p.Dispose(); }
+                }
+                TempFilePolicy.Sweep(Path.GetTempPath(), DateTime.UtcNow, others);
+            }
+            catch { /* housekeeping only */ }
+        }
 
         protected override void OnExit(ExitEventArgs e)
         {

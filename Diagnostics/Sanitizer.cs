@@ -41,8 +41,14 @@ namespace TDPdf.Diagnostics
             sanitized = Regex.Replace(sanitized, @"api_[A-Za-z0-9_-]{16,}", "api_[redacted]");
 
             // Windows paths (UNC, drive-rooted, and bare backslash chains).
-            sanitized = Regex.Replace(sanitized, @"\\[^\s:;]+(?:\\[^\s:;]+)+", "[path redacted]");
+            // A UNC path may contain spaces ("\\srv\Legal Docs\Smith divorce.pdf"), so like the
+            // drive-letter rule below it runs to the end of the line or the closing quote rather than
+            // stopping at the first space, which used to leave "Docs\Smith divorce.pdf" behind.
+            sanitized = Regex.Replace(sanitized, @"\\\\[^\r\n:;""'<>|]+", "[path redacted]");
             sanitized = Regex.Replace(sanitized, @"[A-Za-z]:\\[^\r\n:;]+", "[path redacted]");
+            // Bare backslash chains go last: run earlier, they used to chew the front of a drive path with
+            // a space in it ("C:\Users\Bob\My Docs") and leave "Docs\a.pdf" behind.
+            sanitized = Regex.Replace(sanitized, @"\\[^\s:;]+(?:\\[^\s:;]+)+", "[path redacted]");
 
             // .NET portable stack-trace "in /foo/bar.cs:line 42" frames.
             sanitized = Regex.Replace(sanitized, @"(?m) in /[^\r\n]+:line \d+", " in [path redacted]");

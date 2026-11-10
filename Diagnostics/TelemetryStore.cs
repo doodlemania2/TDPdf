@@ -45,7 +45,15 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static bool IsDisabled()
         {
-            try { return File.Exists(DisabledMarkerPath); }
+            // Honoured only when SYSTEM or an administrator put it there. The folder is creatable by
+            // any user, and a sentinel anyone could plant would let any user switch off a managed
+            // device's telemetry.
+            try
+            {
+                return File.Exists(DisabledMarkerPath)
+                    && PrivilegedPathGuard.IsSafeToWrite(DisabledMarkerPath)
+                    && PrivilegedPathGuard.IsTrusted(new FileInfo(DisabledMarkerPath));
+            }
             catch { return false; }
         }
 
@@ -62,7 +70,8 @@ namespace TDPdf.Diagnostics
         {
             try
             {
-                if (File.Exists(LegacyStorePath))
+                // Runs as SYSTEM during /install: never delete through a folder a user made.
+                if (File.Exists(LegacyStorePath) && PrivilegedPathGuard.IsSafeToWrite(LegacyStorePath))
                     File.Delete(LegacyStorePath);
             }
             catch { /* swallow — caller logs */ }
@@ -77,7 +86,7 @@ namespace TDPdf.Diagnostics
         {
             try
             {
-                EnsureHardenedDirectory();
+                if (!EnsureHardenedDirectory() || !PrivilegedPathGuard.IsSafeToWrite(DisabledMarkerPath)) return;
                 File.WriteAllText(DisabledMarkerPath, "disabled\r\n");
                 HardenFileAcl(DisabledMarkerPath);
             }
@@ -92,7 +101,7 @@ namespace TDPdf.Diagnostics
         {
             try
             {
-                if (File.Exists(DisabledMarkerPath))
+                if (File.Exists(DisabledMarkerPath) && PrivilegedPathGuard.IsSafeToWrite(DisabledMarkerPath))
                     File.Delete(DisabledMarkerPath);
             }
             catch { /* swallow */ }
@@ -108,10 +117,31 @@ namespace TDPdf.Diagnostics
         // idempotent and overrides any pre-existing weakness.
         // ============================================================
 
-        private static void EnsureHardenedDirectory()
+        /// <summary>
+        /// Makes sure the TDPdf folder under %ProgramData% exists, is hardened, and is one a
+        /// privileged process may use (not a reparse point, owned by SYSTEM or Administrators).
+        /// A folder somebody else already made is NOT adopted: this returns false and the caller
+        /// skips its write. Never throws.
+        /// </summary>
+        internal static bool EnsureTrustedDirectory()
         {
-            if (!Directory.Exists(s_dir))
+            try { return EnsureHardenedDirectory(); }
+            catch { return false; }
+        }
+
+        private static bool EnsureHardenedDirectory()
+        {
+            if (Directory.Exists(s_dir))
+            {
+                // Pre-existing: only harden it if it is already ours. Re-ACLing a user-owned folder
+                // would not make its contents trustworthy, and following a junction would
+                // re-ACL somewhere else entirely.
+                if (!PrivilegedPathGuard.IsTrustedDirectory(s_dir)) return false;
+            }
+            else
+            {
                 Directory.CreateDirectory(s_dir);
+            }
 
             try
             {
@@ -147,6 +177,9 @@ namespace TDPdf.Diagnostics
                 // also fail at file-write time and surface a useful
                 // error. Don't mask that with an ACL exception here.
             }
+
+            // Whatever happened above, only report success for a folder a privileged process may use.
+            return PrivilegedPathGuard.IsTrustedDirectory(s_dir);
         }
 
         private static void HardenFileAcl(string path)

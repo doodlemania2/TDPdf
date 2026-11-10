@@ -658,7 +658,11 @@ namespace TDPdf
         /// itself before calling this; the cross-window transfer path (below) calls this too, once
         /// the document is already safely handed to the other window, so nothing is lost either way.
         /// </summary>
-        private void RemoveTabSilently(DocumentContext ctx)
+        /// <param name="keepFile">
+        /// A working file that was handed to another window (cross-window drag, tear-off): it is the
+        /// receiver's now and must outlive this tab. Everything else the tab wrote to %TEMP% is deleted.
+        /// </param>
+        private void RemoveTabSilently(DocumentContext ctx, string? keepFile = null)
         {
             if (!_tabs.Contains(ctx)) return;
 
@@ -675,6 +679,7 @@ namespace TDPdf
 
             try { ctx.Doc?.Close(); } catch { }
             ctx.Doc = null;
+            ctx.TempFiles.DeleteAll(keepFile);   // decrypted and pre-edit copies must not outlive the tab
             ctx.Annotations.Clear();
             ctx.RedactionMarks.Clear();
             if (_eSignPlacement is { } placing && ReferenceEquals(placing.Ctx, ctx)) EndESignPlacement(ESignPlacementEnd.Aborted);
