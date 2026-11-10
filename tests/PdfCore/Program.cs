@@ -41,7 +41,9 @@ void Check(string label, bool ok, string detail = "")
     Console.WriteLine($"  {(ok ? "PASS" : "FAIL")}  {label}{(detail.Length > 0 ? "  — " + detail : "")}");
 }
 
-string tmp = Path.Combine(Path.GetTempPath(), "tdpdf-redact-test");
+// One folder per run: concurrent runs (parallel worktrees, CI) used to share a fixed folder and
+// read each other's half-written files.
+string tmp = Path.Combine(Path.GetTempPath(), $"tdpdf-redact-test-{Environment.ProcessId}-{Guid.NewGuid():N}");
 Directory.CreateDirectory(tmp);
 
 Console.WriteLine($"pdfium edit API: {PdfiumInterop.AvailableEditApi}");
@@ -220,6 +222,7 @@ SaveNormalize.Run(Check);
 PureLogic.Run(Check);
 
 Console.WriteLine();
+try { Directory.Delete(tmp, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
 return failures == 0 ? 0 : 1;
 
