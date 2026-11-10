@@ -1,13 +1,12 @@
 using System.IO;
 using System.Net.Http;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using Docnet.Core;
 using Docnet.Core.Models;
+using Docnet.Core.Readers;
 using Microsoft.Win32;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf.IO;
@@ -99,13 +98,14 @@ namespace TDPdf
             set { Properties.Settings.Default.OcrHighQuality = value; Properties.Settings.Default.Save(); }
         }
 
-        // Download URL for a language's traineddata, honoring the HQ preference.
+        // Download URL for a language's traineddata, honoring the HQ preference. Both tiers are pinned to a
+        // fixed commit and a SHA-256 per file (OcrModelCatalog), checked in DownloadTrainedDataAsync.
         // Standard tier uses tessdata_fast: the same integer LSTM model as the full "tessdata" repo but without
         // the unused legacy-engine data, so it is ~4MB with identical LSTM accuracy. HQ uses tessdata_best
         // (float LSTM): larger but the most accurate.
-        private static string LanguageDataUrl(string code) => OcrHighQuality
-            ? $"https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/{code}.traineddata"
-            : $"https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/{code}.traineddata";
+        private static string LanguageDataUrl(string code, bool highQuality) =>
+            OcrModelCatalog.UrlFor(code, highQuality)
+            ?? throw new InvalidOperationException($"No pinned OCR model for language '{code}'.");
 
         private static string NameForCode(string code)
         {
@@ -149,7 +149,7 @@ namespace TDPdf
             root.Items.Add(MakeMenuItem(
                 selectedForOcr > 1 ? $"OCR {selectedForOcr} Selected _Pages to Clipboard"
                                    : "OCR Current _Page to Clipboard",
-                (_, _) => OcrPagesToClipboard(SelectedPageIndicesForOcr()),
+                (_, _) => ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr())),
                 "Ctrl+Shift+O",
                 selectedForOcr > 1
                     ? "Recognize every selected page and copy the combined text to the clipboard"
@@ -157,16 +157,16 @@ namespace TDPdf
             root.Items.Add(MakeMenuItem("OCR _Region to Clipboard", (_, _) => BeginOcrRegion(),
                 null, "Drag a box over an area to recognize just that region", "\uE7A8"));
             root.Items.Add(MakeMenuItem("OCR _Form Fields to Clipboard",
-                (_, _) => OcrFormFieldsToClipboard(SelectedPageIndicesForOcr()),
+                (_, _) => ObserveOcr(OcrFormFieldsToClipboard(SelectedPageIndicesForOcr())),
                 null,
                 "Recognize each form field's own box and copy the values labelled by field name. "
                 + "Uses what the form declares \u2014 digits only for numeric fields, one glyph per comb "
                 + "cell, and dropdown answers snapped to their real options",
                 "\uE9D5"));
             root.Items.Add(new Separator());
-            root.Items.Add(MakeMenuItem("Make _Searchable PDF…", (_, _) => MakeSearchablePdf(),
+            root.Items.Add(MakeMenuItem("Make _Searchable PDF…", (_, _) => ObserveOcr(MakeSearchablePdf()),
                 null, "OCR every page and save a copy with an invisible, searchable text layer", "\uE721"));
-            root.Items.Add(MakeMenuItem("_Extract All Text…", (_, _) => ExtractAllText(),
+            root.Items.Add(MakeMenuItem("_Extract All Text…", (_, _) => ObserveOcr(ExtractAllText()),
                 null, "OCR every page and save the text to a .txt or .md file", "\uE8A5"));
             root.Items.Add(new Separator());
             root.Items.Add(BuildLanguageMenu());
@@ -235,7 +235,7 @@ namespace TDPdf
                 else
                 {
                     var item = new MenuItem { Header = LangHeader(name, code, hqPref ? "(download HQ)" : "(download)") };
-                    item.Click += (_, _) => DownloadOcrLanguage(code, name);
+                    item.Click += (_, _) => ObserveOcr(DownloadOcrLanguage(code, name));
                     root.Items.Add(item);
                 }
             }
@@ -252,7 +252,7 @@ namespace TDPdf
             {
                 bool now = !OcrHighQuality;
                 OcrHighQuality = now;
-                if (now) RedownloadSelectedHighQuality();
+                if (now) ObserveOcr(RedownloadSelectedHighQuality());
                 else SetStatus("Standard OCR models will be used for new downloads");
             };
             root.Items.Add(hq);
@@ -268,9 +268,12 @@ namespace TDPdf
         }
 
         // Streams one traineddata file to destFile, showing MB progress and honoring the cancel token; writes
-        // via a .part file and atomically moves into place only on full success. Throws on cancel/error.
-        private async Task DownloadTrainedDataAsync(HttpClient http, string url, string destFile, string label, CancellationToken ct)
+        // via a .part file and atomically moves into place only on full success. The finished file must match
+        // the SHA-256 pinned in OcrModelCatalog for this language and tier, or it is deleted and the download
+        // fails. Throws on cancel/error.
+        private async Task DownloadTrainedDataAsync(HttpClient http, string code, bool highQuality, string destFile, string label, CancellationToken ct)
         {
+            string url = LanguageDataUrl(code, highQuality);
             string part = destFile + ".part";
             using (var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct))
             {
@@ -292,6 +295,12 @@ namespace TDPdf
                         : $"{label} {mb:F1} MB  (Esc to cancel)");
                 }
             }
+            if (!OcrModelCatalog.Verify(part, code, highQuality))
+            {
+                TryDeleteFile(part);
+                throw new InvalidDataException(
+                    $"The downloaded {code} language data failed its integrity check (SHA-256 mismatch), so it was discarded.");
+            }
             if (File.Exists(destFile)) File.Delete(destFile);
             File.Move(part, destFile);
         }
@@ -302,7 +311,7 @@ namespace TDPdf
         }
 
         // Downloads a single language's traineddata (standard or HQ, per the toggle) and selects it.
-        private async void DownloadOcrLanguage(string code, string name)
+        private async Task DownloadOcrLanguage(string code, string name)
         {
             var ct = BeginCancellableOp($"Downloading {name} language data...");
             string tessDir = OcrNativeBootstrap.EnsureTessDataDir();
@@ -310,8 +319,9 @@ namespace TDPdf
             try
             {
                 using var http = MakeDownloadClient();
-                await DownloadTrainedDataAsync(http, LanguageDataUrl(code), dest, $"Downloading {name}...", ct);
-                MarkLanguageHq(code, OcrHighQuality);
+                bool hqNow = OcrHighQuality;
+                await DownloadTrainedDataAsync(http, code, hqNow, dest, $"Downloading {name}...", ct);
+                MarkLanguageHq(code, hqNow);
 
                 var sel = GetSelectedOcrLanguages();
                 if (!sel.Contains(code)) { sel.Add(code); SetSelectedOcrLanguages(sel); }
@@ -340,7 +350,7 @@ namespace TDPdf
         // standard copies. Triggered when the user enables "Use High Quality Models". Cancellable; a single
         // language's failure is reported but doesn't abort the rest, and a failed file never replaces a
         // working one (temp+move).
-        private async void RedownloadSelectedHighQuality()
+        private async Task RedownloadSelectedHighQuality()
         {
             // Only UPGRADE languages that are actually installed and not already HQ. A language the user has
             // selected but hasn't downloaded yet must NOT be auto-downloaded here - that would surprise the
@@ -373,10 +383,9 @@ namespace TDPdf
                     i++;
                     string name = NameForCode(code);
                     string dest = Path.Combine(tessDir, code + ".traineddata");
-                    string url = $"https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/{code}.traineddata";
                     try
                     {
-                        await DownloadTrainedDataAsync(http, url, dest, $"Downloading {name} (HQ), {i} of {toDownload.Count}:", ct);
+                        await DownloadTrainedDataAsync(http, code, true, dest, $"Downloading {name} (HQ), {i} of {toDownload.Count}:", ct);
                         MarkLanguageHq(code, true);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
@@ -427,9 +436,10 @@ namespace TDPdf
                     string code = missing[i];
                     string name = NameForCode(code);
                     string dest = Path.Combine(tessDir, code + ".traineddata");
-                    await DownloadTrainedDataAsync(http, LanguageDataUrl(code), dest,
+                    bool hqNow = OcrHighQuality;
+                    await DownloadTrainedDataAsync(http, code, hqNow, dest,
                         missing.Count == 1 ? $"Downloading {name}..." : $"Downloading {name}, {i + 1} of {missing.Count}:", ct);
-                    MarkLanguageHq(code, OcrHighQuality);
+                    MarkLanguageHq(code, hqNow);
                     if (ct.IsCancellationRequested) return false;
                 }
                 foreach (var c in missing) if (!IsLanguageInstalled(c)) return false;
@@ -453,6 +463,82 @@ namespace TDPdf
         }
 
         // ============================================================
+        // Shared render -> OCR page loop
+        // ============================================================
+
+        /// <summary>One page rasterized for OCR: BGRA pixels and their size.</summary>
+        private readonly record struct OcrRaster(int Page, byte[] Bgra, int W, int H);
+
+        /// <summary>One OCR'd page, with the size of the raster it was recognized on.</summary>
+        private readonly record struct OcrPageResult(int Page, OcrResult Result, int W, int H);
+
+        /// <summary>
+        /// Rasterizes <paramref name="pages"/> of an already-open document for OCR, plain (no
+        /// annotations - see the banner at the top of this file), stopping between pages when
+        /// <paramref name="ct"/> is cancelled. <paramref name="report"/> gets (index within the list,
+        /// list length) before each page. A page that renders to nothing yields an empty raster
+        /// (W or H of 0) so a caller keeps its page numbering.
+        /// </summary>
+        private static IEnumerable<OcrRaster> RenderOcrRasters(
+            IDocReader docReader, IReadOnlyList<int> pages, CancellationToken ct, Action<int, int>? report)
+        {
+            for (int i = 0; i < pages.Count; i++)
+            {
+                // Checked between pages: a single page cannot be interrupted mid-recognition, but a long
+                // selection stops at the next boundary.
+                if (ct.IsCancellationRequested) yield break;
+                report?.Invoke(i, pages.Count);
+
+                using var pageReader = docReader.GetPageReader(pages[i]);
+                int w = pageReader.GetPageWidth();
+                int h = pageReader.GetPageHeight();
+                byte[] bgra = pageReader.GetImage();
+                if (bgra is null || bgra.Length == 0 || w <= 0 || h <= 0)
+                    yield return new OcrRaster(pages[i], [], 0, 0);
+                else
+                    yield return new OcrRaster(pages[i], bgra, w, h);
+            }
+        }
+
+        /// <summary>
+        /// Opens <paramref name="file"/> and an <see cref="OcrService"/> ONCE, then lazily renders and
+        /// recognizes each page in <paramref name="pages"/>. A page that renders to nothing yields an
+        /// empty result (W/H of 0). Runs on the calling thread - call it from inside Task.Run - and
+        /// stops early if <paramref name="ct"/> is cancelled, so check the token after the loop.
+        /// </summary>
+        private static IEnumerable<OcrPageResult> OcrPages(
+            string file, IReadOnlyList<int> pages, string lang, CancellationToken ct, Action<int, int>? report)
+        {
+            using var docReader = DocLib.Instance.GetDocReader(file, new PageDimensions(OcrRenderMax, OcrRenderMax));
+            using var ocr = new OcrService(language: lang);   // engine is not thread-safe: one per operation
+            foreach (var r in RenderOcrRasters(docReader, pages, ct, report))
+                yield return new OcrPageResult(r.Page,
+                    r.W > 0 ? ocr.RecognizeBgra(r.Bgra, r.W, r.H) : new OcrResult(), r.W, r.H);
+        }
+
+        /// <summary>
+        /// Runs an OCR operation from a non-async caller (a menu lambda, a key handler). It is
+        /// <c>async void</c> on purpose and rethrows nothing itself: an exception that escapes the
+        /// operation is raised on the UI context and reaches the app's DispatcherUnhandledException
+        /// crash path, exactly as it did when the operations were <c>async void</c> themselves.
+        /// </summary>
+        private async void ObserveOcr(Task operation) => await operation;
+
+        /// <summary>
+        /// <see cref="EnsureOcrModelsReadyAsync"/> inside the failure handling: the model-download gate
+        /// shows dialogs and can throw, and it used to run before each caller's try block.
+        /// </summary>
+        private async Task<bool> TryEnsureOcrModelsReadyAsync(string failureTitle)
+        {
+            try { return await EnsureOcrModelsReadyAsync(); }
+            catch (Exception ex)
+            {
+                TdpDialog.Show(this, $"{failureTitle}:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+        }
+
+        // ============================================================
         // OCR the current page to the clipboard
         // ============================================================
 
@@ -460,8 +546,6 @@ namespace TDPdf
         // OCR are both slow, so they run inside Task.Run behind the busy state; the clipboard write happens back
         // on the UI thread. Rotations are already baked into the working file (SaveTempAndReload writes /Rotate,
         // which PDFium honors on render), so no pixel rotation is needed here.
-        private void OcrPageToClipboard(int pageIdx) => OcrPagesToClipboard([pageIdx]);
-
         /// <summary>
         /// The page indices currently selected in the sidebar, in document order. Falls back to the
         /// current page so the OCR actions behave the same when nothing is multi-selected.
@@ -480,12 +564,12 @@ namespace TDPdf
         // the current one. The document reader and the recognition engine are built ONCE for the
         // whole batch — constructing an OcrService per page is the expensive part, and on a ten-page
         // selection that alone is the difference between usable and not.
-        private async void OcrPagesToClipboard(IReadOnlyList<int> pageIndices)
+        private async Task OcrPagesToClipboard(IReadOnlyList<int> pageIndices)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             int[] pages = [.. pageIndices.Distinct().Where(p => p >= 0 && p < _doc.PageCount).OrderBy(p => p)];
             if (pages.Length == 0) return;
-            if (!await EnsureOcrModelsReadyAsync()) return;
+            if (!await TryEnsureOcrModelsReadyAsync("OCR failed")) return;
 
             string file = _currentFile;
             string lang = CurrentOcrLanguageString();
@@ -496,26 +580,9 @@ namespace TDPdf
             try
             {
                 List<OcrResult> results = await Task.Run(() =>
-                {
-                    using var docReader = DocLib.Instance.GetDocReader(file, new PageDimensions(OcrRenderMax, OcrRenderMax));
-                    using var ocr = new OcrService(language: lang);   // engine is not thread-safe: one per operation
-                    var recognized = new List<OcrResult>(pages.Length);
-                    for (int i = 0; i < pages.Length; i++)
-                    {
-                        // Checked between pages: a single page still cannot be interrupted
-                        // mid-recognition, but a long selection now stops at the next boundary.
-                        if (ct.IsCancellationRequested) break;
-                        if (pages.Length > 1)
-                            SetWorkerStatus($"Running OCR... page {i + 1} of {pages.Length}  (Esc to cancel)");
-
-                        using var pageReader = docReader.GetPageReader(pages[i]);
-                        int w = pageReader.GetPageWidth();
-                        int h = pageReader.GetPageHeight();
-                        byte[] bgra = pageReader.GetImage();
-                        recognized.Add(ocr.RecognizeBgra(bgra, w, h));
-                    }
-                    return recognized;
-                });
+                    OcrPages(file, pages, lang, ct,
+                        (i, n) => { if (n > 1) SetWorkerStatus($"Running OCR... page {i + 1} of {n}  (Esc to cancel)"); })
+                    .Select(r => r.Result).ToList());
 
                 // Cooperative cancel: discard a partial batch rather than copying half of it.
                 if (ct.IsCancellationRequested) { SetStatus("OCR cancelled"); return; }
@@ -558,12 +625,12 @@ namespace TDPdf
         //
         // Plain OCR remains the default everywhere — this is an additional action, exactly as
         // upstream kept it.
-        private async void OcrFormFieldsToClipboard(IReadOnlyList<int> pageIndices)
+        private async Task OcrFormFieldsToClipboard(IReadOnlyList<int> pageIndices)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             int[] pages = [.. pageIndices.Distinct().Where(p => p >= 0 && p < _doc.PageCount).OrderBy(p => p)];
             if (pages.Length == 0) return;
-            if (!await EnsureOcrModelsReadyAsync()) return;
+            if (!await TryEnsureOcrModelsReadyAsync("Form OCR failed")) return;
 
             string file = _currentFile;
             string lang = CurrentOcrLanguageString();
@@ -579,17 +646,13 @@ namespace TDPdf
                     using var docReader = DocLib.Instance.GetDocReader(file, new PageDimensions(OcrRenderMax, OcrRenderMax));
                     using var ocr = new OcrService(language: lang);
 
-                    for (int i = 0; i < pages.Length; i++)
+                    foreach (var raster in RenderOcrRasters(docReader, pages, ct,
+                        (i, n) => { if (n > 1) SetWorkerStatus($"Reading form fields... page {i + 1} of {n}  (Esc to cancel)"); }))
                     {
-                        if (ct.IsCancellationRequested) break;
-                        int pageIdx = pages[i];
-                        if (pages.Length > 1)
-                            SetWorkerStatus($"Reading form fields... page {i + 1} of {pages.Length}  (Esc to cancel)");
-
-                        using var pageReader = docReader.GetPageReader(pageIdx);
-                        int w = pageReader.GetPageWidth();
-                        int h = pageReader.GetPageHeight();
-                        byte[] bgra = pageReader.GetImage();
+                        int pageIdx = raster.Page;
+                        byte[] bgra = raster.Bgra;
+                        int w = raster.W, h = raster.H;
+                        if (w <= 0) continue;
 
                         // Field geometry comes from the existing overlay parser, asked for the OCR
                         // raster's own pixel size — it already resolves the rendered box, walks the
@@ -701,13 +764,13 @@ namespace TDPdf
             SetStatus("Drag a box over the area to recognize");
         }
 
-        private async void OcrRegion(int pageIdx, Rect canvasBounds)
+        private async Task OcrRegion(int pageIdx, Rect canvasBounds)
         {
             if (_doc is null || _currentFile is null) return;
             if (pageIdx < 0 || pageIdx >= _doc.PageCount) return;
             if (!_renderDims.TryGetValue(pageIdx, out var rd) || rd.w <= 0 || rd.h <= 0) return;
             if (canvasBounds.Width < 4 || canvasBounds.Height < 4) { SetStatus("OCR region too small"); return; }
-            if (!await EnsureOcrModelsReadyAsync()) return;
+            if (!await TryEnsureOcrModelsReadyAsync("OCR failed")) return;
 
             string file = _currentFile;
             string lang = CurrentOcrLanguageString();
@@ -720,10 +783,10 @@ namespace TDPdf
                 OcrResult result = await Task.Run(() =>
                 {
                     using var docReader = DocLib.Instance.GetDocReader(file, new PageDimensions(OcrRenderMax, OcrRenderMax));
-                    using var pageReader = docReader.GetPageReader(pageIdx);
-                    int w = pageReader.GetPageWidth();
-                    int h = pageReader.GetPageHeight();
-                    byte[] bgra = pageReader.GetImage();
+                    var raster = RenderOcrRasters(docReader, [pageIdx], CancellationToken.None, null).First();
+                    byte[] bgra = raster.Bgra;
+                    int w = raster.W, h = raster.H;
+                    if (w <= 0) return new OcrResult();
 
                     // Map the on-screen canvas rect (renderW x renderH space) to the OCR render's pixel space.
                     double sx = (double)w / renderW, sy = (double)h / renderH;
@@ -771,10 +834,10 @@ namespace TDPdf
         // selection start working on scans.
         // ============================================================
 
-        private async void MakeSearchablePdf()
+        private async Task MakeSearchablePdf()
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
-            if (!await EnsureOcrModelsReadyAsync()) return;
+            if (!await TryEnsureOcrModelsReadyAsync("Searchable PDF failed")) return;
             CommitActiveTextBox();
 
             var dlg = new SaveFileDialog
@@ -847,28 +910,22 @@ namespace TDPdf
             int totalWords = 0;
             var invisible = new XSolidBrush(XColor.FromArgb(0, 0, 0, 0));
 
-            using var docReader = DocLib.Instance.GetDocReader(src, new PageDimensions(OcrRenderMax, OcrRenderMax));
-            using var ocr = new OcrService(language: language);   // one engine reused across the whole document (single-threaded here)
-
-            var outDoc = PdfReader.Open(src, PdfDocumentOpenMode.Modify);
+            // Disposed on every path, including an OCR or draw exception mid-document (it used to be closed
+            // by hand on two of the three exits and leaked on the third).
+            using var outDoc = PdfReader.Open(src, PdfDocumentOpenMode.Modify);
             int pages = outDoc.PageCount;
-            for (int i = 0; i < pages; i++)
+            int[] allPages = [.. Enumerable.Range(0, pages)];
+            int processed = 0;
+
+            // One engine and one reader for the whole document (single-threaded here).
+            foreach (var ocrPage in OcrPages(src, allPages, language, ct, report))
             {
-                // Cooperative cancel: bail before the next page; the caller sees the cancelled token and the
-                // file is never saved (outDoc.Save is past the loop), so no partial output is written.
-                if (ct.IsCancellationRequested) { outDoc.Close(); return (i, totalWords); }
-                report(i, pages);
-
-                using var pr = docReader.GetPageReader(i);
-                int w = pr.GetPageWidth();
-                int h = pr.GetPageHeight();
-                byte[] bgra = pr.GetImage();
-                if (bgra is null || bgra.Length == 0 || w <= 0 || h <= 0) continue;
-
-                OcrResult result = ocr.RecognizeBgra(bgra, w, h);
+                processed = ocrPage.Page + 1;
+                int w = ocrPage.W, h = ocrPage.H;
+                OcrResult result = ocrPage.Result;
                 if (result.Words.Count == 0) continue;
 
-                var page = outDoc.Pages[i];
+                var page = outDoc.Pages[ocrPage.Page];
 
                 // OCR boxes are top-left pixel positions on the bitmap PDFium just rendered, and PDFium
                 // renders the VISIBLE box (/CropBox, inheritance-aware) with /Rotate applied. Scaling by
@@ -918,8 +975,11 @@ namespace TDPdf
                 gfx.Restore(ocrTextState);
             }
 
+            // Cooperative cancel: the loop stopped at a page boundary; never save a partial layer. The caller
+            // sees the cancelled token and reports that no file was written.
+            if (ct.IsCancellationRequested) return (processed, totalWords);
+
             outDoc.Save(outPath);
-            outDoc.Close();
             return (pages, totalWords);
         }
 
@@ -927,10 +987,10 @@ namespace TDPdf
         // Extract All Text - OCR every page and save the plain text to a .txt or .md file.
         // ============================================================
 
-        private async void ExtractAllText()
+        private async Task ExtractAllText()
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
-            if (!await EnsureOcrModelsReadyAsync()) return;
+            if (!await TryEnsureOcrModelsReadyAsync("Text extraction failed")) return;
             CommitActiveTextBox();
 
             var dlg = new SaveFileDialog
@@ -985,21 +1045,13 @@ namespace TDPdf
         {
             string nl = Environment.NewLine;
             var sb = new StringBuilder();
-            using var docReader = DocLib.Instance.GetDocReader(src, new PageDimensions(OcrRenderMax, OcrRenderMax));
-            using var ocr = new OcrService(language: language);
+            int[] allPages = [.. Enumerable.Range(0, pageCount)];
 
-            for (int i = 0; i < pageCount; i++)
+            foreach (var ocrPage in OcrPages(src, allPages, language, ct, report))
             {
-                if (ct.IsCancellationRequested) return 0;
-                report(i, pageCount);
-
-                using var pr = docReader.GetPageReader(i);
-                int w = pr.GetPageWidth();
-                int h = pr.GetPageHeight();
-                byte[] bgra = pr.GetImage();
-                string text = (bgra is null || bgra.Length == 0 || w <= 0 || h <= 0)
-                    ? string.Empty
-                    : ocr.RecognizeBgra(bgra, w, h).Text.TrimEnd();
+                int i = ocrPage.Page;
+                // A page that rendered to nothing yields an empty result, so it still gets its heading.
+                string text = ocrPage.Result.Text.TrimEnd();
                 // Normalize Tesseract's LF line breaks to the platform's so .txt opens cleanly everywhere.
                 text = text.Replace("\r\n", "\n").Replace("\n", nl);
 
@@ -1028,7 +1080,7 @@ namespace TDPdf
 
         private string SuggestSearchableName() => SuggestBaseName() + "-searchable.pdf";
 
-        // Shared with the image export (ExportImages.cs); TryDeleteFile above is its cleanup twin.
+        // Shared with the image export (MainWindow.ExportImages.cs); TryDeleteFile above is its cleanup twin.
         private static string MakeTempPdfPath(string purpose) =>
             Path.Combine(Path.GetTempPath(), $"tdpdf_{purpose}_{Guid.NewGuid():N}.pdf");
     }

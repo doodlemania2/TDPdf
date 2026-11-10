@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-
 namespace TDPdf.Services
 {
     // ============================================================
@@ -19,7 +15,7 @@ namespace TDPdf.Services
     //     to the real option instead of left wrong.
     //
     // Deliberately dependency-free: no PDF types, no Tesseract types, no UI. The orchestration in
-    // Ocr.cs decides WHAT to recognize; everything here decides what the answer is allowed to be.
+    // MainWindow.Ocr.cs decides WHAT to recognize; everything here decides what the answer is allowed to be.
     // ============================================================
     internal static class FormOcrPolicy
     {

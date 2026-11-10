@@ -1,4 +1,3 @@
-using System;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
 using PdfSharpCore.Pdf.Security;
@@ -54,6 +53,59 @@ namespace TDPdf.Services
             if (check.PageCount != expected)
                 throw new InvalidOperationException(
                     $"The protected copy has {check.PageCount} page(s) where {expected} were written.");
+        }
+
+        /// <summary>What an in-place save would do to the protection the file has on disk.</summary>
+        internal enum Impact
+        {
+            /// <summary>Unprotected source, or its protection is written back at full strength.</summary>
+            None,
+            /// <summary>The save would leave the file with no password at all.</summary>
+            Removed,
+            /// <summary>The password is kept but the encryption is weaker (AES becomes 128-bit RC4).</summary>
+            Downgraded,
+        }
+
+        /// <summary>
+        /// Pure form of <see cref="Assess(bool, PdfProtection?)"/>.
+        /// <paramref name="reapplicable"/> is false when the protection could not be reproduced
+        /// (an AES-256 file opened with its owner password, a PDFium-repaired or rasterised copy).
+        /// </summary>
+        internal static Impact Assess(bool wasProtected, bool reapplicable, bool downgraded)
+        {
+            if (!wasProtected) return Impact.None;
+            if (!reapplicable) return Impact.Removed;
+            return downgraded ? Impact.Downgraded : Impact.None;
+        }
+
+        internal static Impact Assess(bool wasProtected, PdfProtection? protection) =>
+            Assess(wasProtected, protection is { CanReapply: true }, protection?.Downgraded ?? false);
+
+        /// <summary>
+        /// The wording of the confirmation shown before an in-place save that would remove or weaken
+        /// the file's protection. States exactly what will be written.
+        /// </summary>
+        internal static string ImpactMessage(Impact impact, string fileName, PdfProtection? p)
+        {
+            switch (impact)
+            {
+                case Impact.Removed:
+                    return $"\"{fileName}\" is password protected, but TDPdf cannot write that protection back " +
+                           "for this document.\n\n" +
+                           "Saving over it will leave the file with NO password and no restrictions: anyone will " +
+                           "be able to open it. The original is replaced and cannot be recovered.";
+                case Impact.Downgraded:
+                {
+                    bool ownerLost = p is not null && !p.KeepsOwnerPassword && p.OwnerPassword is null;
+                    return $"\"{fileName}\" uses AES encryption, which TDPdf cannot write.\n\n" +
+                           "Saving over it keeps the password but re-encrypts the file as 128-bit RC4, a weaker " +
+                           "and older scheme" +
+                           (ownerLost ? ", and the original owner password will no longer work" : "") +
+                           ". The original is replaced and cannot be recovered.";
+                }
+                default:
+                    return "";
+            }
         }
 
         /// <summary>The status-bar note for a save that kept the file's protection.</summary>

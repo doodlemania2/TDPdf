@@ -1,8 +1,6 @@
-using System;
 using System.ComponentModel;
 using System.IO;
 using System.Security;
-using System.Threading;
 
 namespace TDPdf.Services
 {

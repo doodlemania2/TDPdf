@@ -16,7 +16,7 @@ namespace TDPdf.Services
     }
 
     /// <summary>
-    /// How a crop should be segmented. Deliberately neutral: the callers in Ocr.cs describe the
+    /// How a crop should be segmented. Deliberately neutral: the callers in MainWindow.Ocr.cs describe the
     /// SHAPE of what they are reading, and the Tesseract page-segmentation modes stay contained in
     /// this file alongside every other reference to the engine.
     /// </summary>
@@ -57,13 +57,6 @@ namespace TDPdf.Services
             // before the engine is constructed.
             string dataPath = tessDataPath ?? OcrNativeBootstrap.EnsureReady();
             _engine = new TesseractEngine(dataPath, language, EngineMode.Default);
-        }
-
-        /// <summary>OCR an image file on disk (PNG, TIFF, JPEG, BMP).</summary>
-        public OcrResult RecognizeImageFile(string imagePath)
-        {
-            using var pix = Pix.LoadFromFile(imagePath);
-            return Run(pix);
         }
 
         /// <summary>OCR an encoded image already in memory (e.g. PNG bytes).</summary>

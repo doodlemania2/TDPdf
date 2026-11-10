@@ -369,15 +369,6 @@ namespace TDPdf.Properties
             set => this[nameof(DocumensoDefaultSigningOrder)] = value;
         }
 
-        // Send for Signature: the remembered "Include me as a signer" checkbox.
-        [UserScopedSetting]
-        [DefaultSettingValue("False")]
-        public bool DocumensoIncludeSelfAsSigner
-        {
-            get => (bool)this[nameof(DocumensoIncludeSelfAsSigner)];
-            set => this[nameof(DocumensoIncludeSelfAsSigner)] = value;
-        }
-
         // There is deliberately no "don't ask again" for the warning before a save strips a digital
         // signature (MainWindow.ConfirmSaveOverDigitalSignature). Design §5.5 sketched one
         // (DocumensoWarnOnSignedSave); it was removed unread in 2.0.0 because ticking it would bring

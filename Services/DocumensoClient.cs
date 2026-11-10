@@ -1,15 +1,9 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace TDPdf.Services
 {
@@ -95,7 +89,7 @@ namespace TDPdf.Services
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>HTTP shape</b> follows the two existing call sites (<c>Ocr.cs</c>'s download client and
+    /// <b>HTTP shape</b> follows the two existing call sites (<c>MainWindow.Ocr.cs</c>'s download client and
     /// <c>UpdateCheck</c>): a short-lived <see cref="HttpClient"/> per operation, an explicit
     /// timeout, an explicit User-Agent, <c>System.Text.Json</c>, and a
     /// <see cref="CancellationToken"/> on everything. No shared client, no factory, no retry

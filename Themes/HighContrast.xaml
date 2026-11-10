@@ -9,7 +9,6 @@
     <SolidColorBrush x:Key="BgHover" Color="{x:Static SystemColors.HighlightColor}"/>
     <SolidColorBrush x:Key="BgPressed" Color="{x:Static SystemColors.HighlightColor}"/>
     <SolidColorBrush x:Key="BorderDim" Color="{x:Static SystemColors.WindowTextColor}"/>
-    <SolidColorBrush x:Key="SeparatorBrush" Color="{x:Static SystemColors.WindowTextColor}"/>
     <SolidColorBrush x:Key="AccentGreen" Color="{x:Static SystemColors.HighlightTextColor}"/>
     <SolidColorBrush x:Key="AccentGreenDim" Color="{x:Static SystemColors.HighlightColor}"/>
     <!-- Flowing text-selection quads (upstream KillerPDF v1.6.5, #127): the system selection
@@ -25,13 +24,6 @@
     <SolidColorBrush x:Key="WarningOrange" Color="{x:Static SystemColors.HighlightTextColor}"/>
     <SolidColorBrush x:Key="DangerRed" Color="{x:Static SystemColors.HighlightTextColor}"/>
     <SolidColorBrush x:Key="DisabledForeground" Color="{x:Static SystemColors.GrayTextColor}"/>
-    <SolidColorBrush x:Key="ToolButtonBackground" Color="Transparent"/>
-    <SolidColorBrush x:Key="ToolButtonForeground" Color="{x:Static SystemColors.WindowTextColor}"/>
-    <SolidColorBrush x:Key="ToolButtonHoverBackground" Color="{x:Static SystemColors.HighlightColor}"/>
-    <SolidColorBrush x:Key="ToolButtonPressedBackground" Color="{x:Static SystemColors.HighlightColor}"/>
-    <SolidColorBrush x:Key="ToolButtonCheckedBackground" Color="{x:Static SystemColors.HighlightColor}"/>
-    <SolidColorBrush x:Key="ToolButtonCheckedForeground" Color="{x:Static SystemColors.HighlightTextColor}"/>
-    <SolidColorBrush x:Key="ToolButtonDisabledForeground" Color="{x:Static SystemColors.GrayTextColor}"/>
 
     <!-- Shortcut-overlay keyboard: per-category key colors (upstream KillerPDF v1.6.4 "KsCat*").
          High-contrast mode forgoes hue coding in favor of the system hot-track accent so lit keys

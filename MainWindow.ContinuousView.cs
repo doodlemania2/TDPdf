@@ -2,32 +2,14 @@
 // The scrolling multi-page strip: building it, virtualising it, and keeping the current
 // page and zoom in sync with it. Extracted verbatim from MainWindow.xaml.cs.
 
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.ExceptionServices;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 using Docnet.Core;
 using Docnet.Core.Models;
-using TDPdf.Diagnostics;
 using TDPdf.Services;
-using Microsoft.Win32;
-using PdfSharpCore.Drawing;
-using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.IO;
-using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
 {
@@ -65,18 +47,17 @@ namespace TDPdf
             // PDF natural page width in WPF DIPs (96 DIP/in, 72 pt/in). Zoom-independent so
             // FitToWidth (= viewportW / _continuousPageW) doesn't cancel against the zoom level.
             var refPage = _doc.Pages[0];
-            _continuousPageW = Math.Max(200.0, refPage.Width.Point * (96.0 / 72.0));
+            _continuousPageW = Math.Max(200.0, PdfPageGeometry.DisplaySize(refPage).W * (96.0 / 72.0));
 
             double y = 0;
             for (int i = 0; i < _doc.PageCount; i++)
             {
                 _continuousTops.Add(y);
                 var pdfPage = _doc.Pages[i];
-                double pw = pdfPage.Width.Point, ph = pdfPage.Height.Point;
-                // PdfSharpCore reports the un-rotated box; swap for quarter rotations so the
-                // placeholder aspect matches what Docnet will rasterize.
-                int rot = PdfPageGeometry.Rotation(pdfPage);
-                if (rot == 90 || rot == 270) (pw, ph) = (ph, pw);
+                // DisplaySize is the box PDFium rasterizes with /Rotate applied. Do NOT swap
+                // PdfPage.Width/Height again: PdfSharpCore already reports them swapped for 90/270
+                // pages (PdfPage ctor marks them Landscape), so swapping here flipped them back.
+                var (pw, ph) = PdfPageGeometry.DisplaySize(pdfPage);
                 double ratio = Math.Max(0.1, ph / Math.Max(1, pw));
                 double slotH = _continuousPageW * ratio;
 
@@ -180,8 +161,7 @@ namespace TDPdf
                         // form overlays (RenderFormFields) exist only on _annotationCanvas, so
                         // this surface has nothing to draw the values with. Hiding the widgets
                         // would blank every filled field instead of un-ghosting it.
-                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
-                                  ?? pr.GetImage();
+                        var raw = PageRaster.RenderBgra(pr, currentFile, i, w, h);
                         if (w <= 0 || h <= 0 || raw is null) continue;
 
                         int fi = i, fw = w, fh = h;
@@ -202,11 +182,9 @@ namespace TDPdf
                             // #135: display-only invert, pictures carved back out (empty keep = the
                             // plain full-page flip, which is also what "invert images too" wants).
                             if (_docInvert) InvertBgraInPlaceExcept(bytes, fw, fh, keep);
-                            var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
-                            bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
-                            bmp.Freeze();
+                            var bmp = PageRaster.ToFrozenBitmap(bytes, fw, fh, dpiX, dpiY);
 
-                            if (slot.Child is Image pageImg)
+                            if (bmp is not null && slot.Child is Image pageImg)
                             {
                                 pageImg.Source = bmp;
                                 pageImg.Width = dipW;
@@ -371,8 +349,7 @@ namespace TDPdf
                         // form overlays (RenderFormFields) exist only on _annotationCanvas, so
                         // this surface has nothing to draw the values with. Hiding the widgets
                         // would blank every filled field instead of un-ghosting it.
-                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, p, w, h)
-                                  ?? pr.GetImage();
+                        var raw = PageRaster.RenderBgra(pr, currentFile, p, w, h);
                         if (w <= 0 || h <= 0 || raw is null) continue;
 
                         int fp = p, fw = w, fh = h;
@@ -416,9 +393,8 @@ namespace TDPdf
 
             // #135: display-only invert, pictures carved back out (empty keep = full-page flip).
             if (_docInvert) InvertBgraInPlaceExcept(bgra, pxW, pxH, keep);
-            var bmp = new WriteableBitmap(pxW, pxH, dpiX, dpiY, PixelFormats.Bgra32, null);
-            bmp.WritePixels(new Int32Rect(0, 0, pxW, pxH), bgra, pxW * 4, 0);
-            bmp.Freeze();
+            var bmp = PageRaster.ToFrozenBitmap(bgra, pxW, pxH, dpiX, dpiY);
+            if (bmp is null) return;
             img.Source = bmp;
             img.Width = dipW;
             img.Height = dipH;
@@ -511,8 +487,7 @@ namespace TDPdf
                         // form overlays (RenderFormFields) exist only on _annotationCanvas, so
                         // this surface has nothing to draw the values with. Hiding the widgets
                         // would blank every filled field instead of un-ghosting it.
-                        var raw = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
-                                  ?? pr.GetImage();
+                        var raw = PageRaster.RenderBgra(pr, currentFile, i, w, h);
                         if (w <= 0 || h <= 0 || raw is null) continue;
                         int fi = i, fw = w, fh = h; byte[] bytes = raw;
                         FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, i, pig) : [];
@@ -544,9 +519,8 @@ namespace TDPdf
             double dpiY = 96.0 * fh / dipH;
             // #135: display-only invert, pictures carved back out (empty keep = full-page flip).
             if (_docInvert) InvertBgraInPlaceExcept(bytes, fw, fh, keep);
-            var bmp = new WriteableBitmap(fw, fh, dpiX, dpiY, PixelFormats.Bgra32, null);
-            bmp.WritePixels(new Int32Rect(0, 0, fw, fh), bytes, fw * 4, 0);
-            bmp.Freeze();
+            var bmp = PageRaster.ToFrozenBitmap(bytes, fw, fh, dpiX, dpiY);
+            if (bmp is null) return;
             img.Source = bmp;
             img.Width = dipW;
             img.Height = dipH;

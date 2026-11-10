@@ -1,10 +1,5 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Reflection;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Printing;
 using System.Windows;
 using System.Windows.Documents;
@@ -32,7 +27,7 @@ namespace TDPdf
     //
     // Each command reuses the same pipeline its GUI equivalent runs - the merge
     // named-destination rewrite (BuildNamedDestMap / RewriteNamedDestLinks), the
-    // pre-save scrubs (NormalizeDocumentForSave + StripLinkAnnotationBorders),
+    // pre-save scrubs (PdfSaveNormalizer.Normalize + StripLinkAnnotationBorders),
     // the PDFium decrypt (PdfiumInterop.TryPdfiumRepair), the 150-DPI
     // rasterize (mirrors PdfDocumentService.SaveFlattenedAsync), and the OCR
     // text-layer builder (BuildSearchablePdf) - so CLI output is the kind of
@@ -40,7 +35,7 @@ namespace TDPdf
     //
     // Every method here is static and headless: it never constructs a Window or
     // touches UI state. Console output rides on AttachConsole (GUI-subsystem exe,
-    // see BatchMode.cs); lines can interleave with the shell prompt. Exit codes
+    // see MainWindow.BatchMode.cs); lines can interleave with the shell prompt. Exit codes
     // are the scripting contract: 0 = success, 1 = operation failed, 2 = bad usage.
     public partial class MainWindow
     {
@@ -69,7 +64,7 @@ namespace TDPdf
             exitCode = 0;
             if (args is null || args.Length == 0) return false;
 
-            // The validation resave keeps its dedicated runner in BatchMode.cs.
+            // The validation resave keeps its dedicated runner in MainWindow.BatchMode.cs.
             if (args.Any(a => Eq(a, "--batch-resave")))
                 return TryRunBatch(args, out exitCode);
 
@@ -267,12 +262,12 @@ namespace TDPdf
                     int pageOffset = outPdf.PageCount;
                     Dictionary<string, int> namedDestMap;
                     using (var srcRead = PdfReader.Open(f, PdfDocumentOpenMode.ReadOnly))
-                        namedDestMap = BuildNamedDestMap(srcRead);
+                        namedDestMap = PdfNamedDestinations.BuildMap(srcRead);
                     using var src = PdfReader.Open(f, PdfDocumentOpenMode.Import);
                     for (int i = 0; i < src.PageCount; i++)
                         outPdf.AddPage(src.Pages[i]);
                     if (namedDestMap.Count > 0)
-                        RewriteNamedDestLinks(outPdf, pageOffset, namedDestMap);
+                        PdfNamedDestinations.RewriteLinks(outPdf, pageOffset, namedDestMap);
                 }
                 else
                 {
@@ -280,7 +275,7 @@ namespace TDPdf
                 }
             }
 
-            NormalizeDocumentForSave(outPdf);
+            PdfSaveNormalizer.Normalize(outPdf);
             CliEnsureParentDir(outPath);
             outPdf.Save(outPath);
             con.WriteLine($"Merged {inputs.Count} files ({outPdf.PageCount} pages) -> {outPath}");
@@ -307,7 +302,7 @@ namespace TDPdf
             using var newDoc = new PdfDocument();
             foreach (var idx in indices)
                 newDoc.AddPage(importDoc.Pages[idx]);
-            NormalizeDocumentForSave(newDoc);
+            PdfSaveNormalizer.Normalize(newDoc);
             CliEnsureParentDir(outPath);
             newDoc.Save(outPath);
             con.WriteLine($"Extracted {indices.Count} pages -> {outPath}");
@@ -335,7 +330,7 @@ namespace TDPdf
             {
                 using var single = new PdfDocument();
                 single.AddPage(importDoc.Pages[i]);
-                NormalizeDocumentForSave(single);
+                PdfSaveNormalizer.Normalize(single);
                 single.Save(Path.Combine(outDir, $"{baseName}-page-{(i + 1).ToString().PadLeft(digits, '0')}.pdf"));
             }
             con.WriteLine($"Split {importDoc.PageCount} pages into {outDir}");
@@ -364,7 +359,7 @@ namespace TDPdf
             if (!string.IsNullOrEmpty(password))
             {
                 using var doc = PdfReader.Open(inPath, password!, PdfDocumentOpenMode.Modify);
-                NormalizeDocumentForSave(doc);
+                PdfSaveNormalizer.Normalize(doc);
                 doc.Save(outPath);
                 con.WriteLine($"Decrypted -> {outPath}");
                 return 0;
@@ -438,7 +433,7 @@ namespace TDPdf
         // ============================================================
         // --flatten <in.pdf> <out.pdf> [--dpi n]
         // ============================================================
-        // The headless twin of the GUI's Save Flattened: NormalizeDocumentForSave,
+        // The headless twin of the GUI's Save Flattened: PdfSaveNormalizer.Normalize,
         // then rasterize every page through Docnet/PDFium and rebuild a PNG-per-page
         // PDF sized in points - the same algorithm as PdfDocumentService.SaveFlattenedAsync
         // (150 dpi default), generalized here to honor --dpi.
@@ -468,7 +463,7 @@ namespace TDPdf
                 string norm = CliTempFile("cliflat");
                 using (var doc = PdfReader.Open(inPath, PdfDocumentOpenMode.Modify))
                 {
-                    NormalizeDocumentForSave(doc);
+                    PdfSaveNormalizer.Normalize(doc);
                     for (int i = 0; i < doc.PageCount; i++)
                         pageSizes.Add((doc.Pages[i].Width.Point, doc.Pages[i].Height.Point));
                     doc.Save(norm);
@@ -645,7 +640,7 @@ namespace TDPdf
         // ============================================================
         // --ocr <in.pdf> <out.pdf> [--lang code]
         // ============================================================
-        // Reuses the GUI's searchable-PDF core (BuildSearchablePdf in Ocr.cs):
+        // Reuses the GUI's searchable-PDF core (BuildSearchablePdf in MainWindow.Ocr.cs):
         // Docnet render, Tesseract per page, invisible text drawn over each word.
         // The GUI's model-download gate is dialog-driven, so the CLI has its own
         // silent equivalent honoring the OcrHighQuality setting.
@@ -689,9 +684,13 @@ namespace TDPdf
             if (File.Exists(dest)) return true;
 
             bool hq = TDPdf.Properties.Settings.Default.OcrHighQuality;
-            string url = (hq
-                ? "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/"
-                : "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/") + lang + ".traineddata";
+            // Only the languages with a pinned commit + SHA-256 (OcrModelCatalog) are downloaded.
+            string? url = OcrModelCatalog.UrlFor(lang, hq);
+            if (url is null)
+            {
+                con.WriteLine($"Language '{lang}' is not available for download. Supported: {string.Join(", ", OcrModelCatalog.Codes)}.");
+                return false;
+            }
             con.WriteLine($"Downloading OCR language '{lang}' ({(hq ? "high quality" : "standard")})...");
             try
             {
@@ -704,6 +703,11 @@ namespace TDPdf
                     using (var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
                     using (var f = File.Create(part))
                         await s.CopyToAsync(f).ConfigureAwait(false);
+                    if (!OcrModelCatalog.Verify(part, lang, hq))
+                    {
+                        try { File.Delete(part); } catch { /* best-effort */ }
+                        throw new InvalidDataException("the download failed its SHA-256 integrity check and was discarded");
+                    }
                     if (File.Exists(dest)) File.Delete(dest);
                     File.Move(part, dest);
                 }).GetAwaiter().GetResult();
@@ -732,7 +736,7 @@ namespace TDPdf
             if (!string.IsNullOrEmpty(password))
             {
                 using var pdoc = PdfReader.Open(inPath, password!, PdfDocumentOpenMode.Modify);
-                NormalizeDocumentForSave(pdoc);
+                PdfSaveNormalizer.Normalize(pdoc);
                 pdoc.Save(dec);
                 return dec;
             }

@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -38,13 +35,13 @@ namespace TDPdf
         private const int TransformPreviewPx = 1100;
         private const int TransformApplyPx   = 2200;
 
-        private void ToolTransform_Click(object sender, RoutedEventArgs e)
+        private async void ToolTransform_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null) { SetStatus("Open a PDF first."); return; }
-            OpenTransformWindow();
+            await OpenTransformWindow();
         }
 
-        private void OpenTransformWindow()
+        private async Task OpenTransformWindow()
         {
             if (_doc is null || _currentFile is null) return;
             // Transform bakes the live annotation layer into both its preview and the applied page
@@ -116,7 +113,7 @@ namespace TDPdf
                 return;
             }
 
-            ApplyPageTransform(indices, win.Angle, win.Scale, win.FixedPage, win.FlipH, win.FlipV,
+            await ApplyPageTransform(indices, win.Angle, win.Scale, win.FixedPage, win.FlipH, win.FlipV,
                 win.PerspectiveCorners, win.LevelBlack, win.LevelWhite, win.LevelGamma);
         }
 
@@ -132,7 +129,7 @@ namespace TDPdf
         // behind it. So phase one only RENDERS, into one-page temp PDFs, touching nothing; phase two
         // swaps them all in at once. Cancelling during phase one now leaves the document untouched,
         // and the undo snapshot is not pushed for a transform that never happened.
-        private async void ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
+        private async Task ApplyPageTransform(List<int> pageIndices, double angleDeg, double scale, bool fixedPage,
             bool flipH, bool flipV, Point[] perspectiveCorners,
             int levelBlack = 0, int levelWhite = 255, double levelGamma = 1.0)
         {
@@ -276,19 +273,9 @@ namespace TDPdf
             }
         }
 
-        // The page's visible size in points, honouring both a CropBox (a cropped page reports its real, smaller
-        // size) and /Rotate (a 90/270-rotated page has its width/height swapped when rendered by PDFium).
-        private static (double wpt, double hpt) VisiblePageSize(PdfPage page)
-        {
-            // GetVisiblePageBox (MainWindow.xaml.cs) is the one place that resolves a page's rendered
-            // box: CropBox-over-MediaBox, page-tree inheritance, and no create-on-read side effects.
-            // It reports the UNROTATED box, so the /Rotate swap below is applied exactly once — the
-            // old local helper read page.Width/Height, which PdfSharpCore already swaps for 90/270
-            // pages, so a rotated page with no CropBox got swapped twice and reported the wrong size.
-            var box = GetVisiblePageBox(page);
-            int rot = ((page.Rotate % 360) + 360) % 360;
-            return (rot == 90 || rot == 270) ? (box.Height, box.Width) : (box.Width, box.Height);
-        }
+        // The page's visible size in points: CropBox-over-MediaBox, page-tree inheritance, and the
+        // /Rotate quarter-turn swap, all in PdfPageGeometry.DisplaySize.
+        private static (double wpt, double hpt) VisiblePageSize(PdfPage page) => PdfPageGeometry.DisplaySize(page);
 
         // Saves the document with ALL rendered pages' annotations burned in, to a temp PDF, and returns its
         // path (null when nothing is pending — the caller then renders the normal source). Non-destructive:
@@ -386,7 +373,7 @@ namespace TDPdf
         /// #174: source-levels pass for rescuing pale scans. Remaps the input range [black..white] onto
         /// [0..255] through a midtone gamma, per RGB channel, leaving alpha alone. This is the only
         /// per-pixel stage in the transform pipeline; it follows the same CopyPixels -> mutate ->
-        /// WritePixels shape as the night-mode invert in DocInvert.cs. Identity settings (and anything
+        /// WritePixels shape as the night-mode invert in MainWindow.DocInvert.cs. Identity settings (and anything
         /// that would overflow a byte[]) return the source untouched.
         /// </summary>
         internal static BitmapSource ApplyLevels(BitmapSource src, int black, int white, double gamma)

@@ -1,1 +1,44 @@
 PdfSharpCore 1.3.67, vendored from https://github.com/ststeiger/PdfSharpCore commit d6ac8b092129a4f797365bbbf3eea2723d6c3ebd on 2026-07-17. Local patches are marked with: KillerPDF patch (inherited from upstream) or TDPdf patch (added here)
+
+
+Patches
+-------
+Every file modified or added relative to upstream commit d6ac8b092129a4f797365bbbf3eea2723d6c3ebd.
+Most carry a "TDPdf patch" / "KillerPDF patch" marker; a few (XTextFormatter, EncryptorBase,
+IEncryptor, PdfSecuritySettings, PdfProtection, IdentityEncryptor) use a plain "// TDPdf:" or none,
+so this list is the authoritative record. Keep it in step when a patch is added.
+
+Modified
+  PdfSharpCore.csproj                       net8.0 only (ImageSharp 4), Platforms AnyCPU;x64, InternalsVisibleTo TDPdf, no auto-pack, SixLabors.Fonts 3.x, vendored-warning NoWarn
+  Drawing/XGraphics.cs                      SetPdfBlendMode / SetPdfTextRenderMode pass-throughs to the PDF renderer (#200)
+  Drawing.Layout/XTextFormatter.cs          skip LineBreak blocks (null Text/Location crashed DrawString) and single-block justified lines (divide by zero)
+  Drawing.Pdf/XGraphicsPdfRenderer.cs       emit a /BM-only ExtGState and the Tr text rendering mode operator (#200; invisible-but-extractable OCR text)
+  Fonts.OpenType/GlyphDataTable.cs          re-encoded UTF-16 -> UTF-8; content identical to upstream
+  Fonts.OpenType/IndexToLocationTable.cs    re-encoded UTF-16 -> UTF-8; content identical to upstream
+  Fonts.OpenType/OpenTypeFontTables.cs      re-encoded UTF-16 -> UTF-8; content identical to upstream
+  Fonts.OpenType/OpenTypeFontface.cs        re-encoded UTF-16 -> UTF-8; content identical to upstream
+  Fonts.OpenType/TableDirectoryEntry.cs     re-encoded UTF-16 -> UTF-8; content identical to upstream
+  Pdf/PdfDocument.cs                        never rewrite an imported document's Info dictionary (PDF/A); record the encryption the file had when opened
+  Pdf/PdfPage.cs                            distinguish code-set from file-set orientation (#184); drop the unconditional /Group /Transparency
+  Pdf/PdfPages.cs                           depth/cycle/size guards (2.2.1.0)
+  Pdf/PdfOutline.cs                         depth/cycle/size guards (2.2.1.0)
+  Pdf.Advanced/PdfCIDFont.cs                re-encoded UTF-16 -> UTF-8; content identical to upstream
+  Pdf.Advanced/PdfExtGStateTable.cs         ExtGState carrying only /BM (#200)
+  Pdf.Filters/FlateDecode.cs                depth/cycle/size guards (2.2.1.0)
+  Pdf.IO/Parser.cs                          cross-reference stream default /Index covers max(/Size, entries in the data) (KillerPDF #406); depth/cycle/size guards (2.2.1.0)
+  Pdf.IO/PdfReader.cs                       open an encrypted file for modification with its password and remember the protection so a save restores it; no /ModDate stamp on open
+  Pdf.IO/PdfWriter.cs                       no Verbose layout in DEBUG; correct boolean literals; always an LF between stream data and endstream
+  Pdf.Security/EncryptorBase.cs             RecoveredUserPassword property (re-protect on save)
+  Pdf.Security/EncryptorFactory.cs          the named /Identity crypt filter means "not encrypted"
+  Pdf.Security/IEncryptor.cs                RecoveredUserPassword member
+  Pdf.Security/PdfSecuritySettings.cs       a preserved /O counts as protection when deciding whether to write /Encrypt
+  Pdf.Security/PdfStandardSecurityHandler.cs  preserved /O value, RecoveredUserPassword, /EncryptMetadata false handling
+  Pdf.Security/RC4Encryptor.cs              recover the user password from /O once the owner password validates (R2-R4)
+  Utils/ImageSharpImageSource.cs            ImageSharp 4 API (decoded format via Image.Metadata)
+
+Added
+  LICENSE.md                                upstream licence text, kept beside the code
+  VENDORED.txt                              this file
+  sixlabors.lic                             TDPdf's Six Labors community licence (assemblies TDPdf, PdfSharpCore, PdfCore.Tests; expires 2028-01-14)
+  Pdf.Security/IdentityEncryptor.cs         pass-through encryptor for the /Identity crypt filter
+  Pdf.Security/PdfProtection.cs             captures the encryption a file had when opened and writes it back on save

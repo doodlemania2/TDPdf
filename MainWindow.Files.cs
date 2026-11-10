@@ -2,23 +2,14 @@
 // Open / save / save-as / save-flattened / merge / split and the toolbar buttons that
 // drive them. Both regions extracted verbatim from MainWindow.xaml.cs, in source order.
 
-using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Runtime.ExceptionServices;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 using Docnet.Core;
 using Docnet.Core.Models;
 using TDPdf.Diagnostics;
@@ -27,7 +18,6 @@ using Microsoft.Win32;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
-using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
 {
@@ -698,8 +688,7 @@ namespace TDPdf
                         // form overlays (RenderFormFields) exist only on _annotationCanvas, so
                         // this surface has nothing to draw the values with. Hiding the widgets
                         // would blank every filled field instead of un-ghosting it.
-                        var rawBytes = TDPdf.Services.PdfiumInterop.RenderPageWithAnnotations(currentFile, i, w, h)
-                                       ?? pageReader.GetImage();
+                        var rawBytes = PageRaster.RenderBgra(pageReader, currentFile, i, w, h);
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
                         // Measured here rather than on the UI thread below, so the parse never
                         // stalls the tile pass.
@@ -730,8 +719,8 @@ namespace TDPdf
                 // the plain full-page flip). The buffer is ours and is about to become a throwaway
                 // display bitmap, so flip it in place — nothing else ever sees these bytes.
                 if (_docInvert) InvertBgraInPlaceExcept(rawBytes, w, h, keep);
-                var bitmap = new WriteableBitmap(w, h, 96.0 * dpiScaleX, 96.0 * dpiScaleY, PixelFormats.Bgra32, null);
-                bitmap.WritePixels(new Int32Rect(0, 0, w, h), rawBytes, w * 4, 0);
+                var bitmap = PageRaster.ToFrozenBitmap(rawBytes, w, h, 96.0 * dpiScaleX, 96.0 * dpiScaleY);
+                if (bitmap is null) continue;
 
                 var img = new Image { Source = bitmap, Stretch = Stretch.None };
                 RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
@@ -774,7 +763,7 @@ namespace TDPdf
         // layout pass. While a hold is live, plain SetStatus calls are dropped; the hold refreshes
         // on every wheel notch and expires on its own, after which normal statuses flow again.
         // The hold is short and covers only that stomp — the readout's own five-second lifetime is
-        // ShowScaleReadout's job (AppScale.cs). Put here rather than at the ~200 SetStatus callers
+        // ShowScaleReadout's job (MainWindow.AppScale.cs). Put here rather than at the ~200 SetStatus callers
         // because SetBusy / SetFileOperationBusy / SetWorkerStatus all funnel through this line.
         private DateTime _statusHoldUntil = DateTime.MinValue;
 
@@ -796,7 +785,7 @@ namespace TDPdf
 
         // ---- Transient status readouts -------------------------------------------------------
         // One snapshot / hold / restore for every "flash something on the status line, then put back
-        // what was there" caller: the app-scale readout (AppScale.cs) and the #status-line file size
+        // what was there" caller: the app-scale readout (MainWindow.AppScale.cs) and the #status-line file size
         // below. Whatever was showing before the FIRST flash of a burst is snapshotted and put back,
         // but only if the readout is still the text on screen — so a real status written after the
         // hold lapsed is never replaced by a stale one. The restore assigns StatusText directly
@@ -867,7 +856,7 @@ namespace TDPdf
         // is a number you want sitting in the corner of your eye while you lay a page out. The
         // click gesture on StatusText is untouched.
         //
-        // Like everything else down there it lives in the UNSCALED footer — AppScale.cs leaves the
+        // Like everything else down there it lives in the UNSCALED footer — MainWindow.AppScale.cs leaves the
         // title bar and status bar alone on purpose, so the chip holds still under the cursor while
         // it is being clicked through the units — and it never touches the document, so no dirty
         // flag is involved.
@@ -1020,7 +1009,7 @@ namespace TDPdf
         {
             Telemetry.TrackEvent("File.Open");
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Open PDF", Multiselect = true };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             // OpenFileAsync (inside OpenInTabAsync) already handles the common failure cases itself
             // (bad file, wrong password) with its own dialog and keeps going. But OpenInTabAsync's
@@ -1052,7 +1041,7 @@ namespace TDPdf
             Telemetry.TrackEvent("File.Merge");
             if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Select PDF to merge", Multiselect = true };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
             // RunPageOperation commits the active text box and rolls back a partial merge.
             RunPageOperation("Merge", () =>
             {
@@ -1079,7 +1068,7 @@ namespace TDPdf
 
             // Open twice: Import mode for AddPage, ReadOnly for catalog access.
             using var srcRead = PdfReader.Open(file, PdfDocumentOpenMode.ReadOnly);
-            var namedDestMap = BuildNamedDestMap(srcRead);
+            var namedDestMap = PdfNamedDestinations.BuildMap(srcRead);
 
             using var src = PdfReader.Open(file, PdfDocumentOpenMode.Import);
             for (int i = 0; i < src.PageCount; i++)
@@ -1088,182 +1077,7 @@ namespace TDPdf
             // Rewrite named-destination links in the newly added pages so they
             // resolve correctly after the catalog is not imported.
             if (namedDestMap.Count > 0)
-                RewriteNamedDestLinks(doc, pageOffset, namedDestMap);
-        }
-
-        /// <summary>
-        /// Builds a map of named destination string → 0-based page index from a source document's
-        /// /Dests dictionary and /Names /Dests name tree.
-        /// </summary>
-        private static Dictionary<string, int> BuildNamedDestMap(PdfDocument src)
-        {
-            var map = new Dictionary<string, int>(StringComparer.Ordinal);
-            try
-            {
-                var catalog = src.Internals.Catalog;
-
-                // Legacy flat /Dests dictionary
-                var destsDict = catalog.Elements.GetDictionary("/Dests");
-                if (destsDict != null)
-                {
-                    foreach (var key in destsDict.Elements.Keys)
-                    {
-                        PdfItem? val = DerefItem(destsDict.Elements[key] ?? new PdfInteger(-1));
-                        int? idx = ResolveDestPageIndexInDoc(src, val);
-                        if (idx.HasValue) map[key.TrimStart('/')] = idx.Value;
-                    }
-                }
-
-                // Modern /Names /Dests name tree
-                var namesDict = catalog.Elements.GetDictionary("/Names");
-                var destTree  = namesDict?.Elements.GetDictionary("/Dests");
-                if (destTree != null)
-                    WalkNameTree(src, destTree, map);
-            }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"BuildNamedDestMap: {ex}"); }
-            return map;
-        }
-
-        private static void WalkNameTree(PdfDocument src, PdfDictionary node, Dictionary<string, int> map)
-        {
-            var namesArr = node.Elements.GetArray("/Names");
-            if (namesArr != null)
-            {
-                for (int i = 0; i + 1 < namesArr.Elements.Count; i += 2)
-                {
-                    var keyItem = namesArr.Elements[i];
-                    string key  = keyItem is PdfString ks ? ks.Value : keyItem?.ToString()?.TrimStart('/') ?? "";
-                    if (string.IsNullOrEmpty(key)) continue;
-                    PdfItem? val = DerefItem(namesArr.Elements[i + 1]);
-                    int? idx = ResolveDestPageIndexInDoc(src, val);
-                    if (idx.HasValue) map[key] = idx.Value;
-                }
-            }
-
-            var kids = node.Elements.GetArray("/Kids");
-            if (kids != null)
-            {
-                for (int i = 0; i < kids.Elements.Count; i++)
-                {
-                    if (DerefItem(kids.Elements[i]) is PdfDictionary kid)
-                        WalkNameTree(src, kid, map);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Resolves a destination value (PdfArray or PdfDictionary with /D) to a page index
-        /// within the given source document by matching the page object number.
-        /// </summary>
-        private static int? ResolveDestPageIndexInDoc(PdfDocument src, PdfItem? val)
-        {
-            PdfArray? arr = val as PdfArray;
-            if (arr is null && val is PdfDictionary vd)
-                arr = vd.Elements.GetArray("/D");
-            if (arr is null || arr.Elements.Count == 0) return null;
-
-            var first = arr.Elements[0];
-            int objNum = GetObjectNumber(first);
-            if (objNum > 0)
-            {
-                for (int i = 0; i < src.PageCount; i++)
-                {
-                    var pgRef = src.Pages[i].Reference;
-                    if (pgRef != null && pgRef.ObjectNumber == objNum) return i;
-                }
-            }
-            else if (first is PdfInteger pi && pi.Value >= 0 && pi.Value < src.PageCount)
-            {
-                return pi.Value;
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Walks all link annotations in pages [pageOffset, doc.PageCount) and rewrites any
-        /// named-destination /D values to explicit [pageRef /Fit] arrays using the merged
-        /// document's page references. This is needed because PdfSharpCore's import does not
-        /// copy the source document's /Names /Dests catalog entries.
-        /// </summary>
-        private static void RewriteNamedDestLinks(PdfDocument doc, int pageOffset,
-            Dictionary<string, int> namedDestMap)
-        {
-            for (int pi = pageOffset; pi < doc.PageCount; pi++)
-            {
-                try
-                {
-                    var page    = doc.Pages[pi];
-                    var annotsArr = page.Elements.GetArray("/Annots");
-                    if (annotsArr is null) continue;
-
-                    for (int ai = 0; ai < annotsArr.Elements.Count; ai++)
-                    {
-                        PdfItem? elem = annotsArr.Elements[ai];
-                        PdfDictionary? ann = elem as PdfDictionary
-                            ?? (DerefItemStatic(elem) as PdfDictionary);
-                        if (ann is null) continue;
-
-                        var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
-                        if (!subtype.Contains("Link")) continue;
-
-                        // Check /A /D (GoTo action)
-                        var actionDict = ann.Elements.GetDictionary("/A");
-                        if (actionDict != null)
-                        {
-                            var s = actionDict.Elements["/S"]?.ToString() ?? "";
-                            if (s.Contains("GoTo"))
-                            {
-                                var destItem = actionDict.Elements["/D"];
-                                string? name = ExtractDestName(destItem);
-                                if (name != null && namedDestMap.TryGetValue(name, out int srcIdx))
-                                {
-                                    int targetIdx = pageOffset + srcIdx;
-                                    if (targetIdx < doc.PageCount)
-                                        actionDict.Elements["/D"] = MakeExplicitDest(doc, targetIdx);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // Bare /Dest on annotation
-                            var destItem = ann.Elements["/Dest"];
-                            string? name = ExtractDestName(destItem);
-                            if (name != null && namedDestMap.TryGetValue(name, out int srcIdx))
-                            {
-                                int targetIdx = pageOffset + srcIdx;
-                                if (targetIdx < doc.PageCount)
-                                    ann.Elements["/Dest"] = MakeExplicitDest(doc, targetIdx);
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RewriteNamedDestLinks p{pi}: {ex}"); }
-            }
-        }
-
-        private static string? ExtractDestName(PdfItem? item)
-        {
-            if (item is null) return null;
-            if (item is PdfString ps) return ps.Value;
-            if (item is PdfName   pn) return pn.Value.TrimStart('/');
-            return null;
-        }
-
-        private static PdfArray MakeExplicitDest(PdfDocument doc, int pageIndex)
-        {
-            var arr = new PdfArray(doc);
-            arr.Elements.Add(doc.Pages[pageIndex].Reference);
-            arr.Elements.Add(new PdfName("/Fit"));
-            return arr;
-        }
-
-        // Static version of DerefItem for use in static helpers.
-        private static PdfItem DerefItemStatic(PdfItem item)
-        {
-            var valueProp = item.GetType().GetProperty("Value",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (valueProp?.GetValue(item) is PdfObject resolved) return resolved;
-            return item;
+                PdfNamedDestinations.RewriteLinks(doc, pageOffset, namedDestMap);
         }
 
         private void Split_Click(object sender, RoutedEventArgs e)
@@ -1921,126 +1735,8 @@ namespace TDPdf
             await SaveInPlaceAsync();
         }
 
-        // Pre-save document normalization (ports upstream KillerPDF v1.6.3/v1.6.4 conformance
-        // fixes). Every TDPdf save fully rewrites the file through PdfSharpCore, so we scrub three
-        // classes of structural corruption immediately before writing. All three are semantic
-        // no-ops on healthy documents and also HEAL files damaged by other tools/older builds when
-        // re-saved. Called on the UI thread before dispatching any doc.Save(...).
-        private static void NormalizeDocumentForSave(PdfDocument doc)
-        {
-            ScrubEmptyOutlines(doc);         // #103: never write a dangling /Outlines reference
-            ScrubDegeneratePageBoxes(doc);   // never write a zero-size /CropBox or /MediaBox (Adobe out-of-range)
-            ScrubDeadSignatures(doc);        // a rewrite voids signatures; never ship a dead one (PDF/A 6.4.3)
-        }
-
-        private static double RectNum(PdfItem item) =>
-            item is PdfReal r ? r.Value : item is PdfInteger n ? n.Value : 0;
-
-        // #103 (upstream v1.6.3): PdfSharpCore's writer can emit the catalog's /Outlines reference
-        // without ever writing the (empty, lazily created) outlines object itself - a dangling xref
-        // entry that strict parsers, including PdfSharpCore on reopen, refuse. An outlines dictionary
-        // with no /First contains no bookmarks, so dropping the entry is a semantic no-op that keeps
-        // the file consistent. Real bookmark trees (/First present) are left untouched.
-        private static void ScrubEmptyOutlines(PdfDocument doc)
-        {
-            try
-            {
-                var cat = doc.Internals.Catalog;
-                var item = cat.Elements["/Outlines"];
-                if (item is null) return;
-                if (DerefItemStatic(item) is not PdfDictionary o || o.Elements["/First"] is null)
-                    cat.Elements.Remove("/Outlines");
-            }
-            catch { /* malformed catalog - leave the save as-is */ }
-        }
-
-        // Upstream v1.6.3 (/CropBox), extended here to /MediaBox: PdfSharpCore's PdfPage.MediaBox and
-        // .CropBox property GETTERS have create-on-read semantics, so touching page.CropBox - or
-        // page.Width/page.Height, which read MediaBox - on a page that carries no such entry plants an
-        // empty [0 0 0 0] box into the page dictionary. A zero-size page box saves to disk and Adobe
-        // then rejects the page as "dimensions out-of-range" (Chrome falls back to another box, which is
-        // why such files still open there). Both boxes are INHERITABLE page attributes, so the pages
-        // that get one planted are exactly the ones whose real box lives on an ancestor /Pages node.
-        //
-        // /CropBox: dropping a degenerate one is a semantic no-op - the page falls back to its MediaBox.
-        // /MediaBox: every page needs one, so drop the degenerate entry and re-plant the box the page
-        // tree really specifies; only when nothing usable is inheritable do we leave it absent, which at
-        // least renders (viewers substitute a default page size) where a zero-size box does not.
-        // Both HEAL files damaged by other tools or older builds when re-saved; real boxes are untouched.
-        private static void ScrubDegeneratePageBoxes(PdfDocument doc)
-        {
-            try
-            {
-                for (int i = 0; i < doc.PageCount; i++)
-                {
-                    var page = doc.Pages[i];
-                    var elements = page.Elements;
-
-                    if (IsDegenerateBox(elements["/CropBox"]))
-                        elements.Remove("/CropBox");
-
-                    if (IsDegenerateBox(elements["/MediaBox"]))
-                    {
-                        elements.Remove("/MediaBox");
-                        // With the bad entry gone, ask the page tree what this page's box actually is.
-                        // Re-planting it explicitly keeps the page valid no matter how the writer treats
-                        // the inherited attribute, and is identical in meaning to inheriting it.
-                        if (PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } box)
-                            elements.SetRectangle("/MediaBox",
-                                new PdfRectangle(new XPoint(box.X, box.Y), new XPoint(box.Right, box.Top)));
-                    }
-
-                    // Upstream v1.7.1 (#169): PDF 32000-1 14.11.2 requires /CropBox to lie INSIDE
-                    // /MediaBox. A rotated page could be written with a portrait media box and a
-                    // landscape crop box, a malformed combination that strict validators reject and
-                    // that leaves renderers disagreeing about the page size. Removing the invalid crop
-                    // is lossless: the page falls back to its complete media box rather than clipping
-                    // content away. Done AFTER the media-box healing above so the comparison is against
-                    // a box that is actually usable, and skipped entirely when it is not — a bad media
-                    // box must never be a reason to delete a good crop box.
-                    const double outsideTol = 0.01;
-                    if (ReadOwnPageBox(elements["/CropBox"]) is { } crop &&
-                        PdfPageGeometry.ReadInheritedPageBox(page, "/MediaBox") is { Width: > 1, Height: > 1 } media &&
-                        (crop.X     < media.X     - outsideTol || crop.Y   < media.Y   - outsideTol ||
-                         crop.Right > media.Right + outsideTol || crop.Top > media.Top + outsideTol))
-                        elements.Remove("/CropBox");
-                }
-            }
-            catch { /* malformed page tree - leave the save as-is */ }
-        }
-
-        // Reads a page's OWN /MediaBox or /CropBox entry — no /Parent walk — as a normalized PageBox,
-        // or null when the entry is absent or cannot be interpreted with certainty. Deliberately
-        // stricter than ReadInheritedPageBox, which reads for geometry: this one feeds the DESTRUCTIVE
-        // scrub decisions above, so anything ambiguous reads as null and is then left alone rather than
-        // deleted. The box can be a parsed PdfArray (loaded from disk), a PdfRectangle (planted in
-        // memory by the lazy getter or by GetRectangle writing its conversion back), or an indirect
-        // reference to either.
-        private static PdfPageGeometry.PageBox? ReadOwnPageBox(PdfItem? item)
-        {
-            if (item is null) return null;
-            if (item is not PdfArray and not PdfRectangle) item = DerefItemStatic(item);
-
-            if (item is PdfRectangle rect)
-                return Normalize(rect.X1, rect.Y1, rect.X2, rect.Y2);
-            if (item is PdfArray arr && arr.Elements.Count == 4 &&
-                arr.Elements[0] is PdfReal or PdfInteger && arr.Elements[1] is PdfReal or PdfInteger &&
-                arr.Elements[2] is PdfReal or PdfInteger && arr.Elements[3] is PdfReal or PdfInteger)
-                return Normalize(RectNum(arr.Elements[0]), RectNum(arr.Elements[1]),
-                                 RectNum(arr.Elements[2]), RectNum(arr.Elements[3]));
-            return null;
-
-            static PdfPageGeometry.PageBox Normalize(double x1, double y1, double x2, double y2) =>
-                new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1), Math.Abs(y2 - y1));
-        }
-
-        // True when the entry is present, readable as a rectangle, and zero/sub-point sized. Anything we
-        // cannot interpret returns false so it is left alone rather than destroyed.
-        private static bool IsDegenerateBox(PdfItem? item) =>
-            ReadOwnPageBox(item) is { } box && (box.Width < 1 || box.Height < 1);
-
         /// <summary>
-        /// <see cref="NormalizeDocumentForSave"/> on the LIVE document, for the tools that hand it to
+        /// <see cref="PdfSaveNormalizer.Normalize"/> on the LIVE document, for the tools that hand it to
         /// an external pass (Redact, in-place text edit). The normalization strips any digital
         /// signature, so record that the file on disk still has one for the save warning.
         /// </summary>
@@ -2050,28 +1746,7 @@ namespace TDPdf
             if (TDPdf.Services.PdfSignatureScan.SignedFields(_doc).Count > 0
                 || TDPdf.Services.PdfSignatureScan.HasUsageRights(_doc))
                 _ctx.SignatureStrippedSinceSave = true;
-            NormalizeDocumentForSave(_doc);
-        }
-
-        // Upstream v1.6.4: a TDPdf save fully REWRITES the file, which mathematically invalidates any
-        // existing digital signature: its /ByteRange and digest describe the old bytes (ISO 19005-2,
-        // 6.4.3 requires the digest to cover the entire file). Carrying the dead signature forward
-        // misleads viewers and fails PDF/A validation, so strip signature VALUES (/V) from signature
-        // fields and the catalog's /Perms certification (DocMDP / usage rights) that references them.
-        // The empty fields stay and can be re-signed.
-        private static void ScrubDeadSignatures(PdfDocument doc)
-        {
-            try
-            {
-                doc.Internals.Catalog.Elements.Remove("/Perms");
-                // Same walk the warning counts with (PdfSignatureScan). Sharing it is the point:
-                // when these were two walks, the warning could go stale the first time one learned
-                // about a field shape the other did not — and the failure mode is staying silent
-                // while still removing the signature.
-                foreach (var field in TDPdf.Services.PdfSignatureScan.SignedFields(doc))
-                    field.Elements.Remove("/V");
-            }
-            catch { /* malformed catalog - leave the save as-is */ }
+            PdfSaveNormalizer.Normalize(_doc);
         }
 
         /// <summary>
@@ -2079,7 +1754,7 @@ namespace TDPdf
         /// </summary>
         /// <remarks>
         /// A TDPdf save rewrites the entire file, so any signature in it no longer covers the bytes
-        /// it was made over. <see cref="ScrubDeadSignatures"/> removes it rather than writing one
+        /// it was made over. <see cref="PdfSaveNormalizer.ScrubDeadSignatures"/> removes it rather than writing one
         /// that fails validation, which is the right call — a broken signature reads as tampering,
         /// where an unsigned document merely reads as unsigned.
         ///
@@ -2173,7 +1848,7 @@ namespace TDPdf
                         "Overwrite", "Save As...", "Cancel",
                         "File Changed on Disk", MessageBoxImage.Warning, defaultToCancel: true);
                     if (answer == MessageBoxResult.Yes) return true;
-                    if (answer == MessageBoxResult.No) SaveAs_Click(this, new RoutedEventArgs());
+                    if (answer == MessageBoxResult.No) await SaveAsCore(removingPassword: false);
                     return false;
                 }
                 case FileChangeState.Missing:
@@ -2183,12 +1858,38 @@ namespace TDPdf
                         "Save the document somewhere else?",
                         "Save As...", "Cancel",
                         "File Not Found", MessageBoxImage.Warning);
-                    if (answer == MessageBoxResult.Yes) SaveAs_Click(this, new RoutedEventArgs());
+                    if (answer == MessageBoxResult.Yes) await SaveAsCore(removingPassword: false);
                     return false;
                 }
                 default:
                     return true;
             }
+        }
+
+        /// <summary>
+        /// Before a save in place that would remove or weaken the file's password protection (an
+        /// AES-256 file opened with its owner password is written back with no password; one opened
+        /// with the user password becomes 128-bit RC4): say exactly what will happen and let the
+        /// user save anyway, save elsewhere, or cancel. Asked once per document session. Returns
+        /// true to go ahead. "Save As" starts Save As and returns false.
+        /// </summary>
+        private bool ConfirmProtectionChange(string targetFile)
+        {
+            var impact = ProtectedSave.Assess(_ctx.WasProtected, _ctx.Protection);
+            if (impact == ProtectedSave.Impact.None || _ctx.ProtectionChangeAccepted) return true;
+
+            var answer = TdpDialog.ShowYesNoCancel(this,
+                ProtectedSave.ImpactMessage(impact, System.IO.Path.GetFileName(targetFile), _ctx.Protection),
+                "Save Anyway", "Save As...", "Cancel",
+                impact == ProtectedSave.Impact.Removed ? "Password Protection Will Be Removed" : "Encryption Will Be Weakened",
+                MessageBoxImage.Warning, defaultToCancel: true);
+            if (answer == MessageBoxResult.Yes)
+            {
+                _ctx.ProtectionChangeAccepted = true;
+                return true;
+            }
+            if (answer == MessageBoxResult.No) SaveAs_Click(this, new RoutedEventArgs());
+            return false;
         }
 
         /// <summary>
@@ -2208,6 +1909,7 @@ namespace TDPdf
             // before getting here; the fallback keeps this method total.
             string targetFile = _ctx.OriginalPath ?? _currentFile;
             if (!await ConfirmSaveOverOutsideChangesAsync(targetFile)) return;
+            if (!removingPassword && !ConfirmProtectionChange(targetFile)) return;
             string status = "";
 
             // The unit of work retried by RunSaveWithRecoveryAsync. Reads _doc fresh each call so a
@@ -2216,7 +1918,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
-                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
+                PdfSaveNormalizer.Normalize(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 // The user's own file keeps its password unless they asked to remove it (ProtectedSave).
@@ -2225,8 +1927,7 @@ namespace TDPdf
 
                 if (hasAnnotations)
                 {
-                    var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                        $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                    var tempClean = NewTempPath("clean");
                     await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
                     DrawAnnotationsOnDocument();
                     ExceptionDispatchInfo? saveError = null;
@@ -2305,7 +2006,7 @@ namespace TDPdf
         // does NOT re-apply the protection ordinary saves now keep (ProtectedSave); what the
         // command adds is the explicit, named way to ask for that (and the confirmation, because it
         // rewrites the user's file irreversibly). Routed through SaveInPlaceAsync so it gets the
-        // same NormalizeDocumentForSave scrubs and #106 repair retry as every other save.
+        // same PdfSaveNormalizer.Normalize scrubs and #106 repair retry as every other save.
         private async void RemovePassword_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
@@ -2317,7 +2018,7 @@ namespace TDPdf
             }
             // No on-disk home to write back over (merged / imported / raster-recovered): the user
             // has to say where the unprotected copy goes.
-            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { SaveAsCore(removingPassword: true); return; }
+            if (_ctx.IsUntitled || string.IsNullOrEmpty(_ctx.OriginalPath)) { await SaveAsCore(removingPassword: true); return; }
 
             var res = TdpDialog.Show(this,
                 $"Save \"{System.IO.Path.GetFileName(_ctx.OriginalPath)}\" without its password protection?\n\n" +
@@ -2366,11 +2067,11 @@ namespace TDPdf
             }
         }
 
-        private void SaveAs_Click(object sender, RoutedEventArgs e) => SaveAsCore(removingPassword: false);
+        private async void SaveAs_Click(object sender, RoutedEventArgs e) => await SaveAsCore(removingPassword: false);
 
         // removingPassword: File > Remove Password on a tab with no file of its own to overwrite
         // asks for a copy WITHOUT the password; an ordinary Save As keeps it.
-        private async void SaveAsCore(bool removingPassword)
+        private async Task SaveAsCore(bool removingPassword)
         {
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
@@ -2399,7 +2100,7 @@ namespace TDPdf
             async Task DoSaveAsync()
             {
                 var doc = _doc!;
-                NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
+                PdfSaveNormalizer.Normalize(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                 bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
 
                 // The user's own file keeps its password unless they asked to remove it (ProtectedSave).
@@ -2408,8 +2109,7 @@ namespace TDPdf
 
                 if (hasAnnotations)
                 {
-                    var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                        $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                    var tempClean = NewTempPath("clean");
                     await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
                     DrawAnnotationsOnDocument();
                     ExceptionDispatchInfo? saveError = null;
@@ -2513,25 +2213,25 @@ namespace TDPdf
             {
                 var doc = _doc!;
                 // Flatten writes a NEW file and leaves this tab's document where it was, but
-                // NormalizeDocumentForSave works on the live document: it strips any digital
+                // PdfSaveNormalizer.Normalize works on the live document: it strips any digital
                 // signature from it. Without the snapshot, the tab was left holding a signature-less
                 // copy of a still-signed original, not dirty, with the "Digitally signed" indicator
                 // cleared — so the next Ctrl+S silently overwrote the signed file, and the
                 // save-over-signature warning could not fire because nothing looked signed any more.
                 // Snapshot first, restore in the finally (a retry from RunSaveWithRecoveryAsync must
                 // never start from an already-stripped document).
-                var tempPristine = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_pristine_{Guid.NewGuid():N}.pdf");
+                var tempPristine = NewTempPath("pristine");
                 await _pdfDocumentService.SaveAsync(() => doc.Save(tempPristine), CancellationToken.None);
                 try
                 {
-                    NormalizeDocumentForSave(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
+                    PdfSaveNormalizer.Normalize(doc);   // strip dangling /Outlines, zero-size /CropBox, dead signatures
                     var pageSizes = GetPageSizes(doc);
                     string sourcePath;
                     bool hasAnnotations = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
                     if (hasAnnotations)
                     {
-                        var tempClean = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
-                        var tempBurned = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_burned_{Guid.NewGuid():N}.pdf");
+                        var tempClean = NewTempPath("clean");
+                        var tempBurned = NewTempPath("burned");
                         await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
                         DrawAnnotationsOnDocument();
                         ExceptionDispatchInfo? saveError = null;
@@ -2550,7 +2250,7 @@ namespace TDPdf
                     }
                     else
                     {
-                        var temp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_src_{Guid.NewGuid():N}.pdf");
+                        var temp = NewTempPath("src");
                         await _pdfDocumentService.SaveAsync(() => doc.Save(temp), CancellationToken.None);
                         sourcePath = temp;
                     }
@@ -2614,7 +2314,7 @@ namespace TDPdf
                 Title = "Export Tables to CSV",
                 FileName = baseName + ".csv"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             using var op = Telemetry.StartOperation("ExportTablesCsv");
             SetFileOperationBusy(true, "Exporting tables...");
@@ -2761,19 +2461,19 @@ namespace TDPdf
 
                 if (hasAnnotations)
                 {
-                    string cleanPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_clean_{Guid.NewGuid():N}.pdf");
+                    string cleanPath = NewTempPath("clean");
                     _doc.Save(cleanPath);
                     restorePath = cleanPath;
 
                     DrawAnnotationsOnDocument();
-                    printablePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
+                    printablePath = NewTempPath("print");
                     _doc.Save(printablePath);
                 }
                 else
                 {
                     // No annotations: save a throwaway printable copy so the preview
                     // window never reads the live file out from under us.
-                    string tempPrint = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_print_{Guid.NewGuid():N}.pdf");
+                    string tempPrint = NewTempPath("print");
                     try { _doc.Save(tempPrint); printablePath = tempPrint; }
                     catch
                     {
@@ -2865,5 +2565,547 @@ namespace TDPdf
             _currentFile = reopenedPath;
             previous?.Close();
         }
+
+        // ============================================================
+        // Drag/drop: folders, .zip archives, images, and multi-file drops
+        // ============================================================
+        // Entry point for any file/folder/archive drop. Expands dropped folders (recursively)
+        // and .zip archives, then opens the collected PDFs/images — asking merge-vs-separate
+        // when there is more than one.
+
+        private static readonly string[] DropImageExt = { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff" };
+        private static bool IsPdfPath(string p)      => p.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+        private static bool IsImagePath(string p)    => DropImageExt.Any(ext => p.EndsWith(ext, StringComparison.OrdinalIgnoreCase));
+        private static bool IsOpenablePath(string p) => IsPdfPath(p) || IsImagePath(p);
+
+        private async Task OnPathsDropped(string[] paths)
+        {
+            var found    = new List<string>();
+            var tempDirs = new List<string>();   // extracted-zip temp dirs we may need to clean up
+            bool expanded = false;               // a folder or archive was expanded
+            try
+            {
+                foreach (var p in paths)
+                {
+                    if (Directory.Exists(p)) { expanded = true; CollectOpenable(p, found); }
+                    else if (p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string? zipRefusal = ZipLimits.Refusal(p);
+                        if (zipRefusal != null)
+                        {
+                            TdpDialog.Show(this, $"\"{System.IO.Path.GetFileName(p)}\" was not opened because {zipRefusal}.",
+                                "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                            continue;
+                        }
+                        var dir = ExtractZipToTemp(p);
+                        if (dir != null) { expanded = true; tempDirs.Add(dir); CollectOpenable(dir, found); }
+                    }
+                    else if (IsOpenablePath(p)) found.Add(p);
+                }
+            }
+            catch (Exception ex)
+            {
+                CleanupDirs(tempDirs);
+                TdpDialog.Show(this, $"Could not read the dropped items:\n{ex.Message}",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            if (found.Count == 0)
+            {
+                CleanupDirs(tempDirs);
+                SetStatus("Nothing to open. Drop PDFs, images, folders, or .zip archives");
+                return;
+            }
+
+            // Guard against a folder/archive holding a huge number of files: opening or merging them
+            // all could exhaust memory. Cap to a sane maximum, opening only the first N (name-sorted).
+            const int MaxDropFiles = 50;
+            if (found.Count > MaxDropFiles)
+            {
+                int total = found.Count;
+                var proceed = TdpDialog.Show(this,
+                    $"The drop contains {total} openable files. Open only the first {MaxDropFiles} (sorted by name)?",
+                    "TDPdf", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                if (proceed != MessageBoxResult.OK) { CleanupDirs(tempDirs); SetStatus("Drop cancelled"); return; }
+                found.Sort(StringComparer.OrdinalIgnoreCase);
+                found = found.GetRange(0, MaxDropFiles);
+                SetStatus($"Opening the first {MaxDropFiles} of {total} dropped files");
+            }
+
+            // A single dropped file (no folder/zip expansion) opens directly, preserving today's
+            // single-PDF-drop behavior.
+            if (!expanded && found.Count == 1) { await OpenDroppedAsync(found[0]); return; }
+
+            var choice = TdpDialog.Show(this,
+                $"Open {found.Count} items?\n\nYes = merge them into one PDF\nNo = open each in its own tab",
+                "TDPdf", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+            if (choice == MessageBoxResult.Yes)
+                await OpenMergedAsync(found, tempDirs);       // async: builds on a background thread, then owns temp cleanup
+            else if (choice == MessageBoxResult.No)
+                await OpenSeparatelyAsync(found, tempDirs);   // keep temp for the session; opened docs may reference extracted files
+            else
+                CleanupDirs(tempDirs);                        // cancelled
+        }
+
+        private async Task OpenDroppedAsync(string path)
+        {
+            if (IsPdfPath(path)) await OpenInTabAsync(path);
+            else await OpenImagesAsImportedTabAsync(new[] { path }, System.IO.Path.GetFileName(path));
+        }
+
+        private async Task OpenSeparatelyAsync(List<string> found, List<string> tempDirs)
+        {
+            // Same reasoning as Open_Click: OpenInTabAsync's own bookkeeping has no try/catch of its
+            // own, so one bad item in the drop used to be able to abort every item after it with no
+            // indication why fewer tabs than expected showed up.
+            int failed = 0;
+            foreach (var f in found)
+            {
+                try
+                {
+                    if (IsPdfPath(f))
+                    {
+                        await OpenInTabAsync(f);
+                        // A PDF that came out of a dropped .zip lives in an extraction folder TDPdf made
+                        // under %TEMP% and that the OS eventually clears — a working file, not the user's
+                        // document, so it must never be an in-place save target. Dropping OriginalPath
+                        // routes Ctrl+S to Save As. Files dropped directly keep their real path and save
+                        // normally, including the ones a user genuinely keeps under %TEMP%.
+                        if (IsUnderAnyDirectory(f, tempDirs) && _doc is not null &&
+                            string.Equals(_currentFile, f, StringComparison.OrdinalIgnoreCase))
+                            _ctx.OriginalPath = null;
+                    }
+                    else await OpenImagesAsImportedTabAsync(new[] { f }, System.IO.Path.GetFileName(f));
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    Telemetry.TrackCrash(ex, "Open.DroppedSeparately", recoverable: true);
+                }
+            }
+            SetStatus(failed == 0
+                ? $"Opened {found.Count} item(s) in separate tabs"
+                : $"Opened {found.Count - failed} of {found.Count} item(s) in separate tabs; {failed} failed");
+            // Extracted-zip temp dirs are intentionally NOT deleted here: an imported-image tab keeps
+            // no handle, but a PDF opened directly from an extracted folder is read lazily, so the
+            // extracted files must survive for the session. The OS clears %TEMP% eventually.
+        }
+
+        // Builds ONE combined PDF from the dropped files on a background thread, then opens it as an
+        // unsaved tab (Save routes to Save As). Owns cleanup of the extracted-zip temp dirs.
+        private async Task OpenMergedAsync(List<string> found, List<string> tempDirs)
+        {
+            SetStatus($"Merging {found.Count} dropped items…");
+            string? tempPath;
+            try
+            {
+                // Build off the UI thread so the window stays responsive while it works.
+                tempPath = await Task.Run(() => BuildCombinedPdf(found));
+            }
+            catch (Exception ex)
+            {
+                CleanupDirs(tempDirs);
+                TdpDialog.Show(this, $"Could not merge the dropped files:\n{ex.Message}",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            if (tempPath is null)
+            {
+                CleanupDirs(tempDirs);
+                SetStatus("Nothing could be read from the dropped files");
+                return;
+            }
+
+            await OpenInTabAsync(tempPath);
+            FinalizeUnsavedTab(tempPath, "Combined.pdf", $"Merged {found.Count} item(s) into one PDF");
+            CleanupDirs(tempDirs);
+        }
+
+        // Opens the given image(s) as a single unsaved imported-PDF tab (same UNSAVED flow as New:
+        // dirty orange Save icon, Save routes to Save As, Close warns).
+        private async Task OpenImagesAsImportedTabAsync(string[] images, string displayName)
+        {
+            string tempPath;
+            try { tempPath = BuildPdfFromImages(images); }
+            catch (Exception ex)
+            {
+                TdpDialog.Show(this, $"Could not import the image(s):\n{ex.Message}",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            await OpenInTabAsync(tempPath);
+            FinalizeUnsavedTab(tempPath, displayName, $"Imported {images.Length} image(s)");
+        }
+
+        // After OpenInTabAsync has loaded a working file TDPdf itself created, mark the active tab as
+        // having no on-disk home. Guarded so a failed/reverted open (which returns to the previous
+        // tab) is left untouched. <paramref name="markDirty"/> is false for a blank New document:
+        // it has nothing unsaved in it yet, so closing it must not prompt.
+        private void FinalizeUnsavedTab(string tempPath, string displayName, string status, bool markDirty = true)
+        {
+            if (_doc is null || !string.Equals(_currentFile, tempPath, StringComparison.OrdinalIgnoreCase))
+                return;   // open failed and reverted to a different tab — don't clobber it
+            SetDisplayName(displayName);
+            _ctx.IsUntitled = true;     // no real on-disk home yet → Ctrl+S routes to Save As
+            _ctx.OriginalPath = null;   // the working file is a TDPdf-created temp, never a save target
+            if (markDirty) MarkDirty(true);
+            SetStatus(status);
+            RebuildTabStrip();
+        }
+
+        // Recursively gathers the PDFs and images under a folder, in a stable name order.
+        private static void CollectOpenable(string dir, List<string> found)
+        {
+            IEnumerable<string> files;
+            try { files = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories); }
+            catch { return; }
+            foreach (var f in files.Where(IsOpenablePath).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                found.Add(f);
+        }
+
+        // True when path sits inside any of dirs. Compares full paths with a trailing separator so a
+        // sibling folder whose name merely starts with the same text cannot match.
+        private static bool IsUnderAnyDirectory(string path, List<string> dirs)
+        {
+            try
+            {
+                string full = System.IO.Path.GetFullPath(path);
+                foreach (var d in dirs)
+                {
+                    if (string.IsNullOrWhiteSpace(d)) continue;
+                    string dir = System.IO.Path.GetFullPath(d);
+                    if (!dir.EndsWith(System.IO.Path.DirectorySeparatorChar))
+                        dir += System.IO.Path.DirectorySeparatorChar;
+                    if (full.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            catch { /* malformed path — treat as not extracted */ }
+            return false;
+        }
+
+        private static string? ExtractZipToTemp(string zipPath)
+        {
+            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "tdpdf-zip-" + Guid.NewGuid().ToString("N")[..8]);
+            try
+            {
+                Directory.CreateDirectory(dir);
+                System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, dir);
+                return dir;
+            }
+            catch { try { Directory.Delete(dir, true); } catch { } return null; }
+        }
+
+        private static void CleanupDirs(List<string> dirs)
+        {
+            foreach (var d in dirs) { try { Directory.Delete(d, true); } catch { } }
+        }
+
+        // Builds one PDF from a mix of PDFs (pages imported in order) and images (one page each).
+        // Unreadable / encrypted entries are skipped rather than aborting the whole merge. Returns
+        // a temp PDF path, or null if nothing could be read.
+        private static string? BuildCombinedPdf(List<string> files)
+        {
+            using var outPdf = new PdfDocument();
+            foreach (var f in files)
+            {
+                if (IsPdfPath(f))
+                {
+                    try
+                    {
+                        using var src = PdfReader.Open(f, PdfDocumentOpenMode.Import);
+                        for (int i = 0; i < src.PageCount; i++) outPdf.AddPage(src.Pages[i]);
+                    }
+                    catch { /* skip an unreadable/encrypted PDF */ }
+                }
+                else
+                {
+                    try { AddImagePagesFromFile(outPdf, f); } catch { /* skip an unreadable image */ }
+                }
+            }
+
+            if (outPdf.PageCount == 0) return null;
+            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_combined_{Guid.NewGuid():N}.pdf");
+            outPdf.Save(outPath);
+            return outPath;
+        }
+
+        // Builds a PDF where each page is exactly one source image (multi-frame TIFF/GIF expand to one
+        // page per frame). Page size matches the image's physical size at its own DPI (96 if none).
+        private static string BuildPdfFromImages(string[] imagePaths)
+        {
+            using var pdf = new PdfDocument();
+            foreach (var path in imagePaths) AddImagePagesFromFile(pdf, path);
+            if (pdf.PageCount == 0) throw new InvalidOperationException("No images could be read.");
+            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_imported_{Guid.NewGuid():N}.pdf");
+            pdf.Save(outPath);
+            return outPath;
+        }
+
+        // Appends one page per image frame. Page size matches the image's physical size at its own DPI.
+        private static void AddImagePagesFromFile(PdfDocument pdf, string path)
+        {
+            using var img = System.Drawing.Image.FromFile(path);
+            var dim = new System.Drawing.Imaging.FrameDimension(img.FrameDimensionsList[0]);
+            int frameCount = Math.Max(1, img.GetFrameCount(dim));
+
+            // #366: a source that is ALREADY a JPEG goes into the PDF byte for byte. The loop below
+            // redraws every frame into a 32bpp bitmap and re-encodes it as PNG, which PdfSharpCore
+            // then stores as 24-bit RGB FlateDecode — so importing a 400 KB phone photo produced a
+            // 12 MB page, and the picture in the file was no longer the picture the user chose.
+            //
+            // Note that handing the JPEG bytes to XImage would NOT have fixed it: PdfSharpCore's
+            // image source decodes the stream and saves it again at quality 75. Only writing the
+            // XObject directly (PdfPageImageEncoder) leaves the original bytes alone.
+            //
+            // Single-frame only — a multi-frame TIFF/GIF is one page per frame and cannot be one
+            // pass-through image — and only for the JPEG variants /DCTDecode actually covers; the
+            // sniff refuses anything else, which falls through to the lossless path unchanged.
+            if (frameCount == 1
+                && PdfPageImageEncoder.TryReadPassThroughJpeg(path) is { } jpeg
+                && jpeg.PixelWidth == img.Width && jpeg.PixelHeight == img.Height)
+            {
+                double jpegDpiX = img.HorizontalResolution > 0 ? img.HorizontalResolution : 96.0;
+                double jpegDpiY = img.VerticalResolution   > 0 ? img.VerticalResolution   : 96.0;
+                var jpegPage = pdf.AddPage();
+                jpegPage.Width  = img.Width  * 72.0 / jpegDpiX;
+                jpegPage.Height = img.Height * 72.0 / jpegDpiY;
+                PdfPageImageEncoder.PaintFullPage(
+                    pdf, jpegPage, jpeg, jpegPage.Width.Point, jpegPage.Height.Point);
+                return;
+            }
+
+            for (int f = 0; f < frameCount; f++)
+            {
+                img.SelectActiveFrame(dim, f);
+
+                int wpx = img.Width, hpx = img.Height;
+                double dpiX = img.HorizontalResolution > 0 ? img.HorizontalResolution : 96.0;
+                double dpiY = img.VerticalResolution   > 0 ? img.VerticalResolution   : 96.0;
+                double wPt = wpx * 72.0 / dpiX;
+                double hPt = hpx * 72.0 / dpiY;
+
+                // Copy the active frame to a fresh 32bpp bitmap, then encode PNG (XImage reads that).
+                byte[] png;
+                using (var frame = new System.Drawing.Bitmap(wpx, hpx,
+                           System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    using (var g = System.Drawing.Graphics.FromImage(frame))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(img, 0, 0, wpx, hpx);
+                    }
+                    using var ms = new MemoryStream();
+                    frame.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    png = ms.ToArray();
+                }
+
+                var page = pdf.AddPage();
+                page.Width  = wPt;   // XUnit implicitly treats a double as points
+                page.Height = hPt;
+
+                using var gfx  = XGraphics.FromPdfPage(page);
+                using var xImg = XImage.FromStream(() => new MemoryStream(png));
+                gfx.DrawImage(xImg, 0, 0, wPt, hPt);
+            }
+        }
+
+        // ============================================================
+        // Recent files (MRU) — most-recent first, capped at 10
+        // ============================================================
+        private const int RecentFilesMax = 10;
+
+        // A path is eligible for the recent list only if it is a genuine, existing on-disk file that
+        // does NOT live under the temp directory — that is where New / merged-on-drop / imported-image
+        // working copies live, and those have no lasting saved location worth remembering.
+        private static bool IsRecentEligiblePath(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            try
+            {
+                if (!System.IO.File.Exists(path)) return false;
+                string full = System.IO.Path.GetFullPath(path);
+                string temp = System.IO.Path.GetFullPath(System.IO.Path.GetTempPath());
+                return !full.StartsWith(temp, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        // Reads the stored list, dropping any entry that no longer exists on disk. Entries are
+        // normalised to full paths and de-duplicated case-insensitively: older builds stored paths
+        // as given (forward slashes, relative segments), so one file could be listed twice.
+        private static List<string> GetRecentFiles()
+        {
+            var list = new List<string>();
+            var raw = TDPdf.Properties.Settings.Default.RecentFiles;
+            if (string.IsNullOrEmpty(raw)) return list;
+            foreach (var p in TDPdf.Services.FilePathPolicy.NormalizeDistinct(raw.Split('|')))
+            {
+                try { if (System.IO.File.Exists(p)) list.Add(p); } catch { }
+            }
+            return list;
+        }
+
+        private void AddRecentFile(string path)
+        {
+            // #146: the privacy toggle stops the list growing at the single write path. Reads are
+            // left alone deliberately — turning the toggle on empties the store, so there is
+            // nothing left to read, and turning it back off starts an empty list rather than
+            // resurrecting the old one.
+            if (TDPdf.Properties.Settings.Default.DontRememberRecentFiles) return;
+            if (string.IsNullOrWhiteSpace(path)) return;
+            string normalized;
+            try { normalized = System.IO.Path.GetFullPath(path); } catch { normalized = path; }
+
+            var list = GetRecentFiles();
+            list.RemoveAll(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase));
+            list.Insert(0, normalized);
+            while (list.Count > RecentFilesMax) list.RemoveAt(list.Count - 1);
+
+            TDPdf.Properties.Settings.Default.RecentFiles = string.Join("|", list);   // '|' is illegal in Windows paths
+            TDPdf.Properties.Settings.Default.Save();
+            RefreshRecentFilesUi();
+        }
+
+        private void ClearRecentFiles()
+        {
+            TDPdf.Properties.Settings.Default.RecentFiles = "";
+            TDPdf.Properties.Settings.Default.Save();
+            RefreshRecentFilesUi();
+        }
+
+        private void ClearRecent_Click(object sender, RoutedEventArgs e) => ClearRecentFiles();
+
+        // Rebuilds the start-screen recent-files list (hidden when there are none).
+        private void RefreshRecentFilesUi()
+        {
+            _recentFilesList.Children.Clear();
+            var recents = GetRecentFiles();
+            if (recents.Count == 0) { _recentFilesBox.Visibility = Visibility.Collapsed; return; }
+            _recentFilesBox.Visibility = Visibility.Visible;
+            foreach (var path in recents)
+                _recentFilesList.Children.Add(MakeRecentRow(path));
+        }
+
+        // A single clickable recent-files row: PDF glyph + filename (primary) + dimmed full path.
+        private Button MakeRecentRow(string path)
+        {
+            string fileName = System.IO.Path.GetFileName(path);
+
+            var glyph = new TextBlock
+            {
+                Text       = "\uE8A5",   // Segoe MDL2 "Document"
+                FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
+                FontSize   = 18,
+                Foreground = BrushResource("AccentGreen"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin     = new Thickness(0, 0, 10, 0)
+            };
+
+            var nameText = new TextBlock
+            {
+                Text         = fileName,
+                FontFamily   = new System.Windows.Media.FontFamily("Segoe UI"),
+                FontSize     = 13,
+                Foreground   = BrushResource("TextPrimary"),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var pathText = new TextBlock
+            {
+                Text         = path,
+                FontFamily   = new System.Windows.Media.FontFamily("Segoe UI"),
+                FontSize     = 11,
+                Foreground   = BrushResource("TextSecondary"),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var textCol = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            textCol.Children.Add(nameText);
+            textCol.Children.Add(pathText);
+
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(glyph, 0);
+            Grid.SetColumn(textCol, 1);
+            grid.Children.Add(glyph);
+            grid.Children.Add(textCol);
+
+            var normal = (System.Windows.Media.Brush)System.Windows.Media.Brushes.Transparent;
+            var hover  = BrushResource("BgHover");
+            var btn = new Button
+            {
+                Content                    = grid,
+                Background                 = normal,
+                BorderThickness            = new Thickness(0),
+                Padding                    = new Thickness(8, 6, 8, 6),
+                Cursor                     = Cursors.Hand,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Template                   = MakeRecentRowTemplate(),
+                ToolTip                    = path
+            };
+            AutomationProperties.SetName(btn, "Open " + fileName);
+            btn.MouseEnter += (_, _2) => btn.Background = hover;
+            btn.MouseLeave += (_, _2) => btn.Background = normal;
+            btn.Click      += async (_, _2) => await OpenRecentAsync(path);
+            return btn;
+        }
+
+        // Minimal chrome-free button template (Border + ContentPresenter) so the row shows only our
+        // hover background — mirrors the pattern used by TdpDialog's buttons.
+        private static ControlTemplate MakeRecentRowTemplate()
+        {
+            var border = new FrameworkElementFactory(typeof(Border));
+            border.SetBinding(Border.BackgroundProperty,
+                new System.Windows.Data.Binding("Background")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            border.SetBinding(Border.PaddingProperty,
+                new System.Windows.Data.Binding("Padding")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
+            var cp = new FrameworkElementFactory(typeof(ContentPresenter));
+            cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Stretch);
+            cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            border.AppendChild(cp);
+            return new ControlTemplate(typeof(Button)) { VisualTree = border };
+        }
+
+        private async Task OpenRecentAsync(string path)
+        {
+            if (System.IO.File.Exists(path)) { await OpenInTabAsync(path); return; }
+            TdpDialog.Show(this, $"That file is no longer available:\n{path}",
+                "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshRecentFilesUi();   // drop the now-missing entry
+        }
+
+        // Recent-files dropdown on the Open toolbar button (right-click).
+        private void OpenBtn_RightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+            var menu = new ContextMenu();
+            var recents = GetRecentFiles();
+            if (recents.Count == 0)
+            {
+                menu.Items.Add(new MenuItem { Header = "No recent files", IsEnabled = false });
+            }
+            else
+            {
+                foreach (var p in recents)
+                {
+                    string path = p;   // capture
+                    var item = MakeMenuItem(System.IO.Path.GetFileName(path), async (_, _2) => await OpenRecentAsync(path),
+                                            null, null, "\uE8A5", literalHeader: true);
+                    item.ToolTip = path;
+                    menu.Items.Add(item);
+                }
+                menu.Items.Add(new Separator());
+                menu.Items.Add(MakeMenuItem("Clear List", (_, _2) => ClearRecentFiles(), null, null, "\uE74D"));
+            }
+            menu.PlacementTarget = (UIElement)sender;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            menu.IsOpen = true;
+        }
+
     }
 }

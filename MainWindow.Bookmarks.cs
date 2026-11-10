@@ -2,32 +2,11 @@
 // Add / rename / child / reorder / retarget / delete for the document outline.
 // Extracted verbatim from MainWindow.xaml.cs.
 
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.ExceptionServices;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Text.Json;
 using System.Windows;
-using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
-using Docnet.Core;
-using Docnet.Core.Models;
-using TDPdf.Diagnostics;
-using TDPdf.Services;
-using Microsoft.Win32;
-using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.IO;
-using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
 {
@@ -583,5 +562,231 @@ namespace TDPdf
             _outlineScrollViewer.Visibility = Visibility.Visible;
             _pageControlsRow.Visibility = Visibility.Collapsed;
         }
+
+        // ============================================================
+        // Document outline / bookmarks (sidebar OUTLINES tab)  —  #133
+        //
+        // Editable bookmark tree ported from upstream KillerPDF v1.6.4. TDPdf keeps its own
+        // multi-tab document model, TdpDialog dark dialogs, theme brushes, and (crucially) its
+        // full-document-snapshot undo (PushDocUndo), so this is an adaptation, not a copy:
+        //   • ListBox → themed TreeView (OutlineTreeStyle / OutlineItemStyle / OutlineExpander).
+        //   • Edits mutate the live PdfSharpCore outline object model (_doc.Outlines) so they are
+        //     written on save; page-index for display still resolves through TDPdf's ResolveDest so
+        //     named / GoTo destinations navigate exactly as before.
+        //   • Every mutation rides the existing document-snapshot undo (PushDocUndo) — one Ctrl+Z
+        //     restores the whole edit — rather than a bookmark-specific undo stack.
+        // ============================================================
+
+        /// <summary>
+        /// (Re)builds the OUTLINES tree from the active document's live PdfSharpCore outline
+        /// collection. Safe to call on a null / read-only / outline-less document.
+        /// </summary>
+        private void LoadOutlines()
+        {
+            // A rebuild drives IsExpanded itself; the live Expanded/Collapsed recorder must only ever
+            // hear the USER, or a rebuild would be recorded as a user choice against whichever tab
+            // happens to be active at the time.
+            _outlineRebuilding = true;
+            try { LoadOutlinesCore(); }
+            finally { _outlineRebuilding = false; }
+        }
+
+        private void LoadOutlinesCore()
+        {
+            _bmExtraSel.Clear();          // outlines may be gone after a rebuild / undo
+            _outlineTree.Items.Clear();
+            if (_doc is null)
+            {
+                _sidebarOutlinesTab.IsEnabled = false;
+                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+                return;
+            }
+            try
+            {
+                // #103: _doc.Outlines lazily CREATES an empty outlines object on documents that have
+                // none, and PdfSharpCore then emits a dangling /Outlines reference the reopen rejects.
+                // Peek at the catalog read-only and only touch .Outlines when one really exists.
+                bool hasOutlines = _doc.Internals.Catalog.Elements.ContainsKey("/Outlines");
+                var outlines = hasOutlines ? _doc.Outlines : null;
+                if (outlines is null || outlines.Count == 0)
+                {
+                    // Stay enabled on an editable document so the user can open the panel and add a
+                    // first bookmark (the ghost add-row is then the only entry); read-only documents
+                    // keep the old "disabled when empty" gating.
+                    _sidebarOutlinesTab.IsEnabled = CanEditBookmarks;
+                    if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
+                    else if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+                    return;
+                }
+                _sidebarOutlinesTab.IsEnabled = true;
+                if (CanEditBookmarks) _outlineTree.Items.Add(BuildAddBookmarkGhostRow());
+                AddOutlineItems(_outlineTree.Items, outlines);
+                // Sticky expand/collapse per tab. LoadOutlines rebuilds from scratch on every tab
+                // switch and temp-reload, which used to re-expand everything the user had folded.
+                if (_ctx.OutlineExpandSeen) ApplyOutlineExpandState();
+                else { CaptureOutlineExpandState(); _ctx.OutlineExpandSeen = true; }
+            }
+            catch
+            {
+                // A malformed outline tree must never break opening a document.
+                _outlineTree.Items.Clear();
+                _sidebarOutlinesTab.IsEnabled = false;
+                if (_sidebarOutlinesTab.IsChecked == true) _sidebarPagesTab.IsChecked = true;
+            }
+        }
+
+        /// <summary>
+        /// #133 (upstream v1.6.4): PdfSharpCore's lexer decodes UTF-16 bookmark titles by their BOM,
+        /// but strings it decrypts AFTER parsing (owner-password protected files) never get that BOM
+        /// re-check, so the title arrives as raw bytes widened to chars: a U+00FE U+00FF prefix (the
+        /// BOM bytes) followed by one char per byte (mojibake, most visible on Chinese outlines).
+        /// Detect the widened BOM, re-pack the chars into bytes, and decode as UTF-16. Titles that
+        /// parsed correctly don't start with those two chars and pass through untouched.
+        /// </summary>
+        private static string FixRawUnicodeTitle(string s)
+        {
+            if (s.Length < 2) return s;
+            bool be = s[0] == 'þ' && s[1] == 'ÿ';   // UTF-16BE BOM as raw chars
+            bool le = s[0] == 'ÿ' && s[1] == 'þ';   // UTF-16LE (Adobe tolerance)
+            if (!be && !le) return s;
+            foreach (char c in s)
+                if (c > 'ÿ') return s;   // not byte-widened data - a real (odd) title, leave it
+            var sb = new System.Text.StringBuilder((s.Length - 2) / 2);
+            for (int i = 2; i + 1 < s.Length; i += 2)   // a trailing odd byte is dropped rather than corrupting the pairs
+                sb.Append(be ? (char)((s[i] << 8) | s[i + 1])
+                             : (char)((s[i + 1] << 8) | s[i]));
+            return sb.ToString();
+        }
+
+        /// <summary>Builds a TreeViewItem per outline (recursing into children) tied to its live
+        /// PdfOutline via <see cref="OutlineNodeRef"/>.</summary>
+        private void AddOutlineItems(ItemCollection target, PdfSharpCore.Pdf.PdfOutlineCollection outlines,
+                                     int depth = 0)
+        {
+            foreach (PdfSharpCore.Pdf.PdfOutline outline in outlines)
+            {
+                int pageIdx = GetOutlinePageIndex(outline);
+                string title = FixRawUnicodeTitle(outline.Title ?? string.Empty);
+                var item = new TreeViewItem
+                {
+                    Header = string.IsNullOrEmpty(title) ? "(untitled)" : title,
+                    // Top level starts open, deeper levels start folded (the Acrobat default) — a deep
+                    // outline was otherwise a wall of text on open, since this used to expand every
+                    // node at every depth. ApplyOutlineExpandState overrides this with the user's own
+                    // choices once this tab has built its tree once.
+                    IsExpanded = depth == 0,
+                    Tag = new OutlineNodeRef(outline, outlines, pageIdx),
+                    ToolTip = pageIdx >= 0 ? $"Page {pageIdx + 1}" : null,
+                    // Items are added as ready-made containers, so ItemContainerStyle doesn't apply;
+                    // set the themed style explicitly.
+                    Style = (Style)FindResource("OutlineItemStyle"),
+                };
+                if (outline.Outlines is not null && outline.Outlines.Count > 0)
+                    AddOutlineItems(item.Items, outline.Outlines, depth + 1);
+                target.Add(item);
+            }
+        }
+
+        // ---- Sticky OUTLINES expand/collapse (per tab; state lives on DocumentContext) ------------
+        // Nodes are keyed by index path ("2/0/1"), ghost add-row excluded, because SaveTempAndReload
+        // reopens the document and hands back brand-new PdfOutline instances — an object-keyed set
+        // would go stale on every structural edit. RefreshOutlines still keys ITS capture on the live
+        // PdfOutline objects, which survive a bookmark edit and stay correct when indices shift.
+        private bool _outlineRebuilding;
+
+        /// <summary>Walks the on-screen outline items in index order, ghost add-row skipped, handing
+        /// each one its index path. The single definition of a node's key.</summary>
+        private static void WalkOutlinePaths(ItemCollection items, string prefix,
+                                             Action<TreeViewItem, string> visit)
+        {
+            int i = 0;
+            foreach (var o in items)
+            {
+                if (o is not TreeViewItem it || it.Tag is not OutlineNodeRef) continue;
+                string path = prefix.Length == 0 ? i.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                                 : prefix + "/" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                visit(it, path);
+                WalkOutlinePaths(it.Items, path, visit);
+                i++;
+            }
+        }
+
+        /// <summary>Records which outline nodes are expanded in the tree currently on screen, against
+        /// the active tab. Runs once per tab, right after its first tree is built, so the depth
+        /// defaults become the baseline the live recorder then edits.</summary>
+        private void CaptureOutlineExpandState()
+        {
+            var expanded = _ctx.OutlineExpanded;
+            expanded.Clear();
+            WalkOutlinePaths(_outlineTree.Items, "", (it, path) => { if (it.IsExpanded) expanded.Add(path); });
+        }
+
+        /// <summary>Restores this tab's recorded expand/collapse state onto a freshly built tree.</summary>
+        private void ApplyOutlineExpandState()
+        {
+            var expanded = _ctx.OutlineExpanded;
+            WalkOutlinePaths(_outlineTree.Items, "", (it, path) => it.IsExpanded = expanded.Contains(path));
+        }
+
+        /// <summary>Live recorder for the user's own expand/collapse clicks, attached once to the tree
+        /// (the items themselves are thrown away and rebuilt constantly). Keeps the state current no
+        /// matter which of the many LoadOutlines callers rebuilds next, so nothing has to remember to
+        /// capture first.</summary>
+        private void OutlineTree_ItemExpandChanged(object sender, RoutedEventArgs e)
+        {
+            if (_outlineRebuilding || e.OriginalSource is not TreeViewItem it
+                || it.Tag is not OutlineNodeRef) return;
+            string? path = null;
+            WalkOutlinePaths(_outlineTree.Items, "", (node, p) => { if (ReferenceEquals(node, it)) path = p; });
+            if (path is null) return;
+            if (it.IsExpanded) _ctx.OutlineExpanded.Add(path);
+            else               _ctx.OutlineExpanded.Remove(path);
+        }
+
+        /// <summary>Resolves an outline's 0-based target page. Prefers PdfSharpCore's parsed
+        /// destination page, then falls back to TDPdf's richer resolver (named destinations,
+        /// /GoTo actions) so navigation matches the pre-edit behaviour.</summary>
+        private int GetOutlinePageIndex(PdfSharpCore.Pdf.PdfOutline outline)
+        {
+            if (_doc is null) return -1;
+            if (outline.DestinationPage is PdfSharpCore.Pdf.PdfPage destPage)
+            {
+                for (int i = 0; i < _doc.PageCount; i++)
+                    if (ReferenceEquals(_doc.Pages[i], destPage)) return i;
+            }
+            // Fall back to TDPdf's resolver on the outline's own dictionary.
+            PdfItem? destItem = outline.Elements["/Dest"];
+            if (destItem is null)
+            {
+                var action = outline.Elements.GetDictionary("/A");
+                if (action is not null &&
+                    (action.Elements.GetName("/S") == "/GoTo" || action.Elements.ContainsKey("/D")))
+                {
+                    destItem = action.Elements["/D"];
+                }
+            }
+            return ResolveDest(destItem) ?? -1;
+        }
+
+        private void OutlineTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+        {
+            if (_suppressOutlineNav) return;   // programmatic re-select (e.g. after a move) must not jump the view
+            if (e.NewValue is TreeViewItem item && item.Tag is OutlineNodeRef nref
+                && nref.PageIndex >= 0 && _doc is not null && nref.PageIndex < _doc.PageCount
+                && PageList.SelectedIndex != nref.PageIndex)
+            {
+                RecordNavJump();   // bookmark jump — retraceable via Alt+Left
+                PageList.SelectedIndex = nref.PageIndex;
+            }
+        }
+
+        // The TreeView's own scroll viewer swallows the wheel before the outer one sees it, so the
+        // Outlines panel wouldn't scroll. Forward the wheel to the outer scroll viewer.
+        private void OutlineScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            _outlineScrollViewer.ScrollToVerticalOffset(_outlineScrollViewer.VerticalOffset - e.Delta);
+            e.Handled = true;
+        }
+
     }
 }

@@ -1,7 +1,5 @@
-using System;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.Advanced;
 
 namespace TDPdf.Services
 {
@@ -361,33 +359,16 @@ namespace TDPdf.Services
                 if (node.Elements.ContainsKey(key))
                 {
                     var item = node.Elements[key];
-                    if (item is not null and not PdfInteger and not PdfReal) item = Deref(item);
+                    if (item is not null and not PdfInteger and not PdfReal) item = PdfItems.Deref(item);
                     if (item is PdfInteger n) return n.Value;
                     if (item is PdfReal d) return (int)d.Value;
                     return 0;
                 }
                 var parent = node.Elements["/Parent"];
                 node = parent is null ? null
-                     : parent as PdfDictionary ?? Deref(parent) as PdfDictionary;
+                     : parent as PdfDictionary ?? PdfItems.Deref(parent) as PdfDictionary;
             }
             return 0;
-        }
-
-        /// <summary>
-        /// Resolves an indirect reference to the object it points at, leaving a direct item alone.
-        /// </summary>
-        /// <remarks>
-        /// Reflection over a "Value" property rather than a cast, because the same call has to
-        /// handle both a PdfReference (whose Value is the object) and any already-direct item, and
-        /// PdfSharpCore exposes no common interface for that. Mirrors MainWindow's DerefItemStatic,
-        /// which is the same trick for the same reason.
-        /// </remarks>
-        private static PdfItem Deref(PdfItem item)
-        {
-            var valueProp = item.GetType().GetProperty("Value",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (valueProp?.GetValue(item) is PdfObject resolved) return resolved;
-            return item;
         }
 
         /// <summary>
@@ -395,7 +376,7 @@ namespace TDPdf.Services
         /// size, always normalized so Width/Height are positive. The origin matters — [0 0 612 792] is
         /// the common case but [9 9 621 801] is legal, and content/annotation coordinates are absolute
         /// in user space, so anything mapping into the rendered bitmap must subtract the box origin
-        /// rather than assume (0,0). /Rotate is NOT applied; see Transform.cs VisiblePageSize.
+        /// rather than assume (0,0). /Rotate is NOT applied; see MainWindow.Transform.cs VisiblePageSize.
         /// </summary>
         internal readonly record struct PageBox(double X, double Y, double Width, double Height)
         {
@@ -431,7 +412,7 @@ namespace TDPdf.Services
             {
                 PdfItem? item = node.Elements[key];
                 if (item is not null and not PdfArray and not PdfRectangle)
-                    item = Deref(item);
+                    item = PdfItems.Deref(item);
 
                 if (item is PdfRectangle pr)
                     return Normalize(pr.X1, pr.Y1, pr.X2, pr.Y2);
@@ -441,7 +422,7 @@ namespace TDPdf.Services
 
                 var parent = node.Elements["/Parent"];
                 node = parent is null ? null
-                     : parent as PdfDictionary ?? Deref(parent) as PdfDictionary;
+                     : parent as PdfDictionary ?? PdfItems.Deref(parent) as PdfDictionary;
             }
             return null;
 

@@ -2,32 +2,12 @@
 // The pointer/mouse handling for the page canvas: panning, tool gestures, annotation
 // hit-testing, drag and resize. Extracted verbatim from MainWindow.xaml.cs.
 
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.ExceptionServices;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Text.Json;
 using System.Windows;
-using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
-using Docnet.Core;
-using Docnet.Core.Models;
-using TDPdf.Diagnostics;
 using TDPdf.Services;
-using Microsoft.Win32;
-using PdfSharpCore.Drawing;
-using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.IO;
-using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
 {
@@ -133,11 +113,6 @@ namespace TDPdf
             if (_activeTextBox is not null && e.OriginalSource is DependencyObject src &&
                 IsDescendantOf(src, _activeTextBox))
                 return;
-            // Don't intercept clicks on the crop confirm bar (canvas uses Preview events which
-            // tunnel before child Button clicks fire — we must not swallow them here).
-            if (_cropConfirmBar is not null && e.OriginalSource is DependencyObject cropSrc &&
-                IsDescendantOf(cropSrc, _cropConfirmBar))
-                return;
             // Check if click lands inside a PDF link overlay.
             // We do an explicit bounds check rather than relying on WPF hit-testing through
             // nested transparent canvases, which is unreliable.
@@ -161,19 +136,6 @@ namespace TDPdf
             var pos = e.GetPosition(_annotationCanvas);
             int pageIdx = PageList.SelectedIndex;
             if (pageIdx < 0) return;
-
-            // Crop corner handle — must be checked before the tool switch so the normal
-            // Crop mousedown path (which calls HideCropConfirmBar) doesn't remove handles first.
-            if (_cropHandles.Count > 0 && e.OriginalSource is Rectangle cropHandleRect &&
-                _cropHandles.Contains(cropHandleRect))
-            {
-                _activeCropHandleTag = (string)cropHandleRect.Tag;
-                _cropHandleDragStart = pos;
-                _cropRectAtHandleDrag = _cropCanvasRect;
-                _annotationCanvas.CaptureMouse();
-                e.Handled = true;
-                return;
-            }
 
             if (_currentTool == EditTool.EditImage && _imageResizeHandle is not null &&
                 e.OriginalSource == _imageResizeHandle && _selectedAnnotation is ImageEditAnnotation selectedImage)
@@ -419,7 +381,7 @@ namespace TDPdf
                     _drawStart = pos;
                     var rect = new Rectangle
                     {
-                        Fill = FrozenSolidColorBrush(_highlightColor),
+                        Fill = TdpDialog.FrozenSolidColorBrush(_highlightColor),
                         Width = 0, Height = 0
                     };
                     Canvas.SetLeft(rect, pos.X);
@@ -448,7 +410,7 @@ namespace TDPdf
                     _drawStart = pos;
                     var formRect = new Rectangle
                     {
-                        Fill = new SolidColorBrush(Color.FromArgb(40, 74, 222, 128)),
+                        Fill = AccentWash(40),
                         Stroke = (SolidColorBrush)FindResource("AccentGreen"),
                         StrokeThickness = 1.5,
                         StrokeDashArray = new DoubleCollection { 4, 3 },
@@ -517,12 +479,11 @@ namespace TDPdf
                 case EditTool.Crop:
                     ClearSelection();
                     ClearCropSelection();
-                    HideCropConfirmBar();
                     _isDrawing = true;
                     _drawStart = pos;
                     var cropRect = new Rectangle
                     {
-                        Fill = new SolidColorBrush(Color.FromArgb(35, 74, 222, 128)),
+                        Fill = AccentWash(35),
                         Stroke = (SolidColorBrush)FindResource("AccentGreen"),
                         StrokeThickness = 2,
                         StrokeDashArray = new DoubleCollection { 6, 3 },
@@ -546,7 +507,7 @@ namespace TDPdf
                     _activeInk.Points.Add(pos);
                     var poly = new Polyline
                     {
-                        Stroke = FrozenSolidColorBrush(_drawColor),
+                        Stroke = TdpDialog.FrozenSolidColorBrush(_drawColor),
                         StrokeThickness = _drawWidth,
                         StrokeLineJoin = PenLineJoin.Round,
                         StrokeStartLineCap = PenLineCap.Round,
@@ -623,27 +584,27 @@ namespace TDPdf
                     {
                         ShapeKind.Rectangle => new Rectangle
                         {
-                            Stroke = FrozenSolidColorBrush(_shapeStrokeColor),
+                            Stroke = TdpDialog.FrozenSolidColorBrush(_shapeStrokeColor),
                             StrokeThickness = _shapeStrokeWidth,
                             Fill = _shapeHasFill
-                                ? FrozenSolidColorBrush(_shapeFillColor)
+                                ? TdpDialog.FrozenSolidColorBrush(_shapeFillColor)
                                 : (Brush)Brushes.Transparent,
                             Width = 0, Height = 0,
                             IsHitTestVisible = false
                         },
                         ShapeKind.Ellipse => new Ellipse
                         {
-                            Stroke = FrozenSolidColorBrush(_shapeStrokeColor),
+                            Stroke = TdpDialog.FrozenSolidColorBrush(_shapeStrokeColor),
                             StrokeThickness = _shapeStrokeWidth,
                             Fill = _shapeHasFill
-                                ? FrozenSolidColorBrush(_shapeFillColor)
+                                ? TdpDialog.FrozenSolidColorBrush(_shapeFillColor)
                                 : (Brush)Brushes.Transparent,
                             Width = 0, Height = 0,
                             IsHitTestVisible = false
                         },
                         ShapeKind.Line => new Line
                         {
-                            Stroke = FrozenSolidColorBrush(_shapeStrokeColor),
+                            Stroke = TdpDialog.FrozenSolidColorBrush(_shapeStrokeColor),
                             StrokeThickness = _shapeStrokeWidth,
                             StrokeStartLineCap = PenLineCap.Round,
                             StrokeEndLineCap = PenLineCap.Round,
@@ -1165,47 +1126,6 @@ namespace TDPdf
                     shapePrev.Height = sh;
                     break;
                 }
-
-                case EditTool.Crop when _activePreview is Rectangle crect:
-                    Canvas.SetLeft(crect, Math.Min(pos.X, _drawStart.X));
-                    Canvas.SetTop(crect, Math.Min(pos.Y, _drawStart.Y));
-                    crect.Width = Math.Abs(pos.X - _drawStart.X);
-                    crect.Height = Math.Abs(pos.Y - _drawStart.Y);
-                    break;
-            }
-
-            // Crop corner handle drag — resize the crop rect live.
-            if (_activeCropHandleTag is not null && _cropPreviewRect is not null)
-            {
-                double dx = pos.X - _cropHandleDragStart.X;
-                double dy = pos.Y - _cropHandleDragStart.Y;
-                var r = _cropRectAtHandleDrag;
-                double newX = r.X, newY = r.Y, newW = r.Width, newH = r.Height;
-                switch (_activeCropHandleTag)
-                {
-                    case "NW":
-                        newX = Math.Min(r.Right - 10, r.X + dx);
-                        newY = Math.Min(r.Bottom - 10, r.Y + dy);
-                        newW = r.Right - newX;
-                        newH = r.Bottom - newY;
-                        break;
-                    case "NE":
-                        newY = Math.Min(r.Bottom - 10, r.Y + dy);
-                        newW = Math.Max(10, r.Width + dx);
-                        newH = r.Bottom - newY;
-                        break;
-                    case "SE":
-                        newW = Math.Max(10, r.Width + dx);
-                        newH = Math.Max(10, r.Height + dy);
-                        break;
-                    case "SW":
-                        newX = Math.Min(r.Right - 10, r.X + dx);
-                        newW = r.Right - newX;
-                        newH = Math.Max(10, r.Height + dy);
-                        break;
-                }
-                _cropCanvasRect = new Rect(newX, newY, newW, newH);
-                UpdateCropRectVisuals();
             }
         }
 
@@ -1222,21 +1142,7 @@ namespace TDPdf
             if (_eSignPlacement is { Dragging: true }) { ESignPlacementMouseUp(e); return; }
             if (_eSignPlacement is not null) { e.Handled = true; return; }
 
-            // Don't process release events that originate inside the crop confirm bar.
-            if (_cropConfirmBar is not null && e.OriginalSource is DependencyObject cropSrc &&
-                IsDescendantOf(cropSrc, _cropConfirmBar))
-                return;
-
             int pageIdx = PageList.SelectedIndex;
-
-            // Finish crop handle drag
-            if (_activeCropHandleTag is not null)
-            {
-                _activeCropHandleTag = null;
-                if (_annotationCanvas.IsMouseCaptured) _annotationCanvas.ReleaseMouseCapture();
-                e.Handled = true;
-                return;
-            }
 
             // Finish generic annotation move
             if (_isMovingAnnot)
@@ -1369,7 +1275,7 @@ namespace TDPdf
                     var selectBounds = new Rect(
                         Math.Min(pos.X, _selectStart.X), Math.Min(pos.Y, _selectStart.Y),
                         dragW, dragH);
-                    if (ocrRegion) OcrRegion(pageIdx, selectBounds);
+                    if (ocrRegion) ObserveOcr(OcrRegion(pageIdx, selectBounds));
                     else ExtractTextFromRegion(pageIdx, selectBounds);
                 }
                 return;
@@ -1573,22 +1479,6 @@ namespace TDPdf
                     }
                     break;
                 }
-
-                case EditTool.Crop when _activePreview is Rectangle cr:
-                    if (cr.Width > 10 && cr.Height > 10)
-                    {
-                        _cropCanvasRect = new Rect(Canvas.GetLeft(cr), Canvas.GetTop(cr), cr.Width, cr.Height);
-                        _cropPreviewRect = cr;
-                        _activePreview = null; // keep the preview rect visible; don't null it
-                        ShowCropConfirmBar();
-                        return;
-                    }
-                    else
-                    {
-                        _annotationCanvas.Children.Remove(cr);
-                        _cropPreviewRect = null;
-                    }
-                    break;
             }
             _activePreview = null;
         }
@@ -1660,6 +1550,7 @@ namespace TDPdf
                     PageList.SelectedIndex = 0;
                 ClearCropSelection();
                 MarkDirty();
+                UpdateRemoveCropEnabled();
                 SetStatus(applyToAll ? "Crop applied to all pages" : $"Crop applied to page {pageIdx + 1}");
             }
             catch (OperationCanceledException)

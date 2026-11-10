@@ -1,13 +1,9 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.Advanced;
 
 namespace TDPdf.Services
 {
@@ -120,7 +116,7 @@ namespace TDPdf.Services
 
         private static ObservedSignature Observe(PdfDictionary field, byte[] file)
         {
-            var sig = Deref(field.Elements["/V"]) as PdfDictionary;
+            var sig = PdfItems.Deref(field.Elements["/V"]) as PdfDictionary;
             string name = Str(field, "/T") ?? "";
             if (sig is null) return new ObservedSignature { FieldName = name };
 
@@ -154,11 +150,11 @@ namespace TDPdf.Services
 
         internal static long[]? ReadByteRange(PdfItem? item)
         {
-            if (Deref(item) is not PdfArray a || a.Elements.Count != 4) return null;
+            if (PdfItems.Deref(item) is not PdfArray a || a.Elements.Count != 4) return null;
             var v = new long[4];
             for (int i = 0; i < 4; i++)
             {
-                long? n = Deref(a.Elements[i]) switch
+                long? n = PdfItems.Deref(a.Elements[i]) switch
                 {
                     PdfInteger x => x.Value,
                     PdfIntegerObject x => x.Value,
@@ -400,7 +396,7 @@ namespace TDPdf.Services
         {
             try
             {
-                return Deref(d.Elements[key]) is PdfString ps && !string.IsNullOrWhiteSpace(ps.Value) ? ps.Value.Trim() : null;
+                return PdfItems.Deref(d.Elements[key]) is PdfString ps && !string.IsNullOrWhiteSpace(ps.Value) ? ps.Value.Trim() : null;
             }
             catch
             {
@@ -419,7 +415,6 @@ namespace TDPdf.Services
             return -1;
         }
 
-        private static PdfItem? Deref(PdfItem? item) => item is PdfReference r ? r.Value : item;
     }
 }
 

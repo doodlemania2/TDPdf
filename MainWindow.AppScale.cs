@@ -1,4 +1,3 @@
-using System;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -176,9 +175,9 @@ namespace TDPdf
         //
         // It still goes out through SetStatusHeld, because the chrome resize re-runs the fit
         // pipeline and its page/zoom status would otherwise stomp this on the same layout pass
-        // (MainWindow.xaml.cs SetStatus). That hold is short and covers only the stomp.
+        // (MainWindow.Files.cs SetStatus). That hold is short and covers only the stomp.
         //
-        // The snapshot / hold / restore itself now lives in MainWindow.xaml.cs (FlashStatus), because
+        // The snapshot / hold / restore itself now lives in MainWindow.Files.cs (FlashStatus), because
         // the status-line file-size flash needs exactly the same behaviour and two copies of a
         // save-and-put-back is how the two drift apart.
         private void ShowScaleReadout(double scale)

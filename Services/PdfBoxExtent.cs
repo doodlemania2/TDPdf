@@ -1,4 +1,3 @@
-using System;
 using UglyToad.PdfPig.Core;
 
 namespace TDPdf.Services

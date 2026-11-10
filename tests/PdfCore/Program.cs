@@ -41,7 +41,9 @@ void Check(string label, bool ok, string detail = "")
     Console.WriteLine($"  {(ok ? "PASS" : "FAIL")}  {label}{(detail.Length > 0 ? "  — " + detail : "")}");
 }
 
-string tmp = Path.Combine(Path.GetTempPath(), "tdpdf-redact-test");
+// One folder per run: concurrent runs (parallel worktrees, CI) used to share a fixed folder and
+// read each other's half-written files.
+string tmp = Path.Combine(Path.GetTempPath(), $"tdpdf-redact-test-{Environment.ProcessId}-{Guid.NewGuid():N}");
 Directory.CreateDirectory(tmp);
 
 Console.WriteLine($"pdfium edit API: {PdfiumInterop.AvailableEditApi}");
@@ -168,12 +170,15 @@ Check("named the surviving text", res2.Survivors.Count > 0,
 Check("NO output file was written", !File.Exists(refused));
 
 Geometry.Run(Check, tmp);
+PageSize.Run(Check, tmp);
+OcrModels.Run(Check, tmp);
 ImageGuard.Run(Check, tmp);
 Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 FlattenDpi.Run(Check, tmp);
 Forms.Run(Check, tmp);
 FormSiblings.Run(Check, tmp);
+HostileInput.Run(Check, tmp);
 NameGroups.Run(Check, tmp);
 FontRuns.Run(Check);
 TextEdit.Run(Check, tmp);
@@ -216,8 +221,12 @@ DocumensoSelfSign.Run(Check);
 DocumensoSelfSignLive.Run(Check, tmp);
 DocumensoConnect.Run(Check);
 DocumensoWeb.Run(Check);
+SaveNormalize.Run(Check);
+PureLogic.Run(Check);
+CleanupSecurity.Run(Check, tmp);
 
 Console.WriteLine();
+try { Directory.Delete(tmp, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
 return failures == 0 ? 0 : 1;
 

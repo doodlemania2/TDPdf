@@ -246,10 +246,10 @@ Entry point is **Settings → Document signing**, and the first-run path from th
 
 **Connect flow** — a themed `DocumensoConnectWindow`. There is no dialog XAML anywhere in this repo (only 5 `.xaml` files exist: `App.xaml`, `MainWindow.xaml`, and the three `Themes/*.xaml`), so every dialog is built imperatively in C#. Two chrome recipes are available; use the **custom-chrome** one, matching the signature creator:
 
-- **Custom chrome** — `OpenSignatureCreator()` at `/Volumes/Data/repos/TDPdf/MainWindow.Signatures.cs:365`: `WindowStyle = WindowStyle.None`, `AllowsTransparency = true`, `Background = Brushes.Transparent`, an `outerChrome` `Border` (`BgDark` + `AccentGreenDim` 1px + `CornerRadius(6)`), a `titleBar` `Border` (`BgPanel`, `Padding(14,8,8,8)`, `CornerRadius(5,5,0,0)`, `MouseLeftButtonDown → win.DragMove()`), title `TextBlock` in `AccentGreen`/SemiBold/13/Consolas, and a 28×28 `Segoe MDL2 Assets` close glyph that goes `DangerRed` on hover. `TdpDialog.CreateShell` (`TdpDialog.cs:74`) is the same recipe at width 380. Shared frozen brushes for this chrome already exist: `SignatureBorderBrush` / `DialogCloseNormalBrush` at `MainWindow.xaml.cs:374-375`.
+- **Custom chrome** — `OpenSignatureCreator()` at `/Volumes/Data/repos/TDPdf/MainWindow.Signatures.cs:365`: `WindowStyle = WindowStyle.None`, `AllowsTransparency = true`, `Background = Brushes.Transparent`, an `outerChrome` `Border` (`BgDark` + `AccentGreenDim` 1px + `CornerRadius(6)`), a `titleBar` `Border` (`BgPanel`, `Padding(14,8,8,8)`, `CornerRadius(5,5,0,0)`, `MouseLeftButtonDown → win.DragMove()`), title `TextBlock` in `AccentGreen`/SemiBold/13/Consolas, and a 28×28 `Segoe MDL2 Assets` close glyph that goes `DangerRed` on hover. `TdpDialog.CreateShell` (`TdpDialog.cs:74`) is the same recipe at width 380. The unused `SignatureBorderBrush` / `DialogCloseNormalBrush` / `DialogCloseHoverBrush` statics were removed in 2.2.1.0; resolve `BorderDim` / `TextSecondary` / `DangerRed` from the theme instead.
 - **Native frame** — `ShowSettingsDialog()` keeps the OS frame and only sets `Background`/`Foreground`. Fine for Settings (which already looks that way); wrong for a new modal.
 
-Brush resolution: inside `MainWindow` partials use `BrushResource(string)` (`MainWindow.xaml.cs:2021`, `(SolidColorBrush)FindResource(key)` — **throws on a bad key**). In a standalone class under `Services/`, copy `TdpDialog.Brush(string)` (`TdpDialog.cs:39`), which is `TryFindResource(key) as SolidColorBrush ?? SystemBrush(key)` with a `SystemColors.*` fallback — that fallback is what keeps a dialog legible if a theme dictionary is missing. Keys to use: `BgDark`, `BgPanel`, `BgHover`, `BorderDim`, `AccentGreen`, `AccentGreenDim`, `DangerRed`, `WarningOrange`, `TextPrimary`, `TextSecondary`, `TextMuted`, `DisabledForeground`, `SeparatorBrush`. Buttons: `Style = (Style)FindResource("DarkButton")`.
+Brush resolution: inside `MainWindow` partials use `BrushResource(string)` (`MainWindow.xaml.cs:2021`, `(SolidColorBrush)FindResource(key)` — **throws on a bad key**). In a standalone class under `Services/`, copy `TdpDialog.Brush(string)` (`TdpDialog.cs:39`), which is `TryFindResource(key) as SolidColorBrush ?? SystemBrush(key)` with a `SystemColors.*` fallback — that fallback is what keeps a dialog legible if a theme dictionary is missing. Keys to use: `BgDark`, `BgPanel`, `BgHover`, `BorderDim`, `AccentGreen`, `AccentGreenDim`, `DangerRed`, `WarningOrange`, `TextPrimary`, `TextSecondary`, `TextMuted`, `DisabledForeground`. Buttons: `Style = (Style)FindResource("DarkButton")`.
 
 Flow:
 
@@ -369,7 +369,7 @@ Follow the existing `[UserScopedSetting] [DefaultSettingValue(...)]` pattern (`/
 |---|---|---|---|
 | `DocumensoBaseUrl` | `string` | `""` | tier-3 user-entered URL |
 | `DocumensoDefaultSigningOrder` | `bool` | `False` | sequential vs parallel signing default in the send wizard |
-| `DocumensoIncludeSelfAsSigner` | `bool` | `False` | remembered checkbox in the send wizard |
+| ~~`DocumensoIncludeSelfAsSigner`~~ | | | dropped in 2.2.1.0: it was never read by the send wizard |
 | `DocumensoWarnOnSignedSave` | `bool` | `True` | the don't-ask-again for the §5.5 scrub warning |
 
 **These must tolerate being reset without warning.** `App.config` declares the section with `allowExeDefinition="MachineToLocalUser"`, so `user.config` lands at `%LOCALAPPDATA%\<company>\<exe>_<hash>\<version>\user.config`, and `EnsureSettingsHealthy` in `/Volumes/Data/repos/TDPdf/App.xaml.cs:258-420` force-parses it on startup and, on failure, logs `"SETTINGS CORRUPT - resetting user.config"` and calls `Settings.Default.Reload()`. A reset therefore silently reverts `DocumensoBaseUrl` to `""` → the feature falls back to the policy tier, or goes *Unavailable*. That is acceptable (nothing is lost but a typed URL) **only because the credential is not in `user.config`** — one more reason it is not.
@@ -450,20 +450,20 @@ MainWindow.ESignature.cs               menu handlers, enablement, canvas field p
                                        download-and-open, status-bar wiring
 ```
 
-`Services/` already houses standalone themed windows (`PrintPreviewWindow.cs`, `ThirdPartyLicensesWindow.cs`, `TransformWindow.cs`, and `Diagnostics/CrashDialog.cs`), so window classes belong there. **No DI container. `ViewModels/MainWindowViewModel.cs` is not touched** (issue #18).
+`Services/` already houses standalone themed windows (`PrintPreviewWindow.cs`, `ThirdPartyLicensesWindow.cs`, `TransformWindow.cs`, and `Diagnostics/CrashDialog.cs`), so window classes belong there. **No DI container. `ViewModels/MainWindowViewModel.cs` no longer exists** (deleted in 2.2.1.0).
 
 Two facts about the split that matter in practice:
-- **`partial class MainWindow` is not limited to `MainWindow.*.cs`.** `Ocr.cs:18` and `Cli.cs:45` are also partials of it (which is how `Cli.cs:700` calls `MakeDownloadClient()` without declaring it). So `MainWindow.ESignature.cs` automatically shares every private member — `BrushResource`, `MakeDownloadClient`, `_doc`, `_ctx`, `_currentFile`, `SetStatus`, the manual element refs. Nothing needs to be made `internal`.
+- **`partial class MainWindow` is not limited to `MainWindow.*.cs`.** `MainWindow.Ocr.cs:18` and `MainWindow.Cli.cs:45` are also partials of it (which is how `MainWindow.Cli.cs:700` calls `MakeDownloadClient()` without declaring it). So `MainWindow.ESignature.cs` automatically shares every private member — `BrushResource`, `MakeDownloadClient`, `_doc`, `_ctx`, `_currentFile`, `SetStatus`, the manual element refs. Nothing needs to be made `internal`.
 - **`MainWindow.Undo.cs` (76 lines) is the template for a minimal new partial** — file header comment, one `partial class MainWindow`, no regions.
 
 Current sizes on `release/2.0.0`: `MainWindow.xaml.cs` 11,351 · `.Files.cs` 2,546 · `.Canvas.cs` 1,717 · `.TextEditing.cs` 1,279 · `.Forms.cs` 1,218 · `.Signatures.cs` 1,096 · `.ContinuousView.cs` 728 · `.Sidebar.cs` 656 · `.Bookmarks.cs` 587 · `.Undo.cs` 76 lines.
 
 ### 5.2 HTTP — reuse the existing shape exactly
 
-*(Correction to the brief: `Services/OcrNativeBootstrap.cs` contains no HTTP at all — it only does embedded-resource self-extraction. `Cli.cs` has no `System.Net.Http` using either; it reaches `MakeDownloadClient()` because it is another `partial class MainWindow`. The OCR download lives in `Ocr.cs`.)*
+*(Correction to the brief: `Services/OcrNativeBootstrap.cs` contains no HTTP at all — it only does embedded-resource self-extraction. `MainWindow.Cli.cs` has no `System.Net.Http` using either; it reaches `MakeDownloadClient()` because it is another `partial class MainWindow`. The OCR download lives in `MainWindow.Ocr.cs`.)*
 
 Two existing HTTP call sites, and they agree:
-- `/Volumes/Data/repos/TDPdf/Ocr.cs:262` — `MakeDownloadClient()`: `new HttpClient { Timeout = TimeSpan.FromSeconds(100) }`, `DefaultRequestHeaders.UserAgent.ParseAdd("TDPdf-OCR")`, streamed with `HttpCompletionOption.ResponseHeadersRead` and a `CancellationToken`, `.part` file + atomic `File.Move`.
+- `/Volumes/Data/repos/TDPdf/MainWindow.Ocr.cs:262` — `MakeDownloadClient()`: `new HttpClient { Timeout = TimeSpan.FromSeconds(100) }`, `DefaultRequestHeaders.UserAgent.ParseAdd("TDPdf-OCR")`, streamed with `HttpCompletionOption.ResponseHeadersRead` and a `CancellationToken`, `.part` file + atomic `File.Move`.
 - `/Volumes/Data/repos/TDPdf/Services/UpdateCheck.cs:143` — `using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) }`, explicit `User-Agent`, `System.Text.Json` `JsonDocument.Parse`.
 
 So: **a short-lived `HttpClient` per operation, explicit `Timeout`, explicit `User-Agent`, `System.Text.Json`, `CancellationToken` on everything.** No shared static client, no `SocketsHttpHandler`, no `IHttpClientFactory`, no Polly, no Refit, no new package. `System.Text.Json` is already used across ten files and `Newtonsoft` appears nowhere — reflection-based `JsonSerializer` is fine (source-gen is unnecessary: `PublishTrimmed` is off).
@@ -488,7 +488,7 @@ internal sealed class DocumensoClient
     Task                          CancelAsync(string envelopeId, string? reason, CancellationToken ct);
 }
 ```
-Upload uses `MultipartFormDataContent` with a `payload` part (`application/json`) and one or more `files` parts (`application/pdf`). Downloads reuse the `Ocr.cs` `.part`-then-`File.Move` pattern so a half-written signed PDF never appears on disk.
+Upload uses `MultipartFormDataContent` with a `payload` part (`application/json`) and one or more `files` parts (`application/pdf`). Downloads reuse the `MainWindow.Ocr.cs` `.part`-then-`File.Move` pattern so a half-written signed PDF never appears on disk.
 
 Timeouts: 15 s for probe/metadata calls, 120 s for upload and download.
 
@@ -545,7 +545,7 @@ private void FileMenu_SubmenuOpened(object sender, RoutedEventArgs e)
    - **Placement (preferred).** *"Place signature fields"* dismisses the dialog into a canvas placement mode: the user drags a rectangle per field and picks the recipient + type from a small popup. Existing canvas geometry converts to Documenso's percentage space — `pageX = x / pageWidth * 100`, `pageY = y / pageHeight * 100` (Documenso's origin is **top-left**, `page` is **1-indexed**; TDPdf's page coordinates are top-left too in the canvas overlay, but confirm against `Services/PdfPageGeometry.cs` at implementation time). The gesture is the same one the existing signature **stamp** already uses, so it is familiar and reuses `MainWindow.Canvas.cs` hit-testing.
    - **Placeholders (free).** If the PDF already contains `{{signature, r1}}` text, `POST /envelope/create` finds it and creates the fields itself — zero placement UI. Detect it with PdfPig (already used for text extraction) and show *"This document contains 2 signature placeholders — they will be used automatically."*
    - If neither, warn: *"No signature fields — recipients will be asked to place their own signature."* (That is valid Documenso behaviour, just worth saying.)
-5. **[Send]** → `create` → `recipient/create-many` → `field/create-many` → `distribute`, wrapped in `using var op = Telemetry.StartOperation("DocumensoSend")`, all `await`ed off the UI thread with a progress line in the status bar and an Esc-to-cancel `CancellationToken` (the `Ocr.cs` pattern).
+5. **[Send]** → `create` → `recipient/create-many` → `field/create-many` → `distribute`, wrapped in `using var op = Telemetry.StartOperation("DocumensoSend")`, all `await`ed off the UI thread with a progress line in the status bar and an Esc-to-cancel `CancellationToken` (the `MainWindow.Ocr.cs` pattern).
    Fields **cannot** be changed after distribute, so ordering matters and a partial failure must not leave a half-built envelope: on any failure after `create`, call `POST /envelope/delete` to clean up, and report *"Nothing was sent."*
 6. Success: record `{envelopeId, title, recipients, sentAt}` in a local tracking list (§5.6), show *"Sent to 2 recipients for signature."*, and offer **[Copy signing link]** for any recipient.
 
@@ -563,7 +563,7 @@ Be honest in the copy: *"Signing happens on the Documenso page in your browser."
 `/Volumes/Data/repos/TDPdf/MainWindow.Files.cs:1963` strips `/V` from every signature field and removes `/Perms` on **every** TDPdf save. The reasoning is sound (a full rewrite voids the digest) but the consequence for this feature is sharp: *download a completed, signed PDF → open it → press Ctrl+S → the signature is gone, silently.*
 
 Required handling, all in `MainWindow.ESignature.cs` + a small hook in `.Files.cs`:
-1. **Download to a chosen location, then open.** The downloaded file goes through `SaveFileDialog` (default name `{title} (signed).pdf`) and is then opened in a new tab. Write via `.part` + `File.Move` (the `Ocr.cs:272` pattern) — and note the existing warning at `/Volumes/Data/repos/TDPdf/Services/PdfDocumentService.cs:59` that **cloud-sync folders refuse `File.Replace`**; a user saving a signed PDF into OneDrive is the common case, so use `File.Move` with an explicit delete-then-move fallback rather than `File.Replace`.
+1. **Download to a chosen location, then open.** The downloaded file goes through `SaveFileDialog` (default name `{title} (signed).pdf`) and is then opened in a new tab. Write via `.part` + `File.Move` (the `MainWindow.Ocr.cs:272` pattern) — and note the existing warning at `/Volumes/Data/repos/TDPdf/Services/PdfDocumentService.cs:59` that **cloud-sync folders refuse `File.Replace`**; a user saving a signed PDF into OneDrive is the common case, so use `File.Move` with an explicit delete-then-move fallback rather than `File.Replace`.
 2. **Flag the context.** Add a `bool HasDigitalSignature` to `DocumentContext`, set on open when the catalog has an `/AcroForm` field with `/FT /Sig` and a non-null `/V` (cheap PdfSharpCore dictionary read — no cryptography).
 3. **Warn once before a save that would scrub.** In `SaveInPlace`/`SaveAs`/`SaveFlattened`, when `HasDigitalSignature`, show a themed confirm: *"This document carries a digital signature. Saving rewrites the file and will remove it. The signed original is unaffected if you Save As to a new name."* → Save anyway / Cancel. Reuse `TdpDialog.ShowWithCheckbox` (`/Volumes/Data/repos/TDPdf/TdpDialog.cs:401`) for a *don't ask again* that writes a new `Settings` flag.
 4. **Show it in the UI.** A small "Signed" indicator in the status bar / tab, and a row in `Document Info` (F12).
@@ -701,7 +701,7 @@ Drag-a-rectangle placement (§5.4a) is the better UX and reuses `MainWindow.Canv
 - [ ] If a toolbar button is ever added: matching hidden label `TextBlock` in `ToolbarA11yLabels` (`MainWindow.xaml:1232-1246`) plus `AutomationProperties.Name`/`HelpText`/`AccessKey`/`LabeledBy` and a `TabIndex`. (This design says **no** toolbar button — §5.3.)
 - [ ] `SaveFileDialog` is the one exception already used repo-wide for file picking (`MainWindow.Files.cs:2123`) — keep consistent, don't introduce new chrome.
 - [ ] No new HTTP stack, no DI container, no new JSON library. `new HttpClient { Timeout = … }` + `System.Text.Json`.
-- [ ] `ViewModels/MainWindowViewModel.cs` untouched (issue #18).
+- [ ] `ViewModels/MainWindowViewModel.cs` was deleted in 2.2.1.0 (stub never wired).
 - [ ] Nullable clean; build stays at **4 warnings / 0 errors**, checked with `--no-incremental`.
 - [ ] `_isDirty` respected; save paths routed through the existing dirty-check prompts; the new signed-document guard added to all three save paths.
 - [ ] New `x:Name`d XAML elements re-fetched via `FindName(...)!` into `_camelCase` fields in the `// Manual element refs` block.

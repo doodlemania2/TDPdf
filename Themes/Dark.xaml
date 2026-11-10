@@ -9,7 +9,6 @@
     <SolidColorBrush x:Key="BgHover" Color="#2e2e2e"/>
     <SolidColorBrush x:Key="BgPressed" Color="#333333"/>
     <SolidColorBrush x:Key="BorderDim" Color="#333333"/>
-    <SolidColorBrush x:Key="SeparatorBrush" Color="#333333"/>
     <SolidColorBrush x:Key="AccentGreen" Color="#4ade80"/>
     <SolidColorBrush x:Key="AccentGreenDim" Color="#22543d"/>
     <!-- Flowing text-selection quads (upstream KillerPDF v1.6.5, #127). Painted at ~24% alpha over
@@ -25,13 +24,6 @@
     <SolidColorBrush x:Key="WarningOrange" Color="#ffa500"/>
     <SolidColorBrush x:Key="DangerRed" Color="#ef4444"/>
     <SolidColorBrush x:Key="DisabledForeground" Color="#666666"/>
-    <SolidColorBrush x:Key="ToolButtonBackground" Color="Transparent"/>
-    <SolidColorBrush x:Key="ToolButtonForeground" Color="#e0e0e0"/>
-    <SolidColorBrush x:Key="ToolButtonHoverBackground" Color="#2e2e2e"/>
-    <SolidColorBrush x:Key="ToolButtonPressedBackground" Color="#333333"/>
-    <SolidColorBrush x:Key="ToolButtonCheckedBackground" Color="#22543d"/>
-    <SolidColorBrush x:Key="ToolButtonCheckedForeground" Color="#4ade80"/>
-    <SolidColorBrush x:Key="ToolButtonDisabledForeground" Color="#666666"/>
 
     <!-- Shortcut-overlay keyboard: per-category key colors (upstream KillerPDF v1.6.4 "KsCat*").
          Bright, well-separated hues that read against the dark keycap faces. -->

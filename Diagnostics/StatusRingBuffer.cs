@@ -1,5 +1,3 @@
-using System;
-
 namespace TDPdf.Diagnostics
 {
     public sealed class StatusRingBuffer

@@ -10,7 +10,7 @@ using TDPdf.Services;
 /// tree as well as set on the page.
 /// </summary>
 /// <remarks>
-/// Night mode (DocInvert.cs) inverts the BGRA buffer PDFium hands back and then inverts the image
+/// Night mode (MainWindow.DocInvert.cs) inverts the BGRA buffer PDFium hands back and then inverts the image
 /// boxes a second time so pictures keep their real colours. There is no TDPdf-side pixel rotation
 /// anywhere on that path: every render site sizes the buffer from Docnet's page reader (the page
 /// as displayed) and calls FPDF_RenderPageBitmap with rotate 0, which draws the visible box with

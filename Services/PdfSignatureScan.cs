@@ -1,6 +1,4 @@
-using System.Collections.Generic;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.Advanced;
 
 namespace TDPdf.Services
 {
@@ -42,8 +40,8 @@ namespace TDPdf.Services
             try
             {
                 var catalog = document.Internals.Catalog;
-                if (Deref(catalog.Elements["/AcroForm"]) is not PdfDictionary acroForm) return found;
-                if (Deref(acroForm.Elements["/Fields"]) is not PdfArray fields) return found;
+                if (PdfItems.Deref(catalog.Elements["/AcroForm"]) is not PdfDictionary acroForm) return found;
+                if (PdfItems.Deref(acroForm.Elements["/Fields"]) is not PdfArray fields) return found;
                 Walk(fields, 0, found);
             }
             catch { /* malformed catalog: report what was reachable, never throw out of a save */ }
@@ -55,10 +53,10 @@ namespace TDPdf.Services
             if (depth > MaxFieldDepth) return;
             foreach (var item in fields.Elements)
             {
-                if (item is null || Deref(item) is not PdfDictionary field) continue;
+                if (item is null || PdfItems.Deref(item) is not PdfDictionary field) continue;
                 if (field.Elements.GetName("/FT") == "/Sig" && field.Elements["/V"] is not null)
                     found.Add(field);
-                if (Deref(field.Elements["/Kids"]) is PdfArray kids)
+                if (PdfItems.Deref(field.Elements["/Kids"]) is PdfArray kids)
                     Walk(kids, depth + 1, found);
             }
         }
@@ -76,11 +74,5 @@ namespace TDPdf.Services
             try { return document.Internals.Catalog.Elements["/Perms"] is not null; }
             catch { return false; }
         }
-
-        /// <summary>
-        /// Resolves an indirect reference to the object it points at, leaving anything else alone.
-        /// </summary>
-        private static PdfItem? Deref(PdfItem? item) =>
-            item is PdfReference reference ? reference.Value : item;
     }
 }

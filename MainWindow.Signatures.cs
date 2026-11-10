@@ -2,32 +2,18 @@
 // Drawing, importing, saving and placing signatures, plus the signatures.json store.
 // Extracted verbatim from MainWindow.xaml.cs.
 
-using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.ExceptionServices;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
-using Docnet.Core;
-using Docnet.Core.Models;
 using TDPdf.Diagnostics;
 using TDPdf.Services;
 using Microsoft.Win32;
-using PdfSharpCore.Drawing;
-using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.IO;
-using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
 {
@@ -1009,7 +995,7 @@ namespace TDPdf
                 Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
                 Title = "Import Signature Image"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             try
             {
@@ -1233,7 +1219,7 @@ namespace TDPdf
                 Title = "Insert Image",
                 Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tiff;*.tif|All files|*.*"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             try
             {

@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.Content;
 using PdfSharpCore.Pdf.Content.Objects;
@@ -62,12 +60,6 @@ namespace TDPdf.Services
         /// <summary>The only two colour space names PDFium's generator round-trips.</summary>
         private static readonly HashSet<string> SafeColorSpaces =
             new(StringComparer.Ordinal) { "/DeviceRGB", "/DeviceGray" };
-
-        /// <summary>
-        /// True when <paramref name="page"/> can be handed to PDFium's content generator without
-        /// losing anything. Fail-closed: an unreadable page reports unsafe.
-        /// </summary>
-        public static bool IsRegenerationSafe(PdfPage page) => Inspect(page) == ContentHazard.None;
 
         /// <summary>
         /// Everything on <paramref name="page"/> that content regeneration would destroy.

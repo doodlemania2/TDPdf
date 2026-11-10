@@ -6,9 +6,6 @@
 // Signature Picture image overlay — and the two must stay impossible to confuse, for users and
 // for whoever opens this directory next. Every identifier here is prefixed ESign/Documenso.
 
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;

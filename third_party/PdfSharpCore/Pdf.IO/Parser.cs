@@ -383,6 +383,21 @@ namespace PdfSharpCore.Pdf.IO
             return len;
         }
 
+        // TDPdf patch: array/dictionary nesting depth cap. ParseObject -> ReadArray/ReadDictionary recurse
+        // once per level, and a StackOverflowException cannot be caught, so a crafted "[[[[..." would kill the
+        // process. Past the cap we throw a normal PdfReaderException, which the open path handles.
+        internal const int MaxNestingDepth = 512;
+        int _nestingDepth;
+
+        void EnterNesting()
+        {
+            if (++_nestingDepth > MaxNestingDepth)
+            {
+                _nestingDepth--;
+                ParserDiagnostics.ThrowParserException("Arrays and dictionaries are nested too deeply.");
+            }
+        }
+
         public PdfArray ReadArray(PdfArray array, bool includeReferences)
         {
             Debug.Assert(Symbol == Symbol.BeginArray);
@@ -391,7 +406,9 @@ namespace PdfSharpCore.Pdf.IO
                 array = new PdfArray(_document);
 
             int sp = _stack.SP;
-            ParseObject(Symbol.EndArray);
+            EnterNesting();
+            try { ParseObject(Symbol.EndArray); }
+            finally { _nestingDepth--; }
             int count = _stack.SP - sp;
             PdfItem[] items = _stack.ToArray(sp, count);
             _stack.Reduce(count);
@@ -425,7 +442,9 @@ namespace PdfSharpCore.Pdf.IO
             DictionaryMeta meta = dict.Meta;
 
             int sp = _stack.SP;
-            ParseObject(Symbol.EndDictionary);
+            EnterNesting();
+            try { ParseObject(Symbol.EndDictionary); }
+            finally { _nestingDepth--; }
             int count = _stack.SP - sp;
             Debug.Assert(count % 2 == 0);
             PdfItem[] items = _stack.ToArray(sp, count);

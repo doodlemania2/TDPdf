@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using Docnet.Core;
@@ -9,7 +7,7 @@ namespace TDPdf.Services
 {
     // ── Direct PDFium P/Invoke ───────────────────────────────────────────────────────────────
     // The ONE home for every direct pdfium.dll call in TDPdf (extracted from
-    // Services/PdfDocumentService.cs). pdfium.dll ships with Docnet.Core; PDFium is already
+    // Services/PdfDocumentService.cs). pdfium.dll ships with bblanchon.PDFium.Win32; PDFium is already
     // initialised by Docnet, which we force via DocLib.Instance before any direct P/Invoke.
     //
     // THREADING (upstream KillerPDF v1.6.4): PDFium is single-threaded. Docnet serializes every
@@ -248,7 +246,7 @@ namespace TDPdf.Services
         /// raster itself; the place to watch is any loop that renders many pages of one file — the
         /// continuous-view base / window / re-sharpen passes.
         /// Two rasterize paths deliberately do NOT use this, both for reasons written down where
-        /// they live: OCR (see the note at the top of Ocr.cs) and the sidebar thumbnails (see
+        /// they live: OCR (see the note at the top of MainWindow.Ocr.cs) and the sidebar thumbnails (see
         /// PdfDocumentService.RenderPageBitmap), which are eager over the whole document on the
         /// file-open path and would pay this per-page cost unbounded.
         /// </remarks>
@@ -519,18 +517,12 @@ namespace TDPdf.Services
         [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetFont", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr FPDFTextObj_GetFontRaw(IntPtr textObject);
 
-        [DllImport("pdfium.dll", EntryPoint = "FPDFTextObj_GetFontSize", CallingConvention = CallingConvention.Cdecl)]
-        private static extern bool FPDFTextObj_GetFontSizeRaw(IntPtr textObject, out float size);
-
         [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetIsEmbedded", CallingConvention = CallingConvention.Cdecl)]
         private static extern int FPDFFont_GetIsEmbeddedRaw(IntPtr font);
 
         [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetFontData", CallingConvention = CallingConvention.Cdecl)]
         private static extern bool FPDFFont_GetFontDataRaw(
             IntPtr font, byte[]? buffer, UIntPtr buflen, out UIntPtr outBuflen);
-
-        [DllImport("pdfium.dll", EntryPoint = "FPDFFont_GetBaseFontName", CallingConvention = CallingConvention.Cdecl)]
-        private static extern UIntPtr FPDFFont_GetBaseFontNameRaw(IntPtr font, byte[]? buffer, UIntPtr length);
 
         /// <summary>A rectangle in PDF page space: points, origin bottom-left.</summary>
         internal readonly record struct PdfRect(double Left, double Bottom, double Right, double Top)

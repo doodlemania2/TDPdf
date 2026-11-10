@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -16,7 +14,7 @@ namespace TDPdf
     //
     // Resaves one PDF (or every *.pdf under a folder tree, mirroring the
     // relative structure into the output folder) through the same pre-save
-    // pipeline a GUI save uses: PdfReader.Open(Modify), NormalizeDocumentForSave
+    // pipeline a GUI save uses: PdfReader.Open(Modify), PdfSaveNormalizer.Normalize
     // (the /Outlines, /CropBox, and dead-signature scrubs), StripLinkAnnotationBorders,
     // Save. No window, no dialogs, no repair fallbacks, no encryption stripping —
     // files that cannot go through the plain Modify pipeline are reported as SKIP
@@ -211,7 +209,7 @@ namespace TDPdf
             try
             {
                 // Same pre-save pipeline as SaveInPlace for a document with no user edits.
-                NormalizeDocumentForSave(doc);    // /Outlines, /CropBox, dead-signature scrubs
+                TDPdf.Services.PdfSaveNormalizer.Normalize(doc);    // /Outlines, /CropBox, dead-signature scrubs
                 StripLinkAnnotationBorders(doc);  // link borders are stripped on every GUI save
                 doc.Save(dst);
                 doc.Close();

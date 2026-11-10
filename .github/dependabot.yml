@@ -11,3 +11,17 @@ updates:
       major:
         patterns: ["*"]
         update-types: ["major"]
+  - package-ecosystem: nuget
+    directories:
+      - /
+      - /third_party/PdfSharpCore
+      - /tests/PdfCore
+    schedule:
+      interval: weekly
+    groups:
+      minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      major:
+        patterns: ["*"]
+        update-types: ["major"]

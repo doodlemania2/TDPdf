@@ -52,7 +52,7 @@
              text styling), so it keeps the discoverable, conventional binding rather than upstream's
              bare N. -->
         <KeyBinding Key="I" Modifiers="Control" Command="{x:Static local:MainWindow.InvertColorsCommand}"/>
-        <!-- App-wide UI scale (AppScale.cs) — the chrome, NOT the page. Deliberately Ctrl+Shift so
+        <!-- App-wide UI scale (MainWindow.AppScale.cs) — the chrome, NOT the page. Deliberately Ctrl+Shift so
              it can never be confused with the Ctrl+0/+/- document zoom above; Ctrl+Shift+S and
              Ctrl+Shift+Z are the only Ctrl+Shift letters already taken. -->
         <!-- #153 again: the punctuation halves moved to TryPunctuationShortcut, where they are
@@ -941,7 +941,7 @@
                 </Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
                     <!-- Logo: app icon + wordmark, and the grip for the app-wide UI scale
-                         (AppScale.cs). Rolling the wheel here grows or shrinks the chrome; the
+                         (MainWindow.AppScale.cs). Rolling the wheel here grows or shrinks the chrome; the
                          title bar and footer are deliberately NOT scaled, so the logo never moves
                          out from under the cursor. The press is left unhandled so it still bubbles
                          to TitleBar_MouseLeftButtonDown for window drag / double-click maximize. -->
@@ -1383,7 +1383,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- Sidebar column: inner grid splits content from permanent toggle strip.
-                 Named because the app-wide UI scale (AppScale.cs) hangs its LayoutTransform here —
+                 Named because the app-wide UI scale (MainWindow.AppScale.cs) hangs its LayoutTransform here —
                  the SidebarCol width sites convert through SbPx so the collapse/expand glide keeps
                  working at any scale. -->
             <Grid x:Name="SidebarOuterGrid" Grid.Column="0">
@@ -1635,7 +1635,7 @@
                     <!-- Current-page badge (upstream KillerPDF #197). Replaces the per-tile,
                          cursor-following page tooltips: one "page / total" chip in the viewport
                          corner that slides up on scroll and on page changes and slides back down
-                         once the view settles (ShowPageBadge in MainWindow.xaml.cs). It is a
+                         once the view settles (ShowPageBadge in MainWindow.ContinuousView.cs). It is a
                          sibling of PagePreviewPanel, NOT a child of the primary page Border, so it
                          floats over the whole viewport rather than the current tile. Never
                          hit-testable, so it can never swallow a page click; the 26px right margin
@@ -1715,7 +1715,7 @@
                     <!-- Current page's dimensions, cycling pixels → inches → millimetres →
                          points on each click (PageSizeReadout_Click). Collapsed while no document
                          is open, since there is no page to have a size. It sits in the footer,
-                         which AppScale.cs deliberately never scales, so it holds still under the
+                         which MainWindow.AppScale.cs deliberately never scales, so it holds still under the
                          cursor while it is being clicked through the units. -->
                     <Button x:Name="PageSizeButton" Content=""
                              Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
@@ -1724,7 +1724,7 @@
                              ToolTip="Page size. Click to cycle pixels, inches, millimetres and points."
                              AutomationProperties.Name="Current page size"
                              AutomationProperties.HelpText="The current page's dimensions. Click to cycle the units between pixels, inches, millimetres and points."/>
-                    <!-- App-wide UI scale (AppScale.cs), deliberately sat next to the page-zoom
+                    <!-- App-wide UI scale (MainWindow.AppScale.cs), deliberately sat next to the page-zoom
                          chip so the two sizes read as the pair they are: this one scales the
                          chrome, that one the page. Scroll to step, click to reset — the same
                          gestures as the title-bar logo, and reachable even when the custom title
@@ -1920,7 +1920,7 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Crop"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="R"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Redact"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="F"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Form fields"/></Grid>
-                            <!-- Keep in step with KeyboardMapOverlay.cs KbMap[KbLayer.Base] and with
+                            <!-- Keep in step with MainWindow.KeyboardMapOverlay.cs KbMap[KbLayer.Base] and with
                                  TrySelectToolByKey. This list and the rendered keyboard drifted apart
                                  once already and it was reported as a bug. -->
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="M"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Measure"/></Grid>
@@ -1932,7 +1932,7 @@
                         </StackPanel>
                     </Grid>
 
-                    <!-- Rendered visual keyboard; built lazily in KeyboardMapOverlay.cs. -->
+                    <!-- Rendered visual keyboard; built lazily in MainWindow.KeyboardMapOverlay.cs. -->
                     <StackPanel x:Name="ShortcutKeyboardHost" Visibility="Collapsed"/>
                 </StackPanel>
             </Border>

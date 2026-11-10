@@ -2,32 +2,19 @@
 // Inline editing of existing PDF text (double-click) and the placed text-box tool.
 // Both regions extracted verbatim from MainWindow.xaml.cs, in source order.
 
-using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.ExceptionServices;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
-using Docnet.Core;
-using Docnet.Core.Models;
 using TDPdf.Diagnostics;
 using TDPdf.Services;
 using Microsoft.Win32;
-using PdfSharpCore.Drawing;
-using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
-using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 
 namespace TDPdf
 {
@@ -143,7 +130,7 @@ namespace TDPdf
                 var tb = new TextBox
                 {
                     Text = hit.Text,
-                    Background = FrozenSolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
+                    Background = TdpDialog.FrozenSolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
                     Foreground = new SolidColorBrush(_textColor),
                     BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
                     BorderThickness = new Thickness(2),
@@ -430,10 +417,10 @@ namespace TDPdf
             }
             finally
             {
-                TryDeleteTemp(source);
+                TDPdf.Services.TempFilePolicy.TryDelete(source);
                 if (System.IO.File.Exists(result)
                     && !string.Equals(result, _currentFile, StringComparison.OrdinalIgnoreCase))
-                    TryDeleteTemp(result);
+                    TDPdf.Services.TempFilePolicy.TryDelete(result);
             }
         }
 
@@ -612,7 +599,7 @@ namespace TDPdf
                 Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
                 Title = "Select replacement image"
             };
-            if (dlg.ShowDialog() != true) return;
+            if (dlg.ShowDialog(this) != true) return;
 
             PushPageSnapshot(edit.PageIndex);
             edit.ReplacementImagePath = dlg.FileName;
@@ -906,8 +893,8 @@ namespace TDPdf
                 Tag = new PlacedTextContext { PageIndex = pageIdx, Existing = existing }
             };
             tb.Background = _textWhiteout
-                ? FrozenSolidColorBrush(_textFillColor)
-                : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
+                ? TdpDialog.FrozenSolidColorBrush(_textFillColor)
+                : TdpDialog.FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
             AutomationProperties.SetName(tb, "Annotation text");
             AutomationProperties.SetHelpText(tb, "Type annotation text. Press Enter to save or Escape to cancel.");
             double maxX = Math.Max(0, _textEditorCanvas.Width - width);
@@ -1044,8 +1031,8 @@ namespace TDPdf
         {
             if (_activeTextBox is null || _activeTextBox.Tag is not PlacedTextContext) return;
             _activeTextBox.Background = _textWhiteout
-                ? FrozenSolidColorBrush(_textFillColor)
-                : FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
+                ? TdpDialog.FrozenSolidColorBrush(_textFillColor)
+                : TdpDialog.FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
         }
 
         /// <summary>
