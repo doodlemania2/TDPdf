@@ -712,5 +712,426 @@ namespace TDPdf
             }
             RebuildTabStrip();
         }
+
+        // ============================================================
+        // Drag/drop: page reorder
+        // ============================================================
+
+        private void PageList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _dragStartPoint = e.GetPosition(null);
+            _pageClickCollapseIndex = -1;
+
+            // #135: WPF's Extended-mode ListBox collapses a multi-page selection to the one clicked
+            // page on mouse DOWN (ListBox.NotifyListItemClicked -> MakeSingleSelection), which is
+            // one gesture too early for dragging: by the time the pointer has moved far enough to
+            // start a drag, the block the user selected is already gone and only one page travels.
+            // So when the press lands on a page that is already part of a multi-page selection with
+            // no modifier held, swallow the event to keep the selection intact, and defer the
+            // collapse to mouse-up — where it only happens if no drag followed, which is exactly
+            // how Explorer and every other multi-select list behave.
+            if (e.ClickCount != 1
+                || (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != 0
+                || PageList.SelectedItems.Count <= 1)
+                return;
+
+            if (ContainerUnderMouse(e.OriginalSource as DependencyObject) is not ListBoxItem row) return;
+            int idx = PageList.ItemContainerGenerator.IndexFromContainer(row);
+            if (idx < 0 || !row.IsSelected) return;
+
+            _pageClickCollapseIndex = idx;
+            // The ListBox's own handler would also have focused the row; do it here since it will
+            // never run, or the sidebar silently stops answering the keyboard after this click.
+            row.Focus();
+            e.Handled = true;
+        }
+
+        /// <summary>The <see cref="ListBoxItem"/> a hit-tested element sits inside, if any.</summary>
+        private static ListBoxItem? ContainerUnderMouse(DependencyObject? hit)
+        {
+            while (hit is not null and not ListBoxItem)
+                hit = VisualTreeHelper.GetParent(hit);
+            return hit as ListBoxItem;
+        }
+
+        private void PageList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            // The press was on an already-selected page and no drag followed it, so it was a plain
+            // click after all: apply the selection collapse that mouse-down deferred.
+            if (_pageClickCollapseIndex >= 0 && _pageClickCollapseIndex < PageList.Items.Count)
+                PageList.SelectedIndex = _pageClickCollapseIndex;
+            _pageClickCollapseIndex = -1;
+        }
+
+        private void PageList_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed) return;
+            var diff = _dragStartPoint - e.GetPosition(null);
+            if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
+                Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
+            {
+                // #135 (upstream KillerPDF #233): drag every selected page as one ordered block,
+                // not just the one under the cursor. The list has been SelectionMode="Extended"
+                // all along, so people could already select a run of pages and then discovered
+                // that dragging moved exactly one of them.
+                int[] block = SelectedPageIndices();
+                if (block.Length > 0)
+                {
+                    // A drag is starting, so the press was not a plain click: nothing to collapse.
+                    _pageClickCollapseIndex = -1;
+                    // DoDragDrop blocks until the drag ends ANY way it can — dropped, Escape,
+                    // capture lost to Alt-Tab or a dialog — so this finally is the single teardown
+                    // point, the same role LostMouseCapture plays for the tab-strip drag.
+                    try { DragDrop.DoDragDrop(PageList, block, DragDropEffects.Move); }
+                    finally { HidePageDropLine(); }   // the drag can end anywhere, including nowhere
+                }
+            }
+        }
+
+        /// <summary>The selected pages' indices, ascending and distinct; empty when nothing is
+        /// selected. Unlike <see cref="SelectedPageIndicesForOcr"/> this does NOT fall back to the
+        /// current page — the callers here mutate the document, so "nothing selected" must mean
+        /// nothing happens rather than an unasked-for edit to page one.</summary>
+        private int[] SelectedPageIndices()
+            => PageList.SelectedItems.Cast<object>()
+                .Select(o => PageList.Items.IndexOf(o))
+                .Where(i => i >= 0)
+                .Distinct()
+                .OrderBy(i => i)
+                .ToArray();
+
+        private void PageList_DragOver(object sender, DragEventArgs e)
+        {
+            // #172 (upstream KillerPDF): the sidebar takes a FileDrop of PDFs/images as well as its own
+            // page-reorder payload. The internal payload keeps first refusal so a page drag is never
+            // mistaken for a file drop.
+            if (e.Data.GetDataPresent(typeof(int[])))
+            {
+                e.Effects = DragDropEffects.Move;
+                ShowPageDropLine(DropTargetIndex(e.GetPosition(PageList)));
+            }
+            else if (_doc is not null && DroppedOpenablePaths(e).Length > 0)
+            {
+                e.Effects = DragDropEffects.Copy;
+                HidePageDropLine();   // a file drop appends; there is no insertion point to promise
+            }
+            else
+            {
+                e.Effects = DragDropEffects.None;
+                HidePageDropLine();
+            }
+            e.Handled = true;
+        }
+
+        private void PageList_DragLeave(object sender, DragEventArgs e) => HidePageDropLine();
+
+        /// <summary>
+        /// The index a drop at <paramref name="pos"/> would insert BEFORE — i.e. the first page
+        /// whose midpoint is below the cursor, or one past the end.
+        /// </summary>
+        /// <remarks>
+        /// #135: one helper so the line drawn during the drag and the reorder performed on the drop
+        /// can never disagree. They were separate arithmetic before, which is the standard way a
+        /// drop indicator ends up pointing somewhere the page does not go.
+        /// </remarks>
+        private int DropTargetIndex(Point pos)
+        {
+            for (int i = 0; i < PageList.Items.Count; i++)
+            {
+                if (PageList.ItemContainerGenerator.ContainerFromIndex(i) is ListBoxItem item)
+                {
+                    var mid = item.TranslatePoint(new Point(0, item.ActualHeight / 2), PageList);
+                    if (pos.Y < mid.Y) return i;
+                }
+            }
+            return PageList.Items.Count;
+        }
+
+        private void ShowPageDropLine(int beforeIndex)
+        {
+            if (PageList.Items.Count == 0) { HidePageDropLine(); return; }
+
+            double y;
+            if (beforeIndex < PageList.Items.Count
+                && PageList.ItemContainerGenerator.ContainerFromIndex(beforeIndex) is ListBoxItem at)
+            {
+                y = at.TranslatePoint(new Point(0, 0), _sidebarListHost).Y;
+            }
+            else if (PageList.ItemContainerGenerator.ContainerFromIndex(PageList.Items.Count - 1)
+                     is ListBoxItem last)
+            {
+                y = last.TranslatePoint(new Point(0, last.ActualHeight), _sidebarListHost).Y;
+            }
+            else { HidePageDropLine(); return; }
+
+            // Virtualisation can put a container off-screen; a line drawn outside the host is
+            // meaningless, so say nothing rather than something wrong.
+            if (!IsFinite(y) || y < 0 || y > _sidebarListHost.ActualHeight) { HidePageDropLine(); return; }
+
+            _pageDropLine.Margin = new Thickness(6, y - 1, 6, 0);
+            _pageDropLine.Visibility = Visibility.Visible;
+        }
+
+        private void HidePageDropLine()
+        {
+            if (_pageDropLine is not null) _pageDropLine.Visibility = Visibility.Collapsed;
+        }
+
+        /// <summary>The dropped FileDrop paths this sidebar can append, using the same PDF/image
+        /// classification as the start-screen drop zone (<see cref="IsOpenablePath"/>). Folders and .zip
+        /// archives are deliberately NOT expanded here — that is the start screen's open flow, which asks
+        /// merge-vs-separate; a drop onto an open document's page list only ever appends.</summary>
+        private static string[] DroppedOpenablePaths(DragEventArgs e)
+            => e.Data.GetDataPresent(DataFormats.FileDrop)
+               && e.Data.GetData(DataFormats.FileDrop) is string[] paths
+                ? paths.Where(IsOpenablePath).ToArray()
+                : Array.Empty<string>();
+
+        /// <summary>
+        /// #172: appends the dropped files' pages to the open document. Upstream appends rather than
+        /// inserting at the drop point on purpose — appending leaves every existing page index untouched,
+        /// so annotations, rotations and the undo stack need no remapping. Reuses the two importers we
+        /// already have: <see cref="AppendPdfFileToDoc"/> (File ▸ Merge, including named-destination link
+        /// rewriting) and <see cref="AddImagePagesFromFile"/> (one page per image frame).
+        /// </summary>
+        private async void AppendFilesToCurrentDoc(string[] files)
+        {
+            if (_doc is null) return;
+            var doc = _doc;
+            // The rollback point (which also commits the active text box): the appends below change
+            // _doc across awaits, so this cannot go through RunPageOperation's single Action.
+            var snapshot = BeginPageOperation();
+            int before = doc.PageCount;
+            foreach (var f in files)
+            {
+                // A single bad file skips rather than aborting the drop: a folder-full drag routinely
+                // carries one encrypted or truncated file and the rest are still worth appending.
+                try
+                {
+                    if (IsPdfPath(f)) AppendPdfFileToDoc(doc, f);
+                    else              AddImagePagesFromFile(doc, f);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Sidebar drop skipped {f}: {ex}");
+                    // #203 (upstream v1.7.4): a damaged PDF used to be swallowed here — nothing was
+                    // appended and nothing was said, so the file simply vanished from the drop.
+                    // Offer the same repair the open path offers.
+                    if (IsPdfPath(f)) await TryAppendRepairedPdfAsync(doc, f);
+                }
+                if (_doc is null || !ReferenceEquals(_doc, doc))   // document swapped mid-await
+                {
+                    EndPageOperation(snapshot);
+                    return;
+                }
+            }
+            if (doc.PageCount == before)
+            {
+                EndPageOperation(snapshot);
+                SetStatus("Nothing could be appended because the dropped files could not be read.");
+                return;
+            }
+            int added = doc.PageCount - before;
+            try
+            {
+                // Same persist-and-repaint path as the page reorder below; it marks the document dirty.
+                // Appending renumbers nothing (see the summary), so the unsaved annotations are kept
+                // as they are rather than taking the reload's default clear.
+                SaveTempAndReload(keepAnnotations: true);
+                EndPageOperation(snapshot);
+                SetStatus($"Appended {added} page{(added == 1 ? "" : "s")} from {files.Length} file{(files.Length == 1 ? "" : "s")}");
+            }
+            catch (Exception ex)
+            {
+                RollBackPageOperation(snapshot, "Append", ex);
+            }
+        }
+
+        /// <summary>
+        /// #203: offers to repair a dropped PDF that PdfSharpCore could not read, and appends the
+        /// repaired copy on success. The original file is never written to.
+        /// </summary>
+        /// <remarks>
+        /// Only the lossless strategy is offered here, deliberately narrower than upstream's three.
+        /// <see cref="TDPdf.Services.PdfiumInterop.TryPdfiumRepair"/> re-saves through PDFium and
+        /// keeps text, forms and bookmarks. The open path's raster recovery is NOT chained on:
+        /// opening a rasterized document tells the user the whole file was recovered from pixels,
+        /// whereas appending one would bury a run of flattened, unsearchable pages in the middle of
+        /// a live document with nothing to distinguish them. If PDFium cannot read it either, say so
+        /// and leave the document alone.
+        /// </remarks>
+        private async Task TryAppendRepairedPdfAsync(PdfDocument doc, string path)
+        {
+            string name = System.IO.Path.GetFileName(path);
+            var ask = TdpDialog.Show(this,
+                $"\"{name}\" has a damaged structure and could not be appended.\n\n" +
+                "Attempt a repair? A repaired copy is used, and the original file is not changed.\n\n" +
+                "A repaired file may be missing bookmarks, forms and other interactive features.",
+                "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (ask != MessageBoxResult.Yes) return;
+
+            string fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+            SetBusy(true, $"Repairing {name}...");
+            try
+            {
+                bool repaired = await Task.Run(
+                    () => TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath));
+                if (repaired)
+                {
+                    try
+                    {
+                        AppendPdfFileToDoc(doc, fixedPath);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Repaired append failed {path}: {ex}");
+                    }
+                }
+                TdpDialog.Show(this, $"\"{name}\" could not be repaired.", "TDPdf",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+                try { if (File.Exists(fixedPath)) File.Delete(fixedPath); } catch { /* temp file */ }
+            }
+        }
+
+        private void PageList_Drop(object sender, DragEventArgs e)
+        {
+            HidePageDropLine();
+            // #172: a FileDrop appends; anything carrying the internal page payload falls through to
+            // the reorder below, unchanged.
+            if (_doc is not null && !e.Data.GetDataPresent(typeof(int[])))
+            {
+                var files = DroppedOpenablePaths(e);
+                if (files.Length > 0) { AppendFilesToCurrentDoc(files); e.Handled = true; }
+                return;
+            }
+            if (_doc is null || e.Data.GetData(typeof(int[])) is not int[] block || block.Length == 0)
+                return;
+
+            // The insertion line the user was just looking at and the move performed here read the
+            // same DropTargetIndex, and the same PageBlockMove arithmetic converts that gap into an
+            // insert position — so the line can never promise a place the pages do not go.
+            MovePageBlock(TDPdf.Services.PageBlockMove.Compute(
+                _doc.PageCount, block, DropTargetIndex(e.GetPosition(PageList))));
+        }
+
+        /// <summary>
+        /// Carries out a page-reorder <see cref="TDPdf.Services.PageBlockMove.Plan"/> against the
+        /// open document. The one page-reorder mutation in the app: the thumbnail drag and the
+        /// Move Page Up / Down rows both come here, so the two cannot drift apart.
+        /// </summary>
+        private void MovePageBlock(TDPdf.Services.PageBlockMove.Plan plan)
+        {
+            // IsNoOp covers a block dropped back onto itself, or into a gap inside itself. It has to
+            // be honoured rather than performed harmlessly: a reorder rewrites and reloads the
+            // document — a full re-render, a dirty flag and a lost scroll position — in exchange
+            // for nothing at all.
+            if (_doc is null || plan.IsNoOp || plan.From.Length == 0) return;
+            // It had no error handling at all: a failed reload escaped to the crash handler with
+            // the pages already moved in memory. RunPageOperation (which also commits the active
+            // text box) shows the error and puts the document back.
+            RunPageOperation("Move pages", () => MovePageBlockCore(plan));
+        }
+
+        private void MovePageBlockCore(TDPdf.Services.PageBlockMove.Plan plan)
+        {
+            var doc = _doc!;
+
+            // Each page's annotations travel with it (upstream KillerPDF #429 widened to reorder).
+            // PageBlockMove.Apply is the model of exactly the mutation below, so inverting the order
+            // it produces gives every page's new number; the map is taken against the document as
+            // it stands and applied once the pages have moved.
+            var map = TDPdf.Services.PageIndexRemap.ForOrder(
+                doc.PageCount, TDPdf.Services.PageBlockMove.Apply(doc.PageCount, plan));
+
+            // Lift the pages in document order, then remove from the end so the earlier indices
+            // stay valid while we do it. Each PdfPage carries its own /Rotate, so a page's rotation
+            // travels with the page object itself and needs no separate bookkeeping.
+            var moving = plan.From.Select(i => doc.Pages[i]).ToList();
+            for (int k = plan.From.Length - 1; k >= 0; k--) doc.Pages.RemoveAt(plan.From[k]);
+
+            int insertAt = Math.Clamp(plan.InsertAt, 0, doc.PageCount);
+            for (int k = 0; k < moving.Count; k++) doc.Pages.Insert(insertAt + k, moving[k]);
+
+            // Persists, reloads, repaints and marks the document dirty. A reorder moves pages but
+            // changes no page's geometry, so the annotations — renumbered with their pages — are
+            // still valid where they are drawn, and are kept.
+            ApplyPageIndexMap(map);
+            SaveTempAndReload(keepAnnotations: true);
+
+            // Leave the block selected where it landed, so a second drag (or a second Move Down)
+            // continues from where the eye already is rather than from wherever the rebuilt list
+            // decided to put the selection.
+            PageList.SelectedItems.Clear();
+            if (insertAt >= PageList.Items.Count) return;
+            // SelectedIndex FIRST, then the rest of the block: on a multi-select ListBox the
+            // SelectedIndex setter means "select just this one", so assigning it afterwards would
+            // quietly throw away every page but the first. It is also what drives
+            // PageList_SelectionChanged, and therefore what puts the page in the viewer.
+            PageList.SelectedIndex = insertAt;
+            for (int k = 1; k < moving.Count && insertAt + k < PageList.Items.Count; k++)
+                PageList.SelectedItems.Add(PageList.Items[insertAt + k]);
+        }
+
+        /// <summary>
+        /// Duplicate Page(s): inserts a copy of every selected page as one block immediately after
+        /// the last of them, and leaves the copies selected.
+        /// </summary>
+        /// <remarks>
+        /// The copy itself is <see cref="TDPdf.Services.PdfPageDuplicate"/>'s problem, and it is a
+        /// real problem — inserting a page back into the document it already belongs to shares one
+        /// object rather than copying it, and PdfSharpCore has no in-document copy to offer. That
+        /// file's header explains the mechanism; tests/PdfCore proves the two pages are genuinely
+        /// independent by mutating one across a save round trip and checking the other.
+        ///
+        /// Everything after the copy is the ordinary structural-edit path: mutate _doc.Pages,
+        /// renumber the unsaved annotations to match (ApplyPageIndexMap), then SaveTempAndReload,
+        /// which is what marks the document dirty. The COPIES start clean: they are made from the
+        /// saved page content, which the unsaved overlay is not part of, and cloning the overlay
+        /// onto them would be guessing at intent. But the originals — and every other page in the
+        /// document — keep theirs. This used to take the reload's default clear, which bought
+        /// "no two identical-looking pages where only one is annotated" by throwing away every
+        /// unsaved annotation in the document, including on pages the duplicate never touched.
+        /// </remarks>
+        private void DuplicatePages_Click()
+        {
+            if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            var doc = _doc;
+            int[] pages = SelectedPageIndices();
+            // The menu row is disabled with an empty selection, so this only catches a caller that
+            // arrives some other way; it must not fall back to page one and edit the document unasked.
+            if (pages.Length == 0) { SetStatus("Select the pages to duplicate first."); return; }
+            RunPageOperation("Duplicate", () =>
+            {
+                doc = _doc!;
+                int oldCount = doc.PageCount;
+                int insertAt = TDPdf.Services.PdfPageDuplicate.Duplicate(doc, pages);
+                if (insertAt < 0) return;
+                // The copies arrive as one run at insertAt, so the map is an insertion of however
+                // many pages were actually added; nothing maps onto the copies themselves.
+                ApplyPageIndexMap(TDPdf.Services.PageIndexRemap.ForInsert(oldCount, insertAt, doc.PageCount - oldCount));
+                SaveTempAndReload(keepAnnotations: true);
+
+                // #135 item 5: the copies end up selected, and therefore shown in the viewer — the
+                // whole point of the request. Same order of operations as MovePageBlock above, for
+                // the same reason: on a multi-select ListBox the SelectedIndex setter means "select
+                // just this one", so it has to go FIRST and the rest of the block be added after,
+                // or every copy but the first is silently dropped from the selection.
+                PageList.SelectedItems.Clear();
+                if (insertAt < PageList.Items.Count)
+                {
+                    PageList.SelectedIndex = insertAt;
+                    for (int k = 1; k < pages.Length && insertAt + k < PageList.Items.Count; k++)
+                        PageList.SelectedItems.Add(PageList.Items[insertAt + k]);
+                }
+                SetStatus($"Duplicated {pages.Length} page{(pages.Length == 1 ? "" : "s")}");
+            });
+        }
+
     }
 }

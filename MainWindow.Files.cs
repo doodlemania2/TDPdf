@@ -2865,5 +2865,540 @@ namespace TDPdf
             _currentFile = reopenedPath;
             previous?.Close();
         }
+
+        // ============================================================
+        // Drag/drop: folders, .zip archives, images, and multi-file drops
+        // ============================================================
+        // Entry point for any file/folder/archive drop. Expands dropped folders (recursively)
+        // and .zip archives, then opens the collected PDFs/images — asking merge-vs-separate
+        // when there is more than one.
+
+        private static readonly string[] DropImageExt = { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff" };
+        private static bool IsPdfPath(string p)      => p.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+        private static bool IsImagePath(string p)    => DropImageExt.Any(ext => p.EndsWith(ext, StringComparison.OrdinalIgnoreCase));
+        private static bool IsOpenablePath(string p) => IsPdfPath(p) || IsImagePath(p);
+
+        private async Task OnPathsDropped(string[] paths)
+        {
+            var found    = new List<string>();
+            var tempDirs = new List<string>();   // extracted-zip temp dirs we may need to clean up
+            bool expanded = false;               // a folder or archive was expanded
+            try
+            {
+                foreach (var p in paths)
+                {
+                    if (Directory.Exists(p)) { expanded = true; CollectOpenable(p, found); }
+                    else if (p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var dir = ExtractZipToTemp(p);
+                        if (dir != null) { expanded = true; tempDirs.Add(dir); CollectOpenable(dir, found); }
+                    }
+                    else if (IsOpenablePath(p)) found.Add(p);
+                }
+            }
+            catch (Exception ex)
+            {
+                CleanupDirs(tempDirs);
+                TdpDialog.Show(this, $"Could not read the dropped items:\n{ex.Message}",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            if (found.Count == 0)
+            {
+                CleanupDirs(tempDirs);
+                SetStatus("Nothing to open. Drop PDFs, images, folders, or .zip archives");
+                return;
+            }
+
+            // Guard against a folder/archive holding a huge number of files: opening or merging them
+            // all could exhaust memory. Cap to a sane maximum, opening only the first N (name-sorted).
+            const int MaxDropFiles = 50;
+            if (found.Count > MaxDropFiles)
+            {
+                int total = found.Count;
+                var proceed = TdpDialog.Show(this,
+                    $"The drop contains {total} openable files. Open only the first {MaxDropFiles} (sorted by name)?",
+                    "TDPdf", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                if (proceed != MessageBoxResult.OK) { CleanupDirs(tempDirs); SetStatus("Drop cancelled"); return; }
+                found.Sort(StringComparer.OrdinalIgnoreCase);
+                found = found.GetRange(0, MaxDropFiles);
+                SetStatus($"Opening the first {MaxDropFiles} of {total} dropped files");
+            }
+
+            // A single dropped file (no folder/zip expansion) opens directly, preserving today's
+            // single-PDF-drop behavior.
+            if (!expanded && found.Count == 1) { await OpenDroppedAsync(found[0]); return; }
+
+            var choice = TdpDialog.Show(this,
+                $"Open {found.Count} items?\n\nYes = merge them into one PDF\nNo = open each in its own tab",
+                "TDPdf", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+
+            if (choice == MessageBoxResult.Yes)
+                await OpenMergedAsync(found, tempDirs);       // async: builds on a background thread, then owns temp cleanup
+            else if (choice == MessageBoxResult.No)
+                await OpenSeparatelyAsync(found, tempDirs);   // keep temp for the session; opened docs may reference extracted files
+            else
+                CleanupDirs(tempDirs);                        // cancelled
+        }
+
+        private async Task OpenDroppedAsync(string path)
+        {
+            if (IsPdfPath(path)) await OpenInTabAsync(path);
+            else await OpenImagesAsImportedTabAsync(new[] { path }, System.IO.Path.GetFileName(path));
+        }
+
+        private async Task OpenSeparatelyAsync(List<string> found, List<string> tempDirs)
+        {
+            // Same reasoning as Open_Click: OpenInTabAsync's own bookkeeping has no try/catch of its
+            // own, so one bad item in the drop used to be able to abort every item after it with no
+            // indication why fewer tabs than expected showed up.
+            int failed = 0;
+            foreach (var f in found)
+            {
+                try
+                {
+                    if (IsPdfPath(f))
+                    {
+                        await OpenInTabAsync(f);
+                        // A PDF that came out of a dropped .zip lives in an extraction folder TDPdf made
+                        // under %TEMP% and that the OS eventually clears — a working file, not the user's
+                        // document, so it must never be an in-place save target. Dropping OriginalPath
+                        // routes Ctrl+S to Save As. Files dropped directly keep their real path and save
+                        // normally, including the ones a user genuinely keeps under %TEMP%.
+                        if (IsUnderAnyDirectory(f, tempDirs) && _doc is not null &&
+                            string.Equals(_currentFile, f, StringComparison.OrdinalIgnoreCase))
+                            _ctx.OriginalPath = null;
+                    }
+                    else await OpenImagesAsImportedTabAsync(new[] { f }, System.IO.Path.GetFileName(f));
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    Telemetry.TrackCrash(ex, "Open.DroppedSeparately", recoverable: true);
+                }
+            }
+            SetStatus(failed == 0
+                ? $"Opened {found.Count} item(s) in separate tabs"
+                : $"Opened {found.Count - failed} of {found.Count} item(s) in separate tabs; {failed} failed");
+            // Extracted-zip temp dirs are intentionally NOT deleted here: an imported-image tab keeps
+            // no handle, but a PDF opened directly from an extracted folder is read lazily, so the
+            // extracted files must survive for the session. The OS clears %TEMP% eventually.
+        }
+
+        // Builds ONE combined PDF from the dropped files on a background thread, then opens it as an
+        // unsaved tab (Save routes to Save As). Owns cleanup of the extracted-zip temp dirs.
+        private async Task OpenMergedAsync(List<string> found, List<string> tempDirs)
+        {
+            SetStatus($"Merging {found.Count} dropped items…");
+            string? tempPath;
+            try
+            {
+                // Build off the UI thread so the window stays responsive while it works.
+                tempPath = await Task.Run(() => BuildCombinedPdf(found));
+            }
+            catch (Exception ex)
+            {
+                CleanupDirs(tempDirs);
+                TdpDialog.Show(this, $"Could not merge the dropped files:\n{ex.Message}",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            if (tempPath is null)
+            {
+                CleanupDirs(tempDirs);
+                SetStatus("Nothing could be read from the dropped files");
+                return;
+            }
+
+            await OpenInTabAsync(tempPath);
+            FinalizeUnsavedTab(tempPath, "Combined.pdf", $"Merged {found.Count} item(s) into one PDF");
+            CleanupDirs(tempDirs);
+        }
+
+        // Opens the given image(s) as a single unsaved imported-PDF tab (same UNSAVED flow as New:
+        // dirty orange Save icon, Save routes to Save As, Close warns).
+        private async Task OpenImagesAsImportedTabAsync(string[] images, string displayName)
+        {
+            string tempPath;
+            try { tempPath = BuildPdfFromImages(images); }
+            catch (Exception ex)
+            {
+                TdpDialog.Show(this, $"Could not import the image(s):\n{ex.Message}",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            await OpenInTabAsync(tempPath);
+            FinalizeUnsavedTab(tempPath, displayName, $"Imported {images.Length} image(s)");
+        }
+
+        // After OpenInTabAsync has loaded a working file TDPdf itself created, mark the active tab as
+        // having no on-disk home. Guarded so a failed/reverted open (which returns to the previous
+        // tab) is left untouched. <paramref name="markDirty"/> is false for a blank New document:
+        // it has nothing unsaved in it yet, so closing it must not prompt.
+        private void FinalizeUnsavedTab(string tempPath, string displayName, string status, bool markDirty = true)
+        {
+            if (_doc is null || !string.Equals(_currentFile, tempPath, StringComparison.OrdinalIgnoreCase))
+                return;   // open failed and reverted to a different tab — don't clobber it
+            SetDisplayName(displayName);
+            _ctx.IsUntitled = true;     // no real on-disk home yet → Ctrl+S routes to Save As
+            _ctx.OriginalPath = null;   // the working file is a TDPdf-created temp, never a save target
+            if (markDirty) MarkDirty(true);
+            SetStatus(status);
+            RebuildTabStrip();
+        }
+
+        // Recursively gathers the PDFs and images under a folder, in a stable name order.
+        private static void CollectOpenable(string dir, List<string> found)
+        {
+            IEnumerable<string> files;
+            try { files = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories); }
+            catch { return; }
+            foreach (var f in files.Where(IsOpenablePath).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                found.Add(f);
+        }
+
+        // True when path sits inside any of dirs. Compares full paths with a trailing separator so a
+        // sibling folder whose name merely starts with the same text cannot match.
+        private static bool IsUnderAnyDirectory(string path, List<string> dirs)
+        {
+            try
+            {
+                string full = System.IO.Path.GetFullPath(path);
+                foreach (var d in dirs)
+                {
+                    if (string.IsNullOrWhiteSpace(d)) continue;
+                    string dir = System.IO.Path.GetFullPath(d);
+                    if (!dir.EndsWith(System.IO.Path.DirectorySeparatorChar))
+                        dir += System.IO.Path.DirectorySeparatorChar;
+                    if (full.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            catch { /* malformed path — treat as not extracted */ }
+            return false;
+        }
+
+        private static string? ExtractZipToTemp(string zipPath)
+        {
+            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "tdpdf-zip-" + Guid.NewGuid().ToString("N")[..8]);
+            try
+            {
+                Directory.CreateDirectory(dir);
+                System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, dir);
+                return dir;
+            }
+            catch { try { Directory.Delete(dir, true); } catch { } return null; }
+        }
+
+        private static void CleanupDirs(List<string> dirs)
+        {
+            foreach (var d in dirs) { try { Directory.Delete(d, true); } catch { } }
+        }
+
+        // Builds one PDF from a mix of PDFs (pages imported in order) and images (one page each).
+        // Unreadable / encrypted entries are skipped rather than aborting the whole merge. Returns
+        // a temp PDF path, or null if nothing could be read.
+        private static string? BuildCombinedPdf(List<string> files)
+        {
+            using var outPdf = new PdfDocument();
+            foreach (var f in files)
+            {
+                if (IsPdfPath(f))
+                {
+                    try
+                    {
+                        using var src = PdfReader.Open(f, PdfDocumentOpenMode.Import);
+                        for (int i = 0; i < src.PageCount; i++) outPdf.AddPage(src.Pages[i]);
+                    }
+                    catch { /* skip an unreadable/encrypted PDF */ }
+                }
+                else
+                {
+                    try { AddImagePagesFromFile(outPdf, f); } catch { /* skip an unreadable image */ }
+                }
+            }
+
+            if (outPdf.PageCount == 0) return null;
+            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_combined_{Guid.NewGuid():N}.pdf");
+            outPdf.Save(outPath);
+            return outPath;
+        }
+
+        // Builds a PDF where each page is exactly one source image (multi-frame TIFF/GIF expand to one
+        // page per frame). Page size matches the image's physical size at its own DPI (96 if none).
+        private static string BuildPdfFromImages(string[] imagePaths)
+        {
+            using var pdf = new PdfDocument();
+            foreach (var path in imagePaths) AddImagePagesFromFile(pdf, path);
+            if (pdf.PageCount == 0) throw new InvalidOperationException("No images could be read.");
+            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_imported_{Guid.NewGuid():N}.pdf");
+            pdf.Save(outPath);
+            return outPath;
+        }
+
+        // Appends one page per image frame. Page size matches the image's physical size at its own DPI.
+        private static void AddImagePagesFromFile(PdfDocument pdf, string path)
+        {
+            using var img = System.Drawing.Image.FromFile(path);
+            var dim = new System.Drawing.Imaging.FrameDimension(img.FrameDimensionsList[0]);
+            int frameCount = Math.Max(1, img.GetFrameCount(dim));
+
+            // #366: a source that is ALREADY a JPEG goes into the PDF byte for byte. The loop below
+            // redraws every frame into a 32bpp bitmap and re-encodes it as PNG, which PdfSharpCore
+            // then stores as 24-bit RGB FlateDecode — so importing a 400 KB phone photo produced a
+            // 12 MB page, and the picture in the file was no longer the picture the user chose.
+            //
+            // Note that handing the JPEG bytes to XImage would NOT have fixed it: PdfSharpCore's
+            // image source decodes the stream and saves it again at quality 75. Only writing the
+            // XObject directly (PdfPageImageEncoder) leaves the original bytes alone.
+            //
+            // Single-frame only — a multi-frame TIFF/GIF is one page per frame and cannot be one
+            // pass-through image — and only for the JPEG variants /DCTDecode actually covers; the
+            // sniff refuses anything else, which falls through to the lossless path unchanged.
+            if (frameCount == 1
+                && PdfPageImageEncoder.TryReadPassThroughJpeg(path) is { } jpeg
+                && jpeg.PixelWidth == img.Width && jpeg.PixelHeight == img.Height)
+            {
+                double jpegDpiX = img.HorizontalResolution > 0 ? img.HorizontalResolution : 96.0;
+                double jpegDpiY = img.VerticalResolution   > 0 ? img.VerticalResolution   : 96.0;
+                var jpegPage = pdf.AddPage();
+                jpegPage.Width  = img.Width  * 72.0 / jpegDpiX;
+                jpegPage.Height = img.Height * 72.0 / jpegDpiY;
+                PdfPageImageEncoder.PaintFullPage(
+                    pdf, jpegPage, jpeg, jpegPage.Width.Point, jpegPage.Height.Point);
+                return;
+            }
+
+            for (int f = 0; f < frameCount; f++)
+            {
+                img.SelectActiveFrame(dim, f);
+
+                int wpx = img.Width, hpx = img.Height;
+                double dpiX = img.HorizontalResolution > 0 ? img.HorizontalResolution : 96.0;
+                double dpiY = img.VerticalResolution   > 0 ? img.VerticalResolution   : 96.0;
+                double wPt = wpx * 72.0 / dpiX;
+                double hPt = hpx * 72.0 / dpiY;
+
+                // Copy the active frame to a fresh 32bpp bitmap, then encode PNG (XImage reads that).
+                byte[] png;
+                using (var frame = new System.Drawing.Bitmap(wpx, hpx,
+                           System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    using (var g = System.Drawing.Graphics.FromImage(frame))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(img, 0, 0, wpx, hpx);
+                    }
+                    using var ms = new MemoryStream();
+                    frame.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    png = ms.ToArray();
+                }
+
+                var page = pdf.AddPage();
+                page.Width  = wPt;   // XUnit implicitly treats a double as points
+                page.Height = hPt;
+
+                using var gfx  = XGraphics.FromPdfPage(page);
+                using var xImg = XImage.FromStream(() => new MemoryStream(png));
+                gfx.DrawImage(xImg, 0, 0, wPt, hPt);
+            }
+        }
+
+        // ============================================================
+        // Recent files (MRU) — most-recent first, capped at 10
+        // ============================================================
+        private const int RecentFilesMax = 10;
+
+        // A path is eligible for the recent list only if it is a genuine, existing on-disk file that
+        // does NOT live under the temp directory — that is where New / merged-on-drop / imported-image
+        // working copies live, and those have no lasting saved location worth remembering.
+        private static bool IsRecentEligiblePath(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            try
+            {
+                if (!System.IO.File.Exists(path)) return false;
+                string full = System.IO.Path.GetFullPath(path);
+                string temp = System.IO.Path.GetFullPath(System.IO.Path.GetTempPath());
+                return !full.StartsWith(temp, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        // Reads the stored list, dropping any entry that no longer exists on disk. Entries are
+        // normalised to full paths and de-duplicated case-insensitively: older builds stored paths
+        // as given (forward slashes, relative segments), so one file could be listed twice.
+        private static List<string> GetRecentFiles()
+        {
+            var list = new List<string>();
+            var raw = TDPdf.Properties.Settings.Default.RecentFiles;
+            if (string.IsNullOrEmpty(raw)) return list;
+            foreach (var p in TDPdf.Services.FilePathPolicy.NormalizeDistinct(raw.Split('|')))
+            {
+                try { if (System.IO.File.Exists(p)) list.Add(p); } catch { }
+            }
+            return list;
+        }
+
+        private void AddRecentFile(string path)
+        {
+            // #146: the privacy toggle stops the list growing at the single write path. Reads are
+            // left alone deliberately — turning the toggle on empties the store, so there is
+            // nothing left to read, and turning it back off starts an empty list rather than
+            // resurrecting the old one.
+            if (TDPdf.Properties.Settings.Default.DontRememberRecentFiles) return;
+            if (string.IsNullOrWhiteSpace(path)) return;
+            string normalized;
+            try { normalized = System.IO.Path.GetFullPath(path); } catch { normalized = path; }
+
+            var list = GetRecentFiles();
+            list.RemoveAll(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase));
+            list.Insert(0, normalized);
+            while (list.Count > RecentFilesMax) list.RemoveAt(list.Count - 1);
+
+            TDPdf.Properties.Settings.Default.RecentFiles = string.Join("|", list);   // '|' is illegal in Windows paths
+            TDPdf.Properties.Settings.Default.Save();
+            RefreshRecentFilesUi();
+        }
+
+        private void ClearRecentFiles()
+        {
+            TDPdf.Properties.Settings.Default.RecentFiles = "";
+            TDPdf.Properties.Settings.Default.Save();
+            RefreshRecentFilesUi();
+        }
+
+        private void ClearRecent_Click(object sender, RoutedEventArgs e) => ClearRecentFiles();
+
+        // Rebuilds the start-screen recent-files list (hidden when there are none).
+        private void RefreshRecentFilesUi()
+        {
+            _recentFilesList.Children.Clear();
+            var recents = GetRecentFiles();
+            if (recents.Count == 0) { _recentFilesBox.Visibility = Visibility.Collapsed; return; }
+            _recentFilesBox.Visibility = Visibility.Visible;
+            foreach (var path in recents)
+                _recentFilesList.Children.Add(MakeRecentRow(path));
+        }
+
+        // A single clickable recent-files row: PDF glyph + filename (primary) + dimmed full path.
+        private Button MakeRecentRow(string path)
+        {
+            string fileName = System.IO.Path.GetFileName(path);
+
+            var glyph = new TextBlock
+            {
+                Text       = "\uE8A5",   // Segoe MDL2 "Document"
+                FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
+                FontSize   = 18,
+                Foreground = BrushResource("AccentGreen"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin     = new Thickness(0, 0, 10, 0)
+            };
+
+            var nameText = new TextBlock
+            {
+                Text         = fileName,
+                FontFamily   = new System.Windows.Media.FontFamily("Segoe UI"),
+                FontSize     = 13,
+                Foreground   = BrushResource("TextPrimary"),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var pathText = new TextBlock
+            {
+                Text         = path,
+                FontFamily   = new System.Windows.Media.FontFamily("Segoe UI"),
+                FontSize     = 11,
+                Foreground   = BrushResource("TextSecondary"),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var textCol = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            textCol.Children.Add(nameText);
+            textCol.Children.Add(pathText);
+
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(glyph, 0);
+            Grid.SetColumn(textCol, 1);
+            grid.Children.Add(glyph);
+            grid.Children.Add(textCol);
+
+            var normal = (System.Windows.Media.Brush)System.Windows.Media.Brushes.Transparent;
+            var hover  = BrushResource("BgHover");
+            var btn = new Button
+            {
+                Content                    = grid,
+                Background                 = normal,
+                BorderThickness            = new Thickness(0),
+                Padding                    = new Thickness(8, 6, 8, 6),
+                Cursor                     = Cursors.Hand,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Template                   = MakeRecentRowTemplate(),
+                ToolTip                    = path
+            };
+            AutomationProperties.SetName(btn, "Open " + fileName);
+            btn.MouseEnter += (_, _2) => btn.Background = hover;
+            btn.MouseLeave += (_, _2) => btn.Background = normal;
+            btn.Click      += async (_, _2) => await OpenRecentAsync(path);
+            return btn;
+        }
+
+        // Minimal chrome-free button template (Border + ContentPresenter) so the row shows only our
+        // hover background — mirrors the pattern used by TdpDialog's buttons.
+        private static ControlTemplate MakeRecentRowTemplate()
+        {
+            var border = new FrameworkElementFactory(typeof(Border));
+            border.SetBinding(Border.BackgroundProperty,
+                new System.Windows.Data.Binding("Background")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            border.SetBinding(Border.PaddingProperty,
+                new System.Windows.Data.Binding("Padding")
+                { RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent) });
+            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
+            var cp = new FrameworkElementFactory(typeof(ContentPresenter));
+            cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Stretch);
+            cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            border.AppendChild(cp);
+            return new ControlTemplate(typeof(Button)) { VisualTree = border };
+        }
+
+        private async Task OpenRecentAsync(string path)
+        {
+            if (System.IO.File.Exists(path)) { await OpenInTabAsync(path); return; }
+            TdpDialog.Show(this, $"That file is no longer available:\n{path}",
+                "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RefreshRecentFilesUi();   // drop the now-missing entry
+        }
+
+        // Recent-files dropdown on the Open toolbar button (right-click).
+        private void OpenBtn_RightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+            var menu = new ContextMenu();
+            var recents = GetRecentFiles();
+            if (recents.Count == 0)
+            {
+                menu.Items.Add(new MenuItem { Header = "No recent files", IsEnabled = false });
+            }
+            else
+            {
+                foreach (var p in recents)
+                {
+                    string path = p;   // capture
+                    var item = MakeMenuItem(System.IO.Path.GetFileName(path), async (_, _2) => await OpenRecentAsync(path),
+                                            null, null, "\uE8A5", literalHeader: true);
+                    item.ToolTip = path;
+                    menu.Items.Add(item);
+                }
+                menu.Items.Add(new Separator());
+                menu.Items.Add(MakeMenuItem("Clear List", (_, _2) => ClearRecentFiles(), null, null, "\uE74D"));
+            }
+            menu.PlacementTarget = (UIElement)sender;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            menu.IsOpen = true;
+        }
+
     }
 }
