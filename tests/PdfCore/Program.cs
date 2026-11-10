@@ -3,6 +3,14 @@ using PdfSharpCore.Drawing;
 using PdfSharpCore.Fonts;
 using TDPdf.Services;
 
+// Pin the culture before anything creates a PdfPage. PdfSharpCore sizes a new page from the
+// machine's region (A4 when metric, Letter otherwise), and the fixtures assume US Letter, so a
+// metric runner (the Linux release runner) would otherwise fail ~35 geometry checks.
+System.Globalization.CultureInfo.DefaultThreadCurrentCulture =
+System.Globalization.CultureInfo.DefaultThreadCurrentUICulture =
+System.Globalization.CultureInfo.CurrentCulture =
+System.Globalization.CultureInfo.CurrentUICulture = new System.Globalization.CultureInfo("en-US");
+
 // ── Put the platform's PDFium where the shipping code expects to find it ───────────────
 // PdfiumInterop probes its capabilities with NativeLibrary.TryLoad("pdfium.dll"), which does
 // NOT consult a DllImportResolver. On Windows that file sits beside the exe, so it just
