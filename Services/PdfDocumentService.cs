@@ -1,12 +1,6 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Windows;
-using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Docnet.Core;
 using Docnet.Core.Models;

@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.Advanced;
 using PdfSharpCore.Pdf.IO;

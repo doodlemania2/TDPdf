@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using UglyToad.PdfPig.Content;
 using PdfPigDoc = UglyToad.PdfPig.PdfDocument;
 

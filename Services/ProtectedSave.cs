@@ -1,4 +1,3 @@
-using System;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
 using PdfSharpCore.Pdf.Security;

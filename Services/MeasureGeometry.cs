@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using PdfSharpCore.Pdf;
 
 namespace TDPdf.Services

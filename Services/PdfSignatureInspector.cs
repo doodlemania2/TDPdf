@@ -1,13 +1,9 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.Advanced;
 
 namespace TDPdf.Services
 {

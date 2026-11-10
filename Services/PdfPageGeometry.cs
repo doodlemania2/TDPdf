@@ -1,7 +1,5 @@
-using System;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.Advanced;
 
 namespace TDPdf.Services
 {

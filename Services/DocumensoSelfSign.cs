@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-
 namespace TDPdf.Services
 {
     /// <summary>Where the one signature field of a Sign This Document comes from.</summary>

@@ -10,7 +10,6 @@
 // canvas DIPs, so a re-render at another DPI cannot move them; see DocumensoFieldGeometry for why
 // that frame and the canvas frame are the same frame.
 
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;

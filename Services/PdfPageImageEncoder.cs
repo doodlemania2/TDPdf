@@ -1,12 +1,9 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
-using PdfSharpCore.Pdf.Advanced;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.PixelFormats;

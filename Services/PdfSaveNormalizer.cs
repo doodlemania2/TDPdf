@@ -1,4 +1,3 @@
-using System;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
 

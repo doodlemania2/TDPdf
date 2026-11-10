@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace TDPdf.Services
 {
     /// <summary>Text helpers for AcroForm appearance streams: DA parsing and PDF string escaping.</summary>

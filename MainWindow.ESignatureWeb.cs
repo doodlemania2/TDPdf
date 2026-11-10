@@ -7,7 +7,6 @@
 // page in the default browser, saying why in the status bar — never a modal, and never the page's
 // address (a signing link is as good as the signature).
 
-using System.Collections.Generic;
 using System.Windows;
 using TDPdf.Diagnostics;
 using TDPdf.Services;

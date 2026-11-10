@@ -1,4 +1,3 @@
-using System.Threading;
 using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
