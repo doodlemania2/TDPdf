@@ -1,3 +1,5 @@
+# The shared workflow lives in the public fleet-presence-dispatch repo: a public repo like this
+# one cannot call a reusable workflow from a private repo.
 # Tells tdpdf.com to rebuild on every push to main (fleet presence standard, requirement 7).
 # The site works out which features changed from presence/features.json. A feature that turns
 # "ready" also gets a social post drafted in TDPPublic.
@@ -19,7 +21,7 @@ concurrency:
 
 jobs:
   presence:
-    uses: doodlemania2/fleet-presence/.github/workflows/presence-dispatch.yml@main
+    uses: doodlemania2/fleet-presence-dispatch/.github/workflows/presence-dispatch.yml@main
     with:
       property: tdpdf
       targets: '["doodlemania2/tdpdf-site"]'
