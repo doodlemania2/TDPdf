@@ -78,7 +78,7 @@
       "id": "edit-text",
       "name": "Edit existing text",
       "status": "ready",
-      "summary": "Double-click a line and retype it in the same font, size and colour, so the old words are gone.",
+      "summary": "Pick Edit Text and click a line, or double-click it, then retype it in the same font, size and colour.",
       "audiences": ["user"],
       "headline": true,
       "screens": ["edit-text"],
@@ -252,7 +252,7 @@
       "id": "measure",
       "name": "Measure",
       "status": "ready",
-      "summary": "Measure distances and areas on a page.",
+      "summary": "Drag across a page to measure a distance in inches, millimetres and points at once.",
       "audiences": ["user"],
       "screens": ["measure"],
       "sources": ["Services/MeasureGeometry.cs"]
@@ -347,7 +347,7 @@
       "status": "ready",
       "summary": "Merge, split, flatten, decrypt, print, OCR or convert PDFs to images from a script, with no window.",
       "audiences": ["it-admin"],
-      "sources": ["MainWindow.Cli.cs", "MainWindow.BatchMode.cs"]
+      "sources": ["MainWindow.Cli.cs", "MainWindow.BatchMode.cs", "docs/command-line.md"]
     }
   ],
   "scenarios": [
