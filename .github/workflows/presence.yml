@@ -1,0 +1,28 @@
+# Tells tdpdf.com to rebuild on every push to main (fleet presence standard, requirement 7).
+# The site works out which features changed from presence/features.json. A feature that turns
+# "ready" also gets a social post drafted in TDPPublic.
+#
+# Push to main only, never pull_request: this job runs on the self-hosted tdpdf runner and holds
+# FLEET_DISPATCH_TOKEN. The release-time tdpdf-release dispatch in release.yml stays as it is.
+name: presence
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: presence
+  cancel-in-progress: false
+
+jobs:
+  presence:
+    uses: doodlemania2/fleet-presence/.github/workflows/presence-dispatch.yml@main
+    with:
+      property: tdpdf
+      targets: '["doodlemania2/tdpdf-site"]'
+      runner: tdpdf
+    secrets:
+      dispatch_token: ${{ secrets.FLEET_DISPATCH_TOKEN }}
