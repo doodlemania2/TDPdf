@@ -210,9 +210,34 @@ function Launch([string]$file) {
     $h = MainWindow $p
     [W]::MoveWindow($h, 40, 30, 1600, 1000, $true) | Out-Null
     [W]::SetForegroundWindow($h) | Out-Null
-    Start-Sleep -Seconds 10
+    Start-Sleep -Seconds 6
+    # Fit width again now the window has its final size, so the page and its form-field
+    # overlays are laid out for this size, not the one the window opened at.
+    [System.Windows.Forms.SendKeys]::SendWait('^2')
+    Start-Sleep -Seconds 4
     @{ P = $p; H = $h; Root = $UIA::FromHandle($h) }
 }
+
+function Quit {
+    Get-Process TDPdf -ErrorAction SilentlyContinue | Stop-Process -Force
+    for ($i = 0; $i -lt 20 -and (Get-Process TDPdf -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
+    Start-Sleep -Seconds 1
+}
+
+# A fresh TDPdf with these documents open, the LAST one active. Opening documents in order and
+# letting the newest tab win is more reliable than clicking a tab header from a script.
+function Session([string[]]$files) {
+    Quit
+    $script:app = Launch $files[0]
+    for ($i = 1; $i -lt $files.Count; $i++) {
+        Start-Process -FilePath $Exe -ArgumentList "`"$($files[$i])`"" | Out-Null
+        Start-Sleep -Seconds 8
+    }
+    Front
+}
+
+# True when any of these shots is wanted, so a session nobody needs is never started.
+function AnyWanted([string[]]$names) { foreach ($n in $names) { if (Wanted $n) { return $true } }; $false }
 
 function Front { [W]::SetForegroundWindow($app.H) | Out-Null; Start-Sleep -Milliseconds 400 }
 
@@ -228,8 +253,6 @@ function Settle {
     Front
     InvokeEl (FindId $app.Root 'ToolSelectBtn')
 }
-
-function Tab([string]$file) { ClickEl (Find $app.Root (Split-Path $file -Leaf)); Start-Sleep -Seconds 2 }
 
 # Opens a menu path from the main menu bar, for example 'File', 'Electronic Signature'.
 function MenuPath([string[]]$path) {
@@ -260,7 +283,12 @@ $form      = Join-Path $Demo 'membership-form.pdf'
 $managed   = (Get-ItemProperty 'HKLM:\SOFTWARE\TDPdf' -ErrorAction SilentlyContinue).Installed -eq 1
 Write-Host "TDPdf installed for all users on this machine: $managed"
 
-$app = Launch $agreement
+$app = $null
+
+# ════ the agreement on its own: edit existing text ════
+if (AnyWanted 'edit-text') {
+    Session $agreement
+}
 
 # ── edit-text: edit "1.5%" in section 2 ─────────────────────────────────────────────
 # Measured on the first capture: "1.5%" sits at 61.4% across, 33.7% down the page image.
@@ -284,16 +312,13 @@ Attempt 'edit-text' {
     Keys '{ESC}'
 }
 
-# ── the other demo documents, as tabs ───────────────────────────────────────────────
-foreach ($f in $incident, $form) {
-    Start-Process -FilePath $Exe -ArgumentList "`"$f`"" | Out-Null
-    Start-Sleep -Seconds 8
+# ════ the incident report: search, redaction, OCR ════
+if (AnyWanted 'search', 'redact', 'ocr') {
+    Session $incident
 }
-Front
 
 # ── search: every "Jordan Ellis" in the incident report ───────────────────────────
 Attempt 'search' {
-    Tab $incident
     Keys '^f'
     Keys 'Jordan Ellis'
     Keys '{ENTER}'
@@ -306,7 +331,6 @@ Attempt 'search' {
 # Boxes are fractions of the page image, measured on an earlier capture of incident-report.pdf.
 # ("Redact matches" is not used here: on this file it marks whole lines, filed as an issue.)
 Attempt 'redact' {
-    Tab $incident
     InvokeEl (FindId $app.Root 'ToolRedactBtn')
     Start-Sleep -Seconds 1
     $boxes = @(
@@ -323,10 +347,21 @@ Attempt 'redact' {
     Shot 'redact' $app.P
 }
 
+Attempt 'ocr' {
+    Expand (MenuPath 'Tools', 'OCR')
+    Start-Sleep -Seconds 1
+    Park
+    Shot 'ocr' $app.P
+}
+
+# ════ the membership form: filling it in ════
+if (AnyWanted 'form-fill') {
+    Session $form
+}
+
 # ── form-fill: type into the membership form ───────────────────────────────────────
 # Field centres as fractions of the page, from build/screenshots/make-form-demo.py.
 Attempt 'form-fill' {
-    Tab $form
     PageClick 0.500 0.229; Keys 'Avery Quinn'
     PageClick 0.297 0.294; Keys '{(}555{)} 014-0142'   # SendKeys reads ( ) as grouping
     PageClick 0.703 0.294; Keys '1 March 2027'
@@ -337,16 +372,19 @@ Attempt 'form-fill' {
     Shot 'form-fill' $app.P
 }
 
+# ════ two tabs, the agreement in front: the window, menus and tools ════
+if (AnyWanted 'hero', 'page-sidebar', 'esign-menu', 'esign-connect', 'transform', 'export-images', 'print-preview', 'keyboard-map', 'crop', 'measure', 'form-build', 'markup') {
+    Session $incident, $agreement
+}
+
 # ── hero: the agreement tab, every tab showing ─────────────────────────────────────
 Attempt 'hero' {
-    Tab $agreement
     Park
     Shot 'hero' $app.P
 }
 
 # ── page-sidebar: the right-click menu on a page thumbnail ─────────────────────────
 Attempt 'page-sidebar' {
-    Tab $agreement
     $list = FindId $app.Root 'PageList'
     $item = $list.FindFirst($Scope::Children, [System.Windows.Automation.Condition]::TrueCondition)
     ClickEl $item -Right
@@ -354,11 +392,78 @@ Attempt 'page-sidebar' {
     Shot 'page-sidebar' $app.P
 }
 
+# ── menus and windows opened from the menu bar ────────────────────────────────────
+Attempt 'esign-menu' {
+    MenuPath 'File', 'Electronic Signature', 'Send for Signature' | Out-Null
+    Park
+    Shot 'esign-menu' $app.P
+}
+
+# Without a connected account, Send for Signature opens the Connect TDPdf Signing window.
+Attempt 'esign-connect' {
+    InvokeEl (MenuPath 'File', 'Electronic Signature', 'Send for Signature')
+    Start-Sleep -Seconds 4
+    Park
+    Shot 'esign-connect' $app.P
+}
+
+Attempt 'transform' {
+    InvokeEl (MenuPath 'Tools', 'Transform Page')
+    Start-Sleep -Seconds 3
+    Park
+    Shot 'transform' $app.P
+}
+
+Attempt 'export-images' {
+    InvokeEl (MenuPath 'File', 'Export Pages as Images')
+    Start-Sleep -Seconds 3
+    Park
+    Shot 'export-images' $app.P
+}
+
+Attempt 'print-preview' {
+    Keys '^p'
+    Start-Sleep -Seconds 5
+    Park
+    Shot 'print-preview' $app.P
+}
+
+Attempt 'keyboard-map' {
+    Keys '{F1}'
+    Start-Sleep -Seconds 2
+    Park
+    Shot 'keyboard-map' $app.P
+}
+
+# ── crop: the crop box on the page ────────────────────────────────────────────────
+Attempt 'crop' {
+    InvokeEl (FindId $app.Root 'ToolCropBtn')
+    Start-Sleep -Seconds 1
+    Park
+    Shot 'crop' $app.P
+}
+
+# ── measure: the live readout while dragging across the title ─────────────────────
+Attempt 'measure' {
+    InvokeEl (FindId $app.Root 'ToolMeasureBtn'); Start-Sleep -Milliseconds 400
+    PageDrag 0.117 0.150 0.430 0.150 -Hold
+    Start-Sleep -Seconds 1
+    try { Shot 'measure' $app.P } finally { Release }
+}
+
+# ── form-build: the Form tool's field box on the agreement ────────────────────────
+Attempt 'form-build' {
+    InvokeEl (FindId $app.Root 'ToolFormBtn'); Start-Sleep -Milliseconds 400
+    PageDrag 0.600 0.120 0.880 0.140
+    Start-Sleep -Seconds 1
+    Park
+    Shot 'form-build' $app.P
+}
+
 # ── markup: highlight, underline, a shape, ink and a text box on the agreement ─────
 # Line positions as fractions of the page: section 1 text at 0.220, section 2 heading at 0.282,
 # section 3 text at 0.408; text starts at 0.116 across.
 Attempt 'markup' {
-    Tab $agreement
     InvokeEl (FindId $app.Root 'ToolHighlightBtn'); Start-Sleep -Milliseconds 400
     PageDrag 0.117 0.220 0.600 0.220
     InvokeEl (FindId $app.Root 'ToolUnderlineBtn'); Start-Sleep -Milliseconds 400
@@ -378,98 +483,15 @@ Attempt 'markup' {
     Shot 'markup' $app.P
 }
 
-# ── measure: the live readout while dragging across the title ─────────────────────
-Attempt 'measure' {
-    Tab $agreement
-    InvokeEl (FindId $app.Root 'ToolMeasureBtn'); Start-Sleep -Milliseconds 400
-    PageDrag 0.117 0.150 0.430 0.150 -Hold
-    Start-Sleep -Seconds 1
-    try { Shot 'measure' $app.P } finally { Release }
-}
-
-# ── crop: the crop box on the page ────────────────────────────────────────────────
-Attempt 'crop' {
-    Tab $agreement
-    InvokeEl (FindId $app.Root 'ToolCropBtn')
-    Start-Sleep -Seconds 1
-    Park
-    Shot 'crop' $app.P
-}
-
-# ── menus and windows opened from the menu bar ────────────────────────────────────
-Attempt 'esign-menu' {
-    Tab $agreement
-    MenuPath 'File', 'Electronic Signature', 'Send for Signature' | Out-Null
-    Park
-    Shot 'esign-menu' $app.P
-}
-
-# Without a connected account, Send for Signature opens the Connect TDPdf Signing window.
-Attempt 'esign-connect' {
-    Tab $agreement
-    InvokeEl (MenuPath 'File', 'Electronic Signature', 'Send for Signature')
-    Start-Sleep -Seconds 4
-    Park
-    Shot 'esign-connect' $app.P
-}
-
-Attempt 'ocr' {
-    Tab $incident
-    Expand (MenuPath 'Tools', 'OCR')
-    Start-Sleep -Seconds 1
-    Park
-    Shot 'ocr' $app.P
-}
-
-Attempt 'transform' {
-    Tab $agreement
-    InvokeEl (MenuPath 'Tools', 'Transform Page')
-    Start-Sleep -Seconds 3
-    Park
-    Shot 'transform' $app.P
-}
-
-Attempt 'export-images' {
-    Tab $agreement
-    InvokeEl (MenuPath 'File', 'Export Pages as Images')
-    Start-Sleep -Seconds 3
-    Park
-    Shot 'export-images' $app.P
-}
-
-Attempt 'print-preview' {
-    Tab $agreement
-    Keys '^p'
-    Start-Sleep -Seconds 5
-    Park
-    Shot 'print-preview' $app.P
-}
-
-Attempt 'keyboard-map' {
-    Tab $agreement
-    Keys '{F1}'
-    Start-Sleep -Seconds 2
-    Park
-    Shot 'keyboard-map' $app.P
-}
-
-# ── form-build: the Form tool's field box on the agreement ────────────────────────
-Attempt 'form-build' {
-    Tab $agreement
-    InvokeEl (FindId $app.Root 'ToolFormBtn'); Start-Sleep -Milliseconds 400
-    PageDrag 0.600 0.120 0.880 0.140
-    Start-Sleep -Seconds 1
-    Park
-    Shot 'form-build' $app.P
-}
-
-# ── install: what the status-bar install button offers ────────────────────────────
+# ════ install ════
 function InstallPrompt([string]$name) {
     InvokeEl (FindId $app.Root 'InstallBtn')
     Start-Sleep -Seconds 3
     Park
     Shot $name $app.P
 }
+
+if (Wanted 'install') { Session $agreement }
 
 if ($managed) {
     # Never install or uninstall here: the machine-wide copy belongs to Intune.
@@ -478,8 +500,7 @@ if ($managed) {
     Attempt 'install' {
         InstallPrompt 'install-fresh'
         Keys '{ESC}'
-        Get-Process TDPdf -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Seconds 2
+        Quit
         $i = Start-Process -FilePath $Exe -ArgumentList '/install', '/silent' -PassThru -Wait
         Write-Host "silent install exit code $($i.ExitCode)"
         $script:app = Launch $agreement
@@ -487,4 +508,4 @@ if ($managed) {
     }
 }
 
-Get-Process TDPdf -ErrorAction SilentlyContinue | Stop-Process -Force
+Quit
