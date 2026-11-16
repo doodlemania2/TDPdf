@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+### Fixed
+
+- The Form tool's field buttons (Text, Paragraph, Check, Radio, Dropdown, Signature) and the buttons for a selected field show their whole label. They were cut to the width of an icon button, so "Paragraph" read "Par".
+
 ## [2.2.1.0] - 2026-11-09
 
 A cleanup release. Three reviews (security, code quality, maintenance) read the whole codebase, and every finding below was approved individually. Most of it you will never see; the parts you will are a safer way to open files from strangers, a Remove crop button, and correct page shapes for rotated pages in continuous view.
