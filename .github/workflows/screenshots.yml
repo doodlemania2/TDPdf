@@ -37,7 +37,7 @@ on:
         required: false
         default: ''
       source:
-        description: Build TDPdf from the dispatched branch instead of downloading a release, to check a fix before it ships. The pictures go to `screenshots-source`, never to `screenshots`.
+        description: Build TDPdf from the dispatched branch instead of downloading a release, to check a fix before it ships. Runs on hosted windows-2022, never the capture VM. The pictures go to `screenshots-source`, never to `screenshots`.
         type: boolean
         default: false
       shots:
@@ -60,7 +60,9 @@ jobs:
     if: >-
       github.actor == github.repository_owner &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
-    runs-on: ${{ inputs.runner || vars.CAPTURE_RUNNER || 'windows-2022' }}
+    # A source build is unsigned. It always runs on a clean hosted runner: the capture VM's security
+    # policy refuses to start unsigned programs ("Access is denied"), and unsigned code stays off it.
+    runs-on: ${{ inputs.source && 'windows-2022' || inputs.runner || vars.CAPTURE_RUNNER || 'windows-2022' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
