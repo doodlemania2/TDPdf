@@ -76,8 +76,10 @@ jobs:
             Set-DisplayResolution -Width 1920 -Height 1080 -Force
             $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
           }
-          if ($b.Width -ne 1920 -or $b.Height -ne 1080) { throw "The screen is $($b.Width)x$($b.Height); the shots need 1920x1080." }
-          "Desktop ready: $($b.Width)x$($b.Height)"
+          "Primary screen: $($b.Width)x$($b.Height)"
+          if ($b.Width -ne 1920 -or $b.Height -ne 1080) {
+            throw "The primary screen is $($b.Width)x$($b.Height), not 1920x1080. Is the capture user signed in at the console, and is the display set to 1920x1080 at 100% scaling?"
+          }
 
       # The tag picks which signed release to download. A Release run started by a tag push
       # names its tag in head_branch; anything else (a re-release dispatch, a screenshots/**
