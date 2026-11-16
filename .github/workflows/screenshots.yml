@@ -1,14 +1,25 @@
 name: Screenshots
 
 # Captures real screenshots of a released TDPdf build for the Microsoft Store listing and
-# tdpdf.com. Runs on a GitHub-hosted Windows runner because the app is WPF and the
-# self-hosted runner is Linux.
+# tdpdf.com. The app is WPF, so this needs a Windows desktop. It runs on a GitHub-hosted Windows
+# runner until the repository variable CAPTURE_RUNNER is set to `tdp-windows-capture`, the fleet's
+# self-hosted Windows machine (an interactive desktop session, see tdpdf-site docs/windows-capture-runner.md).
+#
+# Safe for that machine because this repo is public:
+#   - Only `workflow_dispatch` and `push` can start it. Never `pull_request` or `pull_request_target`,
+#     so a fork's code can never reach the machine.
+#   - The job runs only when the person who started it is the repository owner (github.actor).
+#   - Keep "Require approval for all outside collaborators" on in the repository's Actions settings.
 on:
   workflow_dispatch:
     inputs:
       tag:
         description: Release tag to capture
         default: v2.0.0.0
+      runner:
+        description: Runner label to try for this run only (for example tdp-windows-capture). Empty uses the CAPTURE_RUNNER variable, else the hosted runner.
+        required: false
+        default: ''
   push:
     branches: ['screenshots/**']
 
@@ -17,7 +28,9 @@ permissions:
 
 jobs:
   capture:
-    runs-on: windows-2022
+    # Defense in depth for the self-hosted machine: only the owner's own dispatches and pushes run.
+    if: github.actor == github.repository_owner
+    runs-on: ${{ inputs.runner || vars.CAPTURE_RUNNER || 'windows-2022' }}
     timeout-minutes: 20
     env:
       TAG: ${{ inputs.tag || 'v2.0.0.0' }}
