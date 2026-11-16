@@ -261,12 +261,17 @@ function Park { [W]::SetCursorPos(1900, 1070) | Out-Null; Start-Sleep -Milliseco
 
 function Settle {
     Park
+    # One Escape always (an overlay inside the window, such as the shortcut list, is not a window
+    # of its own), then more while a dialog or menu window is still open.
+    Keys '{ESC}'
     for ($i = 0; $i -lt 3; $i++) {
         if (@([W]::Windows([uint32]$app.P.Id)).Count -le 1) { break }
         Keys '{ESC}'
     }
     Front
-    InvokeEl (FindId $app.Root 'ToolSelectBtn')
+    # The Select tool by its shortcut: invoking the button gives it keyboard focus, and WPF then
+    # shows its tooltip in the next shot.
+    Keys 'v'
 }
 
 # Opens a menu path from the main menu bar, for example 'File', 'Electronic Signature'.
