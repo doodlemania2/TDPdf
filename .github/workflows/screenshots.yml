@@ -36,12 +36,22 @@ jobs:
       TAG: ${{ inputs.tag || 'v2.0.0.0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The hosted image has Set-DisplayResolution; the self-hosted machine does not and is already
+      # 1920x1080 at 100%. Either way, fail within seconds, naming the cause, if the desktop is wrong
+      # (not signed in, locked, or another resolution), instead of capturing blank or odd pictures.
       - name: Screen resolution
         shell: pwsh
         run: |
-          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          if (Get-Command Set-DisplayResolution -ErrorAction SilentlyContinue) {
+            Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          }
           Add-Type -AssemblyName System.Windows.Forms
-          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          "Primary screen: $($b.Width)x$($b.Height)"
+          if ($b.Width -ne 1920 -or $b.Height -ne 1080) {
+            throw "The primary screen is $($b.Width)x$($b.Height), not 1920x1080. Is the capture user signed in at the console, and is the display set to 1920x1080 at 100%?"
+          }
+          if (-not [Environment]::UserInteractive) { throw 'This is not an interactive session. The runner must run as the signed-in capture user, not as a service.' }
 
       - name: Download release exe
         shell: pwsh
