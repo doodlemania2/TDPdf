@@ -503,6 +503,8 @@ Attempt 'markup' {
 
 # ── form-build: the Form tool's field box on the agreement ────────────────────────
 Attempt 'form-build' {
+    # A fresh copy of the documents, so none of the markup above is in this shot.
+    Session $incident, $agreement
     InvokeEl (FindId $app.Root 'ToolFormBtn'); Start-Sleep -Milliseconds 400
     PageDrag 0.500 0.178 0.850 0.198   # empty space right of the "1. Scope of work" heading
     Start-Sleep -Seconds 1

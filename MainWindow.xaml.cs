@@ -4116,6 +4116,9 @@ namespace TDPdf
                     // Button ignores Background/Foreground and wears the OS chrome instead.
                     Style = (Style)FindResource("ToolbarButton"),
                     Content = label,
+                    // ToolbarButton fixes Width at 36 for icon buttons; a word needs its own width,
+                    // or "Paragraph" shows as "Par".
+                    Width = double.NaN,
                     Padding = new Thickness(8, 3, 8, 3),
                     Margin = new Thickness(0, 0, 3, 0),
                     Height = 24,
@@ -4193,6 +4196,9 @@ namespace TDPdf
                 {
                     Style = (Style)FindResource("ToolbarButton"),
                     Content = label,
+                    // ToolbarButton fixes Width at 36 for icon buttons; a word needs its own width,
+                    // or "Paragraph" shows as "Par".
+                    Width = double.NaN,
                     Padding = new Thickness(8, 3, 8, 3),
                     Margin = new Thickness(0, 0, 3, 0),
                     Height = 24,
