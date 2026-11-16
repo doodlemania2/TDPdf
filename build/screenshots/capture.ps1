@@ -1,5 +1,5 @@
-# Takes Store / tdpdf.com screenshots of a released TDPdf build on a GitHub-hosted
-# Windows runner. Drives the app through UI Automation, mouse and keyboard input only, so
+# Takes Store / tdpdf.com screenshots of a released TDPdf build on a Windows runner with an
+# interactive desktop (the fleet's tdp-windows-capture machine, or GitHub-hosted windows-2022). Drives the app through UI Automation, mouse and keyboard input only, so
 # every image is the real app, not a mock-up. Each shot is attempted independently: one
 # that fails is logged and the rest still run.
 param(
