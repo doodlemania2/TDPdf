@@ -1,0 +1,380 @@
+{
+  "property": "tdpdf",
+  "audiences": ["user", "it-admin"],
+  "features": [
+    {
+      "id": "esign-send",
+      "name": "Send for signature",
+      "status": "ready",
+      "summary": "Add the people who need to sign, mark where each one signs, and send the document from TDPdf.",
+      "audiences": ["user"],
+      "headline": true,
+      "screens": ["esign-send"],
+      "sources": [
+        "MainWindow.ESignature.cs",
+        "MainWindow.ESignatureFields.cs",
+        "MainWindow.ESignatureWeb.cs",
+        "Services/DocumensoSend*.cs",
+        "Services/DocumensoPlaceholders.cs",
+        "Services/DocumensoFieldGeometry.cs",
+        "Services/DocumensoClient.cs",
+        "Services/DocumensoModels.cs",
+        "Services/DocumensoConfig.cs",
+        "Services/DocumensoConnectWindow.cs",
+        "Services/DocumensoBrowserSignIn.cs",
+        "Services/DocumensoCredentialStore.cs",
+        "Services/DocumensoUi.cs",
+        "Services/DocumensoWeb*.cs",
+        "Services/WebView2Bootstrap.cs"
+      ]
+    },
+    {
+      "id": "esign-requests",
+      "name": "Signature requests",
+      "status": "ready",
+      "summary": "See where each signature request stands, and download the signed PDF, the certificate of completion and the audit log.",
+      "audiences": ["user"],
+      "screens": ["esign-requests"],
+      "sources": ["MainWindow.ESignatureRequests.cs", "Services/DocumensoRequest*.cs"]
+    },
+    {
+      "id": "self-sign",
+      "name": "Sign it yourself",
+      "status": "ready",
+      "summary": "When you are the only signer, sign the document yourself and the sealed copy opens back in TDPdf.",
+      "audiences": ["user"],
+      "screens": ["self-sign"],
+      "sources": ["MainWindow.ESignatureSelfSign.cs", "Services/DocumensoSelfSign*.cs"]
+    },
+    {
+      "id": "verify-signatures",
+      "name": "Verify signatures",
+      "status": "ready",
+      "summary": "See who signed any PDF, when they signed, and whether anything was added afterwards.",
+      "audiences": ["user"],
+      "screens": ["verify-signatures"],
+      "sources": [
+        "MainWindow.ESignatureVerify.cs",
+        "Services/DocumensoVerifyWindow.cs",
+        "Services/PdfSignatureInspector.cs",
+        "Services/PdfSignatureScan.cs"
+      ]
+    },
+    {
+      "id": "redaction",
+      "name": "Redaction",
+      "status": "ready",
+      "summary": "Remove the text and images under your mark, then check the saved file to make sure nothing is left.",
+      "audiences": ["user"],
+      "headline": true,
+      "screens": ["redact"],
+      "sources": [
+        "MainWindow.xaml.cs",
+        "Services/PdfRedaction*.cs",
+        "Services/PdfContentInspector.cs"
+      ]
+    },
+    {
+      "id": "edit-text",
+      "name": "Edit existing text",
+      "status": "ready",
+      "summary": "Pick Edit Text and click a line, or double-click it, then retype it in the same font, size and colour.",
+      "audiences": ["user"],
+      "headline": true,
+      "screens": ["edit-text"],
+      "sources": [
+        "MainWindow.TextEditing.cs",
+        "Services/PdfTextEdit.cs",
+        "Services/PdfContentEditor.cs",
+        "Services/TextRunService.cs",
+        "Services/FontCoverage.cs",
+        "Services/FontFallback.cs",
+        "Services/CmapCoverage.cs",
+        "Services/PdfFonts.cs",
+        "Services/PdfFontStyle.cs",
+        "Services/TextLetterSpacing.cs",
+        "Services/RtlTextLayout.cs"
+      ]
+    },
+    {
+      "id": "form-filling",
+      "name": "Fill in forms",
+      "status": "ready",
+      "summary": "Type into a PDF form's fields, tick its boxes and pick from its lists, then save it.",
+      "audiences": ["user"],
+      "screens": ["form-fill"],
+      "sources": ["MainWindow.Forms.cs", "Services/PdfFormText.cs", "Services/FormFieldSiblings.cs"]
+    },
+    {
+      "id": "form-building",
+      "name": "Create forms",
+      "status": "ready",
+      "summary": "Add text boxes, checkboxes, radio buttons, dropdowns and signature fields to turn any PDF into a form.",
+      "audiences": ["user"],
+      "screens": ["form-build"],
+      "sources": ["MainWindow.xaml.cs", "Services/PdfFormBuilder.cs"]
+    },
+    {
+      "id": "markup",
+      "name": "Mark up documents",
+      "status": "ready",
+      "summary": "Add text boxes, highlights, freehand ink, shapes and pictures, with your own colour, size and opacity.",
+      "audiences": ["user"],
+      "screens": ["markup"],
+      "sources": [
+        "MainWindow.Canvas.cs",
+        "MainWindow.AnnotationBake.cs",
+        "MainWindow.ToolSettings.cs",
+        "Models/Annotations.cs",
+        "Services/AnnotationRotate.cs",
+        "Services/InkDot.cs",
+        "ColorPicker.cs"
+      ]
+    },
+    {
+      "id": "saved-signatures",
+      "name": "Your saved signature",
+      "status": "ready",
+      "summary": "Draw your signature once, or import a picture of it, and place it on any page with one click.",
+      "audiences": ["user"],
+      "screens": ["signature-place"],
+      "sources": ["MainWindow.Signatures.cs", "Services/SignatureStoreFile.cs"]
+    },
+    {
+      "id": "pages",
+      "name": "Organise pages",
+      "status": "ready",
+      "summary": "Merge PDFs, split out pages, and insert, rotate, reorder, extract or delete pages from the sidebar.",
+      "audiences": ["user"],
+      "screens": ["page-sidebar"],
+      "sources": [
+        "MainWindow.Files.cs",
+        "MainWindow.Sidebar.cs",
+        "Services/PdfDocumentService.cs",
+        "Services/PdfPageDuplicate.cs",
+        "Services/PageIndexRemap.cs",
+        "Services/PageBlockMove.cs"
+      ]
+    },
+    {
+      "id": "crop-transform",
+      "name": "Crop and straighten",
+      "status": "ready",
+      "summary": "Crop pages, rotate them by any angle, flip or scale them, and square up a photographed page.",
+      "audiences": ["user"],
+      "screens": ["crop", "transform"],
+      "sources": [
+        "MainWindow.Transform.cs",
+        "Services/CropService.cs",
+        "Services/TransformWindow.cs",
+        "Services/PerspectiveWarp.cs",
+        "Services/PdfBoxExtent.cs"
+      ]
+    },
+    {
+      "id": "search",
+      "name": "Search and copy",
+      "status": "ready",
+      "summary": "Search the whole document, jump between matches, and select text to copy it out.",
+      "audiences": ["user"],
+      "screens": ["search"],
+      "sources": ["MainWindow.Search.cs", "MainWindow.TextSelection.cs", "Services/PdfTextSearch.cs"]
+    },
+    {
+      "id": "ocr",
+      "name": "Searchable scans",
+      "status": "ready",
+      "summary": "Recognise the text on scanned pages so you can search and copy it, or save a searchable PDF.",
+      "audiences": ["user"],
+      "screens": ["ocr"],
+      "sources": ["MainWindow.Ocr.cs", "Services/Ocr*.cs", "Services/FormOcrPolicy.cs"]
+    },
+    {
+      "id": "tabs",
+      "name": "Tabs",
+      "status": "ready",
+      "summary": "Open several PDFs in one window, each tab keeping track of its own unsaved changes.",
+      "audiences": ["user"],
+      "screens": ["hero"],
+      "sources": ["MainWindow.TabDrag.cs", "Services/WindowTransfer.cs"]
+    },
+    {
+      "id": "viewing",
+      "name": "Reading and zoom",
+      "status": "ready",
+      "summary": "Read one page at a time or scroll through them all, zoom smoothly, and follow links inside the document.",
+      "audiences": ["user"],
+      "screens": ["hero"],
+      "sources": [
+        "MainWindow.xaml",
+        "MainWindow.ContinuousView.cs",
+        "ViewModels/**",
+        "Services/ZoomAnchorMath.cs",
+        "Services/WheelPageFlipGate.cs",
+        "Services/PageRaster.cs",
+        "Services/PdfPageRasterizer.cs",
+        "Services/PdfiumInterop.cs"
+      ]
+    },
+    {
+      "id": "print-flatten",
+      "name": "Print and flatten",
+      "status": "ready",
+      "summary": "Print with your markup included, or flatten every page into a copy that can't be edited.",
+      "audiences": ["user"],
+      "screens": ["print-preview"],
+      "sources": [
+        "Services/PrintPreviewWindow.cs",
+        "Services/PrintSheetPlan.cs",
+        "Services/PrintTicketDuplex.cs",
+        "Services/FlattenResolution.cs"
+      ]
+    },
+    {
+      "id": "locked-pdfs",
+      "name": "Locked and damaged files",
+      "status": "ready",
+      "summary": "Password-protected PDFs ask for the password, and damaged files are repaired when they open.",
+      "audiences": ["user"],
+      "screens": ["password"],
+      "sources": ["Services/PdfEncryptionScan.cs", "Services/ProtectedSave.cs", "Services/PdfSaveNormalizer.cs"]
+    },
+    {
+      "id": "bookmarks",
+      "name": "Bookmarks",
+      "status": "ready",
+      "summary": "Add, rename, nest, reorder and delete bookmarks, and point each one at the right page.",
+      "audiences": ["user"],
+      "screens": ["bookmarks"],
+      "sources": ["MainWindow.Bookmarks.cs", "Services/PdfNamedDestinations.cs"]
+    },
+    {
+      "id": "measure",
+      "name": "Measure",
+      "status": "ready",
+      "summary": "Drag across a page to measure a distance in inches, millimetres and points at once.",
+      "audiences": ["user"],
+      "screens": ["measure"],
+      "sources": ["Services/MeasureGeometry.cs"]
+    },
+    {
+      "id": "export-images",
+      "name": "Export pages as images",
+      "status": "ready",
+      "summary": "Save pages as PNG or JPEG pictures at the resolution you choose.",
+      "audiences": ["user"],
+      "screens": ["export-images"],
+      "sources": ["MainWindow.ExportImages.cs", "Services/PageImageExporter.cs", "Services/PdfPageImageEncoder.cs"]
+    },
+    {
+      "id": "export-tables",
+      "name": "Export tables",
+      "status": "ready",
+      "summary": "Copy the tables in a PDF into a CSV file that Excel opens.",
+      "audiences": ["user"],
+      "screens": ["export-tables"],
+      "sources": ["Services/TableExtractor.cs"]
+    },
+    {
+      "id": "themes",
+      "name": "Light, dark and night",
+      "status": "ready",
+      "summary": "TDPdf follows your Windows theme, with a high contrast theme and a night mode for reading in the dark.",
+      "audiences": ["user"],
+      "screens": ["themes"],
+      "sources": ["Themes/**", "Services/ThemeManager.cs", "MainWindow.DocInvert.cs", "MainWindow.AppScale.cs"]
+    },
+    {
+      "id": "keyboard",
+      "name": "Keyboard shortcuts",
+      "status": "ready",
+      "summary": "Press F1 to see every shortcut on a picture of your own keyboard.",
+      "audiences": ["user"],
+      "screens": ["keyboard-map"],
+      "sources": ["MainWindow.Keyboard.cs", "MainWindow.KeyboardMapOverlay.cs", "Services/KeyLayout.cs"]
+    },
+    {
+      "id": "install",
+      "name": "Install without an administrator",
+      "status": "ready",
+      "summary": "Run TDPdf from anywhere, then install it for yourself in seconds with no administrator prompt.",
+      "audiences": ["user", "it-admin"],
+      "screens": ["install"],
+      "sources": [
+        "MainWindow.xaml.cs",
+        "Services/PortableInstallPolicy.cs",
+        "Services/InstallerExitCodes.cs",
+        "Diagnostics/InstallLog.cs"
+      ]
+    },
+    {
+      "id": "intune-deploy",
+      "name": "Deploy with Intune",
+      "status": "ready",
+      "summary": "Install silently for every user on a machine, with exit codes and a detection rule ready for Intune.",
+      "audiences": ["it-admin"],
+      "sources": [
+        "docs/intune-distribution.md",
+        "Services/PortableInstallPolicy.cs",
+        "Services/InstallerExitCodes.cs",
+        "Services/UpdateCheck.cs"
+      ]
+    },
+    {
+      "id": "admin-policies",
+      "name": "Registry policies",
+      "status": "ready",
+      "summary": "Set update checks, the signing server and telemetry for every machine through registry policy.",
+      "audiences": ["it-admin"],
+      "sources": [
+        "docs/intune-distribution.md",
+        "Services/UpdateCheck.cs",
+        "Services/DocumensoConfig.cs",
+        "Diagnostics/TelemetryConfig.cs"
+      ]
+    },
+    {
+      "id": "telemetry",
+      "name": "Telemetry you control",
+      "status": "ready",
+      "summary": "Nothing is sent unless your organisation points TDPdf at its own collector, and the privacy policy lists every field.",
+      "audiences": ["it-admin"],
+      "sources": ["Diagnostics/**", "PRIVACY.md"]
+    },
+    {
+      "id": "command-line",
+      "name": "Command line",
+      "status": "ready",
+      "summary": "Merge, split, flatten, decrypt, print, OCR or convert PDFs to images from a script, with no window.",
+      "audiences": ["it-admin"],
+      "sources": ["MainWindow.Cli.cs", "MainWindow.BatchMode.cs", "docs/command-line.md"]
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "send-a-contract",
+      "name": "Fix a contract and get it signed",
+      "features": ["edit-text", "esign-send", "esign-requests"]
+    },
+    {
+      "id": "share-a-redacted-report",
+      "name": "Share a report with the names removed",
+      "features": ["search", "redaction"]
+    },
+    {
+      "id": "fill-and-sign-a-form",
+      "name": "Fill in a form and sign it",
+      "features": ["form-filling", "saved-signatures"]
+    },
+    {
+      "id": "digitise-a-scan",
+      "name": "Turn a photographed page into a searchable PDF",
+      "features": ["crop-transform", "ocr", "search"]
+    },
+    {
+      "id": "roll-out-to-an-organisation",
+      "name": "Roll TDPdf out to an organisation",
+      "features": ["intune-deploy", "admin-policies", "telemetry"]
+    }
+  ]
+}
