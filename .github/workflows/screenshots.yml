@@ -1,21 +1,32 @@
 name: Screenshots
 
 # Captures real screenshots of a released TDPdf build for the Microsoft Store listing and
-# tdpdf.com. The app is WPF, so this needs a Windows desktop. It runs on a GitHub-hosted Windows
-# runner until the repository variable CAPTURE_RUNNER is set to `tdp-windows-capture`, the fleet's
-# self-hosted Windows machine (an interactive desktop session, see tdpdf-site docs/windows-capture-runner.md).
+# tdpdf.com, after every successful release. The app is WPF, so this needs an interactive
+# Windows desktop. It runs on a GitHub-hosted Windows runner until the repository variable
+# CAPTURE_RUNNER is set to `tdp-windows-capture`, the fleet's self-hosted Windows machine
+# (pve VM 100, see tdpdf-site docs/windows-capture-runner.md).
+#
+# tdpdf-site fetches the newest `screenshots` artifact itself and keeps the last good set,
+# so nothing is copied by hand and no images go into git.
 #
 # Safe for that machine because this repo is public:
-#   - Only `workflow_dispatch` and `push` can start it. Never `pull_request` or `pull_request_target`,
-#     so a fork's code can never reach the machine.
-#   - The job runs only when the person who started it is the repository owner (github.actor).
+#   - Only three things start it: a finished Release run (`workflow_run`), `workflow_dispatch`
+#     and a push to a `screenshots/**` branch. Never `pull_request` or `pull_request_target`.
+#     A `workflow_run` always runs this file as it is on main, and Release itself starts only
+#     from tag pushes and owner dispatches, so a fork's code can never reach the machine.
+#   - The job runs only when the repository owner started it (github.actor; for workflow_run
+#     that is whoever started the Release run).
 #   - Keep "Require approval for all outside collaborators" on in the repository's Actions settings.
 on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to capture
-        default: v2.0.0.0
+        description: Release tag to capture (for example v2.2.1.0). Empty captures the latest release.
+        required: false
+        default: ''
       runner:
         description: Runner label to try for this run only (for example tdp-windows-capture). Empty uses the CAPTURE_RUNNER variable, else the hosted runner.
         required: false
@@ -26,29 +37,83 @@ on:
 permissions:
   contents: read
 
+# One desktop, one capture at a time. A second run waits instead of fighting over the mouse.
+concurrency:
+  group: screenshots
+  cancel-in-progress: false
+
 jobs:
   capture:
-    # Defense in depth for the self-hosted machine: only the owner's own dispatches and pushes run.
-    if: github.actor == github.repository_owner
+    if: >-
+      github.actor == github.repository_owner &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ${{ inputs.runner || vars.CAPTURE_RUNNER || 'windows-2022' }}
     timeout-minutes: 20
-    env:
-      TAG: ${{ inputs.tag || 'v2.0.0.0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Screen resolution
+
+      # Fail in seconds, not at the timeout, when there is no desktop to draw on: a locked
+      # screen, a disconnected console session, or someone switching users on the VM.
+      - name: Check the desktop
         shell: pwsh
+        timeout-minutes: 2
         run: |
-          Set-DisplayResolution -Width 1920 -Height 1080 -Force
           Add-Type -AssemblyName System.Windows.Forms
-          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class D {
+            [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenInputDesktop(uint f, bool i, uint a);
+            [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr h);
+          }
+          "@
+          if (-not [Environment]::UserInteractive) { throw 'Not an interactive session. The runner must run in the auto-logon desktop session, not as a service.' }
+          $h = [D]::OpenInputDesktop(0, $false, 0x0100)  # DESKTOP_SWITCHDESKTOP
+          if ($h -eq [IntPtr]::Zero) { throw 'The desktop is locked or disconnected. Sign the capture user back in at the console.' }
+          [D]::CloseDesktop($h) | Out-Null
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          if (($b.Width -ne 1920 -or $b.Height -ne 1080) -and (Get-Command Set-DisplayResolution -ErrorAction SilentlyContinue)) {
+            Set-DisplayResolution -Width 1920 -Height 1080 -Force
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          }
+          "Primary screen: $($b.Width)x$($b.Height)"
+          if ($b.Width -ne 1920 -or $b.Height -ne 1080) {
+            throw "The primary screen is $($b.Width)x$($b.Height), not 1920x1080. Is the capture user signed in at the console, and is the display set to 1920x1080 at 100% scaling?"
+          }
+
+      # The tag picks which signed release to download. A Release run started by a tag push
+      # names its tag in head_branch; anything else (a re-release dispatch, a screenshots/**
+      # push, an empty input) captures the latest published release.
+      - name: Pick the release
+        id: tag
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $pattern = '^v\d+\.\d+\.\d+\.\d+$'
+          $tag = if ($env:INPUT_TAG) { $env:INPUT_TAG } elseif ($env:RUN_BRANCH -match $pattern) { $env:RUN_BRANCH } else { '' }
+          if (-not $tag) {
+            $tag = (Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } "https://api.github.com/repos/$env:REPO/releases/latest").tag_name
+          }
+          if ($tag -notmatch $pattern) { throw "Not a release tag: '$tag'" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "Capturing $tag"
 
       - name: Download release exe
         shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           $u = "https://tdpdfreleases.blob.core.windows.net/releases/$env:TAG/TDPdf-$env:TAG-win-x64.exe"
           Invoke-WebRequest $u -OutFile "$env:RUNNER_TEMP\TDPdf.exe"
-          (Get-AuthenticodeSignature "$env:RUNNER_TEMP\TDPdf.exe").SignerCertificate.Subject
+          $sig = Get-AuthenticodeSignature "$env:RUNNER_TEMP\TDPdf.exe"
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike 'CN=The Doodle Project*') {
+            throw "Unexpected signature: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+          $sig.SignerCertificate.Subject
 
       - name: Capture
         shell: pwsh
@@ -61,3 +126,4 @@ jobs:
         with:
           name: screenshots
           path: ${{ runner.temp }}/shots
+          retention-days: 90
