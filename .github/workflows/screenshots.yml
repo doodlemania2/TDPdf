@@ -16,6 +16,10 @@ on:
       tag:
         description: Release tag to capture
         default: v2.0.0.0
+      runner:
+        description: Runner label to try for this run only (for example tdp-windows-capture). Empty uses the CAPTURE_RUNNER variable, else the hosted runner.
+        required: false
+        default: ''
   push:
     branches: ['screenshots/**']
 
@@ -26,7 +30,7 @@ jobs:
   capture:
     # Defense in depth for the self-hosted machine: only the owner's own dispatches and pushes run.
     if: github.actor == github.repository_owner
-    runs-on: ${{ vars.CAPTURE_RUNNER || 'windows-2022' }}
+    runs-on: ${{ inputs.runner || vars.CAPTURE_RUNNER || 'windows-2022' }}
     timeout-minutes: 20
     env:
       TAG: ${{ inputs.tag || 'v2.0.0.0' }}
