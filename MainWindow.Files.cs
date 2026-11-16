@@ -499,8 +499,12 @@ namespace TDPdf
                 // pass it is meant to follow is still in flight — which is what was tearing the
                 // canvas out from under Canvas.MeasureOverride. Background runs strictly after
                 // layout completes, which is all "settled" ever meant here.
-                int linkBitmapW = renderedPage.PixelWidth;
-                int linkBitmapH = renderedPage.PixelHeight;
+                // #220: the overlay canvas is DisplayWidth x DisplayHeight DIPs (set just above, and the
+                // same as _renderDims), so links and form fields are laid out in those units. The
+                // bitmap's PIXEL size differs whenever the render DPI is not 96, which made every
+                // form overlay about 14% too large at the default fit-width zoom.
+                int linkBitmapW = (int)Math.Round(renderedPage.DisplayWidth);
+                int linkBitmapH = (int)Math.Round(renderedPage.DisplayHeight);
                 _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
                 {
                     if (cancellationToken.IsCancellationRequested

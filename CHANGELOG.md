@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ### Fixed
 
+- Form fields line up with the boxes printed on the page. At most zoom levels they were drawn too large and offset down and to the right (about 14% at the default fit-width zoom), so clicking a box could miss its field. Links inside the page had the same offset.
+- Edit Existing Image keeps the right part of the page. At most zoom levels it copied a region offset from the image you picked.
 - The Form tool's field buttons (Text, Paragraph, Check, Radio, Dropdown, Signature) and the buttons for a selected field show their whole label. They were cut to the width of an icon button, so "Paragraph" read "Par".
 
 ## [2.2.1.0] - 2026-11-09
