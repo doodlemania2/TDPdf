@@ -504,7 +504,7 @@ Attempt 'markup' {
 # ── form-build: the Form tool's field box on the agreement ────────────────────────
 Attempt 'form-build' {
     InvokeEl (FindId $app.Root 'ToolFormBtn'); Start-Sleep -Milliseconds 400
-    PageDrag 0.600 0.088 0.880 0.112   # empty space right of the title
+    PageDrag 0.500 0.178 0.850 0.198   # empty space right of the "1. Scope of work" heading
     Start-Sleep -Seconds 1
     Park
     Shot 'form-build' $app.P
