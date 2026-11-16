@@ -139,6 +139,20 @@ function Find($root, [string[]]$names, [int]$wait = 10) {
     throw "element '$($names -join "' / '")' not found"
 }
 
+# An element by name in any of TDPdf's own windows (a dialog is its own top-level window).
+function FindInApp([string]$name, [int]$wait = 10) {
+    $pc = New-Object System.Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, $app.P.Id)
+    $nc = New-Object System.Windows.Automation.PropertyCondition($UIA::NameProperty, $name)
+    for ($i = 0; $i -lt $wait * 2; $i++) {
+        foreach ($top in @($UIA::RootElement.FindAll($Scope::Children, $pc))) {
+            $e = $top.FindFirst($Scope::Descendants, $nc)
+            if ($e) { return $e }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "element '$name' not found in TDPdf's windows"
+}
+
 function FindId($root, [string]$id) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, $id)
     $e = $root.FindFirst($Scope::Descendants, $cond)
@@ -196,7 +210,8 @@ function MainWindow($proc) {
     throw "TDPdf main window never appeared"
 }
 
-function Wanted([string]$what) { $Shots.Count -eq 0 -or $Shots -contains $what }
+$OffByDefault = @('form-fill')
+function Wanted([string]$what) { if ($Shots.Count -eq 0) { $OffByDefault -notcontains $what } else { $Shots -contains $what } }
 
 function Attempt([string]$what, [scriptblock]$b) {
     if (-not (Wanted $what)) { return }
@@ -317,6 +332,13 @@ if (AnyWanted 'search', 'redact', 'ocr') {
     Session $incident
 }
 
+Attempt 'ocr' {
+    Expand (MenuPath 'Tools', 'OCR')
+    Start-Sleep -Seconds 1
+    Park
+    Shot 'ocr' $app.P
+}
+
 # ── search: every "Jordan Ellis" in the incident report ───────────────────────────
 Attempt 'search' {
     Keys '^f'
@@ -347,13 +369,6 @@ Attempt 'redact' {
     Shot 'redact' $app.P
 }
 
-Attempt 'ocr' {
-    Expand (MenuPath 'Tools', 'OCR')
-    Start-Sleep -Seconds 1
-    Park
-    Shot 'ocr' $app.P
-}
-
 # ════ the membership form: filling it in ════
 if (AnyWanted 'form-fill') {
     Session $form
@@ -361,6 +376,8 @@ if (AnyWanted 'form-fill') {
 
 # ── form-fill: type into the membership form ───────────────────────────────────────
 # Field centres as fractions of the page, from build/screenshots/make-form-demo.py.
+# Off by default until #220 is fixed: the field overlays are drawn about 14% too large, so the
+# clicks miss the fields and the typing reaches the tool shortcuts. Ask for it with -Shots form-fill.
 Attempt 'form-fill' {
     PageClick 0.500 0.229; Keys 'Avery Quinn'
     PageClick 0.297 0.294; Keys '{(}555{)} 014-0142'   # SendKeys reads ( ) as grouping
@@ -409,6 +426,10 @@ Attempt 'esign-connect' {
 
 Attempt 'transform' {
     InvokeEl (MenuPath 'Tools', 'Transform Page')
+    Start-Sleep -Seconds 2
+    # First a warning that transforming rasterizes the page; OK only opens the Transform window,
+    # nothing changes until Apply, which is never pressed.
+    InvokeEl (FindInApp 'OK')
     Start-Sleep -Seconds 3
     Park
     Shot 'transform' $app.P
@@ -429,7 +450,7 @@ Attempt 'print-preview' {
 }
 
 Attempt 'keyboard-map' {
-    Keys '{F1}'
+    Keys '^/'   # Ctrl+? (F1 opens About in this release)
     Start-Sleep -Seconds 2
     Park
     Shot 'keyboard-map' $app.P
@@ -437,9 +458,9 @@ Attempt 'keyboard-map' {
 
 # ── crop: the crop box on the page ────────────────────────────────────────────────
 Attempt 'crop' {
-    InvokeEl (FindId $app.Root 'ToolCropBtn')
-    Start-Sleep -Seconds 1
+    Keys 'c'    # the shortcut, not the button, so no focus tooltip lands in the shot
     Park
+    Start-Sleep -Seconds 2
     Shot 'crop' $app.P
 }
 
@@ -449,15 +470,6 @@ Attempt 'measure' {
     PageDrag 0.117 0.150 0.430 0.150 -Hold
     Start-Sleep -Seconds 1
     try { Shot 'measure' $app.P } finally { Release }
-}
-
-# ── form-build: the Form tool's field box on the agreement ────────────────────────
-Attempt 'form-build' {
-    InvokeEl (FindId $app.Root 'ToolFormBtn'); Start-Sleep -Milliseconds 400
-    PageDrag 0.600 0.120 0.880 0.140
-    Start-Sleep -Seconds 1
-    Park
-    Shot 'form-build' $app.P
 }
 
 # ── markup: highlight, underline, a shape, ink and a text box on the agreement ─────
@@ -481,6 +493,16 @@ Attempt 'markup' {
     Park
     Start-Sleep -Seconds 1
     Shot 'markup' $app.P
+}
+
+
+# ── form-build: the Form tool's field box on the agreement ────────────────────────
+Attempt 'form-build' {
+    InvokeEl (FindId $app.Root 'ToolFormBtn'); Start-Sleep -Milliseconds 400
+    PageDrag 0.600 0.088 0.880 0.112   # empty space right of the title
+    Start-Sleep -Seconds 1
+    Park
+    Shot 'form-build' $app.P
 }
 
 # ════ install ════
