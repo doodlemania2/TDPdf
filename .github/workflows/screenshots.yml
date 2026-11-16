@@ -9,6 +9,11 @@ name: Screenshots
 # tdpdf-site fetches the newest `screenshots` artifact itself and keeps the last good set,
 # so nothing is copied by hand and no images go into git.
 #
+# The capture machine has TDPdf installed for all users (Intune), so there it can only show the
+# "managed" install prompt. When the capture runs there, a second job on a clean hosted runner takes
+# the first-run and Reinstall prompts, and `publish` merges both sets into `screenshots`. Full-screen
+# grabs from failed shots go to `screenshots-debug`, which is never published.
+#
 # Safe for that machine because this repo is public:
 #   - Only three things start it: a finished Release run (`workflow_run`), `workflow_dispatch`
 #     and a push to a `screenshots/**` branch. Never `pull_request` or `pull_request_target`.
@@ -119,11 +124,98 @@ jobs:
         shell: pwsh
         run: |
           ./build/screenshots/capture.ps1 -Exe "$env:RUNNER_TEMP\TDPdf.exe" `
-            -Demo "$PWD\build\screenshots\demo" -Out "$env:RUNNER_TEMP\shots"
+            -Demo "$PWD\build\screenshots\demo" -Out "$env:RUNNER_TEMP\shots" `
+            -DebugOut "$env:RUNNER_TEMP\shots-debug"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: screenshots
+          name: shots-desktop
           path: ${{ runner.temp }}/shots
+          retention-days: 1
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: screenshots-debug
+          path: ${{ runner.temp }}/shots-debug
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # The first-run and Reinstall prompts need a machine without TDPdf installed for all users.
+  # Only needed when `capture` runs on the self-hosted machine; on a hosted runner it takes them itself.
+  install-clean:
+    if: >-
+      github.actor == github.repository_owner &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
+      (inputs.runner || vars.CAPTURE_RUNNER) != ''
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Screen resolution
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+
+      - name: Pick the release
+        id: tag
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $pattern = '^v\d+\.\d+\.\d+\.\d+$'
+          $tag = if ($env:INPUT_TAG) { $env:INPUT_TAG } elseif ($env:RUN_BRANCH -match $pattern) { $env:RUN_BRANCH } else { '' }
+          if (-not $tag) {
+            $tag = (Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } "https://api.github.com/repos/$env:REPO/releases/latest").tag_name
+          }
+          if ($tag -notmatch $pattern) { throw "Not a release tag: '$tag'" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Download release exe
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $u = "https://tdpdfreleases.blob.core.windows.net/releases/$env:TAG/TDPdf-$env:TAG-win-x64.exe"
+          Invoke-WebRequest $u -OutFile "$env:RUNNER_TEMP\TDPdf.exe"
+          $sig = Get-AuthenticodeSignature "$env:RUNNER_TEMP\TDPdf.exe"
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike 'CN=The Doodle Project*') {
+            throw "Unexpected signature: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+          $sig.SignerCertificate.Subject
+
+      - name: Capture the install prompts
+        shell: pwsh
+        run: |
+          ./build/screenshots/capture.ps1 -Exe "$env:RUNNER_TEMP\TDPdf.exe" `
+            -Demo "$PWD\build\screenshots\demo" -Out "$env:RUNNER_TEMP\shots" `
+            -DebugOut "$env:RUNNER_TEMP\shots-debug" -Shots install
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shots-install
+          path: ${{ runner.temp }}/shots
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # One `screenshots` artifact, whichever machines took the pictures. tdpdf-site fetches it.
+  publish:
+    needs: [capture, install-clean]
+    if: always() && needs.capture.result != 'skipped'
+    runs-on: tdpdf
+    timeout-minutes: 5
+    steps:
+      - uses: actions/upload-artifact/merge@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots
+          pattern: shots-*
           retention-days: 90
+          delete-merged: true
