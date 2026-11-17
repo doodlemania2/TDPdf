@@ -566,13 +566,12 @@ namespace TDPdf
             // this capture is baked into the saved PDF.
             if (_primaryPageBitmap is not BitmapSource source) return null;
 
-            int x = Math.Max(0, (int)Math.Floor(bounds.X));
-            int y = Math.Max(0, (int)Math.Floor(bounds.Y));
-            int right = Math.Min(source.PixelWidth, (int)Math.Ceiling(bounds.Right));
-            int bottom = Math.Min(source.PixelHeight, (int)Math.Ceiling(bounds.Bottom));
-            if (right <= x || bottom <= y) return null;
+            // #220: bounds are canvas DIPs; the bitmap's pixels differ unless it was rendered at 96 DPI.
+            if (TDPdf.Services.CanvasPixels.Region(bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                    source.PixelWidth, source.PixelHeight, source.Width, source.Height) is not { } px)
+                return null;
 
-            var crop = new CroppedBitmap(source, new Int32Rect(x, y, right - x, bottom - y));
+            var crop = new CroppedBitmap(source, new Int32Rect(px.X, px.Y, px.W, px.H));
             var encoder = new PngBitmapEncoder();
             encoder.Frames.Add(BitmapFrame.Create(crop));
             using var ms = new MemoryStream();

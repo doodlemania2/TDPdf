@@ -210,7 +210,12 @@ function MainWindow($proc) {
     throw "TDPdf main window never appeared"
 }
 
-$OffByDefault = @('form-fill')
+# form-fill shows the form overlays, which 2.2.1.0 and earlier draw about 14% too large (#220,
+# fixed after 2.2.1.0). Off by default for those builds; ask for it with -Shots form-fill.
+$OffByDefault = @()
+$exeVersion = [version](Get-Item $Exe).VersionInfo.FileVersion
+if ($exeVersion -le [version]'2.2.1.0') { $OffByDefault += 'form-fill' }
+Write-Host "TDPdf $exeVersion; off by default: $($OffByDefault -join ', ')"
 function Wanted([string]$what) { if ($Shots.Count -eq 0) { $OffByDefault -notcontains $what } else { $Shots -contains $what } }
 
 function Attempt([string]$what, [scriptblock]$b) {
@@ -381,8 +386,8 @@ if (AnyWanted 'form-fill') {
 
 # ── form-fill: type into the membership form ───────────────────────────────────────
 # Field centres as fractions of the page, from build/screenshots/make-form-demo.py.
-# Off by default until #220 is fixed: the field overlays are drawn about 14% too large, so the
-# clicks miss the fields and the typing reaches the tool shortcuts. Ask for it with -Shots form-fill.
+# Off by default for 2.2.1.0 and earlier (#220): there the field overlays are drawn too large, the
+# clicks miss the fields and the typing reaches the tool shortcuts.
 Attempt 'form-fill' {
     PageClick 0.500 0.229; Keys 'Avery Quinn'
     PageClick 0.297 0.294; Keys '{(}555{)} 014-0142'   # SendKeys reads ( ) as grouping

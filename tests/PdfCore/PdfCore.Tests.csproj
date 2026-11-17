@@ -63,6 +63,7 @@
     <Compile Include="..\..\Services\PdfFormBuilder.cs" />
     <Compile Include="..\..\Services\PageBlockMove.cs" />
     <Compile Include="..\..\Services\PageIndexRemap.cs" />
+    <Compile Include="..\..\Services\CanvasPixels.cs" />
     <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
     <Compile Include="..\..\Services\RtlTextLayout.cs" />

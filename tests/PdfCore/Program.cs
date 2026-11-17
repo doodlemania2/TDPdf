@@ -193,6 +193,7 @@ TextEdit.Run(Check, tmp);
 Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);
+CanvasPixelsTests.Run(Check);
 SignatureScan.Run(Check);
 SignatureInspect.Run(Check, tmp);
 Duplicate.Run(Check, tmp);

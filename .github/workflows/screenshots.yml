@@ -36,6 +36,14 @@ on:
         description: Runner label to try for this run only (for example tdp-windows-capture). Empty uses the CAPTURE_RUNNER variable, else the hosted runner.
         required: false
         default: ''
+      source:
+        description: Build TDPdf from the dispatched branch instead of downloading a release, to check a fix before it ships. Runs on hosted windows-2022, never the capture VM. The pictures go to `screenshots-source`, never to `screenshots`.
+        type: boolean
+        default: false
+      shots:
+        description: Shot names to take, separated by spaces (for example "form-fill form-build"). Empty takes the default set.
+        required: false
+        default: ''
   push:
     branches: ['screenshots/**']
 
@@ -52,7 +60,9 @@ jobs:
     if: >-
       github.actor == github.repository_owner &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
-    runs-on: ${{ inputs.runner || vars.CAPTURE_RUNNER || 'windows-2022' }}
+    # A source build is unsigned. It always runs on a clean hosted runner: the capture VM's security
+    # policy refuses to start unsigned programs ("Access is denied"), and unsigned code stays off it.
+    runs-on: ${{ inputs.source && 'windows-2022' || inputs.runner || vars.CAPTURE_RUNNER || 'windows-2022' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,6 +100,7 @@ jobs:
       # names its tag in head_branch; anything else (a re-release dispatch, a screenshots/**
       # push, an empty input) captures the latest published release.
       - name: Pick the release
+        if: ${{ !inputs.source }}
         id: tag
         shell: pwsh
         env:
@@ -108,6 +119,7 @@ jobs:
           "Capturing $tag"
 
       - name: Download release exe
+        if: ${{ !inputs.source }}
         shell: pwsh
         env:
           TAG: ${{ steps.tag.outputs.tag }}
@@ -119,20 +131,35 @@ jobs:
             throw "Unexpected signature: $($sig.Status) $($sig.SignerCertificate.Subject)"
           }
           $sig.SignerCertificate.Subject
+          "TDPDF_EXE=$env:RUNNER_TEMP\TDPdf.exe" >> $env:GITHUB_ENV
+
+      # An unsigned build of the dispatched branch, only on an owner's workflow_dispatch.
+      - name: Build from source
+        if: ${{ inputs.source }}
+        shell: pwsh
+        run: |
+          dotnet build TDPdf.csproj -c Release -o "$env:RUNNER_TEMP\tdpdf-build"
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          "TDPDF_EXE=$env:RUNNER_TEMP\tdpdf-build\TDPdf.exe" >> $env:GITHUB_ENV
+          "Capturing a build of $env:GITHUB_REF_NAME at $env:GITHUB_SHA"
 
       - name: Capture
         shell: pwsh
+        env:
+          SHOTS: ${{ inputs.shots }}
         run: |
-          ./build/screenshots/capture.ps1 -Exe "$env:RUNNER_TEMP\TDPdf.exe" `
+          $only = @($env:SHOTS -split '\s+' | Where-Object { $_ })
+          ./build/screenshots/capture.ps1 -Exe $env:TDPDF_EXE `
             -Demo "$PWD\build\screenshots\demo" -Out "$env:RUNNER_TEMP\shots" `
-            -DebugOut "$env:RUNNER_TEMP\shots-debug"
+            -DebugOut "$env:RUNNER_TEMP\shots-debug" -Shots $only
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: shots-desktop
+          # A source build is not a release, so it never becomes `screenshots` (which the site reads).
+          name: ${{ inputs.source && 'screenshots-source' || 'shots-desktop' }}
           path: ${{ runner.temp }}/shots
-          retention-days: 1
+          retention-days: ${{ inputs.source && 7 || 1 }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -148,7 +175,7 @@ jobs:
     if: >-
       github.actor == github.repository_owner &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
-      (inputs.runner || vars.CAPTURE_RUNNER) != ''
+      (inputs.runner || vars.CAPTURE_RUNNER) != '' && !inputs.source
     runs-on: windows-2022
     timeout-minutes: 15
     steps:
@@ -209,7 +236,7 @@ jobs:
   # One `screenshots` artifact, whichever machines took the pictures. tdpdf-site fetches it.
   publish:
     needs: [capture, install-clean]
-    if: always() && needs.capture.result != 'skipped'
+    if: always() && needs.capture.result != 'skipped' && !inputs.source
     runs-on: tdpdf
     timeout-minutes: 5
     steps:
