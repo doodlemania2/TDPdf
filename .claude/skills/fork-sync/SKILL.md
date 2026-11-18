@@ -15,7 +15,7 @@ Instead, this fork practices **curated, per-feature porting**: identify what ups
 - `main` is **push-protected** (CodeQL rule blocks direct pushes) → always work on a branch and open a PR.
 - `gh pr create` defaults to the **upstream** repo — you MUST pass `--repo doodlemania2/TDPdf`.
 - Build (from macOS/Linux where this repo usually lives): `dotnet build -c Release -p:EnableWindowsTargeting=true`. The app only *runs* on Windows (WPF + native pdfium.dll), so you cannot run it here — verify by **clean compile with no new warnings**.
-- There is no test suite or linter. Build warnings are the only lint signal. Record the **baseline warning set first** and never add new warning codes/locations.
+- Tests: `dotnet run --project tests/PdfCore/PdfCore.Tests.csproj -c Release` runs the PdfCore harness (about 1,600 checks, runs on macOS); it must print **ALL PASS**, and it gates `release.yml`. Add checks for any pure logic you port into `Services/`. There is no linter: build warnings are the lint signal, and the baseline is **0 warnings, 0 errors** (check with `--no-incremental`).
 - Read `CLAUDE.md` before touching code — architecture, the three PDF libraries (don't swap them), branding rules, conventions.
 
 ## Procedure
@@ -49,13 +49,13 @@ All feature work tends to touch the ~8000-line `MainWindow.xaml.cs`, so **port c
 ### 4. Finalize (once, centrally)
 - Bump `<Version>`, `<AssemblyVersion>`, `<FileVersion>` together in `TDPdf.csproj` (minor bump for features, patch for fixes-only).
 - Add one `## [x.y.z.0] - YYYY-MM-DD` section to `CHANGELOG.md` (Keep a Changelog: Added/Changed/Fixed), each entry crediting the upstream version it came from. Add the compare link at the bottom.
-- Final clean build: `dotnet build -c Release -p:EnableWindowsTargeting=true --no-incremental` — confirm 0 errors and only baseline warning codes.
+- Final clean build: `dotnet build -c Release -p:EnableWindowsTargeting=true --no-incremental` — confirm 0 warnings, 0 errors. Then run the PdfCore harness and confirm ALL PASS.
 - Branding leak scan: `git diff HEAD~1 --name-only | grep -E '\.(cs|xaml)$' | xargs grep -nI "KillerPDF\|thekiller\|SteveTheKiller"` — the only allowed hits are pre-existing GPL attribution (e.g. the About dialog's "Forked from …") and code comments; no new product strings.
-- Commit (end message with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer), push the branch, and:
+- Commit (a `Co-Authored-By:` trailer is fine), push the branch, and:
   ```
   gh pr create --repo doodlemania2/TDPdf --base main --head <branch> --title "…" --body "…"
   ```
-  End the PR body with the Claude Code generated-with line.
+  End the PR body with its last real section. Never write "Claude Code", a "Generated with" footer or a session link in any PR or issue.
 
 ### 5. Keep branches aligned
 After the PR merges, fast-forward local `main` to `origin/main` and delete the merged sync branch. Leave `upstream/main` tracked for the next sync. Do not force-push `main`.
