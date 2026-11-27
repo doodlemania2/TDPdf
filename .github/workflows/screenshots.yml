@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       shots:
-        description: Shot names to take, separated by spaces (for example "form-fill form-build"). Empty takes the default set.
+        description: Shot names to take, separated by spaces (for example "form-fill form-build"). Empty takes the default set, which leaves out epub-open; name it to take it.
         required: false
         default: ''
   push:
