@@ -291,6 +291,20 @@
       , "MainWindow.Placement.cs", "Services/WindowPlacementMath.cs"]
     },
     {
+      "id": "two-page-view",
+      "name": "Two pages, continuous",
+      "status": "ready",
+      "summary": "Scroll through the document with facing pages side by side, with an optional book layout that keeps the cover on its own. Each tab keeps its own view, and the Pages sidebar can show two thumbnails per row.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.ContinuousView.cs",
+        "MainWindow.PairedSidebar.cs",
+        "Controls/PairedThumbnailPanel.cs",
+        "Services/SpreadRows.cs"
+      ]
+    },
+    {
       "id": "print-flatten",
       "name": "Print and flatten",
       "status": "ready",

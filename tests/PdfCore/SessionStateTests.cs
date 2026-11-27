@@ -14,6 +14,23 @@ internal static class SessionStateTests
         string json = SessionState.Serialize(states);
         var back = SessionState.Parse(json);
         Check("session: JSON round-trips", back.Count == 2 && back[0] == states[0] && back[1] == states[1], json);
+
+        // #246: every tab keeps its own view, including the two-page strip, through save, merge and reopen.
+        var perTab = new List<TabViewState>
+        {
+            S("a.pdf", 1, 0, "Width", "TwoPageContinuous"), S("b.pdf", 2, 0, "None", "Grid"), S("c.pdf", 3, 1.25, "None", "Continuous"),
+        };
+        var perTabBack = SessionState.Parse(SessionState.Serialize(perTab));
+        Check("session: each tab keeps its own view mode", perTabBack.Count == 3
+              && perTabBack[0].ViewMode == "TwoPageContinuous" && perTabBack[1].ViewMode == "Grid" && perTabBack[2].ViewMode == "Continuous",
+              string.Join(",", perTabBack.Select(t => t.ViewMode)));
+        string perTabMerged = SessionState.Merge(SessionState.Serialize(perTab), new[] { P("a.pdf"), P("b.pdf"), P("c.pdf") },
+            new[] { S("b.pdf", 9, 0, "None", "Single") });
+        var mergedModes = SessionState.Parse(perTabMerged).ToDictionary(t => Path.GetFileName(t.Path), t => t.ViewMode);
+        Check("session: a window saving one tab leaves the others' views alone",
+              mergedModes["a.pdf"] == "TwoPageContinuous" && mergedModes["b.pdf"] == "Single" && mergedModes["c.pdf"] == "Continuous",
+              string.Join(",", mergedModes.Select(kv => kv.Key + "=" + kv.Value)));
+        Check("session: a tab with no saved state has no view to apply", SessionState.For(perTabBack, P("none.pdf")).ViewMode == "", "");
         Check("session: empty serialises to empty", SessionState.Serialize(new List<TabViewState>()) == "", "");
         Check("session: garbage parses to empty", SessionState.Parse("{not json").Count == 0 && SessionState.Parse(null).Count == 0 && SessionState.Parse("[null]").Count == 0, "");
         var hostile = SessionState.Parse("[{\"Path\":\"" + P("x.pdf").Replace("\\", "\\\\") + "\",\"Page\":-7,\"Zoom\":-2,\"Fit\":null,\"ViewMode\":null}]");

@@ -748,7 +748,7 @@
                         DataContextChanged="PageThumb_DataContextChanged">
                 <Border Background="White" BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
                         Visibility="{Binding ThumbVisibility}">
-                    <Grid Width="140" Height="{Binding ThumbHeight}" Margin="0,0,0,2">
+                    <Grid Width="{Binding ThumbWidth}" Height="{Binding ThumbHeight}" Margin="0,0,0,2">
                         <Image Source="{Binding Thumb}" Stretch="Uniform"/>
                         <!-- annotations not yet saved into the file -->
                         <Image Source="{Binding Overlay}" Stretch="Fill" IsHitTestVisible="False"/>
@@ -1174,8 +1174,18 @@
                           Header="Invert I_mages Too" InputGestureText="Shift+N"    Click="DocInvertImages_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB9F;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- The page view of the ACTIVE TAB (each tab keeps its own, #246). The five rows are
+                     built in code (BuildPageViewMenu) and checked by SyncViewModeMenu. -->
+                <MenuItem x:Name="PageViewMenuItem" Header="Page _View">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A9;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Toggle _Sidebar"                                  Click="SidebarToggle_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE700;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- Two thumbnails per row in the Pages sidebar (#246); the same switch is on the
+                     sidebar's right-click menu and in Settings. -->
+                <MenuItem x:Name="PairedSidebarMenuItem" Header="_Two-Column Pages Sidebar" Click="PairedSidebar_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A9;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
                 <!-- Upstream KillerPDF #193: in Two-Page view the cover displays ALONE, so facing
@@ -1183,7 +1193,7 @@
                      (SyncTwoPageBookUi sets IsChecked); only meaningful in Two-Page view, which is
                      why the row says so rather than hiding itself. -->
                 <MenuItem x:Name="TwoPageBookMenuItem"
-                          Header="_Book Layout (Two-Page)" InputGestureText="B"      Click="TwoPageBook_Click">
+                          Header="_Book Layout (Two-Page views)" InputGestureText="B"      Click="TwoPageBook_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8F1;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
@@ -1477,9 +1487,21 @@
         <Grid Grid.Row="4" KeyboardNavigation.TabNavigation="Continue">
             <Grid.ColumnDefinitions>
                 <!-- SidebarCol never collapses to 0 — it shrinks to 24px (the toggle strip width). -->
-                <ColumnDefinition x:Name="SidebarCol" Width="180" MinWidth="24" MaxWidth="260"/>
+                <ColumnDefinition x:Name="SidebarCol" Width="180" MinWidth="24" MaxWidth="296"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
+
+            <!-- Drag handle on the sidebar's right edge (#246). The sidebar can be widened until its
+                 thumbnails reach full size (SidebarWidth.Max, applied in code, scales with the
+                 thumbnails). Its visibility follows the sidebar's, so it is gone when the rail is
+                 collapsed and in full screen. Painted above the sidebar so it gets the pointer. -->
+            <GridSplitter x:Name="SidebarSplitter" Grid.Column="0" Width="6" Margin="0,0,-3,0"
+                          HorizontalAlignment="Right" VerticalAlignment="Stretch"
+                          ResizeDirection="Columns" ResizeBehavior="CurrentAndNext"
+                          Background="Transparent" Cursor="SizeWE" Focusable="False"
+                          Panel.ZIndex="20"
+                          Visibility="{Binding Visibility, ElementName=SidebarBorder}"
+                          AutomationProperties.Name="Resize sidebar"/>
 
             <!-- Sidebar column: inner grid splits content from permanent toggle strip.
                  Named because the app-wide UI scale (MainWindow.AppScale.cs) hangs its LayoutTransform here —

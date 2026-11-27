@@ -138,6 +138,17 @@ namespace TDPdf.Properties
             set => this[nameof(TwoPageBookLayout)] = value;
         }
 
+        // The Pages sidebar shows two thumbnails per row (#246). Off (default) is the single column
+        // it has always been. An app-wide reading preference like the view mode; the pairing follows
+        // TwoPageBookLayout.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool SidebarTwoColumns
+        {
+            get => (bool)this[nameof(SidebarTwoColumns)];
+            set => this[nameof(SidebarTwoColumns)] = value;
+        }
+
         // When true (default), launching TDPdf while it is already running
         // (e.g. double-clicking another PDF in Explorer) forwards the file to
         // the existing window as a new tab instead of opening a second window.
@@ -159,9 +170,10 @@ namespace TDPdf.Properties
             set => this[nameof(EnterAddsNewLine)] = value;
         }
 
-        // Persisted page view mode (app-wide). One of the ViewMode enum names:
-        // "Single", "Continuous", "TwoPage", "Grid". Defaults to Grid, which is
-        // the layout the app opened in before view modes were introduced.
+        // The page view mode the user chose last. One of the ViewMode enum names:
+        // "Single", "Continuous", "TwoPage", "TwoPageContinuous", "Grid". Each tab keeps its own
+        // view; this is the one a NEW tab starts in. Defaults to Grid, which is the layout the app
+        // opened in before view modes were introduced.
         [UserScopedSetting]
         [DefaultSettingValue("Grid")]
         public string ViewMode

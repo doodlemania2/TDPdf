@@ -10,7 +10,7 @@ namespace TDPdf.Services
     /// <param name="Page">Zero-based page index.</param>
     /// <param name="Zoom">True zoom (1 = natural size); 0 means "no remembered zoom".</param>
     /// <param name="Fit">"None", "Width" or "Page".</param>
-    /// <param name="ViewMode">"Single", "Continuous", "TwoPage" or "Grid"; empty when unknown.</param>
+    /// <param name="ViewMode">This tab's own view: "Single", "Continuous", "TwoPage", "TwoPageContinuous" or "Grid"; empty when unknown.</param>
     internal sealed record TabViewState(string Path, int Page, double Zoom, string Fit, string ViewMode);
 
     /// <summary>

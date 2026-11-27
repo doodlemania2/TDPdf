@@ -562,6 +562,9 @@ namespace TDPdf
         /// <summary>Arrow keys and PgUp / PgDn step through the pages. True when the key was consumed.</summary>
         private bool TryPageStepKeys(KeyEventArgs e)
         {
+            // The two-column Pages sidebar steps a row with Up / Down (#246).
+            if (TryPairedSidebarKeys(e)) return true;
+
             // Arrow keys and PgUp/PgDn navigate to the previous / next page. Handled here at the window
             // (Preview) level with e.Handled so paging works the same whether the page canvas or a sidebar
             // thumbnail has focus — otherwise a focused PageList would page its own selection instead. PgUp/

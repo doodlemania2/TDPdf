@@ -16,8 +16,120 @@ namespace TDPdf
     public partial class MainWindow : Window
     {
         // ============================================================
-        // Continuous (vertical-strip) view
+        // Continuous (vertical-strip) view, and Two pages, continuous (#246)
         // ============================================================
+        //
+        // Two pages, continuous is the same strip with the pages laid out two to a row. Every page
+        // has a slot (_continuousSlots[page]); in the plain strip the slots are the panel's children,
+        // in the two-page strip each row is a Grid child of the panel holding one or two slots. All
+        // page-indexed work (windowing, re-sharpening, the render stream) goes through the slot list,
+        // so it is the same code for both. _continuousTops[page] is the top of the page's ROW.
+
+        /// <summary>Gap between rows, and between the two pages of a row.</summary>
+        private const double ContinuousGap = 12;
+
+        // ── The View > Page View menu (#246) ────────────────────────────────────────────────────
+
+        private static readonly (ViewMode Mode, string Label)[] PageViewChoices =
+        [
+            (ViewMode.Single, "Single page"),
+            (ViewMode.Continuous, "Continuous scroll"),
+            (ViewMode.TwoPage, "Two pages"),
+            (ViewMode.TwoPageContinuous, "Two pages, continuous"),
+            (ViewMode.Grid, "Grid"),
+        ];
+
+        private readonly List<MenuItem> _pageViewItems = [];
+
+        /// <summary>Fills View > Page View with one row per mode. Called once from the constructor.</summary>
+        private void BuildPageViewMenu()
+        {
+            if (FindName("PageViewMenuItem") is not MenuItem host) return;
+            foreach (var (mode, label) in PageViewChoices)
+            {
+                var item = new MenuItem { Header = label, Tag = mode };
+                item.Click += (_, _) => SetViewMode(mode);
+                host.Items.Add(item);
+                _pageViewItems.Add(item);
+            }
+            SyncViewModeMenu();
+        }
+
+        /// <summary>Ticks the active tab's mode in View > Page View.</summary>
+        private void SyncViewModeMenu()
+        {
+            foreach (var item in _pageViewItems)
+                item.IsChecked = item.Tag is ViewMode m && m == _viewMode;
+        }
+
+        /// <summary>The slot of a page, or null while the strip is not built or the page is out of range.</summary>
+        private Border? ContinuousSlot(int page)
+            => page >= 0 && page < _continuousSlots.Count ? _continuousSlots[page] : null;
+
+        private static double SlotHeight(Border? slot)
+            => slot is null || double.IsNaN(slot.Height) ? 0 : slot.Height;
+
+        /// <summary>
+        /// The height the page's row takes on screen: the page's own slot in the plain strip, the
+        /// taller of the two pages in the two-page strip.
+        /// </summary>
+        private double ContinuousRowHeight(int page)
+        {
+            double h = SlotHeight(ContinuousSlot(page));
+            if (!IsPairedStrip) return h;
+            var row = SpreadRows.Row(SpreadRows.RowOf(page, _twoPageBook), _continuousSlots.Count, _twoPageBook);
+            if (row.Left >= 0) h = Math.Max(h, SlotHeight(ContinuousSlot(row.Left)));
+            if (row.Right >= 0) h = Math.Max(h, SlotHeight(ContinuousSlot(row.Right)));
+            return h;
+        }
+
+        /// <summary>Width of the strip's content: one page, or a row of two facing pages.</summary>
+        private double ContinuousStripWidth()
+            => IsPairedStrip ? SpreadRows.StripWidth(_continuousPageW, ContinuousGap) : _continuousPageW;
+
+        /// <summary>The natural (zoom 1) height of the page's row: what Fit Page fits against.</summary>
+        private double ContinuousNaturalRowHeight(int page)
+        {
+            if (_doc is null || _doc.PageCount == 0 || _continuousPageW <= 0) return 1;
+            double SlotH(int p)
+            {
+                var (pw, ph) = PdfPageGeometry.DisplaySize(_doc.Pages[p]);
+                return _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
+            }
+            page = Math.Clamp(page, 0, _doc.PageCount - 1);
+            if (!IsPairedStrip) return SlotH(page);
+            var row = SpreadRows.Row(SpreadRows.RowOf(page, _twoPageBook), _doc.PageCount, _twoPageBook);
+            double h = 0;
+            if (row.Left >= 0) h = Math.Max(h, SlotH(row.Left));
+            if (row.Right >= 0) h = Math.Max(h, SlotH(row.Right));
+            return h;
+        }
+
+        /// <summary>
+        /// Recomputes the stored top of the row holding <paramref name="page"/> from the row above's
+        /// final height. O(1): rows render in order, so the row above is already final.
+        /// </summary>
+        private void UpdateContinuousTop(int page)
+        {
+            if (page < 0 || page >= _continuousTops.Count) return;
+            if (!IsPairedStrip)
+            {
+                _continuousTops[page] = page == 0
+                    ? 0
+                    : _continuousTops[page - 1] + SlotHeight(ContinuousSlot(page - 1)) + ContinuousGap;
+                return;
+            }
+            int rowIdx = SpreadRows.RowOf(page, _twoPageBook);
+            var row = SpreadRows.Row(rowIdx, _continuousSlots.Count, _twoPageBook);
+            double top = 0;
+            if (rowIdx > 0)
+            {
+                var prev = SpreadRows.Row(rowIdx - 1, _continuousSlots.Count, _twoPageBook);
+                top = _continuousTops[prev.First] + ContinuousRowHeight(prev.First) + ContinuousGap;
+            }
+            if (row.Left >= 0) _continuousTops[row.Left] = top;
+            if (row.Right >= 0) _continuousTops[row.Right] = top;
+        }
 
         /// <summary>
         /// Builds the continuous strip: one placeholder slot per page sized from the PDF's
@@ -31,7 +143,9 @@ namespace TDPdf
             if (_doc is null) return;
             _continuousRenderCts?.Cancel();
             _continuousPanel.Children.Clear();
+            _continuousSlots.Clear();
             _continuousTops.Clear();
+            bool paired = IsPairedStrip;
             // #130 (upstream v1.6.4): a PDF whose page tree parses to zero pages must not reach the
             // Pages[0] deref below — Continuous view crashed with an out-of-range index. Nothing to
             // lay out, so bail after clearing any stale tiles.
@@ -49,10 +163,9 @@ namespace TDPdf
             var refPage = _doc.Pages[0];
             _continuousPageW = Math.Max(200.0, PdfPageGeometry.DisplaySize(refPage).W * (96.0 / 72.0));
 
-            double y = 0;
+            var slotHeights = new List<double>(_doc.PageCount);
             for (int i = 0; i < _doc.PageCount; i++)
             {
-                _continuousTops.Add(y);
                 var pdfPage = _doc.Pages[i];
                 // DisplaySize is the box PDFium rasterizes with /Rotate applied. Do NOT swap
                 // PdfPage.Width/Height again: PdfSharpCore already reports them swapped for 90/270
@@ -69,7 +182,8 @@ namespace TDPdf
                 {
                     Width = _continuousPageW,
                     Height = slotH,
-                    Margin = new Thickness(0, 0, 0, 12),
+                    // A row of the two-page strip carries the gap below it instead.
+                    Margin = paired ? new Thickness(0) : new Thickness(0, 0, 0, ContinuousGap),
                     Background = BrushResource("BgPanel"),
                     Tag = i,
                     Child = pageImg
@@ -80,8 +194,40 @@ namespace TDPdf
                 AutomationProperties.SetName(placeholder, $"Page {i + 1}");
                 AutomationProperties.SetHelpText(placeholder, "Click to make this the current page.");
                 placeholder.PreviewMouseLeftButtonDown += (_, _) => SelectContinuousPage(capturedI);
-                _continuousPanel.Children.Add(placeholder);
-                y += slotH + 12;
+                _continuousSlots.Add(placeholder);
+                slotHeights.Add(slotH);
+                if (!paired) _continuousPanel.Children.Add(placeholder);
+            }
+
+            if (!paired)
+            {
+                // The plain strip is a single column: one gap below every page.
+                double y = 0;
+                for (int i = 0; i < slotHeights.Count; i++) { _continuousTops.Add(y); y += slotHeights[i] + ContinuousGap; }
+            }
+            else
+            {
+                _continuousTops.AddRange(SpreadRows.PageTops(slotHeights, _twoPageBook, ContinuousGap));
+                double rowW = SpreadRows.StripWidth(_continuousPageW, ContinuousGap);
+                for (int r = 0; r < SpreadRows.RowCount(_doc.PageCount, _twoPageBook); r++)
+                {
+                    var row = SpreadRows.Row(r, _doc.PageCount, _twoPageBook);
+                    var host = new Grid { Width = rowW, Margin = new Thickness(0, 0, 0, ContinuousGap) };
+                    foreach (int page in new[] { row.Left, row.Right })
+                    {
+                        if (page < 0) continue;
+                        var slot = _continuousSlots[page];
+                        slot.VerticalAlignment = VerticalAlignment.Center;   // a mixed pair centres on the taller page
+                        slot.HorizontalAlignment = SpreadRows.CellOf(page, _doc.PageCount, _twoPageBook, centreLoneLast: true) switch
+                        {
+                            SpreadCell.Left => HorizontalAlignment.Left,
+                            SpreadCell.Right => HorizontalAlignment.Right,
+                            _ => HorizontalAlignment.Center,
+                        };
+                        host.Children.Add(slot);
+                    }
+                    _continuousPanel.Children.Add(host);
+                }
             }
 
             // Entering Continuous flips the display factor to 1, so the layout scale for the zoom
@@ -170,9 +316,8 @@ namespace TDPdf
                         FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, i, pig) : [];
                         Application.Current.Dispatcher.Invoke(() =>
                         {
-                            if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
-                            if (fi >= _continuousPanel.Children.Count) return;
-                            if (_continuousPanel.Children[fi] is not Border slot) return;
+                            if (cts.IsCancellationRequested || !IsContinuousFamily) return;
+                            if (ContinuousSlot(fi) is not Border slot) return;
 
                             double dipW = slot.Width;
                             double dipH = dipW * fh / fw;
@@ -198,19 +343,7 @@ namespace TDPdf
                             // page's top from the previous page's finalized bottom (O(1) per page,
                             // avoiding an O(n^2) full rebuild on long documents). Pages below fi are
                             // still placeholders; they correct their own tops as they render.
-                            if (fi < _continuousTops.Count)
-                            {
-                                if (fi == 0)
-                                {
-                                    _continuousTops[0] = 0;
-                                }
-                                else
-                                {
-                                    double prevH = ((FrameworkElement)_continuousPanel.Children[fi - 1]).Height;
-                                    if (double.IsNaN(prevH)) prevH = 0;
-                                    _continuousTops[fi] = _continuousTops[fi - 1] + prevH + 12;
-                                }
-                            }
+                            UpdateContinuousTop(fi);
 
                             // Pages render in order, so once the target page is reached every page
                             // above it has its final height; re-scroll so we land precisely on it.
@@ -243,7 +376,7 @@ namespace TDPdf
         // pass over an almost-always-empty set below the hi-res threshold).
         private void StartContinuousResharpen()
         {
-            if (_viewMode != ViewMode.Continuous) return;
+            if (!IsContinuousFamily) return;
             if (_continuousSharpenTimer is null)
             {
                 _continuousSharpenTimer = new System.Windows.Threading.DispatcherTimer
@@ -251,7 +384,7 @@ namespace TDPdf
                 _continuousSharpenTimer.Tick += (_, _) =>
                 {
                     _continuousSharpenTimer!.Stop();
-                    if (_viewMode != ViewMode.Continuous) return;
+                    if (!IsContinuousFamily) return;
                     MaintainContinuousWindow();   // #122: render pages entering the window, release those leaving
                     ResharpenContinuousVisible();
                 };
@@ -267,8 +400,8 @@ namespace TDPdf
         // re-checks _viewMode and cancellation after every await/dispatch.
         private void ResharpenContinuousVisible()
         {
-            if (_viewMode != ViewMode.Continuous || _doc is null || _currentFile is null) return;
-            if (_continuousTops.Count == 0 || _continuousPanel.Children.Count == 0) return;
+            if (!IsContinuousFamily || _doc is null || _currentFile is null) return;
+            if (_continuousTops.Count == 0 || _continuousSlots.Count == 0) return;
 
             double zoom = Zoom.ZoomLevel;
             double targetW = _continuousPageW;
@@ -289,11 +422,10 @@ namespace TDPdf
             double viewTop = PagePreviewPanel.VerticalOffset / Math.Max(0.01, zoom);
             double viewBot = (PagePreviewPanel.VerticalOffset + PagePreviewPanel.ViewportHeight) / Math.Max(0.01, zoom);
             var visible = new List<int>();
-            for (int i = 0; i < _continuousTops.Count && i < _continuousPanel.Children.Count; i++)
+            for (int i = 0; i < _continuousTops.Count && i < _continuousSlots.Count; i++)
             {
                 double top = _continuousTops[i];
-                double h = ((FrameworkElement)_continuousPanel.Children[i]).Height;
-                if (double.IsNaN(h)) continue;
+                double h = ContinuousRowHeight(i);
                 if (top + h >= viewTop && top <= viewBot) visible.Add(i);
             }
             if (visible.Count > 0)
@@ -360,7 +492,7 @@ namespace TDPdf
                         if (cts.IsCancellationRequested) return;
                         Dispatcher.Invoke(() =>
                         {
-                            if (cts.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
+                            if (cts.IsCancellationRequested || !IsContinuousFamily) return;
                             SharpenContinuousSlot(fp, fw, fh, bytes, keep);
                         });
                     }
@@ -376,8 +508,7 @@ namespace TDPdf
         // that already carry a base bitmap, so it never fights the streaming base pass.
         private void SharpenContinuousSlot(int pageIndex, int pxW, int pxH, byte[] bgra, FracRect[] keep)
         {
-            if (pageIndex < 0 || pageIndex >= _continuousPanel.Children.Count) return;
-            if (_continuousPanel.Children[pageIndex] is not Border slot) return;
+            if (ContinuousSlot(pageIndex) is not Border slot) return;
             if (slot.Child is not Image img) return;
             if (img.Source is not BitmapSource baseSrc) return;   // base not rendered yet — leave it
 
@@ -406,8 +537,7 @@ namespace TDPdf
         private void RestoreContinuousBase(int pageIndex)
         {
             if (!_continuousBaseBitmaps.TryGetValue(pageIndex, out var baseBmp)) return;
-            if (pageIndex >= 0 && pageIndex < _continuousPanel.Children.Count
-                && _continuousPanel.Children[pageIndex] is Border slot
+            if (ContinuousSlot(pageIndex) is Border slot
                 && slot.Child is Image img)
             {
                 img.Source = baseBmp;
@@ -425,8 +555,8 @@ namespace TDPdf
         // long document trims the far pages. Runs on the UI thread; the render itself is off-thread.
         private void MaintainContinuousWindow()
         {
-            if (_viewMode != ViewMode.Continuous || _doc is null || _currentFile is null) return;
-            int slotCount = _continuousPanel.Children.Count;
+            if (!IsContinuousFamily || _doc is null || _currentFile is null) return;
+            int slotCount = _continuousSlots.Count;
             if (slotCount == 0 || _continuousTops.Count == 0) return;
 
             double zoom = Math.Max(0.01, Zoom.ZoomLevel);
@@ -436,8 +566,7 @@ namespace TDPdf
             for (int i = 0; i < _continuousTops.Count && i < slotCount; i++)
             {
                 double top = _continuousTops[i];
-                double h = ((FrameworkElement)_continuousPanel.Children[i]).Height;
-                if (double.IsNaN(h)) h = 0;
+                double h = ContinuousRowHeight(i);
                 if (top + h >= viewTop && top <= viewBot) { if (firstVis < 0) firstVis = i; lastVis = i; }
             }
             if (firstVis < 0) { firstVis = 0; lastVis = 0; }   // before first layout: treat the top as visible
@@ -448,7 +577,7 @@ namespace TDPdf
             for (int i = 0; i < slotCount; i++)
             {
                 if (i >= lo && i <= hi) continue;
-                if (_continuousPanel.Children[i] is not Border slot || slot.Child is not Image img) continue;
+                if (_continuousSlots[i] is not Border slot || slot.Child is not Image img) continue;
                 if (img.Source is null) continue;
                 img.Source = null;
                 slot.Background = BrushResource("BgPanel");
@@ -459,7 +588,7 @@ namespace TDPdf
             // Collect in-window slots that still need a base bitmap.
             var need = new List<int>();
             for (int i = lo; i <= hi; i++)
-                if (_continuousPanel.Children[i] is Border slot && slot.Child is Image img && img.Source is null)
+                if (_continuousSlots[i] is Border slot && slot.Child is Image img && img.Source is null)
                     need.Add(i);
             if (need.Count == 0) return;
 
@@ -494,7 +623,7 @@ namespace TDPdf
                         if (ct.IsCancellationRequested) return;
                         Dispatcher.Invoke(() =>
                         {
-                            if (ct.IsCancellationRequested || _viewMode != ViewMode.Continuous) return;
+                            if (ct.IsCancellationRequested || !IsContinuousFamily) return;
                             ApplyContinuousBaseStable(fi, fw, fh, bytes, keep);
                         });
                     }
@@ -509,8 +638,7 @@ namespace TDPdf
         // set at layout already matches the page aspect, so the natural-size bitmap fills the slot.
         private void ApplyContinuousBaseStable(int fi, int fw, int fh, byte[] bytes, FracRect[] keep)
         {
-            if (fi < 0 || fi >= _continuousPanel.Children.Count) return;
-            if (_continuousPanel.Children[fi] is not Border slot || slot.Child is not Image img) return;
+            if (ContinuousSlot(fi) is not Border slot || slot.Child is not Image img) return;
             if (img.Source is not null) return;   // already rendered (or sharpened) — don't clobber
             double dipW = slot.Width;
             if (double.IsNaN(dipW) || dipW <= 0) return;
@@ -632,7 +760,7 @@ namespace TDPdf
             // already runs here, so it reports the page rather than repeating the hunt.
             if (_viewMode == ViewMode.Grid) { UpdateGridCurrentPageCounter(e.VerticalChange != 0); return; }
 
-            if (_viewMode != ViewMode.Continuous || _continuousTops.Count == 0) return;
+            if (!IsContinuousFamily || _continuousTops.Count == 0) return;
             // #85: once scrolling settles, sharpen the pages now in view and release the ones that
             // left. Debounced, so streaming base render / rapid scroll just keeps resetting the timer;
             // programmatic scrolls count too (their offset change still moves the visible window).
@@ -645,10 +773,11 @@ namespace TDPdf
                                     / Math.Max(0.01, Zoom.ZoomLevel);
             int nearest = 0;
             double minDist = double.MaxValue;
-            for (int i = 0; i < _continuousTops.Count && i < _continuousPanel.Children.Count; i++)
+            for (int i = 0; i < _continuousTops.Count && i < _continuousSlots.Count; i++)
             {
-                double h = ((FrameworkElement)_continuousPanel.Children[i]).Height;
-                if (double.IsNaN(h)) h = 0;
+                // In the two-page strip both pages of a row are equally near, and the strict
+                // comparison keeps the first: the row's left page (the SpreadStart rule).
+                double h = ContinuousRowHeight(i);
                 double center = _continuousTops[i] + h * 0.5;
                 double dist = Math.Abs(center - viewportCenter);
                 if (dist < minDist) { minDist = dist; nearest = i; }
@@ -657,7 +786,10 @@ namespace TDPdf
             // #197: surface the position badge on real scrolling, whichever page ends up nearest.
             if (e.VerticalChange != 0) ShowPageBadge(nearest);
 
-            if (PageList.SelectedIndex != nearest)
+            // A page picked on the right of a row stays the selection while its row is the one in view.
+            bool sameRow = IsPairedStrip && PageList.SelectedIndex >= 0
+                && SpreadRows.RowOf(PageList.SelectedIndex, _twoPageBook) == SpreadRows.RowOf(nearest, _twoPageBook);
+            if (PageList.SelectedIndex != nearest && !sameRow)
             {
                 _pageJumpBox.Text = (nearest + 1).ToString();
                 // Update the sidebar selection without re-scrolling the strip back.
