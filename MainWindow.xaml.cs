@@ -6039,7 +6039,7 @@ namespace TDPdf
         /// edit refer to a different document layout, so we clear the stacks here.
         /// Must be called BEFORE modifying _doc.
         /// </summary>
-        private void PushDocUndo()
+        private void PushDocUndo(bool keepMarks = false)
         {
             if (_doc is null) return;
             // Undoing a document change reloads the document and drops every pending form value
@@ -6050,7 +6050,7 @@ namespace TDPdf
             _doc.Save(ms);
             _undoStack.Clear();
             _redoStack.Clear();
-            _undoStack.AddLast(new UndoEntry(UndoKind.Document, DocBytes: ms.ToArray()));
+            _undoStack.AddLast(new UndoEntry(UndoKind.Document, DocBytes: ms.ToArray(), KeepMarks: keepMarks));
         }
 
         private void RenderTextAnnotation(TextAnnotation ta)

@@ -1253,6 +1253,14 @@
                               Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="Water_mark…"                                       Click="Watermark_Click"
+                          ToolTip="Add a text or picture watermark and page numbers to a range of pages">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8D2;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Remove Watermar_k"                                 Click="RemoveWatermark_Click"
+                          ToolTip="Remove the watermarks and page numbers TDPdf added">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE74D;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE90F;"/></MenuItem.Icon>
                 </MenuItem>

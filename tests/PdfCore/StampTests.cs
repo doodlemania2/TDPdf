@@ -174,15 +174,19 @@ internal static class StampTests
         int fullMin = DarkestGreen(ix, w, h), faintMin = DarkestGreen(ix2, w, h);
         Check("opacity is baked into the appearance: a 40% stamp is paler than a full one", faintMin > fullMin + 40, $"{fullMin} vs {faintMin}");
 
-        // A picture's opacity is the wrapper state: the appearance names its graphics states.
-        var picFaint = new StampAnnotation { Kind = StampKind.Image, ImageData = Png1x1, Opacity = 0.5, Position = new Point(10, 10), Scale = 1, SourceWidth = 120, SourceHeight = 60 };
+        // A picture's opacity: the appearance paints the picture as a transparency group under an opacity state.
+        var png = WatermarkTests.MakePng(40, 20, 220, 20, 20, 96);
+        var picFaint = new StampAnnotation { Kind = StampKind.Image, ImageData = Convert.ToBase64String(png), Opacity = 0.4, Position = new Point(100, 100), Scale = 2, SourceWidth = 60, SourceHeight = 30 };
         var (pathP, _) = Save(tmp, "stamp-pic-faint", 0, new PageAnnotation[] { picFaint });
         using (var reP = PdfSharpCore.Pdf.IO.PdfReader.Open(pathP, mode))
         {
             var fm = PdfItems.Deref((FirstStamp(reP)!.Elements["/AP"] as PdfDictionary)!.Elements["/N"]) as PdfDictionary;
             string body = System.Text.Encoding.Latin1.GetString(fm!.Stream.UnfilteredValue);
-            Check("a half-opaque picture stamp sets stroke and fill opacity around its image", body.StartsWith("q /GS") && body.Contains(" gs ") && body.Contains(" Do"), body.Length > 60 ? body[..60] : body);
+            Check("a half-opaque picture stamp paints its picture as a group under an opacity state", body.Contains("/GSa gs") && body.Contains("/Fm0 Do"), body);
         }
+        var (pxs, pw, ph) = Render(pathP, (int)PageW, (int)PageH);
+        int pi = ((130 * (int)PageW) + 160) * 4;
+        Check("picture stamp opacity: 40% red over white renders pale", pxs.Length > pi + 2 && pxs[pi + 2] > 200 && pxs[pi + 1] > 130 && pxs[pi + 1] < 190, pxs.Length > pi + 2 ? $"{pxs[pi + 2]},{pxs[pi + 1]},{pxs[pi]}" : "no render");
 
         // Picture and custom text stamps are real annotations too, with their own names.
         var pic = new StampAnnotation { Kind = StampKind.Image, ImageData = Png1x1, Position = new Point(10, 10), Scale = 1, SourceWidth = 120, SourceHeight = 60 };

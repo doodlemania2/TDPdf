@@ -95,11 +95,11 @@ namespace TDPdf.Services
             }
 
             form.DrawingFinished();   // writes the content stream; the opacity wrapper below needs it
-            var pdfForm = form.PdfForm;
-            // A picture has no colour operators of its own, so the whole appearance is wrapped in an opacity
-            // state; text and frame carry the opacity in their own colours (XGraphics resets the alpha state
-            // before every coloured object, which would undo a wrapper).
-            if (s.Kind == StampKind.Image) ApplyOpacity(doc, pdfForm, s.Opacity);
+            // A picture has no colour operators of its own to carry an opacity, so it is wrapped; text
+            // and frame carry theirs in their own colours.
+            PdfDictionary pdfForm = form.PdfForm;
+            if (s.Kind == StampKind.Image && s.Opacity < 0.999)
+                pdfForm = WrapWithOpacity(doc, form.PdfForm, at.Width, at.Height, s.Opacity);
             var matrix = new PdfArray(doc);
             foreach (double n in new[] { at.A, at.B, at.C, at.D, at.E, at.F }) matrix.Elements.Add(new PdfReal(n));
             pdfForm.Elements["/Matrix"] = matrix;
@@ -173,27 +173,39 @@ namespace TDPdf.Services
         }
 
         /// <summary>
-        /// Wraps the appearance's content in a graphics state that sets stroke and fill opacity, so the
-        /// whole stamp (frame, words or picture) is drawn at <paramref name="opacity"/>.
+        /// Wraps a drawn form so that the whole of it is painted at <paramref name="opacity"/>: the
+        /// returned form paints <paramref name="inner"/> (made a transparency group) under a graphics
+        /// state that sets stroke and fill opacity. A group, not a bare state, because XGraphics resets
+        /// the alpha state before every object it draws, which would undo an opacity set outside it.
         /// </summary>
-        private static void ApplyOpacity(PdfDocument doc, PdfFormXObject form, double opacity)
+        internal static PdfDictionary WrapWithOpacity(PdfDocument doc, PdfFormXObject inner, double w, double h, double opacity)
         {
-            if (opacity >= 0.999) return;
-            var stream = form.Stream;
-            if (stream is null) return;
-            var res = form.Resources;
-            var stroke = doc.ExtGStateTable.GetExtGStateStroke(opacity, false);
-            var fill = doc.ExtGStateTable.GetExtGStateNonStroke(opacity, false);
-            string gs1 = res.AddExtGState(stroke), gs2 = res.AddExtGState(fill);
-            byte[] body = stream.UnfilteredValue;
-            string head = string.Format(CultureInfo.InvariantCulture, "q {0} gs {1} gs\n", gs1, gs2);
-            var all = new List<byte>(System.Text.Encoding.ASCII.GetBytes(head));
-            all.AddRange(body);
-            all.AddRange(System.Text.Encoding.ASCII.GetBytes("\nQ\n"));
-            // The finished stream may already be flate-compressed; the wrapped one is written plain.
-            form.Elements.Remove("/Filter");
-            form.Elements.Remove("/DecodeParms");
-            stream.Value = all.ToArray();
+            var group = new PdfDictionary(doc);
+            group.Elements["/S"] = new PdfName("/Transparency");
+            inner.Elements["/Group"] = group;
+
+            var state = new PdfDictionary(doc);
+            state.Elements["/Type"] = new PdfName("/ExtGState");
+            state.Elements["/CA"] = new PdfReal(opacity);
+            state.Elements["/ca"] = new PdfReal(opacity);
+            var states = new PdfDictionary(doc);
+            states.Elements["/GSa"] = state;
+            var xobjects = new PdfDictionary(doc);
+            xobjects.Elements["/Fm0"] = inner.Reference!;
+            var res = new PdfDictionary(doc);
+            res.Elements["/ExtGState"] = states;
+            res.Elements["/XObject"] = xobjects;
+
+            var outer = new PdfDictionary(doc);
+            outer.Elements["/Type"] = new PdfName("/XObject");
+            outer.Elements["/Subtype"] = new PdfName("/Form");
+            var bbox = new PdfArray(doc);
+            foreach (double n in new[] { 0, 0, w, h }) bbox.Elements.Add(new PdfReal(n));
+            outer.Elements["/BBox"] = bbox;
+            outer.Elements["/Resources"] = res;
+            outer.CreateStream(System.Text.Encoding.ASCII.GetBytes("q /GSa gs /Fm0 Do Q\n"));
+            doc.Internals.AddObject(outer);
+            return outer;
         }
     }
 }

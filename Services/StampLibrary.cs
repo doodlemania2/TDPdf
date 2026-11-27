@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Windows;
 
 namespace TDPdf.Services
@@ -150,34 +149,8 @@ namespace TDPdf.Services
         internal static double ClampOpacity(double fraction) =>
             ClampOpacityPercent(fraction * 100) / 100;
 
-        /// <summary>
-        /// Reads a typed number. Either decimal separator works ("32.5" and "32,5"); when both appear
-        /// the last one is the decimal point and the other is a thousands mark ("1,234.5", "1.234,5").
-        /// A trailing unit such as "px" or "%" is ignored. False for anything else.
-        /// </summary>
-        internal static bool TryParseNumber(string? text, out double value)
-        {
-            value = 0;
-            if (string.IsNullOrWhiteSpace(text)) return false;
-            string t = text.Trim().TrimEnd('%').TrimEnd();
-            if (t.EndsWith("px", StringComparison.OrdinalIgnoreCase) || t.EndsWith("pt", StringComparison.OrdinalIgnoreCase))
-                t = t[..^2].TrimEnd();
-            t = t.Replace(" ", "").Replace(" ", "");
-            int dot = t.LastIndexOf('.'), comma = t.LastIndexOf(',');
-            if (dot >= 0 && comma >= 0)
-            {
-                char decimalMark = dot > comma ? '.' : ',';
-                char thousands = decimalMark == '.' ? ',' : '.';
-                t = t.Replace(thousands.ToString(), "").Replace(decimalMark, '.');
-            }
-            else if (comma >= 0)
-            {
-                if (t.IndexOf(',') != comma) return false;   // "1,2,3" is not a number
-                t = t.Replace(',', '.');
-            }
-            if (!double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out value)) return false;
-            return !double.IsNaN(value) && !double.IsInfinity(value);
-        }
+        /// <summary>Reads a typed number; see <see cref="TypedNumber.TryParse"/>.</summary>
+        internal static bool TryParseNumber(string? text, out double value) => TypedNumber.TryParse(text, out value);
 
         /// <summary>A typed size, clamped to the slider's range. False (value untouched) when it is not a number.</summary>
         internal static bool TryParseSize(string? text, out double size)

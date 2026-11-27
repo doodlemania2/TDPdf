@@ -63,7 +63,10 @@ namespace TDPdf
             UndoKind Kind,
             int PageIdx = -1,
             byte[]? DocBytes = null,
-            List<PageAnnotation>? PageAnnotations = null);
+            List<PageAnnotation>? PageAnnotations = null,
+            // A document change that moves nothing on the pages (a watermark): undoing or redoing it
+            // leaves the pending marks where they are instead of dropping them with the page layout.
+            bool KeepMarks = false);
         private const int MaxUndoEntries = 100;
         private LinkedList<UndoEntry> _undoStack => _ctx.UndoStack;
         private LinkedList<UndoEntry> _redoStack => _ctx.RedoStack;
@@ -188,7 +191,7 @@ namespace TDPdf
                     currentBytes = ms.ToArray();
                 }
                 if (currentBytes is not null)
-                    target.AddLast(new UndoEntry(UndoKind.Document, DocBytes: currentBytes));
+                    target.AddLast(new UndoEntry(UndoKind.Document, DocBytes: currentBytes, KeepMarks: entry.KeepMarks));
 
                 int selectedIdx = PageList.SelectedIndex;
                 var tempPath = NewTempPath("undo");
@@ -200,8 +203,8 @@ namespace TDPdf
                     // inverse Document entry on `target`).
                     ClearPageSnapshotsOnly(source);
                     ClearPageSnapshotsExceptLast(target);
-                    _annotations.Clear();
-                    ESignDropFieldsForLayoutChange(_ctx);
+                    if (!entry.KeepMarks) _annotations.Clear();
+                    if (!entry.KeepMarks) ESignDropFieldsForLayoutChange(_ctx);
                     ClearFormState();
                     ClearMeasurement();
                     _renderDims.Clear();

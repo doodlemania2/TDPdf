@@ -357,6 +357,15 @@
       "audiences": ["user"],
       "screens": [],
       "sources": ["MainWindow.Stamps.cs", "Services/StampLibrary.cs", "Services/StampWriter.cs", "Services/AnnotationBaker.cs"]
+    },
+    {
+      "id": "watermarks",
+      "name": "Watermarks and page numbers",
+      "status": "ready",
+      "summary": "Add a text or picture watermark and page numbers to the pages you choose, with a live preview. Remove them again later from Tools.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Watermark.cs", "Services/WatermarkSpec.cs", "Services/WatermarkWriter.cs", "Services/TypedNumber.cs"]
     }
   ],
   "scenarios": [
