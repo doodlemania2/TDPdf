@@ -900,7 +900,9 @@ namespace TDPdf
                 ? TdpDialog.FrozenSolidColorBrush(_textFillColor)
                 : TdpDialog.FrozenSolidColorBrush(Color.FromArgb(230, 255, 255, 255));
             AutomationProperties.SetName(tb, "Annotation text");
-            AutomationProperties.SetHelpText(tb, "Type annotation text. Press Enter to save or Escape to cancel.");
+            AutomationProperties.SetHelpText(tb, TDPdf.Properties.Settings.Default.EnterAddsNewLine
+                ? "Type annotation text. Press Control+Enter to save or Escape to cancel."
+                : "Type annotation text. Press Enter to save or Escape to cancel.");
             double maxX = Math.Max(0, _textEditorCanvas.Width - width);
             double maxY = Math.Max(0, _textEditorCanvas.Height - Math.Max(tb.MinHeight, 24));
             // A NEW box is placed so its first line is centred on the I-beam's hotspot. Putting the
@@ -942,7 +944,7 @@ namespace TDPdf
                 Telemetry.TrackEvent("Annotation.TextEditorInputStarted",
                     new Dictionary<string, string> { ["Type"] = "Text" });
             };
-            SetStatus("Type your text, then press Enter to place it (Shift+Enter for a new line)");
+            SetStatus(TextBoxEnterHint());
             FocusTextEditorWhenLoaded(
                 tb,
                 selectAll: existing is not null,
@@ -1096,12 +1098,27 @@ namespace TDPdf
                 CancelActiveTextBox();
                 e.Handled = true;
             }
-            else if (e.Key == Key.Enter && Keyboard.Modifiers != ModifierKeys.Shift)
+            else if (e.Key == Key.Enter && EnterSavesTextBox(Keyboard.Modifiers))
             {
                 CommitActiveTextBox();
                 e.Handled = true;
             }
         }
+
+        /// <summary>
+        /// Whether this Enter saves the text box (true) or is left to the box to add a line (false).
+        /// Default: Enter saves, Shift+Enter adds a line. With "Enter adds a new line" on, Enter adds
+        /// a line and only Ctrl+Enter saves.
+        /// </summary>
+        private static bool EnterSavesTextBox(ModifierKeys modifiers) =>
+            TDPdf.Properties.Settings.Default.EnterAddsNewLine
+                ? (modifiers & ModifierKeys.Control) != 0
+                : modifiers != ModifierKeys.Shift;
+
+        private static string TextBoxEnterHint() =>
+            TDPdf.Properties.Settings.Default.EnterAddsNewLine
+                ? "Type your text, then press Ctrl+Enter to place it (Enter for a new line)"
+                : "Type your text, then press Enter to place it (Shift+Enter for a new line)";
 
         private void TextBox_LostFocus(object sender, RoutedEventArgs e)
         {

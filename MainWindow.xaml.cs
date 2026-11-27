@@ -2451,6 +2451,25 @@ namespace TDPdf
             singleInstance.Unchecked += SingleInstanceSettingChanged;
             panel.Children.Add(singleInstance);
 
+            var enterNewLine = new CheckBox
+            {
+                Content = "Enter adds a new line in text boxes (Ctrl+Enter saves)",
+                IsChecked = TDPdf.Properties.Settings.Default.EnterAddsNewLine,
+                Foreground = BrushResource("TextPrimary"),
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            void EnterNewLineChanged(object? s, RoutedEventArgs e)
+            {
+                TDPdf.Properties.Settings.Default.EnterAddsNewLine = enterNewLine.IsChecked == true;
+                try { TDPdf.Properties.Settings.Default.Save(); } catch { /* the choice still holds for this session */ }
+                SetStatus(enterNewLine.IsChecked == true
+                    ? "Text boxes: Enter adds a new line, Ctrl+Enter saves"
+                    : "Text boxes: Enter saves, Shift+Enter adds a new line");
+            }
+            enterNewLine.Checked += EnterNewLineChanged;
+            enterNewLine.Unchecked += EnterNewLineChanged;
+            panel.Children.Add(enterNewLine);
+
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
             panel.Children.Add(new TextBlock
