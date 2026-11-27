@@ -115,6 +115,9 @@ namespace TDPdf
 
         private async Task TransferTabToWindowAsync(DocumentContext ctx, int destPid)
         {
+            // A read-only view may be dragged out only as another read-only window (TearOffTabToNewWindowAsync):
+            // handing the file to an editing window would put two editors on it.
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus("A read-only view cannot move its document into another window."); return; }
             using var op = Telemetry.StartOperation("TabDrag.TransferToWindow");
             string? path = await ResolveTransferPathAsync(ctx);
             if (path is null) { op.Fail(); return; }   // ResolveTransferPathAsync already tracked why
@@ -151,10 +154,10 @@ namespace TDPdf
                 // of its own since ProcessPath is reliably set for the process that is running us.
                 string exePath = Environment.ProcessPath!;
                 var psi = new ProcessStartInfo(exePath) { UseShellExecute = false };
-                psi.ArgumentList.Add("--new-window");
-                psi.ArgumentList.Add(path!);
-                // Opens beside this window, not on top of it and not maximized.
-                if (TearOffBoundsArg() is { } boundsArg) psi.ArgumentList.Add(boundsArg);
+                // Opens beside this window, not on top of it and not maximized. A read-only view
+                // stays read-only when its tab is torn off.
+                WindowPlacementMath.Box? tearOffBounds = TearOffBoundsArg() is { } boundsArg && WindowPlacementMath.TryParseBoundsArg(new[] { boundsArg }, out var parsed) ? parsed : null;
+                foreach (var a in WindowLaunch.BuildArgs(path!, ReadOnlyGate.ProcessIsReadOnly, tearOffBounds)) psi.ArgumentList.Add(a);
                 Process.Start(psi);
                 SetStatus($"Opened \"{displayName}\" in a new window.");
                 RemoveTabSilently(ctx, keepFile: path);
@@ -176,6 +179,12 @@ namespace TDPdf
         private async Task<bool> ImportTabFromAnotherWindowAsync(string path)
         {
             using var op = Telemetry.StartOperation("TabDrag.Import");
+            if (ReadOnlyGate.ProcessIsReadOnly)
+            {
+                // The sender keeps its tab: this window never takes a document it could not save.
+                op.With("Reason", "ReadOnlyWindow").Fail();
+                return false;
+            }
             if (!_uiReady || !File.Exists(path))
             {
                 op.With("Reason", !_uiReady ? "NotReady" : "PathMissing").Fail();
@@ -315,6 +324,13 @@ namespace TDPdf
                 return;
             }
 
+            if (ReadOnlyGate.ProcessIsReadOnly)
+            {
+                // A read-only view is never where a document someone just double-clicked should land.
+                // Give it its own editable window instead.
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) StartSeparateWindow(path, readOnly: false, bounds: null);
+                return;
+            }
             if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
             Activate();
             Topmost = true;

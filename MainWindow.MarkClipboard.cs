@@ -260,6 +260,7 @@ namespace TDPdf
         private void PasteFromClipboard()
         {
             if (_doc is null) return;
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus(ReadOnlyGate.RefusedStatus); return; }
             int pageIdx = PageList.SelectedIndex;
             if (pageIdx < 0) return;
             CommitActiveTextBox();

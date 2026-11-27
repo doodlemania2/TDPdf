@@ -659,6 +659,7 @@ namespace TDPdf
             InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
             InitPageSizeReadout();   // upstream v1.8.5: restore the footer page-size chip's unit
             ApplyLayoutShortcutLabels();   // #153: spell the zoom chords for THIS keyboard layout
+            InitSideBySide();   // #232: View ▸ Split View, and everything the read-only window turns off
             LoadSignatures();
             BuildContextMenu();
             SetTool(EditTool.Select);
@@ -701,20 +702,17 @@ namespace TDPdf
                 // via FinishOpenFileAsync.
                 SyncSidebarToDocState(hasDoc: _doc is not null, startup: true);
 
-                var args = Environment.GetCommandLineArgs();
-                // GetCommandLineArgs()[0] is always the exe path; --new-window (tab tear-off /
-                // "Move to New Window") shifts the file argument over by one and, being a
-                // single-purpose window spun up around one specific document, must not then pull in
-                // whatever multi-tab session was last saved from some unrelated window.
-                bool isTearOffLaunch = args.Length > 1 &&
-                    string.Equals(args[1], "--new-window", StringComparison.OrdinalIgnoreCase);
-                int fileArgIndex = isTearOffLaunch ? 2 : 1;
+                // --new-window (tab tear-off / "Move to New Window") and --read-only (split view) windows
+                // are single-purpose windows spun up around one specific document, so they must not
+                // pull in whatever multi-tab session was last saved from some unrelated window.
+                // WindowLaunch reads the switches in any order and finds the document among them.
+                bool isTearOffLaunch = _launch.SeparateWindow;
                 // Only the first TDPdf window owns (and restores) the saved session; see SaveSession.
                 bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
                 if (ownsSession) ClaimSavedSession();
-                if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
+                if (_launch.Path is { } launchPath && System.IO.File.Exists(launchPath))
                 {
-                    await OpenRequestedPathAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
+                    await OpenRequestedPathAsync(launchPath);   // an explicitly-requested file wins over the saved session
                     // The saved session is not offered and is left alone, so it is still there the
                     // next time TDPdf starts without a file (HandleSessionOnClose skips it).
                     _sessionPending = ownsSession && _sessionContributed.Count > 0;
@@ -2162,6 +2160,7 @@ namespace TDPdf
             ThemeManager.ThemeChanged -= ThemeManager_ThemeChanged;
             _hwndSource?.RemoveHook(WndProc);
             _windowTransferServer?.Dispose();
+            DisposeSideBySide();
             base.OnClosing(e);
         }
 
@@ -2273,6 +2272,7 @@ namespace TDPdf
         private void HandleSessionOnClose()
         {
             if (_sessionPending) return;
+            if (ReadOnlyGate.ProcessIsReadOnly) return;   // a read-only view is a second look at a file another window owns
             var openFiles = OpenSessionFiles();
             if (TDPdf.Properties.Settings.Default.ReopenSession == "No")
             {
@@ -3031,6 +3031,9 @@ namespace TDPdf
                                              bool literalHeader = false)
         {
             var item = new MenuItem { Header = literalHeader ? EscapeMenuHeader(header) : header };
+            // A read-only window (split view) keeps only the commands that look; a file name (literalHeader) is an Open entry.
+            if (ReadOnlyGate.ProcessIsReadOnly && !literalHeader && !ReadOnlyGate.IsMenuCommandAllowed(header))
+                item.IsEnabled = false;
             item.Click += click;
             if (gesture != null)
                 item.InputGestureText = gesture;
@@ -3845,6 +3848,11 @@ namespace TDPdf
 
         private void SetTool(EditTool tool)
         {
+            if (ReadOnlyGate.ProcessIsReadOnly && !ReadOnlyGate.IsToolAllowed(tool.ToString()))
+            {
+                SetStatus(ReadOnlyGate.RefusedStatus);
+                return;
+            }
             // Picking a tool means leaving Electronic Signature field placement; the fields placed so
             // far stay on the tab for the next Send for Signature.
             if (_eSignPlacement is not null) EndESignPlacement(ESignPlacementEnd.Aborted);
@@ -7115,6 +7123,9 @@ namespace TDPdf
 
         private void MarkDirty(bool dirty = true)
         {
+            // A read-only window never holds changes: whatever got past the menus and keys is refused
+            // here and the file's own version is put back (MainWindow.SideBySide.cs).
+            if (dirty && ReadOnlyGate.ProcessIsReadOnly) { dirty = false; ReadOnlyMutationAttempted(); }
             _isDirty = dirty;
             if (_saveAsBtnRef != null)
             {

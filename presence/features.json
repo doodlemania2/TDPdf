@@ -467,6 +467,15 @@
       "audiences": ["user"],
       "screens": [],
       "sources": ["MainWindow.Watermark.cs", "Services/WatermarkSpec.cs", "Services/WatermarkWriter.cs", "Services/TypedNumber.cs"]
+    },
+    {
+      "id": "split-view",
+      "name": "Split view",
+      "status": "ready",
+      "summary": "Put two documents side by side in two windows that snap to the halves of your screen, or open the same document twice. The second window of one document is read-only and updates when you save.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.SideBySide.cs", "MainWindow.TabDrag.cs", "MainWindow.Placement.cs", "Services/SplitLayout.cs", "Services/ReadOnlyGate.cs", "Services/WindowLaunch.cs"]
     }
   ],
   "scenarios": [

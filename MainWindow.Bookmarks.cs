@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using PdfSharpCore.Pdf;
+using TDPdf.Services;
 
 namespace TDPdf
 {
@@ -30,7 +31,7 @@ namespace TDPdf
 
         // PdfSharpCore cannot save a document opened read-only (owner-password / XRef-fallback opens),
         // so bookmark editing is hidden there rather than failing at save time.
-        private bool CanEditBookmarks => _doc is not null && !_doc.IsReadOnly;
+        private bool CanEditBookmarks => _doc is not null && !_doc.IsReadOnly && !ReadOnlyGate.ProcessIsReadOnly;
 
         // Multi-select. WPF's TreeView is hard single-select, so its built-in selection stays the
         // "primary" item and Ctrl/Shift clicks maintain this extra set on top. Keyed by PdfOutline so

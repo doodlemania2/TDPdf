@@ -259,8 +259,9 @@ namespace TDPdf
         /// </summary>
         private bool TryForwardToRunningInstance(StartupEventArgs e)
         {
-            bool isTearOffLaunch = e.Args.Length > 0 &&
-                string.Equals(e.Args[0], "--new-window", StringComparison.OrdinalIgnoreCase);
+            // --new-window and --read-only (split view) both mean "a window of its own": folding them into
+            // the running window would drop the read-only flag, or undo the drag that asked for a new window.
+            bool isTearOffLaunch = WindowLaunch.Parse(e.Args).SeparateWindow;
             if (!isTearOffLaunch && SafeSetting(() => TDPdf.Properties.Settings.Default.SingleInstanceTabs, true))
             {
                 try
