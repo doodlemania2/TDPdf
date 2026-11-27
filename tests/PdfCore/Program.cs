@@ -198,6 +198,7 @@ Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);
 CanvasPixelsTests.Run(Check);
+CropMarginsTests.Run(Check);
 DateCulture.Run(Check, tmp);
 ProtectedSaveId.Run(Check, tmp);
 SignatureScan.Run(Check);
