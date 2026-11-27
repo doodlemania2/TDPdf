@@ -197,18 +197,25 @@ namespace TDPdf.Services
             }, cancellationToken);
         }
 
-        public Task<IReadOnlyList<BitmapSource?>> RenderThumbnailsAsync(string path, int pageCount, CancellationToken cancellationToken)
+        /// <summary>
+        /// Renders the sidebar thumbnails for just the given pages, in the order given, off the UI
+        /// thread. One document open serves the whole batch. A page that fails to render comes back
+        /// null (the sidebar shows its placeholder and asks again when the entry is next shown); the
+        /// call itself only throws if the file cannot be opened or the token is cancelled. Every
+        /// PDFium call goes through Docnet's own lock, so this serializes with the viewer's renders.
+        /// </summary>
+        public Task<BitmapSource?[]> RenderThumbnailsAsync(string path, IReadOnlyList<int> pageIndices, CancellationToken cancellationToken)
         {
-            return Task.Run<IReadOnlyList<BitmapSource?>>(() =>
+            return Task.Run(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var thumbnails = new List<BitmapSource?>(pageCount);
+                var thumbnails = new BitmapSource?[pageIndices.Count];
                 using (var docReader = DocLib.Instance.GetDocReader(path, new PageDimensions(256, 256)))
                 {
-                    for (int i = 0; i < pageCount; i++)
+                    for (int i = 0; i < pageIndices.Count; i++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        thumbnails.Add(RenderPageBitmap(docReader, i));
+                        thumbnails[i] = RenderPageBitmap(docReader, pageIndices[i]);
                     }
                 }
                 return thumbnails;
@@ -591,14 +598,14 @@ namespace TDPdf.Services
         /// <remarks>
         /// NOT annotation-aware, deliberately (#141) — the one rasterize in the app that still uses
         /// the plain flag-0 <c>GetImage()</c> apart from OCR. <see cref="RenderThumbnailsAsync"/>
-        /// runs this eagerly over EVERY page of the document, awaited on the file-open path, reusing
-        /// a single reader. Routing it through <c>PdfiumInterop.RenderPageWithAnnotations</c> would
-        /// add one <c>FPDF_LoadDocument</c> plus a form-fill environment init/teardown per page —
-        /// each taking <c>PdfiumLock</c> and so contending with the foreground page render — for an
-        /// open-time cost that grows without bound with page count. The payoff would be
-        /// file-carried markup on a 256 px thumbnail, where it is barely legible. If thumbnails ever
-        /// become lazy/virtualized per page, revisit this; until then do not "fix" the
-        /// inconsistency with the other rasterize sites.
+        /// renders a small batch of the pages that are on screen, reusing a single reader.
+        /// Routing it through <c>PdfiumInterop.RenderPageWithAnnotations</c> would add one
+        /// <c>FPDF_LoadDocument</c> plus a form-fill environment init/teardown per page — each
+        /// taking <c>PdfiumLock</c> and so contending with the foreground page render — for
+        /// file-carried markup on a 256 px thumbnail, where it is barely legible. Markup added in
+        /// this session is drawn over the thumbnail by the sidebar itself (it lives in WPF
+        /// overlays, not in the file), so do not "fix" the inconsistency with the other rasterize
+        /// sites.
         /// </remarks>
         private static BitmapSource? RenderPageBitmap(IDocReader docReader, int pageIndex)
         {

@@ -131,8 +131,8 @@ namespace TDPdf
             bool assignedDocument = false;
             try
             {
-                int pageCount = result.Document.PageCount;
-                var thumbnails = await _pdfDocumentService.RenderThumbnailsAsync(result.WorkingPath, pageCount, cancellationToken);
+                // No thumbnails are rendered here: the sidebar renders the ones on screen on demand
+                // (RefreshPageList), so the document is up as soon as it is open however long it is.
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (_doc is not null) { _doc.Close(); _doc = null; }
@@ -168,9 +168,8 @@ namespace TDPdf
                 _searchPageCursor = -1;
                 ClearSecondaryPages();
                 ClearSelection();
-                RefreshPageList(thumbnails);
+                RefreshPageList(ThumbRefresh.Reset);
                 LoadOutlines();
-                _ctx.Thumbnails = thumbnails;
                 // #399: a different document in this tab — or the same one reloaded at a new
                 // geometry, as the crop path does — has no resume point. ApplyViewModeOnOpen
                 // below places it from the app-global standing preference, exactly as always.
@@ -255,61 +254,6 @@ namespace TDPdf
         // panel; TdpDialog gives it the same borderless wordmark chrome as every other TDPdf dialog.
         // Enter/Esc and the Open/Cancel semantics (null == cancelled) are unchanged.
         private string? PromptForPassword(string filename) => TdpDialog.PromptPassword(this, filename);
-
-        private void RefreshPageList(IReadOnlyList<BitmapSource?>? thumbnails = null)
-        {
-            PageList.Items.Clear();
-            if (_doc is null) return;
-
-            for (int i = 0; i < _doc.PageCount; i++)
-            {
-                BitmapSource? thumb = thumbnails is not null && i < thumbnails.Count ? thumbnails[i] : null;
-                var img = new Image
-                {
-                    Source = thumb,
-                    Width = 140,
-                    Height = thumb is not null ? 140.0 * thumb.PixelHeight / thumb.PixelWidth : 100,
-                    Stretch = Stretch.Uniform,
-                    Margin = new Thickness(0, 0, 0, 2)
-                };
-
-                var label = new TextBlock
-                {
-                    Text = $"Page {i + 1}",
-                    Foreground = (SolidColorBrush)FindResource("TextSecondary"),
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 10,
-                    HorizontalAlignment = HorizontalAlignment.Center
-                };
-
-                var panel = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
-                if (thumb is not null)
-                {
-                    var border = new Border
-                    {
-                        Background = Brushes.White,
-                        BorderBrush = BrushResource("BorderDim"),
-                        BorderThickness = new Thickness(1),
-                        Child = img
-                    };
-                    panel.Children.Add(border);
-                }
-                else
-                {
-                    panel.Children.Add(new TextBlock
-                    {
-                        Text = $"Page {i + 1}",
-                        Foreground = (SolidColorBrush)FindResource("TextPrimary"),
-                        FontFamily = new FontFamily("Consolas"),
-                        FontSize = 13,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        Margin = new Thickness(0, 20, 0, 20)
-                    });
-                }
-                panel.Children.Add(label);
-                PageList.Items.Add(panel);
-            }
-        }
 
         private void UpdateCurrentDpiScale()
         {

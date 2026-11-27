@@ -736,6 +736,29 @@
             </Setter>
         </Style>
 
+        <!-- One sidebar entry. The list holds a lightweight PageThumbItem per page; the bitmap
+             arrives (and is released again) as the virtualising panel realises and recycles the
+             entry. Loaded / DataContextChanged / Unloaded are what ask for a render. -->
+        <DataTemplate x:Key="PageThumbTemplate">
+            <StackPanel HorizontalAlignment="Center"
+                        Loaded="PageThumb_Loaded" Unloaded="PageThumb_Unloaded"
+                        DataContextChanged="PageThumb_DataContextChanged">
+                <Border Background="White" BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
+                        Visibility="{Binding ThumbVisibility}">
+                    <Grid Width="140" Height="{Binding ThumbHeight}" Margin="0,0,0,2">
+                        <Image Source="{Binding Thumb}" Stretch="Uniform"/>
+                        <!-- annotations not yet saved into the file -->
+                        <Image Source="{Binding Overlay}" Stretch="Fill" IsHitTestVisible="False"/>
+                    </Grid>
+                </Border>
+                <TextBlock Text="{Binding Label}" Foreground="{DynamicResource TextPrimary}"
+                           FontFamily="Consolas" FontSize="13" HorizontalAlignment="Center"
+                           Margin="0,20,0,20" Visibility="{Binding PlaceholderVisibility}"/>
+                <TextBlock Text="{Binding Label}" Foreground="{DynamicResource TextSecondary}"
+                           FontFamily="Segoe UI" FontSize="10" HorizontalAlignment="Center"/>
+            </StackPanel>
+        </DataTemplate>
+
         <!-- Page list styles -->
         <Style x:Key="PageListBox" TargetType="ListBox">
             <Setter Property="Background" Value="{DynamicResource BgPanel}"/>
@@ -746,6 +769,13 @@
             <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
             <Setter Property="VirtualizingStackPanel.IsVirtualizing" Value="True"/>
             <Setter Property="VirtualizingStackPanel.VirtualizationMode" Value="Recycling"/>
+            <!-- Pixel scrolling (entries differ in height) and a page of cache either side: the
+                 thumbnails render for whatever the panel has realised, so this is the margin
+                 around the viewport that is already drawn when the user scrolls. -->
+            <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel"/>
+            <Setter Property="VirtualizingPanel.CacheLengthUnit" Value="Page"/>
+            <Setter Property="VirtualizingPanel.CacheLength" Value="1,1"/>
+            <Setter Property="ItemTemplate" Value="{StaticResource PageThumbTemplate}"/>
             <Setter Property="ItemsPanel">
                 <Setter.Value>
                     <ItemsPanelTemplate>
@@ -1472,16 +1502,15 @@
                             </TextBox>
                         </DockPanel>
                         <Grid x:Name="SidebarListHost">
-                            <ScrollViewer x:Name="SidebarScrollViewer"
-                                          VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Disabled">
+                            <!-- The ListBox scrolls itself: an outer ScrollViewer would measure it at
+                                 full height and defeat its virtualising panel. -->
                                 <ListBox x:Name="PageList" Style="{StaticResource PageListBox}"
                                          BorderThickness="0" SelectionMode="Extended"
                                          KeyboardNavigation.TabIndex="30"
                                          AutomationProperties.Name="Pages"
                                          AutomationProperties.HelpText="List of pages in the current PDF. Select pages to preview, reorder, extract, or delete. Right-click for page operations."
                                          AutomationProperties.LabeledBy="{Binding ElementName=PagesHeader}"
-                                         ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                          PreviewMouseWheel="PageList_PreviewMouseWheel"
                                          SelectionChanged="PageList_SelectionChanged"
@@ -1491,7 +1520,6 @@
                                          PreviewMouseLeftButtonUp="PageList_PreviewMouseLeftButtonUp"
                                          PreviewMouseMove="PageList_PreviewMouseMove"
                                          MouseRightButtonUp="PageList_MouseRightButtonUp"/>
-                            </ScrollViewer>
                             <!-- #135: shows exactly where a dragged page (or block of pages) will
                                  land. Last child so it paints above the lists; never hit-testable,
                                  or it would eat the drop it exists to describe. -->
