@@ -53,6 +53,28 @@ namespace TDPdf.Services
         public static bool IsFitLimited(int mode, double fit, double actual)
             => mode == ScaleFit || !(actual > 0) || (mode == ScaleShrink && fit <= actual);
 
+        /// <summary>
+        /// Whether a 1-up page is turned 90 degrees on the sheet: only for Fit to page, only when the page
+        /// is not square, and only when the page and the sheet are oriented differently (a landscape page
+        /// on a portrait sheet, or the reverse). Every other mode keeps the page upright.
+        /// </summary>
+        public static bool TurnToFit(int mode, double pageW, double pageH, double sheetW, double sheetH)
+        {
+            if (mode != ScaleFit) return false;
+            if (!(pageW > 0) || !(pageH > 0) || !(sheetW > 0) || !(sheetH > 0)) return false;
+            if (pageW == pageH || sheetW == sheetH) return false;
+            return (pageW > pageH) != (sheetW > sheetH);
+        }
+
+        /// <summary>
+        /// Snaps one axis of the placed image to the printable area. When the image is within
+        /// <paramref name="tolerance"/> of the area it grows to one pixel past it, so the white sheet does
+        /// not show as a hairline at the page edge. Applies to every scale mode; an image clearly larger or
+        /// smaller than the area is left as it is.
+        /// </summary>
+        public static double SnapToArea(double size, double area, double tolerance = 1.5)
+            => Math.Abs(size - area) <= tolerance ? area + 1 : size;
+
         // ---- Two-sided choice persistence ----
 
         /// <summary>
