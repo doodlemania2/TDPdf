@@ -5057,6 +5057,7 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
+            string? supersededFile = _currentFile;
             _doc?.Close();
             _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
             _currentFile = redactedPath;
@@ -5087,6 +5088,9 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
+
+            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes.
+            RetireWorkingCopy(supersededFile);
         }
 
         /// <summary>
@@ -6829,6 +6833,7 @@ namespace TDPdf
             var reopened = OpenWorkingCopy(ref tempPath);
 
             // The new document is open: from here on nothing can leave the tab without one.
+            string? supersededFile = _currentFile;
             try { doc.Close(); } catch { /* the old instance is discarded either way */ }
             _doc = reopened;
             _currentFile = tempPath;
@@ -6871,6 +6876,30 @@ namespace TDPdf
             ClearSelection();
             MarkDirty();
             ShowReloadedDocument(selectedIdx);
+            RetireWorkingCopy(supersededFile);
+        }
+
+        // Page operations hold their pre-edit working file as a rollback point until they finish;
+        // RetireWorkingCopy must not delete one of those. Case-insensitive like TempFileSet.
+        private readonly HashSet<string> _heldWorkingFiles = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Deletes a working copy this tab has just stopped using (the file the document was
+        /// reloaded from, a decrypted copy, the pre-redaction copy). It used to stay in %TEMP% until
+        /// the tab closed, holding every earlier revision's content, including text since redacted
+        /// or pages since deleted. Undo keeps its own bytes in memory, so nothing needs the file.
+        /// Only files <see cref="TDPdf.Services.TempFileSet"/> owns are touched: the user's own file
+        /// is never owned, so it can never be deleted here. A file that cannot be deleted yet (still
+        /// open) stays owned and is removed when the tab closes.
+        /// </summary>
+        private void RetireWorkingCopy(string? superseded)
+        {
+            if (string.IsNullOrEmpty(superseded)) return;
+            if (string.Equals(superseded, _currentFile, StringComparison.OrdinalIgnoreCase)) return;
+            if (_heldWorkingFiles.Contains(superseded)) return;
+            if (!TDPdf.Services.TempFilePolicy.IsOurs(superseded) || !_ctx.TempFiles.Contains(superseded)) return;
+            if (TDPdf.Services.TempFilePolicy.TryDelete(superseded) || !System.IO.File.Exists(superseded))
+                _ctx.TempFiles.Release(superseded);
         }
 
         /// <summary>
@@ -6998,6 +7027,7 @@ namespace TDPdf
                 try { _doc.Save(docPath); }
                 catch { TDPdf.Services.TempFilePolicy.TryDelete(docPath); _ctx.TempFiles.Release(docPath); docPath = null; }
             }
+            if (_currentFile is not null) _heldWorkingFiles.Add(_currentFile);
             return new PageOperationSnapshot(
                 docPath,
                 _currentFile,
@@ -7008,9 +7038,14 @@ namespace TDPdf
         }
 
         /// <summary>The edit succeeded (or changed nothing): drop the rollback copy.</summary>
-        private static void EndPageOperation(PageOperationSnapshot snapshot)
+        private void EndPageOperation(PageOperationSnapshot snapshot)
         {
             if (snapshot.DocumentPath is not null) TDPdf.Services.TempFilePolicy.TryDelete(snapshot.DocumentPath);
+            if (snapshot.WorkingFile is not null)
+            {
+                _heldWorkingFiles.Remove(snapshot.WorkingFile);
+                RetireWorkingCopy(snapshot.WorkingFile);   // the edit replaced it; no rollback is needed now
+            }
         }
 
         /// <summary>
@@ -7019,6 +7054,7 @@ namespace TDPdf
         /// </summary>
         private void RollBackPageOperation(PageOperationSnapshot snapshot, string failureTitle, Exception ex)
         {
+            if (snapshot.WorkingFile is not null) _heldWorkingFiles.Remove(snapshot.WorkingFile);
             Telemetry.TrackEvent("Page.OperationFailed", new Dictionary<string, string>
             {
                 ["Operation"]     = failureTitle,
