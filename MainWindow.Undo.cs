@@ -210,7 +210,7 @@ namespace TDPdf
                 _renderDims.Clear();
                 ClearSelection();
                 MarkDirty();
-                RefreshPageList();
+                RefreshPageListAfterEdit();
                 LoadOutlines();   // the reopened _doc has its own outline tree; rebuild the panel (#133)
                 if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                     PageList.SelectedIndex = selectedIdx;

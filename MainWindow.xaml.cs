@@ -5076,7 +5076,7 @@ namespace TDPdf
             HideRedactSettings();
             MarkDirty();
 
-            RefreshPageList();
+            RefreshPageListAfterEdit();
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
             else if (PageList.Items.Count > 0)
@@ -6944,7 +6944,7 @@ namespace TDPdf
             // Same reasoning for the link-target page map (#438): keyed on the document instance,
             // which the reload replaced, but dropped here explicitly all the same.
             InvalidateLinkPageMap();
-            RefreshPageList();
+            RefreshPageListAfterEdit();
             if (PageList.Items.Count > 0)
                 PageList.SelectedIndex = Math.Clamp(selectedIdx, 0, PageList.Items.Count - 1);
 

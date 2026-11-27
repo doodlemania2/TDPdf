@@ -448,7 +448,7 @@ namespace TDPdf
             ClearSelection();
             MarkDirty();
 
-            RefreshPageList();
+            RefreshPageListAfterEdit();
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
             else if (PageList.Items.Count > 0)
