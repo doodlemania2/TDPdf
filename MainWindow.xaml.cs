@@ -1983,8 +1983,10 @@ namespace TDPdf
                     _portableBadge.Visibility = Visibility.Visible;
                 }
             }
-            else if (choice == MessageBoxResult.No)
+            else if (choice == MessageBoxResult.No && PortableInstallPolicy.CanUninstall(offer))
             {
+                // The prompt only ever reaches here for an install this user owns, which is exactly
+                // what CanUninstall decides (tests/PdfCore/PortableInstall.cs).
                 App.UninstallFromPortable(this);
                 RefreshPortableBadge();
             }
@@ -2393,17 +2395,11 @@ namespace TDPdf
 
         private void ShowSettingsDialog()
         {
-            var win = new Window
-            {
-                Title = "Settings",
-                Width = 360,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = BrushResource("BgPanel"),
-                Foreground = BrushResource("TextPrimary")
-            };
+            // The shared dialog shell (design width 360 at scale 1), so this follows the app size and
+            // stays on screen. The settings list can be taller than a small screen, so it scrolls
+            // within the room the shell leaves.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Settings", 360);
+            win.Foreground = BrushResource("TextPrimary");
 
             var panel = new StackPanel { Margin = new Thickness(20, 16, 20, 16) };
             panel.Children.Add(new TextBlock
@@ -2650,7 +2646,13 @@ namespace TDPdf
             close.Click += (_, _) => win.Close();
             panel.Children.Add(close);
 
-            win.Content = panel;
+            shellBody.Children.Add(new ScrollViewer
+            {
+                Content = panel,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = TdpDialog.ScrollBodyMaxHeight(this),
+            });
             win.ShowDialog();
         }
 
@@ -3730,37 +3732,6 @@ namespace TDPdf
                 PageList.SelectedIndex = sel;
                 SetStatus("Link removed.");
             });
-        }
-
-        /// <summary>
-        /// Strips visual styling (border, color, appearance stream) from all Link annotations
-        /// in the document so they render as invisible clickable areas rather than colored
-        /// rectangles that can look like strikethroughs in other PDF viewers.
-        /// </summary>
-        private static void StripLinkAnnotationBorders(PdfDocument doc)
-        {
-            foreach (var pdfPage in doc.Pages)
-            {
-                var annotsArr = pdfPage.Elements.GetArray("/Annots");
-                if (annotsArr is null) continue;
-                for (int i = 0; i < annotsArr.Elements.Count; i++)
-                {
-                    PdfItem? elem = annotsArr.Elements[i];
-                    PdfDictionary? ann = elem as PdfDictionary ?? PdfItems.Deref(elem) as PdfDictionary;
-                    if (ann is null) continue;
-                    var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
-                    if (!subtype.Contains("Link")) continue;
-                    // Remove appearance stream and color; set /Border [0 0 0] for invisible border.
-                    ann.Elements.Remove("/AP");
-                    ann.Elements.Remove("/C");
-                    ann.Elements.Remove("/BS");
-                    var borderArr = new PdfArray();
-                    borderArr.Elements.Add(new PdfInteger(0));
-                    borderArr.Elements.Add(new PdfInteger(0));
-                    borderArr.Elements.Add(new PdfInteger(0));
-                    ann.Elements["/Border"] = borderArr;
-                }
-            }
         }
 
         /// <summary>
@@ -6297,13 +6268,8 @@ namespace TDPdf
         /// the list in order, so annotations within each group keep their existing relative z-order
         /// and already-annotated documents render unchanged apart from the bug being fixed.
         /// </remarks>
-        private static IEnumerable<PageAnnotation> InPaintOrder(IList<PageAnnotation> annots)
-        {
-            for (int i = 0; i < annots.Count; i++)
-                if (annots[i] is TextEditAnnotation or ImageEditAnnotation) yield return annots[i];
-            for (int i = 0; i < annots.Count; i++)
-                if (annots[i] is not (TextEditAnnotation or ImageEditAnnotation)) yield return annots[i];
-        }
+        private static IEnumerable<PageAnnotation> InPaintOrder(IList<PageAnnotation> annots) =>
+            AnnotationBaker.InPaintOrder(annots);
 
         private (double W, double H) MeasureTextForRotate(TextAnnotation ta)
         {

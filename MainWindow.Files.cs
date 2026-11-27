@@ -1243,6 +1243,20 @@ namespace TDPdf
             });
         }
 
+        // The limits and units of the Insert Blank Page custom size. The floor and ceiling are the
+        // format's, not ours: PDF 32000-1 puts a hard 14400 pt (200 in) limit on a page side, and a
+        // page thinner than a few points is a file no viewer will draw anything on.
+        private const double InsertPageMinSidePt = 3.0;
+        private const double InsertPageMaxSidePt = 14400.0;
+
+        // (display name, points per unit, format for the seeded value)
+        private static readonly (string Name, double PtPer, string Fmt)[] InsertPageUnits =
+        {
+            ("inches",      72.0,        "0.##"),
+            ("millimetres", 72.0 / 25.4, "0.#"),
+            ("points",      1.0,         "0.#")
+        };
+
         private (double WidthPt, double HeightPt)? ShowInsertPageDialog(double currentWPt, double currentHPt)
         {
             // (Display name, width pt, height pt). Sizes are in PostScript points (72/in). The presets
@@ -1255,7 +1269,6 @@ namespace TDPdf
             foreach (var (name, shortPt, longPt) in TDPdf.Services.PaperSizeNames.Table)
                 sizes.Add((TDPdf.Services.PaperSizeNames.Label(name, shortPt, longPt), shortPt, longPt));
 
-            var bgDark   = (SolidColorBrush)FindResource("BgDark");
             var bgPanel  = (SolidColorBrush)FindResource("BgPanel");
             var borderDim = (SolidColorBrush)FindResource("BorderDim");
             var textPrimary = (SolidColorBrush)FindResource("TextPrimary");
@@ -1263,185 +1276,32 @@ namespace TDPdf
             var accent = (SolidColorBrush)FindResource("AccentGreen");
             var danger = (SolidColorBrush)FindResource("DangerRed");
 
-            var win = new Window
-            {
-                Title = "Insert Blank Page",
-                Width = 380, SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = bgDark,
-                Foreground = textPrimary,
-                ShowInTaskbar = false,
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12
-            };
+            // The shared dialog shell, so this follows the app size and stays on screen. Its body is
+            // the stack below; the window-level font and foreground are inherited by the content.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Insert Blank Page");
+            win.ShowInTaskbar = false;
+            win.Foreground = textPrimary;
+            win.FontFamily = new FontFamily("Segoe UI");
+            win.FontSize = 12;
 
             var root = new StackPanel { Margin = new Thickness(16) };
 
-            root.Children.Add(new TextBlock
-            {
-                Text = "Page size",
-                Foreground = textSecondary,
-                FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, 0, 0, 6)
-            });
+            var (sizeBox, customIndex) = BuildSizePicker(sizes, textSecondary, root);
 
-            var sizeBox = new ComboBox
-            {
-                Style = (Style)FindResource("DarkComboBox"),
-                Height = 28
-            };
-            foreach (var s in sizes) sizeBox.Items.Add(s.Name);
-            // "Custom…" sits one past the end of the presets, so its combo index IS sizes.Length —
-            // every custom-only branch below tests that rather than a magic number.
-            int customIndex = sizes.Count;
-            sizeBox.Items.Add("Custom…");
-            sizeBox.SelectedIndex = 0;
-            root.Children.Add(sizeBox);
+            var (customPanel, widthBox, heightBox, unitBox, customNote) = BuildCustomSizePanel(currentWPt, currentHPt, textPrimary, textSecondary, bgPanel, borderDim, accent, root);
 
-            // ---- Custom size (revealed only while "Custom…" is the selection) ----
-            // Points are the PDF's own unit, but nobody buys paper in points, so the entry is a
-            // width/height pair plus a unit picker and the conversion to points happens on the way
-            // out. The floor and ceiling are the format's, not ours: PDF 32000-1 puts a hard 14400
-            // pt (200 in) limit on a page side, and a page thinner than a few points is a file no
-            // viewer will draw anything on.
-            const double MinSidePt = 3.0;
-            const double MaxSidePt = 14400.0;
+            var (rbPortrait, rbLandscape) = BuildOrientationPicker(currentWPt, currentHPt, textPrimary, textSecondary, root);
 
-            // (display name, points per unit, format for the seeded value)
-            var units = new (string Name, double PtPer, string Fmt)[]
-            {
-                ("inches",      72.0,        "0.##"),
-                ("millimetres", 72.0 / 25.4, "0.#"),
-                ("points",      1.0,         "0.#")
-            };
+            var (cancelBtn, okBtn) = BuildInsertButtons(textPrimary, bgPanel, borderDim, accent, root);
 
-            TextBox NumBox() => new()
-            {
-                Width = 74,
-                Height = 28,
-                Foreground = textPrimary,
-                Background = bgPanel,
-                BorderBrush = borderDim,
-                BorderThickness = new Thickness(1),
-                CaretBrush = accent,
-                Padding = new Thickness(6, 4, 6, 4),
-                VerticalContentAlignment = VerticalAlignment.Center,
-                TextAlignment = TextAlignment.Right
-            };
-
-            var customPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
-            var customRow = new StackPanel { Orientation = Orientation.Horizontal };
-            var widthBox = NumBox();
-            var heightBox = NumBox();
-            var unitBox = new ComboBox
-            {
-                Style = (Style)FindResource("DarkComboBox"),
-                Height = 28,
-                Width = 120,
-                Margin = new Thickness(8, 0, 0, 0)
-            };
-            foreach (var u in units) unitBox.Items.Add(u.Name);
-            unitBox.SelectedIndex = 0;
-
-            customRow.Children.Add(widthBox);
-            customRow.Children.Add(new TextBlock
-            {
-                Text = "×",
-                Foreground = textSecondary,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(6, 0, 6, 0)
-            });
-            customRow.Children.Add(heightBox);
-            customRow.Children.Add(unitBox);
-            customPanel.Children.Add(customRow);
-
-            // Doubles as the inline validation message (DangerRed) and, once the numbers are good,
-            // the point equivalent — so the user can see what the PDF is actually going to get.
-            // Deliberately not a second dialog: a modal on top of a modal to say "that is not a
-            // number" is the kind of thing this app's dialogs exist to avoid.
-            var customNote = new TextBlock
-            {
-                Foreground = textSecondary,
-                FontSize = 11,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 6, 0, 0)
-            };
-            customPanel.Children.Add(customNote);
-            root.Children.Add(customPanel);
-
-            root.Children.Add(new TextBlock
-            {
-                Text = "Orientation",
-                Foreground = textSecondary,
-                FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, 14, 0, 6)
-            });
-
-            var orient = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel { Orientation = Orientation.Horizontal });
-            var rbPortrait = new RadioButton
-            {
-                Content = "Portrait", IsChecked = currentWPt <= currentHPt,
-                Foreground = textPrimary, Margin = new Thickness(0, 0, 16, 0),
-                VerticalContentAlignment = VerticalAlignment.Center
-            };
-            var rbLandscape = new RadioButton
-            {
-                Content = "Landscape", IsChecked = currentWPt > currentHPt,
-                Foreground = textPrimary,
-                VerticalContentAlignment = VerticalAlignment.Center
-            };
-            orient.Children.Add(rbPortrait);
-            orient.Children.Add(rbLandscape);
-            root.Children.Add(orient);
-
-            var buttons = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(0, 18, 0, 0)
-            };
-            var cancelBtn = new Button
-            {
-                Content = "Cancel",
-                Width = 96, Height = 30,
-                Margin = new Thickness(0, 0, 8, 0),
-                Background = bgPanel,
-                Foreground = textPrimary,
-                BorderBrush = borderDim,
-                Cursor = Cursors.Hand,
-                IsCancel = true
-            };
-            var okBtn = new Button
-            {
-                Content = "Insert",
-                Width = 96, Height = 30,
-                Background = accent,
-                Foreground = Brushes.White,
-                FontWeight = FontWeights.SemiBold,
-                BorderBrush = accent,
-                Cursor = Cursors.Hand,
-                IsDefault = true
-            };
-            buttons.Children.Add(cancelBtn);
-            buttons.Children.Add(okBtn);
-            root.Children.Add(buttons);
-
-            win.Content = new Border
-            {
-                Background = bgPanel,
-                BorderBrush = borderDim,
-                BorderThickness = new Thickness(1),
-                Child = root
-            };
+            shellBody.Children.Add(root);
 
             // ---- Custom-size validation and state ----
             // Reads both boxes in the selected unit. Rejects anything that is not a number, plus
             // zero / negative / absurd sizes, and names the first problem it finds.
             bool TryReadCustom(out double wPt, out double hPt, out string problem)
             {
-                double ptPer = units[Math.Max(0, unitBox.SelectedIndex)].PtPer;
+                double ptPer = InsertPageUnits[Math.Max(0, unitBox.SelectedIndex)].PtPer;
                 wPt = hPt = 0;
                 if (!double.TryParse(widthBox.Text.Trim(), out double w) ||
                     !double.TryParse(heightBox.Text.Trim(), out double h))
@@ -1456,14 +1316,14 @@ namespace TDPdf
                     problem = "Those dimensions are not a usable page size.";
                     return false;
                 }
-                if (wPt < MinSidePt || hPt < MinSidePt)
+                if (wPt < InsertPageMinSidePt || hPt < InsertPageMinSidePt)
                 {
-                    problem = $"Too small. Each side must be at least {MinSidePt / ptPer:0.###} {units[Math.Max(0, unitBox.SelectedIndex)].Name}.";
+                    problem = $"Too small. Each side must be at least {InsertPageMinSidePt / ptPer:0.###} {InsertPageUnits[Math.Max(0, unitBox.SelectedIndex)].Name}.";
                     return false;
                 }
-                if (wPt > MaxSidePt || hPt > MaxSidePt)
+                if (wPt > InsertPageMaxSidePt || hPt > InsertPageMaxSidePt)
                 {
-                    problem = $"Too large. A PDF page cannot exceed {MaxSidePt / ptPer:0.##} {units[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
+                    problem = $"Too large. A PDF page cannot exceed {InsertPageMaxSidePt / ptPer:0.##} {InsertPageUnits[Math.Max(0, unitBox.SelectedIndex)].Name} (14400 pt) on a side.";
                     return false;
                 }
                 problem = string.Empty;
@@ -1499,20 +1359,20 @@ namespace TDPdf
             unitBox.SelectionChanged += (_, _) =>
             {
                 int now = Math.Max(0, unitBox.SelectedIndex);
-                double from = units[Math.Max(0, lastUnit)].PtPer;
-                double to = units[now].PtPer;
+                double from = InsertPageUnits[Math.Max(0, lastUnit)].PtPer;
+                double to = InsertPageUnits[now].PtPer;
                 if (double.TryParse(widthBox.Text.Trim(), out double w))
-                    widthBox.Text = (w * from / to).ToString(units[now].Fmt);
+                    widthBox.Text = (w * from / to).ToString(InsertPageUnits[now].Fmt);
                 if (double.TryParse(heightBox.Text.Trim(), out double h))
-                    heightBox.Text = (h * from / to).ToString(units[now].Fmt);
+                    heightBox.Text = (h * from / to).ToString(InsertPageUnits[now].Fmt);
                 lastUnit = now;
                 ValidateCustom();
             };
 
             // Seed the boxes from the page being inserted after, in the starting unit, so Custom
             // opens on something real to edit rather than two empty boxes.
-            widthBox.Text = (currentWPt / units[0].PtPer).ToString(units[0].Fmt);
-            heightBox.Text = (currentHPt / units[0].PtPer).ToString(units[0].Fmt);
+            widthBox.Text = (currentWPt / InsertPageUnits[0].PtPer).ToString(InsertPageUnits[0].Fmt);
+            heightBox.Text = (currentHPt / InsertPageUnits[0].PtPer).ToString(InsertPageUnits[0].Fmt);
             widthBox.TextChanged += (_, _) => ValidateCustom();
             heightBox.TextChanged += (_, _) => ValidateCustom();
             sizeBox.SelectionChanged += (_, _) => SyncCustomState();
@@ -1543,6 +1403,170 @@ namespace TDPdf
             return (presetW, presetH);
         }
 
+        /// <summary>The Page size label and the preset list, with Custom… as the last entry.</summary>
+        private (ComboBox SizeBox, int CustomIndex) BuildSizePicker(List<(string Name, double W, double H)> sizes, SolidColorBrush textSecondary, StackPanel root)
+        {
+            root.Children.Add(new TextBlock
+            {
+                Text = "Page size",
+                Foreground = textSecondary,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 6)
+            });
+
+            var sizeBox = new ComboBox
+            {
+                Style = (Style)FindResource("DarkComboBox"),
+                Height = 28
+            };
+            foreach (var s in sizes) sizeBox.Items.Add(s.Name);
+            // "Custom…" sits one past the end of the presets, so its combo index IS sizes.Length —
+            // every custom-only branch below tests that rather than a magic number.
+            int customIndex = sizes.Count;
+            sizeBox.Items.Add("Custom…");
+            sizeBox.SelectedIndex = 0;
+            root.Children.Add(sizeBox);
+
+            return (sizeBox, customIndex);
+        }
+
+        /// <summary>The custom size entry (width, height, unit and a note), shown only while Custom… is selected.</summary>
+        private (StackPanel CustomPanel, TextBox WidthBox, TextBox HeightBox, ComboBox UnitBox, TextBlock CustomNote) BuildCustomSizePanel(double currentWPt, double currentHPt, SolidColorBrush textPrimary, SolidColorBrush textSecondary, SolidColorBrush bgPanel, SolidColorBrush borderDim, SolidColorBrush accent, StackPanel root)
+        {
+            // ---- Custom size (revealed only while "Custom…" is the selection) ----
+            // Points are the PDF's own unit, but nobody buys paper in points, so the entry is a
+            // width/height pair plus a unit picker and the conversion to points happens on the way
+            // out. The floor and ceiling are the format's, not ours: PDF 32000-1 puts a hard 14400
+            // pt (200 in) limit on a page side, and a page thinner than a few points is a file no
+            // viewer will draw anything on.
+
+            TextBox NumBox() => new()
+            {
+                Width = 74,
+                Height = 28,
+                Foreground = textPrimary,
+                Background = bgPanel,
+                BorderBrush = borderDim,
+                BorderThickness = new Thickness(1),
+                CaretBrush = accent,
+                Padding = new Thickness(6, 4, 6, 4),
+                VerticalContentAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Right
+            };
+
+            var customPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+            var customRow = new StackPanel { Orientation = Orientation.Horizontal };
+            var widthBox = NumBox();
+            var heightBox = NumBox();
+            var unitBox = new ComboBox
+            {
+                Style = (Style)FindResource("DarkComboBox"),
+                Height = 28,
+                Width = 120,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            foreach (var u in InsertPageUnits) unitBox.Items.Add(u.Name);
+            unitBox.SelectedIndex = 0;
+
+            customRow.Children.Add(widthBox);
+            customRow.Children.Add(new TextBlock
+            {
+                Text = "×",
+                Foreground = textSecondary,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 6, 0)
+            });
+            customRow.Children.Add(heightBox);
+            customRow.Children.Add(unitBox);
+            customPanel.Children.Add(customRow);
+
+            // Doubles as the inline validation message (DangerRed) and, once the numbers are good,
+            // the point equivalent — so the user can see what the PDF is actually going to get.
+            // Deliberately not a second dialog: a modal on top of a modal to say "that is not a
+            // number" is the kind of thing this app's dialogs exist to avoid.
+            var customNote = new TextBlock
+            {
+                Foreground = textSecondary,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 0)
+            };
+            customPanel.Children.Add(customNote);
+            root.Children.Add(customPanel);
+
+            return (customPanel, widthBox, heightBox, unitBox, customNote);
+        }
+
+        /// <summary>The Portrait / Landscape choice.</summary>
+        private (RadioButton RbPortrait, RadioButton RbLandscape) BuildOrientationPicker(double currentWPt, double currentHPt, SolidColorBrush textPrimary, SolidColorBrush textSecondary, StackPanel root)
+        {
+            root.Children.Add(new TextBlock
+            {
+                Text = "Orientation",
+                Foreground = textSecondary,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 14, 0, 6)
+            });
+
+            var orient = TDPdf.Controls.RadioGroupKeyboard.Apply(new StackPanel { Orientation = Orientation.Horizontal });
+            var rbPortrait = new RadioButton
+            {
+                Content = "Portrait", IsChecked = currentWPt <= currentHPt,
+                Foreground = textPrimary, Margin = new Thickness(0, 0, 16, 0),
+                VerticalContentAlignment = VerticalAlignment.Center
+            };
+            var rbLandscape = new RadioButton
+            {
+                Content = "Landscape", IsChecked = currentWPt > currentHPt,
+                Foreground = textPrimary,
+                VerticalContentAlignment = VerticalAlignment.Center
+            };
+            orient.Children.Add(rbPortrait);
+            orient.Children.Add(rbLandscape);
+            root.Children.Add(orient);
+
+            return (rbPortrait, rbLandscape);
+        }
+
+        /// <summary>The Cancel and Insert buttons.</summary>
+        private (Button CancelBtn, Button OkBtn) BuildInsertButtons(SolidColorBrush textPrimary, SolidColorBrush bgPanel, SolidColorBrush borderDim, SolidColorBrush accent, StackPanel root)
+        {
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 18, 0, 0)
+            };
+            var cancelBtn = new Button
+            {
+                Content = "Cancel",
+                Width = 96, Height = 30,
+                Margin = new Thickness(0, 0, 8, 0),
+                Background = bgPanel,
+                Foreground = textPrimary,
+                BorderBrush = borderDim,
+                Cursor = Cursors.Hand,
+                IsCancel = true
+            };
+            var okBtn = new Button
+            {
+                Content = "Insert",
+                Width = 96, Height = 30,
+                Background = accent,
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.SemiBold,
+                BorderBrush = accent,
+                Cursor = Cursors.Hand,
+                IsDefault = true
+            };
+            buttons.Children.Add(cancelBtn);
+            buttons.Children.Add(okBtn);
+            root.Children.Add(buttons);
+
+            return (cancelBtn, okBtn);
+        }
+
+
         private void DocumentInfo_Click(object sender, RoutedEventArgs e) => ShowDocumentInfoDialog();
 
         // F12 / File ▸ Document Info… — view and edit the PDF's Document Information dictionary
@@ -1554,26 +1578,19 @@ namespace TDPdf
             var doc = _doc;
             if (doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
 
-            var bgDark        = BrushResource("BgDark");
             var bgPanel       = BrushResource("BgPanel");
             var borderDim     = BrushResource("BorderDim");
             var textPrimary   = BrushResource("TextPrimary");
             var textSecondary = BrushResource("TextSecondary");
             var accent        = BrushResource("AccentGreen");
 
-            var win = new Window
-            {
-                Title = "Document Info",
-                Width = 460, SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = bgDark,
-                Foreground = textPrimary,
-                ShowInTaskbar = false,
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12
-            };
+            // The shared dialog shell, so this follows the app size and stays on screen. Its body is
+            // the stack below; the window-level font and foreground are inherited by the content.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Document Info", 460);
+            win.ShowInTaskbar = false;
+            win.Foreground = textPrimary;
+            win.FontFamily = new FontFamily("Segoe UI");
+            win.FontSize = 12;
 
             var root = new StackPanel { Margin = new Thickness(16) };
 
@@ -1674,13 +1691,7 @@ namespace TDPdf
             buttons.Children.Add(saveBtn);
             root.Children.Add(buttons);
 
-            win.Content = new Border
-            {
-                Background = bgPanel,
-                BorderBrush = borderDim,
-                BorderThickness = new Thickness(1),
-                Child = root
-            };
+            shellBody.Children.Add(root);
 
             cancelBtn.Click += (_, _) => { win.DialogResult = false; };
             saveBtn.Click += (_, _) =>

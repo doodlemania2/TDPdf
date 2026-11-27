@@ -180,7 +180,6 @@ namespace TDPdf
         /// </summary>
         private (bool Jpeg, double Dpi, string Range)? ShowExportImagesDialog(int pageCount)
         {
-            var bgDark        = BrushResource("BgDark");
             var bgPanel       = BrushResource("BgPanel");
             var borderDim     = BrushResource("BorderDim");
             var textPrimary   = BrushResource("TextPrimary");
@@ -188,20 +187,13 @@ namespace TDPdf
             var accent        = BrushResource("AccentGreen");
             var danger        = BrushResource("DangerRed");
 
-            var win = new Window
-            {
-                Title = "Export Pages as Images",
-                Width = 400,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = bgDark,
-                Foreground = textPrimary,
-                ShowInTaskbar = false,
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12
-            };
+            // The shared dialog shell (design width 400 at scale 1), so this follows the app size and
+            // stays on screen. Its body is the stack below; font and foreground are inherited.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Export Pages as Images", 400);
+            win.ShowInTaskbar = false;
+            win.Foreground = textPrimary;
+            win.FontFamily = new FontFamily("Segoe UI");
+            win.FontSize = 12;
 
             var root = new StackPanel { Margin = new Thickness(16) };
 
@@ -340,13 +332,7 @@ namespace TDPdf
             buttons.Children.Add(exportBtn);
             root.Children.Add(buttons);
 
-            win.Content = new Border
-            {
-                Background = bgPanel,
-                BorderBrush = borderDim,
-                BorderThickness = new Thickness(1),
-                Child = root
-            };
+            shellBody.Children.Add(root);
 
             double dpi = PageImageExporter.DefaultDpi;
             cancelBtn.Click += (_, _) => win.DialogResult = false;

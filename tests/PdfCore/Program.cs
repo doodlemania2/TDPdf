@@ -263,6 +263,8 @@ DocumensoWeb.Run(Check);
 SaveNormalize.Run(Check);
 PureLogic.Run(Check);
 CleanupSecurity.Run(Check, tmp);
+AnnotationBakeTests.Run(Check, tmp);
+UpdateCheckTests.Run(Check);
 
 Console.WriteLine();
 try { Directory.Delete(tmp, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }

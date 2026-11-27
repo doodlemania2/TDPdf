@@ -177,108 +177,7 @@ namespace TDPdf
             // Diagnostics/TelemetryConfig.cs). Its `/set-telemetry` counterpart was removed in
             // 1.24.0.0 along with Application Insights: the OTLP collector is provisioned by
             // policy, so there is no longer a secret for an operator to pipe in by hand.
-            if (e.Args.Length > 0)
-            {
-                bool silent = e.Args.Length > 1 &&
-                              string.Equals(e.Args[1], "/silent", StringComparison.OrdinalIgnoreCase);
-
-                // Unattended-install aliases. TDPdf's own switch is `/install /silent`, which
-                // nobody outside this repo would guess, and Microsoft Store certification runs the
-                // installer with NO UI permitted — a reviewer reaches for whichever spelling the
-                // ecosystem taught them (`/S` is NSIS, `/quiet` is MSI, `/verysilent` is Inno).
-                // Accepting the common ones costs nothing and is the difference between a working
-                // submission and a rejected one.
-                //
-                // This also fixes a real bug in passing: a bare `/silent` previously fell through
-                // to the document-open path, so TDPdf tried to open a file literally named
-                // "/silent". Only an argument list of exactly one is treated as an alias, so
-                // `/install /silent` and a genuine file path are both unaffected.
-                bool bareSilentInstall = e.Args.Length == 1 && IsSilentInstallAlias(e.Args[0]);
-
-                if (bareSilentInstall ||
-                    string.Equals(e.Args[0], "/install", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (bareSilentInstall) silent = true;
-                    InstallLog.WriteHeader("INSTALL", e.Args);
-                    // SYSTEM-context install is the right moment to retire a legacy
-                    // telemetry.dat, since this is the one path that reliably runs elevated.
-                    TelemetryStore.RemoveLegacyStore();
-                    Telemetry.Initialize(AppVersionString());
-                    Telemetry.TrackEvent("Install.Start", InstallProps(silent));
-                    try
-                    {
-                        using (InstallerExitCodes.Acquire(InstallLockKey()))
-                            DoInstall(wantDesktop: false);
-                        InstallLog.Write("INSTALL OK");
-                        Telemetry.TrackEvent("Install.Success", InstallProps(silent));
-                        Telemetry.Flush();
-                        Shutdown(0);
-                    }
-                    catch (Exception ex)
-                    {
-                        int code = InstallerExitCodes.FromException(ex);
-                        InstallLog.WriteError($"INSTALL FAILED (exit {code})", ex);
-                        if (code == InstallerExitCodes.Busy)
-                            Telemetry.TrackEvent("Install.Busy", InstallProps(silent));
-                        else
-                            Telemetry.TrackCrash(ex, "Install", recoverable: false);
-                        Telemetry.Flush();
-                        Shutdown(code);
-                    }
-                    return;
-                }
-
-                if (string.Equals(e.Args[0], "/uninstall", StringComparison.OrdinalIgnoreCase))
-                {
-                    InstallLog.WriteHeader("UNINSTALL", e.Args);
-                    Telemetry.Initialize(AppVersionString());
-                    Telemetry.TrackEvent("Uninstall.Start", InstallProps(silent));
-                    try
-                    {
-                        bool done;
-                        using (InstallerExitCodes.Acquire(InstallLockKey()))
-                            done = Uninstall(silent: silent);
-                        InstallLog.Write(done ? "UNINSTALL OK" : "UNINSTALL NOT DONE");
-                        Telemetry.TrackEvent("Uninstall.Success", InstallProps(silent));
-                        Telemetry.Flush();
-                        Shutdown(0);
-                    }
-                    catch (Exception ex)
-                    {
-                        int code = InstallerExitCodes.FromException(ex);
-                        InstallLog.WriteError($"UNINSTALL FAILED (exit {code})", ex);
-                        if (code == InstallerExitCodes.Busy)
-                            Telemetry.TrackEvent("Uninstall.Busy", InstallProps(silent));
-                        else
-                            Telemetry.TrackCrash(ex, "Uninstall", recoverable: false);
-                        Telemetry.Flush();
-                        Shutdown(code);
-                    }
-                    return;
-                }
-
-                if (string.Equals(e.Args[0], "/clear-telemetry", StringComparison.OrdinalIgnoreCase))
-                {
-                    InstallLog.WriteHeader("CLEAR-TELEMETRY", e.Args);
-                    try
-                    {
-                        // Clear() also removes any legacy telemetry.dat left by a pre-1.24.0.0
-                        // install. That file held a DPAPI-encrypted Application Insights
-                        // connection string which nothing reads any more; leaving a dead secret
-                        // on disk across the fleet is not a state worth preserving.
-                        TelemetryStore.Clear();
-                        TelemetryStore.MarkDisabled();
-                        InstallLog.Write("CLEAR-TELEMETRY OK");
-                        Shutdown(0);
-                    }
-                    catch (Exception ex)
-                    {
-                        InstallLog.WriteError("CLEAR-TELEMETRY FAILED", ex);
-                        Shutdown(1);
-                    }
-                    return;
-                }
-            }
+            if (e.Args.Length > 0 && TryRunInstallerSwitch(e)) return;
 
             // Heal a corrupt user.config and carry settings over from the previous version BEFORE
             // any Settings.Default access (the headless CLI commands below read settings too, then
@@ -343,6 +242,23 @@ namespace TDPdf
             // back into whichever window happens to hold the mutex would silently undo the user's
             // drag. MainWindow's own startup path strips the flag back off before looking at args[1]
             // for the file to open.
+            if (TryForwardToRunningInstance(e)) return;
+
+            ThemeManager.Initialize(ParseThemeSetting(SafeSetting(() => TDPdf.Properties.Settings.Default.Theme, "")));
+
+            TrackStartup(appVersion);
+
+            ShutdownMode = ShutdownMode.OnLastWindowClose;
+
+            ShowMainWindow();
+        }
+
+        /// <summary>
+        /// Single-instance forwarding. True when this launch handed its file to the running window and
+        /// is shutting down; false when it should carry on and open a window of its own.
+        /// </summary>
+        private bool TryForwardToRunningInstance(StartupEventArgs e)
+        {
             bool isTearOffLaunch = e.Args.Length > 0 &&
                 string.Equals(e.Args[0], "--new-window", StringComparison.OrdinalIgnoreCase);
             if (!isTearOffLaunch && SafeSetting(() => TDPdf.Properties.Settings.Default.SingleInstanceTabs, true))
@@ -358,7 +274,7 @@ namespace TDPdf
                         if (TrySendToRunningInstance(payload))
                         {
                             Shutdown(0);
-                            return;
+                            return true;
                         }
                         // Couldn't reach the running instance — continue and open
                         // a normal window so the user is never left with nothing.
@@ -374,8 +290,143 @@ namespace TDPdf
                 }
             }
 
-            ThemeManager.Initialize(ParseThemeSetting(SafeSetting(() => TDPdf.Properties.Settings.Default.Theme, "")));
+            return false;
+        }
 
+        /// <summary>
+        /// Handles the install / uninstall / telemetry switches, which are headless by design and
+        /// must run BEFORE any UI, theme or crash plumbing. True when one was handled (the process is
+        /// shutting down); false for an ordinary launch.
+        /// </summary>
+        private bool TryRunInstallerSwitch(StartupEventArgs e)
+        {
+            bool silent = e.Args.Length > 1 &&
+                          string.Equals(e.Args[1], "/silent", StringComparison.OrdinalIgnoreCase);
+
+            // Unattended-install aliases. TDPdf's own switch is `/install /silent`, which
+            // nobody outside this repo would guess, and Microsoft Store certification runs the
+            // installer with NO UI permitted — a reviewer reaches for whichever spelling the
+            // ecosystem taught them (`/S` is NSIS, `/quiet` is MSI, `/verysilent` is Inno).
+            // Accepting the common ones costs nothing and is the difference between a working
+            // submission and a rejected one.
+            //
+            // This also fixes a real bug in passing: a bare `/silent` previously fell through
+            // to the document-open path, so TDPdf tried to open a file literally named
+            // "/silent". Only an argument list of exactly one is treated as an alias, so
+            // `/install /silent` and a genuine file path are both unaffected.
+            bool bareSilentInstall = e.Args.Length == 1 && IsSilentInstallAlias(e.Args[0]);
+
+            if (bareSilentInstall ||
+                string.Equals(e.Args[0], "/install", StringComparison.OrdinalIgnoreCase))
+            {
+                if (bareSilentInstall) silent = true;
+                RunInstallSwitch(e, silent);
+                return true;
+            }
+
+            if (string.Equals(e.Args[0], "/uninstall", StringComparison.OrdinalIgnoreCase))
+            {
+                RunUninstallSwitch(e, silent);
+                return true;
+            }
+
+            if (string.Equals(e.Args[0], "/clear-telemetry", StringComparison.OrdinalIgnoreCase))
+            {
+                RunClearTelemetrySwitch(e);
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// <c>/install</c> (and its unattended aliases): installs headless and shuts down with the
+        /// installer exit code.
+        /// </summary>
+        private void RunInstallSwitch(StartupEventArgs e, bool silent)
+        {
+            InstallLog.WriteHeader("INSTALL", e.Args);
+            // SYSTEM-context install is the right moment to retire a legacy
+            // telemetry.dat, since this is the one path that reliably runs elevated.
+            TelemetryStore.RemoveLegacyStore();
+            Telemetry.Initialize(AppVersionString());
+            Telemetry.TrackEvent("Install.Start", InstallProps(silent));
+            try
+            {
+                using (InstallerExitCodes.Acquire(InstallLockKey()))
+                    DoInstall(wantDesktop: false);
+                InstallLog.Write("INSTALL OK");
+                Telemetry.TrackEvent("Install.Success", InstallProps(silent));
+                Telemetry.Flush();
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                int code = InstallerExitCodes.FromException(ex);
+                InstallLog.WriteError($"INSTALL FAILED (exit {code})", ex);
+                if (code == InstallerExitCodes.Busy)
+                    Telemetry.TrackEvent("Install.Busy", InstallProps(silent));
+                else
+                    Telemetry.TrackCrash(ex, "Install", recoverable: false);
+                Telemetry.Flush();
+                Shutdown(code);
+            }
+        }
+
+        /// <summary><c>/uninstall</c>: uninstalls and shuts down with the installer exit code.</summary>
+        private void RunUninstallSwitch(StartupEventArgs e, bool silent)
+        {
+            InstallLog.WriteHeader("UNINSTALL", e.Args);
+            Telemetry.Initialize(AppVersionString());
+            Telemetry.TrackEvent("Uninstall.Start", InstallProps(silent));
+            try
+            {
+                bool done;
+                using (InstallerExitCodes.Acquire(InstallLockKey()))
+                    done = Uninstall(silent: silent);
+                InstallLog.Write(done ? "UNINSTALL OK" : "UNINSTALL NOT DONE");
+                Telemetry.TrackEvent("Uninstall.Success", InstallProps(silent));
+                Telemetry.Flush();
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                int code = InstallerExitCodes.FromException(ex);
+                InstallLog.WriteError($"UNINSTALL FAILED (exit {code})", ex);
+                if (code == InstallerExitCodes.Busy)
+                    Telemetry.TrackEvent("Uninstall.Busy", InstallProps(silent));
+                else
+                    Telemetry.TrackCrash(ex, "Uninstall", recoverable: false);
+                Telemetry.Flush();
+                Shutdown(code);
+            }
+        }
+
+        /// <summary><c>/clear-telemetry</c>: the admin / SYSTEM device opt-out; shuts down when done.</summary>
+        private void RunClearTelemetrySwitch(StartupEventArgs e)
+        {
+            InstallLog.WriteHeader("CLEAR-TELEMETRY", e.Args);
+            try
+            {
+                // Clear() also removes any legacy telemetry.dat left by a pre-1.24.0.0
+                // install. That file held a DPAPI-encrypted Application Insights
+                // connection string which nothing reads any more; leaving a dead secret
+                // on disk across the fleet is not a state worth preserving.
+                TelemetryStore.Clear();
+                TelemetryStore.MarkDisabled();
+                InstallLog.Write("CLEAR-TELEMETRY OK");
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError("CLEAR-TELEMETRY FAILED", ex);
+                Shutdown(1);
+            }
+        }
+
+        /// <summary>The <c>App.Startup</c> event: version, install scope and the machine's basics.</summary>
+        private static void TrackStartup(string appVersion)
+        {
             string installScope = DetectInstalledScope() switch
             {
                 InstallScope.PerMachine => "PerMachine",
@@ -392,9 +443,14 @@ namespace TDPdf
                 ["ProcessorCount"]    = Environment.ProcessorCount.ToString(),
                 ["SettingsRecovered"] = s_settingsRecovered ? "true" : "false",
             });
+        }
 
-            ShutdownMode = ShutdownMode.OnLastWindowClose;
-
+        /// <summary>
+        /// Shows the startup splash and then the main window; the splash is dismissed once the window has
+        /// rendered.
+        /// </summary>
+        private void ShowMainWindow()
+        {
             // Immediate startup feedback. MainWindow has a heavy first render
             // (large XAML, FindName resolution, tab strip / context menu build,
             // grain texture, signature load, then the async document open), so a

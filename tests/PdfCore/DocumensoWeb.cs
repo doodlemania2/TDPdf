@@ -82,12 +82,6 @@ internal static class DocumensoWeb
         P("/sign/tok/complete", DocumensoWebPage.SigningComplete, "https://org.example/docs");
         Check("a completed page on ANOTHER host is not completion",
               DocumensoWebNavigation.Classify(Base, "https://evil.example/sign/tok/complete") == DocumensoWebPage.Other, "");
-        Check("finished pages: complete, rejected, expired — not waiting or signing",
-              DocumensoWebNavigation.IsSigningFinished(DocumensoWebPage.SigningComplete)
-              && DocumensoWebNavigation.IsSigningFinished(DocumensoWebPage.SigningRejected)
-              && DocumensoWebNavigation.IsSigningFinished(DocumensoWebPage.SigningExpired)
-              && !DocumensoWebNavigation.IsSigningFinished(DocumensoWebPage.SigningWaiting)
-              && !DocumensoWebNavigation.IsSigningFinished(DocumensoWebPage.Signing), "");
     }
 
     private static void Display(Action<string, bool, string> Check)

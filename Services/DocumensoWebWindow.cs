@@ -124,95 +124,10 @@ namespace TDPdf.Services
             outer.Child = grid;
             win.Content = outer;
 
-            // ── Title bar (the CreateShell recipe, opaque) ──────────────────────────────────
-            var titleBar = new Border { Background = Brush("BgPanel"), Padding = new Thickness(14, 6, 6, 6) };
-            titleBar.MouseLeftButtonDown += (_, e) =>
-            {
-                if (e.ClickCount == 2) { win.WindowState = win.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; return; }
-                if (e.ButtonState == MouseButtonState.Pressed) { try { win.DragMove(); } catch (InvalidOperationException) { } }
-            };
-            var tg = new Grid();
-            tg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            tg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            tg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var titleText = new TextBlock
-            {
-                Foreground = Brush("AccentGreen"),
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 13,
-                FontFamily = new FontFamily("Consolas"),
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            };
-            var maxBtn = TitleGlyph("", "Maximize");
-            var closeBtn = TitleGlyph("", "Close");
-            closeBtn.MouseEnter += (_, _) => closeBtn.Foreground = Brush("DangerRed");
-            closeBtn.MouseLeave += (_, _) => closeBtn.Foreground = Brush("TextSecondary");
-            Grid.SetColumn(maxBtn, 1);
-            Grid.SetColumn(closeBtn, 2);
-            tg.Children.Add(titleText);
-            tg.Children.Add(maxBtn);
-            tg.Children.Add(closeBtn);
-            titleBar.Child = tg;
-            grid.Children.Add(titleBar);
-
-            // ── Toolbar: Back · Reload · address · Open in browser ─────────────────────────
-            var bar = new Grid { Margin = new Thickness(10, 6, 10, 6) };
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var backBtn = GlyphButton(owner, "", "Back");
-            var reloadBtn = GlyphButton(owner, "", "Reload");
-            reloadBtn.Margin = new Thickness(6, 0, 0, 0);
-            var address = Para("", "TextSecondary", 11, new Thickness(10, 0, 10, 0));
-            address.VerticalAlignment = VerticalAlignment.Center;
-            address.TextWrapping = TextWrapping.NoWrap;
-            address.TextTrimming = TextTrimming.CharacterEllipsis;
-            address.FontFamily = new FontFamily("Consolas");
-            var externalBtn = SmallButton(owner, "Open in browser", "Open this page in your browser");
-            externalBtn.Margin = new Thickness(0);
-            Grid.SetColumn(reloadBtn, 1);
-            Grid.SetColumn(address, 2);
-            Grid.SetColumn(externalBtn, 3);
-            bar.Children.Add(backBtn);
-            bar.Children.Add(reloadBtn);
-            bar.Children.Add(address);
-            bar.Children.Add(externalBtn);
-            Grid.SetRow(bar, 1);
-            grid.Children.Add(bar);
-
-            // ── The page ────────────────────────────────────────────────────────────────────
-            var pageHost = new Grid { Background = Brush("BgDark") };
-            var loading = Para("Loading…", "TextSecondary", 12, new Thickness(0));
-            loading.HorizontalAlignment = HorizontalAlignment.Center;
-            loading.VerticalAlignment = VerticalAlignment.Center;
-            pageHost.Children.Add(loading);
-            var web = new WebView2 { Visibility = Visibility.Hidden, DefaultBackgroundColor = ToDrawing(Brush("BgDark").Color) };
-            pageHost.Children.Add(web);
-            Grid.SetRow(pageHost, 2);
-            grid.Children.Add(pageHost);
-
-            // ── Status bar: what happened + Download signed copy / Open it ────────────────
-            var foot = new Border { Background = Brush("BgPanel"), Padding = new Thickness(12, 8, 12, 8), BorderBrush = Brush("BorderDim"), BorderThickness = new Thickness(0, 1, 0, 0) };
-            var fg = new Grid();
-            fg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            fg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var status = Para("", "TextSecondary", 12, new Thickness(0, 0, 10, 0));
-            status.VerticalAlignment = VerticalAlignment.Center;
-            var actions = new StackPanel { Orientation = Orientation.Horizontal };
-            var downloadBtn = MakeButton(owner, "Download signed copy…", primary: true);
-            var openBtn = MakeButton(owner, "Open it", primary: false);
-            openBtn.Margin = new Thickness(8, 0, 0, 0);
-            openBtn.ToolTip = "Opens the downloaded signed copy in a new tab";
-            actions.Children.Add(downloadBtn);
-            actions.Children.Add(openBtn);
-            Grid.SetColumn(actions, 1);
-            fg.Children.Add(status);
-            fg.Children.Add(actions);
-            foot.Child = fg;
-            Grid.SetRow(foot, 3);
-            grid.Children.Add(foot);
+            var (titleText, maxBtn, closeBtn) = BuildTitleBar(win, grid);
+            var (backBtn, reloadBtn, address, externalBtn) = BuildToolbar(owner, grid);
+            var (loading, web) = BuildPageHost(grid);
+            var (status, downloadBtn, openBtn) = BuildStatusBar(owner, grid);
 
             // ── State ───────────────────────────────────────────────────────────────────────
             var inputs = first;
@@ -570,6 +485,120 @@ namespace TDPdf.Services
             _open = win;
             Reset(first);
             win.Show();
+        }
+
+        /// <summary>The title bar: draggable (double-click maximizes), with the maximize and close glyphs.</summary>
+        private static (TextBlock TitleText, Button MaxBtn, Button CloseBtn) BuildTitleBar(Window win, Grid grid)
+        {
+            // ── Title bar (the CreateShell recipe, opaque) ──────────────────────────────────
+            var titleBar = new Border { Background = Brush("BgPanel"), Padding = new Thickness(14, 6, 6, 6) };
+            titleBar.MouseLeftButtonDown += (_, e) =>
+            {
+                if (e.ClickCount == 2) { win.WindowState = win.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; return; }
+                if (e.ButtonState == MouseButtonState.Pressed) { try { win.DragMove(); } catch (InvalidOperationException) { } }
+            };
+            var tg = new Grid();
+            tg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            tg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            tg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var titleText = new TextBlock
+            {
+                Foreground = Brush("AccentGreen"),
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 13,
+                FontFamily = new FontFamily("Consolas"),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            var maxBtn = TitleGlyph("", "Maximize");
+            var closeBtn = TitleGlyph("", "Close");
+            closeBtn.MouseEnter += (_, _) => closeBtn.Foreground = Brush("DangerRed");
+            closeBtn.MouseLeave += (_, _) => closeBtn.Foreground = Brush("TextSecondary");
+            Grid.SetColumn(maxBtn, 1);
+            Grid.SetColumn(closeBtn, 2);
+            tg.Children.Add(titleText);
+            tg.Children.Add(maxBtn);
+            tg.Children.Add(closeBtn);
+            titleBar.Child = tg;
+            grid.Children.Add(titleBar);
+
+            return (titleText, maxBtn, closeBtn);
+        }
+
+        /// <summary>The toolbar: Back, Reload, the address, and Open in browser.</summary>
+        private static (Button BackBtn, Button ReloadBtn, TextBlock Address, Button ExternalBtn) BuildToolbar(Window? owner, Grid grid)
+        {
+            // ── Toolbar: Back · Reload · address · Open in browser ─────────────────────────
+            var bar = new Grid { Margin = new Thickness(10, 6, 10, 6) };
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var backBtn = GlyphButton(owner, "", "Back");
+            var reloadBtn = GlyphButton(owner, "", "Reload");
+            reloadBtn.Margin = new Thickness(6, 0, 0, 0);
+            var address = Para("", "TextSecondary", 11, new Thickness(10, 0, 10, 0));
+            address.VerticalAlignment = VerticalAlignment.Center;
+            address.TextWrapping = TextWrapping.NoWrap;
+            address.TextTrimming = TextTrimming.CharacterEllipsis;
+            address.FontFamily = new FontFamily("Consolas");
+            var externalBtn = SmallButton(owner, "Open in browser", "Open this page in your browser");
+            externalBtn.Margin = new Thickness(0);
+            Grid.SetColumn(reloadBtn, 1);
+            Grid.SetColumn(address, 2);
+            Grid.SetColumn(externalBtn, 3);
+            bar.Children.Add(backBtn);
+            bar.Children.Add(reloadBtn);
+            bar.Children.Add(address);
+            bar.Children.Add(externalBtn);
+            Grid.SetRow(bar, 1);
+            grid.Children.Add(bar);
+
+            return (backBtn, reloadBtn, address, externalBtn);
+        }
+
+        /// <summary>The page area: a loading note under the (initially hidden) WebView2.</summary>
+        private static (TextBlock Loading, WebView2 Web) BuildPageHost(Grid grid)
+        {
+            // ── The page ────────────────────────────────────────────────────────────────────
+            var pageHost = new Grid { Background = Brush("BgDark") };
+            var loading = Para("Loading…", "TextSecondary", 12, new Thickness(0));
+            loading.HorizontalAlignment = HorizontalAlignment.Center;
+            loading.VerticalAlignment = VerticalAlignment.Center;
+            pageHost.Children.Add(loading);
+            var web = new WebView2 { Visibility = Visibility.Hidden, DefaultBackgroundColor = ToDrawing(Brush("BgDark").Color) };
+            pageHost.Children.Add(web);
+            Grid.SetRow(pageHost, 2);
+            grid.Children.Add(pageHost);
+
+            return (loading, web);
+        }
+
+        /// <summary>The status bar: what happened, plus Download signed copy and Open it.</summary>
+        private static (TextBlock Status, Button DownloadBtn, Button OpenBtn) BuildStatusBar(Window? owner, Grid grid)
+        {
+            // ── Status bar: what happened + Download signed copy / Open it ────────────────
+            var foot = new Border { Background = Brush("BgPanel"), Padding = new Thickness(12, 8, 12, 8), BorderBrush = Brush("BorderDim"), BorderThickness = new Thickness(0, 1, 0, 0) };
+            var fg = new Grid();
+            fg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            fg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var status = Para("", "TextSecondary", 12, new Thickness(0, 0, 10, 0));
+            status.VerticalAlignment = VerticalAlignment.Center;
+            var actions = new StackPanel { Orientation = Orientation.Horizontal };
+            var downloadBtn = MakeButton(owner, "Download signed copy…", primary: true);
+            var openBtn = MakeButton(owner, "Open it", primary: false);
+            openBtn.Margin = new Thickness(8, 0, 0, 0);
+            openBtn.ToolTip = "Opens the downloaded signed copy in a new tab";
+            actions.Children.Add(downloadBtn);
+            actions.Children.Add(openBtn);
+            Grid.SetColumn(actions, 1);
+            fg.Children.Add(status);
+            fg.Children.Add(actions);
+            foot.Child = fg;
+            Grid.SetRow(foot, 3);
+            grid.Children.Add(foot);
+
+            return (status, downloadBtn, openBtn);
         }
 
         private static Button TitleGlyph(string glyph, string name)

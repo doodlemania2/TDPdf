@@ -351,6 +351,51 @@ namespace TDPdf.Services
             // because its geometry options are set-and-forget for most jobs, and folding it keeps
             // the 268px column short enough that Copies/Pages are visible without scrolling.
 
+            AddPrinterSection(panel);
+            AddPagesSection(panel);
+            AddLayoutSection(panel);
+            AddOutputSection(panel);
+
+            // Buttons pinned below the scroller so they stay visible on a short window.
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var cancel = MakeButton("Cancel", false);
+            cancel.Click += (_, _) =>
+            {
+                if (_printing) return;
+                DialogResult = false;
+                Close();
+            };
+            cancel.IsCancel = true;
+            _printBtn = MakeButton("Print", true);
+            _printBtn.Margin = new Thickness(8, 0, 0, 0);
+            _printBtn.Click += (_, _) => DoPrint();
+            _printBtn.IsDefault = true;
+            btnRow.Children.Add(cancel);
+            btnRow.Children.Add(_printBtn);
+
+            var optionsScroller = new ScrollViewer
+            {
+                Content                       = panel,
+                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            };
+            Grid.SetRow(optionsScroller, 0);
+
+            var btnHost = new Border { Child = btnRow, Padding = new Thickness(16, 8, 12, 12) };
+            Grid.SetRow(btnHost, 1);
+
+            var column = new Grid();
+            column.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            column.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            column.Children.Add(optionsScroller);
+            column.Children.Add(btnHost);
+            Grid.SetColumn(column, 0);
+            return column;
+        }
+
+        /// <summary>The PRINTER section: which device, what paper, which tray.</summary>
+        private void AddPrinterSection(StackPanel panel)
+        {
             // --- PRINTER: which device, what paper, which tray ------------------
             int secPrinter = panel.Children.Count;
 
@@ -428,7 +473,11 @@ namespace TDPdf.Services
             panel.Children.Add(source);
 
             WrapSection(panel, secPrinter, "PRINTER", expanded: true);
+        }
 
+        /// <summary>The PAGES TO PRINT section: which pages, how many copies, in what order.</summary>
+        private void AddPagesSection(StackPanel panel)
+        {
             // --- PAGES TO PRINT: which pages, how many copies, in what order ----
             int secPages = panel.Children.Count;
 
@@ -493,7 +542,11 @@ namespace TDPdf.Services
             panel.Children.Add(reverse);
 
             WrapSection(panel, secPages, "PAGES TO PRINT", expanded: true);
+        }
 
+        /// <summary>The LAYOUT section: how the pages sit on the sheet.</summary>
+        private void AddLayoutSection(StackPanel panel)
+        {
             // --- LAYOUT: how the pages sit on the sheet -------------------------
             int secLayout = panel.Children.Count;
 
@@ -635,7 +688,11 @@ namespace TDPdf.Services
             panel.Children.Add(nup);
 
             WrapSection(panel, secLayout, "LAYOUT", expanded: false);
+        }
 
+        /// <summary>The OUTPUT section.</summary>
+        private void AddOutputSection(StackPanel panel)
+        {
             // --- OUTPUT: what comes out of the machine, and how much of it ------
             int secOutput = panel.Children.Count;
 
@@ -694,42 +751,6 @@ namespace TDPdf.Services
             });
 
             WrapSection(panel, secOutput, "OUTPUT", expanded: true);
-
-            // Buttons pinned below the scroller so they stay visible on a short window.
-            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            var cancel = MakeButton("Cancel", false);
-            cancel.Click += (_, _) =>
-            {
-                if (_printing) return;
-                DialogResult = false;
-                Close();
-            };
-            cancel.IsCancel = true;
-            _printBtn = MakeButton("Print", true);
-            _printBtn.Margin = new Thickness(8, 0, 0, 0);
-            _printBtn.Click += (_, _) => DoPrint();
-            _printBtn.IsDefault = true;
-            btnRow.Children.Add(cancel);
-            btnRow.Children.Add(_printBtn);
-
-            var optionsScroller = new ScrollViewer
-            {
-                Content                       = panel,
-                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-            };
-            Grid.SetRow(optionsScroller, 0);
-
-            var btnHost = new Border { Child = btnRow, Padding = new Thickness(16, 8, 12, 12) };
-            Grid.SetRow(btnHost, 1);
-
-            var column = new Grid();
-            column.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            column.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            column.Children.Add(optionsScroller);
-            column.Children.Add(btnHost);
-            Grid.SetColumn(column, 0);
-            return column;
         }
 
         private TextBox MakeTextBox(string text) => TdpDialog.UseThemedTextMenu(new()
