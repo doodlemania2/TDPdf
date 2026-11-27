@@ -333,7 +333,9 @@ function MainWindow($proc) {
 # epub-open is off by default on every build: the first EPUB on a machine asks for a book layout and
 # the book is laid out by WebView2, neither checked on the capture machine yet; ask for it with
 # -Shots epub-open.
-$OffByDefault = @('epub-open')
+# print-color: on the capture VM the scroll stops just short of the COLOR section (run 46039174774), so it is
+# taken only when asked for by name until that is reliable.
+$OffByDefault = @('epub-open', 'print-color')
 $exeVersion = [version](Get-Item $Exe).VersionInfo.FileVersion
 if ($exeVersion -le [version]'2.2.1.0') { $OffByDefault += 'form-fill' }
 Write-Host "TDPdf $exeVersion; off by default: $($OffByDefault -join ', ')"
