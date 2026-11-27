@@ -6623,11 +6623,13 @@ namespace TDPdf
                                     bmp.EndInit();
                                 }
                                 if (bmp.CanFreeze) bmp.Freeze();
+                                // The date line, when there is one, owns the bottom strip of the box.
+                                double sigImgH = sigH - SigStrip(sa) * sa.Scale;
                                 var imgCtrl = new System.Windows.Controls.Image
                                 {
                                     Source = bmp,
                                     Width = sigW,
-                                    Height = sigH,
+                                    Height = sigImgH,
                                     Stretch = System.Windows.Media.Stretch.Uniform,
                                     IsHitTestVisible = false
                                 };
@@ -6645,8 +6647,8 @@ namespace TDPdf
                                 if (stroke.Count < 2) continue;
                                 var sigPoly = new Polyline
                                 {
-                                    Stroke = Brushes.Black,
-                                    StrokeThickness = 2 * sa.Scale,
+                                    Stroke = SignatureInkBrush(sa.InkColor),
+                                    StrokeThickness = SignatureInk.ResolvePenWidth(sa.PenWidth) * sa.Scale,
                                     StrokeLineJoin = PenLineJoin.Round,
                                     StrokeStartLineCap = PenLineCap.Round,
                                     StrokeEndLineCap = PenLineCap.Round,
@@ -6661,6 +6663,14 @@ namespace TDPdf
                                     sa.Position.X + sigW / 2, sa.Position.Y + sigH / 2);
                                 _annotationCanvas.Children.Add(sigPoly);
                             }
+                        }
+                        if (BuildSignatureDateBlock(sa, sa.Scale) is { } dateBlock)
+                        {
+                            Canvas.SetLeft(dateBlock, sa.Position.X);
+                            Canvas.SetTop(dateBlock, sa.Position.Y + sigH - SigStrip(sa) * sa.Scale);
+                            // Turned about the centre of the whole box, which is not the block's own centre.
+                            ApplyAnnotationRotation(dateBlock, sa.Rotation, sigW / 2, SigStrip(sa) * sa.Scale - sigH / 2);
+                            _annotationCanvas.Children.Add(dateBlock);
                         }
                         break;
 

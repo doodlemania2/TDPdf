@@ -136,6 +136,14 @@ internal static class AnnotationBakeTests
     private static string FootText(string content) =>
         string.Join(" | ", ImageFootprints(content).Select(f => $"{Fmt(f.L)},{Fmt(f.B)}..{Fmt(f.R)},{Fmt(f.T)}"));
 
+    /// <summary>A black stroke: written as "0 0 0 RG" or "0 G", or not written at all (black is the page default).</summary>
+    private static bool IsBlackStroke(string content)
+    {
+        var rg = Operands(content, "RG", 3);
+        var g = Operands(content, "G", 1);
+        return rg.All(c => Near(c[0], 0) && Near(c[1], 0) && Near(c[2], 0)) && g.All(c => Near(c[0], 0));
+    }
+
     private static bool Near(double a, double b, double eps = 0.01) => Math.Abs(a - b) <= eps;
 
     private static bool HasRect(string content, double x, double y, double w, double h) =>
@@ -409,6 +417,55 @@ internal static class AnnotationBakeTests
                   strokeB.Content.Contains("4 w") && Operands(strokeB.Content, "l", 2).Count == 2, "");
             var sm = Operands(strokeB.Content, "m", 2);
             Check("signature strokes: offset by the position and scaled", sm.Count >= 1 && Near(sm[0][0], 100) && Near(sm[0][1], 700), "");
+
+            // #249: ink colour and pen width are real, and an old signature (no colour, no width) is black and 2 wide.
+            Check("signature strokes: an old signature with no colour bakes black",
+                  IsBlackStroke(strokeB.Content), "");
+            var inked = new SignatureAnnotation
+            {
+                Position = new Point(100, 100), Scale = 1, SourceWidth = 200, SourceHeight = 80, InkColor = "#FF0000", PenWidth = 5,
+                Strokes = { new List<Point> { new Point(0, 0), new Point(10, 0) } }
+            };
+            var inkedB = Bake(tmp, "sig-inked", inked);
+            Check("signature strokes: the ink colour is written to the page",
+                  Operands(inkedB.Content, "RG", 3).Any(c => Near(c[0], 1) && Near(c[1], 0) && Near(c[2], 0)), "");
+            Check("signature strokes: the pen width is written to the page", inkedB.Content.Contains("5 w"), "");
+            var badInk = Bake(tmp, "sig-badink", new SignatureAnnotation
+            {
+                Position = new Point(100, 100), Scale = 1, SourceWidth = 200, SourceHeight = 80, InkColor = "nonsense", PenWidth = double.NaN,
+                Strokes = { new List<Point> { new Point(0, 0), new Point(10, 0) } }
+            });
+            Check("signature strokes: an unreadable colour or width falls back to black and 2", 
+                  IsBlackStroke(badInk.Content) && badInk.Content.Contains("2 w"), "");
+
+            // The optional date line: written once, under the signature, in the same colour.
+            var dated = new SignatureAnnotation
+            {
+                Position = new Point(100, 100), Scale = 1, SourceWidth = 200, SourceHeight = 96, InkColor = "#0000FF",
+                DateText = "2026-11-27", DateStrip = 16,
+                Strokes = { new List<Point> { new Point(0, 0), new Point(10, 0) } }
+            };
+            var datedB = Bake(tmp, "sig-dated", dated);
+            Check("signature date: the date line is drawn once", Count(datedB.Content, "Tj") == 1 || Count(datedB.Content, "TJ") == 1, "");
+            Check("signature date: it is in the signature's ink colour",
+                  Operands(datedB.Content, "rg", 3).Any(c => Near(c[0], 0) && Near(c[1], 0) && Near(c[2], 1)), "");
+            var noDate = Bake(tmp, "sig-nodate", new SignatureAnnotation
+            {
+                Position = new Point(100, 100), Scale = 1, SourceWidth = 200, SourceHeight = 96, DateStrip = 16,
+                Strokes = { new List<Point> { new Point(0, 0), new Point(10, 0) } }
+            });
+            Check("signature date: no date text, no date line", Count(noDate.Content, "Tj") + Count(noDate.Content, "TJ") == 0, "");
+            var datedImg = Bake(tmp, "sig-dated-img", new SignatureAnnotation
+            {
+                Position = new Point(100, 100), Scale = 0.5, SourceWidth = 200, SourceHeight = 96, ImageData = Png1x1,
+                DateText = "2026-11-27", DateStrip = 16
+            });
+            // The picture takes the box above the strip: 100 x 40 canvas, so its bottom is at 100 + 40 = 140.
+            Check("signature date: a picture keeps to the box above the date strip",
+                  FootIs(datedImg.Content, 100, 800 - 100 - 40, 200, 800 - 100),
+                  FootText(datedImg.Content));
+            var cl = (SignatureAnnotation)dated.Clone();
+            Check("signature date and ink survive a clone", cl.DateText == "2026-11-27" && cl.DateStrip == 16 && cl.InkColor == "#0000FF", "");
 
             var pic = new ImageAnnotation { Position = new Point(50, 300), Scale = 1, SourceWidth = 120, SourceHeight = 60, ImageData = Png1x1, Rotation = 180 };
             var picB = Bake(tmp, "pic-rot180", pic);

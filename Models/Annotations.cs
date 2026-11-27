@@ -385,13 +385,33 @@ namespace TDPdf
         /// <summary>Base-64 encoded PNG. Non-null = image sig; null = drawn strokes.</summary>
         public string? ImageData { get; set; }
 
+        /// <summary>
+        /// Ink colour of a drawn signature, "#RRGGBB". Null (every signature placed before the editor
+        /// existed) means black. Imported and typed pictures carry their colour in <see cref="ImageData"/>.
+        /// </summary>
+        public string? InkColor { get; set; }
+
+        /// <summary>Pen width of a drawn signature in signature units (scaled by <see cref="PlacedAnnotation.Scale"/>). Null means 2.</summary>
+        public double? PenWidth { get; set; }
+
+        /// <summary>
+        /// The optional date line, "yyyy-MM-dd", fixed when the signature was placed. Null = no date line.
+        /// It is part of the mark: the last <see cref="DateStrip"/> units of <see cref="PlacedAnnotation.SourceHeight"/>
+        /// are the strip it is written in, so it moves, resizes and turns with the signature.
+        /// </summary>
+        public string? DateText { get; set; }
+
+        /// <summary>Height, in signature units, of the date strip at the bottom of the box. 0 when there is no date line.</summary>
+        public double DateStrip { get; set; }
+
         protected override PageAnnotation CloneCore()
         {
             var copy = new SignatureAnnotation
             {
                 PageIndex = PageIndex, Position = Position, Scale = Scale,
                 SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData,
-                Rotation = Rotation
+                Rotation = Rotation, InkColor = InkColor, PenWidth = PenWidth,
+                DateText = DateText, DateStrip = DateStrip
             };
             foreach (var stroke in Strokes) copy.Strokes.Add(new List<Point>(stroke));
             return copy;
@@ -519,5 +539,20 @@ namespace TDPdf
         public double CanvasHeight { get; set; } = 150;
         /// <summary>Base-64 encoded PNG for imported image signatures. Null = drawn strokes.</summary>
         public string? ImageData { get; set; }
+
+        // Added by the signature editor. All optional: a file written before them loads as it always
+        // did (black, 2 wide, no source picture), and an older TDPdf reading a file that has them
+        // skips them, because signatures.json is read with System.Text.Json's defaults.
+
+        /// <summary>Ink colour "#RRGGBB". For a drawn signature null is black; for an imported picture null keeps its own colours.</summary>
+        public string? InkColor { get; set; }
+        /// <summary>Pen width of a drawn signature. Null means 2.</summary>
+        public double? PenWidth { get; set; }
+        /// <summary>The imported picture as chosen (PNG, base 64), so editing starts from it rather than from <see cref="ImageData"/>, which is the processed result.</summary>
+        public string? SourceImageData { get; set; }
+        /// <summary>Luminance threshold 1 to 255 used to turn the source into ink; null or 0 means none.</summary>
+        public int? Threshold { get; set; }
+        /// <summary>Edge feather strength 0 to 10; null or 0 means none.</summary>
+        public int? Feather { get; set; }
     }
 }
