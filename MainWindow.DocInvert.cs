@@ -279,8 +279,13 @@ namespace TDPdf
         /// </summary>
         private BitmapSource? DisplayBitmap(BitmapSource? source, FracRect[] keep)
         {
-            if (source is null || !_docInvert) return source;
-            return _invertedBitmaps.GetValue(source, s => InvertedCopy(s, keep));
+            if (source is null) return source;
+            // The monitor's colour profile comes first (MainWindow.MonitorColor.cs), then the night-mode
+            // invert, so the invert works on what the screen will show. Both are the identity on an
+            // sRGB monitor in true colour, and the bitmap comes back untouched.
+            var coloured = MonitorColored(source);
+            if (!_docInvert) return coloured;
+            return _invertedBitmaps.GetValue(coloured, s => InvertedCopy(s, keep));
         }
 
         /// <summary>Frozen inverted copy of a bitmap. Falls back to the original if it can't be read.</summary>

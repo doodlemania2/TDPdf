@@ -936,6 +936,7 @@ namespace TDPdf
             _hwndSource?.AddHook(WndProc);
             InitializeTaskbarIcons(hwnd);
             ApplyNativeTitleBarTheme(hwnd);
+            InitMonitorColor();   // MainWindow.MonitorColor.cs
 
             // Custom chrome (AllowsTransparency=True, see ApplyInitialWindowChromeSettings) makes
             // this a layered window, and DWM cannot generate its own live taskbar thumbnail /
@@ -1017,6 +1018,7 @@ namespace TDPdf
 
         private const int WM_GETMINMAXINFO = 0x0024;
         private const int WM_DPICHANGED = 0x02E0;
+        private const int WM_DISPLAYCHANGE = 0x007E;
         private const int WM_MOUSEHWHEEL = 0x020E;
         private const int WM_KEYDOWN = 0x0100;
         private const int VK_ESCAPE = 0x1B;
@@ -1071,6 +1073,12 @@ namespace TDPdf
             {
                 WmDpiChanged(hwnd, wParam, lParam);
                 handled = true;
+                Dispatcher.BeginInvoke(new Action(RefreshMonitorColor));   // the window may have landed on another monitor
+            }
+            else if (msg == WM_DISPLAYCHANGE)
+            {
+                // Observe only: WPF still needs to see it. A monitor was added, removed or reconfigured.
+                Dispatcher.BeginInvoke(new Action(RefreshMonitorColor));
             }
             else if (msg == WM_MOUSEHWHEEL)
             {
@@ -2658,6 +2666,7 @@ namespace TDPdf
             });
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 0, 0, 12) });
+            AddColorSettingsSection(panel);        // MainWindow.MonitorColor.cs
             AddESignatureSettingsSection(panel);   // MainWindow.ESignature.cs
 
             var note = new TextBlock

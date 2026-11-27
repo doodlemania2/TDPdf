@@ -100,6 +100,12 @@
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
     <Compile Include="..\..\Services\PrintTicketDuplex.cs" />
+    <Compile Include="..\..\Services\ColorProfiles.cs" />
+    <Compile Include="..\..\Services\ColorEngine.cs" />
+    <Compile Include="..\..\Services\ColorTransform.cs" />
+    <Compile Include="..\..\Services\ColorMonitorPolicy.cs" />
+    <Compile Include="..\..\Services\PrintTicketColor.cs" />
+    <Compile Include="..\..\Services\LcmsNative.cs" />
     <Compile Include="..\..\Services\PrintSheetPlan.cs" />
     <Compile Include="..\..\Services\PrintRaster.cs" />
     <Compile Include="..\..\Services\OcrTextFit.cs" />

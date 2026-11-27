@@ -659,6 +659,7 @@ namespace TDPdf
                         // would blank every filled field instead of un-ghosting it.
                         var rawBytes = PageRaster.RenderBgra(pageReader, currentFile, i, w, h);
                         if (w <= 0 || h <= 0 || rawBytes is null) continue;
+                        DisplayColor.Apply(rawBytes, w, h);   // monitor profile; nothing on an sRGB monitor
                         // Measured here rather than on the UI thread below, so the parse never
                         // stalls the tile pass.
                         result.Add((i, w, h, rawBytes, _docInvert ? ImageRectsFor(currentFile, i, pig) : []));

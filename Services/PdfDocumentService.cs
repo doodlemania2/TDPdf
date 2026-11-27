@@ -614,7 +614,11 @@ namespace TDPdf.Services
                 {
                     int width = pageReader.GetPageWidth();
                     int height = pageReader.GetPageHeight();
-                    return PageRaster.ToFrozenBitmap(pageReader.GetImage(), width, height, 96, 96);
+                    var pixels = pageReader.GetImage();
+                    // Display-only: a thumbnail is shown on the monitor, so it takes the monitor's
+                    // profile like the page does. A no-op on an sRGB monitor.
+                    DisplayColor.Apply(pixels, width, height);
+                    return PageRaster.ToFrozenBitmap(pixels, width, height, 96, 96);
                 }
             }
             catch

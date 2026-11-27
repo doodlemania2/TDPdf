@@ -250,6 +250,26 @@ namespace TDPdf.Properties
             set => this[nameof(PrintColor)] = value;
         }
 
+        // The print window's Color section, saved per printer (see PrintColorStore). Empty means every
+        // printer is on "Driver default", which is today's behaviour.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string PrintColorManagement
+        {
+            get => (string)this[nameof(PrintColorManagement)];
+            set => this[nameof(PrintColorManagement)] = value;
+        }
+
+        // Match the monitor's colour profile on screen. Only acts when Windows reports a profile that is
+        // not sRGB; on a plain sRGB monitor no pixel is changed whatever this says.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool MatchMonitorColor
+        {
+            get => (bool)this[nameof(MatchMonitorColor)];
+            set => this[nameof(MatchMonitorColor)] = value;
+        }
+
         // Last two-sided (duplex) choice; only applied when the printer supports it.
         [UserScopedSetting]
         [DefaultSettingValue("False")]
