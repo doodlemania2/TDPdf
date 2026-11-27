@@ -65,6 +65,16 @@ namespace TDPdf
             return "User-" + (sid ?? Environment.UserName);
         }
 
+        private static bool IsElevatedOrSystem()
+        {
+            try
+            {
+                using var id = WindowsIdentity.GetCurrent();
+                return id.IsSystem || new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch { return false; }
+        }
+
         private static bool IsSystemContextSafe()
         {
             try { return WindowsIdentity.GetCurrent().IsSystem; }
@@ -1545,9 +1555,6 @@ namespace TDPdf
             // pre-placed at a fixed %TEMP% path runs in its place.
             string dir = installDir.TrimEnd('\\');
             string batName = $"tdpdf_uninstall_{Guid.NewGuid():N}.bat";
-            string tempDir = Path.GetTempPath();
-            string bat = Path.Combine(tempDir, batName);
-            File.WriteAllText(bat, UninstallPolicy.DeferredDeleteScript, Encoding.ASCII);
 
             // The message comes first and the batch starts after it, so the minute of retries is spent
             // after this process is about to exit rather than while a dialog nobody has clicked holds
@@ -1556,6 +1563,22 @@ namespace TDPdf
             {
                 Prompt("TDPdf has been uninstalled.", AppName,
                     MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
+            // The batch is written only now, straight before it runs, so nothing can swap it while a
+            // modal prompt is up. An elevated process (and SYSTEM, which is how Intune runs this)
+            // puts it in %WINDIR%\Temp: ordinary users can create files there but cannot modify one
+            // an administrator created, whereas the user's own %TEMP% is writable by any
+            // medium-integrity process in the same session. CreateNew refuses a pre-planted file.
+            string tempDir = IsElevatedOrSystem()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Temp")
+                : Path.GetTempPath();
+            Directory.CreateDirectory(tempDir);
+            string bat = Path.Combine(tempDir, batName);
+            using (var fs = new FileStream(bat, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                byte[] body = Encoding.ASCII.GetBytes(UninstallPolicy.DeferredDeleteScript);
+                fs.Write(body, 0, body.Length);
             }
 
             var psi = new ProcessStartInfo(TDPdf.Services.SystemTool.Path("cmd.exe"), UninstallPolicy.DeferredDeleteArguments(batName))
