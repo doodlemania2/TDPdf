@@ -43,74 +43,11 @@ namespace TDPdf.Services
             CancellationTokenSource? cts = null;
             bool busy = false;
 
-            var win = new Window
-            {
-                Title = "Electronic Signature",
-                Width = 470,
-                SizeToContent = SizeToContent.Height,
-                WindowStyle = WindowStyle.None,
-                AllowsTransparency = true,
-                Background = Brushes.Transparent,
-                ResizeMode = ResizeMode.NoResize,
-                Owner = owner,
-                WindowStartupLocation = owner is not null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
-                ShowInTaskbar = false,
-            };
-
-            var outer = new Border
-            {
-                Background = Brush("BgDark"),
-                BorderBrush = Brush("AccentGreenDim"),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(6),
-            };
-            var root = new StackPanel();
-            outer.Child = root;
-            win.Content = outer;
-
-            // ── Title bar ──────────────────────────────────────────────────────────────────
-            var titleBar = new Border
-            {
-                Background = Brush("BgPanel"),
-                Padding = new Thickness(14, 8, 8, 8),
-                CornerRadius = new CornerRadius(5, 5, 0, 0),
-            };
-            titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
-            var titleGrid = new Grid();
-            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var titleText = new TextBlock
-            {
-                Text = "Connect TDPdf Signing",
-                Foreground = Brush("AccentGreen"),
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 13,
-                FontFamily = new FontFamily("Consolas"),
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            var closeBtn = new Button
-            {
-                Content = "\uE8BB",
-                FontFamily = new FontFamily("Segoe MDL2 Assets"),
-                FontSize = 10,
-                Width = 28,
-                Height = 28,
-                Background = Brushes.Transparent,
-                Foreground = Brush("TextSecondary"),
-                BorderThickness = new Thickness(0),
-                Cursor = Cursors.Hand,
-                VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = "Close",
-            };
-            System.Windows.Automation.AutomationProperties.SetName(closeBtn, "Close");
-            closeBtn.MouseEnter += (_, _) => closeBtn.Foreground = Brush("DangerRed");
-            closeBtn.MouseLeave += (_, _) => closeBtn.Foreground = Brush("TextSecondary");
+            // The shared dialog shell: title bar, close glyph, app-size scale. The window keeps its
+            // own name for the taskbar and screen readers; the title bar reads "Connect TDPdf Signing".
+            var (win, root, closeBtn) = DocumensoUi.CreateShell(owner, "Connect TDPdf Signing", 470);
+            win.Title = "Electronic Signature";
             closeBtn.Click += (_, _) => win.Close();
-            Grid.SetColumn(closeBtn, 1);
-            titleGrid.Children.Add(titleText);
-            titleGrid.Children.Add(closeBtn);
-            titleBar.Child = titleGrid;
-            root.Children.Add(titleBar);
 
             // ── Body: browser sign-in ──────────────────────────────────────────────────────
             var body = new StackPanel { Margin = new Thickness(20, 16, 20, 8) };
