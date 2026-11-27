@@ -254,6 +254,7 @@ SignatureInkTests.Run(Check);
 PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);
 PrintPlan.Run(Check);
+ColorTests.Run(Check);
 PrintRaster.Run(Check);
 OcrTextFitTests.Run(Check, tmp);
 TextSearch.Run(Check, tmp);

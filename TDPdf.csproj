@@ -129,6 +129,16 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- Colour management: the lcms2 (Little CMS, MIT) native library, embedded like the OCR natives and
+       extracted on first use by Services/LcmsNative.cs (LcmsBootstrap). It is used ONLY when its SHA-256
+       equals LcmsBootstrap.PinnedSha256, so a file dropped here without updating the pin is ignored (and
+       tests/PdfCore fails). Absent today: without it the managed colour engine is used. -->
+  <ItemGroup>
+    <EmbeddedResource Include="third_party\lcms2\win-x64\lcms2.dll" Condition="Exists('third_party\lcms2\win-x64\lcms2.dll')">
+      <LogicalName>TDPdf.ColorNative.lcms2.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- WebView2's native loader, the OCR way: embedded as a resource and extracted on first use
        (Services/WebView2Bootstrap.cs), which then calls CoreWebView2Environment.SetLoaderDllFolderPath.
        WebView2NeverCopyLoaderDllToOutputDirectory switches off the package's loose

@@ -309,6 +309,7 @@ namespace TDPdf
                         // would blank every filled field instead of un-ghosting it.
                         var raw = PageRaster.RenderBgra(pr, currentFile, i, w, h);
                         if (w <= 0 || h <= 0 || raw is null) continue;
+                        DisplayColor.Apply(raw, w, h);   // monitor profile; nothing on an sRGB monitor
 
                         int fi = i, fw = w, fh = h;
                         byte[] bytes = raw;
@@ -483,6 +484,7 @@ namespace TDPdf
                         // would blank every filled field instead of un-ghosting it.
                         var raw = PageRaster.RenderBgra(pr, currentFile, p, w, h);
                         if (w <= 0 || h <= 0 || raw is null) continue;
+                        DisplayColor.Apply(raw, w, h);   // monitor profile; nothing on an sRGB monitor
 
                         int fp = p, fw = w, fh = h;
                         byte[] bytes = raw;
@@ -618,6 +620,7 @@ namespace TDPdf
                         // would blank every filled field instead of un-ghosting it.
                         var raw = PageRaster.RenderBgra(pr, currentFile, i, w, h);
                         if (w <= 0 || h <= 0 || raw is null) continue;
+                        DisplayColor.Apply(raw, w, h);   // monitor profile; nothing on an sRGB monitor
                         int fi = i, fw = w, fh = h; byte[] bytes = raw;
                         FracRect[] keep = _docInvert ? ImageRectsFor(currentFile, i, pig) : [];
                         if (ct.IsCancellationRequested) return;

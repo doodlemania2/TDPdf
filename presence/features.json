@@ -490,6 +490,15 @@
       "audiences": ["user"],
       "screens": [],
       "sources": ["MainWindow.SideBySide.cs", "MainWindow.TabDrag.cs", "MainWindow.Placement.cs", "Services/SplitLayout.cs", "Services/ReadOnlyGate.cs", "Services/WindowLaunch.cs"]
+    },
+    {
+      "id": "color-management",
+      "name": "Color management",
+      "status": "ready",
+      "summary": "On a monitor with its own color profile, pages show their real colors. In the print window, choose a printer profile and rendering intent, preview how a page will print, and see whether the driver agreed to leave color to TDPdf.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.MonitorColor.cs", "Services/Color*.cs", "Services/Lcms*.cs", "Services/PrintTicketColor.cs", "Services/PrintPreviewWindow.cs"]
     }
   ],
   "scenarios": [
