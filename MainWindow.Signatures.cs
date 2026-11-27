@@ -29,6 +29,11 @@ namespace TDPdf
         private string? _signatureDamagedBackup;
         private bool _signatureDamageAnnounced;
 
+        // The ids this window last read from, or wrote to, signatures.json. PersistSignatures merges
+        // against it so a second TDPdf window's newly saved signature is not dropped (see
+        // SignatureStoreFile.Merge).
+        private List<string> _signatureBaseIds = [];
+
         private void LoadSignatures()
         {
             try
@@ -48,6 +53,7 @@ namespace TDPdf
                 {
                     var json = File.ReadAllText(SignatureFile);
                     _savedSignatures = JsonSerializer.Deserialize<List<SavedSignature>>(json) ?? [];
+                    _signatureBaseIds = _savedSignatures.Select(x => x.Id).ToList();
                 }
             }
             catch
@@ -85,8 +91,13 @@ namespace TDPdf
             if (_signatureFileDamaged && (_savedSignatures.Count == 0 || _signatureDamagedBackup is null)) return;
             try
             {
-                var json = JsonSerializer.Serialize(_savedSignatures, new JsonSerializerOptions { WriteIndented = true });
-                SignatureStoreFile.WriteAtomic(SignatureFile, json);
+                Directory.CreateDirectory(SignatureDir);
+                var merged = SignatureStoreFile.SaveMerged(SignatureFile, _savedSignatures, _signatureBaseIds,
+                    x => x.Id, new JsonSerializerOptions { WriteIndented = true });
+                // Adopt what was written, so a signature another window added shows up here too.
+                _savedSignatures.Clear();
+                _savedSignatures.AddRange(merged);
+                _signatureBaseIds = merged.Select(x => x.Id).ToList();
                 _signatureFileDamaged = false;   // readable again; the backup keeps the old bytes
             }
             catch { /* best effort */ }
