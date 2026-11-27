@@ -2861,6 +2861,7 @@ namespace TDPdf
             menu.Items.Add(_ctxCut);
             menu.Items.Add(_ctxCopy);
             menu.Items.Add(_ctxPaste);
+            AddPictureMenuItems(menu);
             menu.Opened += (_, _) => UpdateMarkMenuState();
             menu.Items.Add(MakeMenuItem(
                 PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
@@ -2879,7 +2880,7 @@ namespace TDPdf
             menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), "V", "Switch to the select tool", "\uE8B3"));
             menu.Items.Add(MakeMenuItem("_Text Tool", (s, e) => SetTool(EditTool.Text), "1", "Switch to the text tool", "\uE8D2"));
             menu.Items.Add(MakeMenuItem("Edit Existing Text", (s, e) => SetTool(EditTool.EditText), "2", "Switch to the existing text edit tool", "\uE104"));
-            menu.Items.Add(MakeMenuItem("Edit Existing Image", (s, e) => SetTool(EditTool.EditImage), "3", "Switch to the existing image edit tool", "\uEB9F"));
+            menu.Items.Add(MakeMenuItem("Select Picture", (s, e) => SetTool(EditTool.EditImage), "3", "Switch to the picture tool: select, move, resize, replace or extract a picture the PDF carries", "\uEB9F"));
             menu.Items.Add(MakeMenuItem("_Highlight Tool", (s, e) => SetTool(EditTool.Highlight), "5", "Switch to the highlight tool", "\uED56"));
             menu.Items.Add(MakeMenuItem("_Draw Tool", (s, e) => SetTool(EditTool.Draw), "9", "Switch to the draw tool", "\uED63"));
             menu.Items.Add(MakeMenuItem("_Crop Tool", (s, e) => SetTool(EditTool.Crop), "C", "Switch to the crop tool", "\uE7A8"));
@@ -3945,6 +3946,7 @@ namespace TDPdf
             ClearTextSelection();
             CancelActivePointerOperation(removePreview: true);
             _currentTool = tool;
+            if (tool != EditTool.EditImage) ClearPictureSelection();
             // Tool bars edit tool defaults, not a selected annotation.
             _styleTarget = null;
 
@@ -4126,7 +4128,7 @@ namespace TDPdf
         private bool IsPointerOperationActive =>
             _isDrawing || _isSelecting || _isDraggingAnnot || _isResizingSig ||
             _isResizingImage || _isMovingAnnot || _isMovingMulti || _isResizingAnnot || _isPanning ||
-            _txtSelActive || _isMeasuring;
+            _txtSelActive || _isMeasuring || _pictureDrag != PictureDrag.None;
 
         // Sidebar toggle strip button and the View menu's "Toggle Sidebar" both land here.
         private void SidebarToggle_Click(object sender, RoutedEventArgs e) =>
@@ -5848,6 +5850,7 @@ namespace TDPdf
 
         private void ClearSelection()
         {
+            ClearPictureSelection();
             FinishResizeInProgress();
             _restyleStepOpen = false;
             _restylePre = null;
@@ -6835,6 +6838,8 @@ namespace TDPdf
             ApplyTextSelectionQuads(pageIndex);
             // A selection of several marks has no single border to re-add: rebuild its outlines.
             RestoreMultiSelectionChrome(pageIndex);
+            // A selected picture's box and handles (#244).
+            RestorePictureChrome(pageIndex);
         }
 
         /// <summary>

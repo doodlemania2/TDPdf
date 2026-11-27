@@ -391,6 +391,23 @@
       "sources": ["MainWindow.ExportEpub.cs", "Services/EpubExport*.cs", "Services/EpubExporter.cs", "Services/PdfiumInterop.EpubExport.cs"]
     },
     {
+      "id": "page-pictures",
+      "name": "Move, replace and extract pictures",
+      "status": "ready",
+      "summary": "Click a picture on the page to move it, resize it, delete it, copy it, save it as a file, swap in another one, or cut a box or one colour area out of it as a transparent picture.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.PageImages.cs",
+        "MainWindow.PictureExtract.cs",
+        "Services/PdfiumInterop.Images.cs",
+        "Services/PdfImageObjects.cs",
+        "Services/PicturePlacement.cs",
+        "Services/PictureOrientation.cs",
+        "Services/ColorKeyMask.cs"
+      ]
+    },
+    {
       "id": "export-tables",
       "name": "Export tables",
       "status": "ready",

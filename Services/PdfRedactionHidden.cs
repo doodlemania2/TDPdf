@@ -39,11 +39,15 @@ namespace TDPdf.Services
         /// unmarked page keeps whatever that page uses; one that cannot be read, or that is also the
         /// form default resources, is left alone. The verification that follows does not depend on
         /// this step succeeding.
+        ///
+        /// <paramref name="onlyCategories"/> limits what is REMOVED (for example just "/XObject", as
+        /// picture editing does); what counts as used is always worked out from every category.
         /// </remarks>
         internal static bool TryPruneResources(
             string srcPath, string destPath,
             IReadOnlyDictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>> rectsByPage,
-            IReadOnlyCollection<int> skipPages, out int pruned, out string? error)
+            IReadOnlyCollection<int> skipPages, out int pruned, out string? error,
+            IReadOnlyCollection<string>? onlyCategories = null)
         {
             pruned = 0;
             error = null;
@@ -86,9 +90,15 @@ namespace TDPdf.Services
 
                 foreach (int i in targets)
                 {
-                    foreach (var d in CategoryDicts(InheritedResources(doc.Pages[i])))
+                    var pageRes = InheritedResources(doc.Pages[i]);
+                    var removable = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
+                    if (onlyCategories is not null)
+                        foreach (var cat in onlyCategories)
+                            if (pageRes is not null && Resolve(pageRes.Elements[cat]) is PdfDictionary rd) removable.Add(rd);
+                    foreach (var d in CategoryDicts(pageRes))
                     {
                         if (unsafeDicts.Contains(d)) continue;
+                        if (onlyCategories is not null && !removable.Contains(d)) continue;
                         used.TryGetValue(d, out var names);
                         foreach (var key in d.Elements.Keys.ToList())
                         {

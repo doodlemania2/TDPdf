@@ -197,7 +197,8 @@ namespace TDPdf
         /// <summary>Ctrl+C and the menu's Copy: the selected marks, or the selected text when no mark is selected.</summary>
         private void CopyMarksOrText()
         {
-            if (HasMarkSelection && !IsTypingTarget()) CopyMarks(cut: false);
+            if (HasPictureSelection && !IsTypingTarget()) CopyPicture(cut: false);
+            else if (HasMarkSelection && !IsTypingTarget()) CopyMarks(cut: false);
             else CopySelectedText();
         }
 
@@ -215,11 +216,27 @@ namespace TDPdf
             if (_annotations.TryGetValue(page, out var pageList))
                 marks = marks.OrderBy(m => pageList.IndexOf(m)).ToList();
 
-            var clip = new MarkClip { Marks = marks.Select(m => m.Clone()).ToList() };
+            PublishMarkClip(new MarkClip { Marks = marks.Select(m => m.Clone()).ToList() }, null);
+
+            if (cut)
+            {
+                DeleteSelected();
+                SetStatus(marks.Count == 1 ? "Cut 1 mark" : $"Cut {marks.Count} marks");
+            }
+            else SetStatus(marks.Count == 1 ? "Copied 1 mark" : $"Copied {marks.Count} marks");
+        }
+
+        /// <summary>
+        /// Puts a copy on the system clipboard (the private marks format, plus whatever
+        /// <paramref name="extra"/> adds, such as a PNG for other apps) and remembers it as this window's last copy.
+        /// </summary>
+        private void PublishMarkClip(MarkClip clip, Action<DataObject>? extra)
+        {
             try
             {
                 var data = new DataObject();
                 data.SetData(MarksFormat, SerializeClip(clip));
+                extra?.Invoke(data);
                 Clipboard.SetDataObject(data, true);
                 clip.Sequence = GetClipboardSequenceNumber();
             }
@@ -232,17 +249,11 @@ namespace TDPdf
             _markClip = clip;
             _pasteClipId = null;
             _pasteStep = 0;
-
-            if (cut)
-            {
-                DeleteSelected();
-                SetStatus(marks.Count == 1 ? "Cut 1 mark" : $"Cut {marks.Count} marks");
-            }
-            else SetStatus(marks.Count == 1 ? "Copied 1 mark" : $"Copied {marks.Count} marks");
         }
 
         private void CutMarks()
         {
+            if (HasPictureSelection) { CopyPicture(cut: true); return; }
             if (HasMarkSelection) CopyMarks(cut: true);
         }
 

@@ -177,9 +177,17 @@ namespace TDPdf
         /// </summary>
         private void SelectMarkForContextMenu(MouseButtonEventArgs e)
         {
-            if (_currentTool != EditTool.Select || IsPointerOperationActive) return;
+            if (IsPointerOperationActive) return;
             int pageIdx = PageList.SelectedIndex;
             if (pageIdx < 0) return;
+            // The Select Picture tool picks the picture under the pointer, so the menu acts on it (#244).
+            if (_currentTool == EditTool.EditImage)
+            {
+                if (!HasPictureSelection || !ChromeBox.ToRect().Contains(e.GetPosition(_annotationCanvas)))
+                    TrySelectPictureAt(e.GetPosition(_annotationCanvas), pageIdx);
+                return;
+            }
+            if (_currentTool != EditTool.Select) return;
             var hit = TopMarkAt(pageIdx, e.GetPosition(_annotationCanvas));
             if (hit is null || _markSelection.Contains(hit)) return;
             var members = ExpandToGroups(pageIdx, new[] { hit });
@@ -193,7 +201,8 @@ namespace TDPdf
         private void UpdateMarkMenuState()
         {
             UpdateRasterizeRegionMenuState();
-            if (_ctxCut is not null) _ctxCut.IsEnabled = HasMarkSelection;
+            if (_ctxCut is not null) _ctxCut.IsEnabled = HasMarkSelection || HasPictureSelection;
+            UpdatePictureMenuState();
             if (_ctxPaste is not null) _ctxPaste.IsEnabled = CanPasteNow();
             if (_ctxGroup is not null) _ctxGroup.IsEnabled = IsMultiSelection;
             if (_ctxUngroup is not null) _ctxUngroup.IsEnabled = SelectionIsGrouped;
@@ -470,6 +479,7 @@ namespace TDPdf
 
         private void DeleteSelected()
         {
+            if (HasPictureSelection) { DeletePicture(); return; }
             if (_markSelection.Count == 0) return;
             var marks = new List<PageAnnotation>(_markSelection);
             int pageIdx = marks[0].PageIndex;

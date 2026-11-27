@@ -661,6 +661,12 @@ namespace TDPdf
                 return;
             }
 
+            if (_pictureDrag != PictureDrag.None)
+            {
+                PictureDragMove(pos);
+                return;
+            }
+
             if (_isResizingImage && _resizingImageEdit is not null)
             {
                 ResizeImageEditPreview(pos);
@@ -732,6 +738,14 @@ namespace TDPdf
             if (_eSignPlacement is not null) { e.Handled = true; return; }
 
             int pageIdx = PageList.SelectedIndex;
+
+            // Finish moving or resizing a picture the PDF carries (#244).
+            if (_pictureDrag != PictureDrag.None)
+            {
+                PictureDragEnd(e.GetPosition(_annotationCanvas));
+                e.Handled = true;
+                return;
+            }
 
             // Finish dragging several marks together
             if (_isMovingMulti)
