@@ -2777,11 +2777,7 @@ namespace TDPdf
         /// at creation time like every other overlay brush, so a wash built after a theme switch uses the
         /// new theme's accent (a hardcoded dark-theme green is unreadable on the Light theme).
         /// </summary>
-        private SolidColorBrush AccentWash(byte alpha)
-        {
-            var c = BrushResource("AccentGreen").Color;
-            return new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
-        }
+        private SolidColorBrush AccentWash(byte alpha) => TDPdf.Services.ThemeBrushes.Wash(BrushResource("AccentGreen").Color, alpha);
 
         // ============================================================
         // Context menu
@@ -4767,7 +4763,7 @@ namespace TDPdf
             {
                 Width = w,
                 Height = h,
-                Fill = new SolidColorBrush(Color.FromArgb(46, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Fill = TDPdf.Services.ThemeBrushes.Wash(danger.Color, 46),
                 Stroke = danger,
                 StrokeThickness = 2,
                 StrokeDashArray = new DoubleCollection { 4, 3 },
@@ -4994,7 +4990,7 @@ namespace TDPdf
                 Content = "Redact Permanently",
                 Style = btnStyle,
                 IsEnabled = marks > 0,
-                Background = new SolidColorBrush(Color.FromArgb(40, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Background = TDPdf.Services.ThemeBrushes.Wash(danger.Color, 40),
                 Foreground = danger,
                 BorderBrush = danger,
                 ToolTip = "Delete the marked content from the file. This cannot be undone."

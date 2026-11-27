@@ -180,23 +180,7 @@ namespace TDPdf.Services
 
         // ---- Theme helpers (mirror PrintPreviewWindow / TdpDialog so theming stays on our palette) ----
 
-        private static SolidColorBrush R(string key) =>
-            Application.Current?.TryFindResource(key) as SolidColorBrush ?? SystemBrush(key);
-
-        private static SolidColorBrush SystemBrush(string key) => key switch
-        {
-            "AccentGreen"    => SystemColors.HighlightBrush,
-            "AccentGreenDim" => SystemColors.HighlightBrush,
-            "DangerRed"      => SystemColors.HighlightBrush,
-            "BgDark"         => SystemColors.WindowBrush,
-            "BgPanel"        => SystemColors.WindowBrush,
-            "BgHover"        => SystemColors.ControlBrush,
-            "BgPressed"      => SystemColors.ControlDarkBrush,
-            "BorderDim"      => SystemColors.WindowTextBrush,
-            "TextPrimary"    => SystemColors.WindowTextBrush,
-            "TextSecondary"  => SystemColors.GrayTextBrush,
-            _                => SystemColors.WindowTextBrush
-        };
+        private static SolidColorBrush R(string key) => ThemeBrushes.Get(key);
 
         private Style? FindOwnerStyle(string key) => Owner?.TryFindResource(key) as Style;
 

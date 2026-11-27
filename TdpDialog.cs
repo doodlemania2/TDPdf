@@ -15,28 +15,7 @@ namespace TDPdf
     // ============================================================
     internal static partial class TdpDialog
     {
-        private static SolidColorBrush Brush(string key)
-        {
-            return Application.Current?.TryFindResource(key) as SolidColorBrush
-                ?? SystemBrush(key);
-        }
-
-        private static SolidColorBrush SystemBrush(string key)
-        {
-            return key switch
-            {
-                "AccentGreen" => SystemColors.HighlightBrush,
-                "AccentGreenDim" => SystemColors.HighlightBrush,
-                "DangerRed" => SystemColors.HighlightBrush,
-                "BgDark" => SystemColors.WindowBrush,
-                "BgPanel" => SystemColors.WindowBrush,
-                "BgHover" => SystemColors.ControlBrush,
-                "BgPressed" => SystemColors.ControlDarkBrush,
-                "BorderDim" => SystemColors.WindowTextBrush,
-                "TextSecondary" => SystemColors.WindowTextBrush,
-                _ => SystemColors.WindowTextBrush
-            };
-        }
+        private static SolidColorBrush Brush(string key) => TDPdf.Services.ThemeBrushes.Get(key);
 
         internal static SolidColorBrush FrozenSolidColorBrush(System.Windows.Media.Color color)
         {

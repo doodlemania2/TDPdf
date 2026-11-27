@@ -171,29 +171,8 @@ namespace TDPdf.Services
             try { _server?.Dispose(); } catch { /* best effort */ }
         }
 
-        // Resolves a themed brush, falling back to a sensible system brush when the
-        // resource is unavailable (mirrors TdpDialog's lookup so theming stays
-        // centralized on our palette).
-        private static SolidColorBrush R(string key)
-        {
-            return Application.Current?.TryFindResource(key) as SolidColorBrush
-                ?? SystemBrush(key);
-        }
-
-        private static SolidColorBrush SystemBrush(string key) => key switch
-        {
-            "AccentGreen"    => SystemColors.HighlightBrush,
-            "AccentGreenDim" => SystemColors.HighlightBrush,
-            "DangerRed"      => SystemColors.HighlightBrush,
-            "BgDark"         => SystemColors.WindowBrush,
-            "BgPanel"        => SystemColors.WindowBrush,
-            "BgHover"        => SystemColors.ControlBrush,
-            "BgPressed"      => SystemColors.ControlDarkBrush,
-            "BorderDim"      => SystemColors.WindowTextBrush,
-            "TextPrimary"    => SystemColors.WindowTextBrush,
-            "TextSecondary"  => SystemColors.GrayTextBrush,
-            _                => SystemColors.WindowTextBrush
-        };
+        // Resolves a themed brush, falling back to a system brush when the resource is unavailable.
+        private static SolidColorBrush R(string key) => ThemeBrushes.Get(key);
 
         // Pulls a named Style from the owning window so the dialog can reuse the
         // app's themed ComboBox / chrome-close-button styling when present.

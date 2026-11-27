@@ -532,18 +532,6 @@ namespace TDPdf.Services
             return b;
         }
 
-        // TdpDialog.Brush, copied: a missing theme key must leave the dialog legible, so every
-        // lookup falls back to a system colour instead of throwing the way FindResource would.
-        private static SolidColorBrush Brush(string key)
-            => Application.Current?.TryFindResource(key) as SolidColorBrush ?? SystemBrush(key);
-
-        private static SolidColorBrush SystemBrush(string key) => key switch
-        {
-            "AccentGreen" or "AccentGreenDim" or "DangerRed" or "WarningOrange" => SystemColors.HighlightBrush,
-            "BgDark" or "BgPanel" => SystemColors.WindowBrush,
-            "BgHover" => SystemColors.ControlBrush,
-            "TextSecondary" or "TextMuted" => SystemColors.GrayTextBrush,
-            _ => SystemColors.WindowTextBrush,
-        };
+        private static SolidColorBrush Brush(string key) => ThemeBrushes.Get(key);
     }
 }

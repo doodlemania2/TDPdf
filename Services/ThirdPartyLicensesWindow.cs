@@ -52,17 +52,7 @@ namespace TDPdf.Services
         /// Theme brush by key, falling back to a literal so the window still renders if a theme
         /// dictionary is missing — the same defensive lookup TdpDialog uses.
         /// </summary>
-        private static SolidColorBrush Brush(string key, Color fallback)
-        {
-            try
-            {
-                if (Application.Current?.TryFindResource(key) is SolidColorBrush b) return b;
-            }
-            catch { /* resource lookup before the dictionaries load */ }
-            var brush = new SolidColorBrush(fallback);
-            brush.Freeze();
-            return brush;
-        }
+        private static SolidColorBrush Brush(string key, Color fallback) => ThemeBrushes.Get(key, fallback);
 
         private static string LoadNotices()
         {

@@ -91,8 +91,9 @@ namespace TDPdf
             };
         }
 
+        // This dialog's own fallback is the control colour for any missing key, not the shared table's.
         private static SolidColorBrush Brush(string key) =>
-            Application.Current?.TryFindResource(key) as SolidColorBrush ?? SystemColors.ControlBrush;
+            TDPdf.Services.ThemeBrushes.Get(key, SystemColors.ControlBrush);
 
         // ── UI ──────────────────────────────────────────────────────────────────
         private void BuildUi()

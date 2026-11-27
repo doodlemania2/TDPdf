@@ -481,7 +481,7 @@ namespace TDPdf
         private void RenderFormFieldOutlines(List<FormFieldInfo> fields)
         {
             var green = (SolidColorBrush)FindResource("AccentGreen");
-            var wash = new SolidColorBrush(Color.FromArgb(28, green.Color.R, green.Color.G, green.Color.B));
+            var wash = ThemeBrushes.Wash(green.Color, 28);
 
             int selectedObj = _selectedFormWidget is null ? int.MinValue : PdfItems.ObjectNumber(_selectedFormWidget);
 
