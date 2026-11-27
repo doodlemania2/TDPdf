@@ -33,36 +33,24 @@ namespace TDPdf.Services
         {
             int d = Angles.Mod360(delta);
             if (d == 0) return;
-            double newW = d == 90 || d == 270 ? oldH : oldW;
-            double newH = d == 90 || d == 270 ? oldW : oldH;
 
-            Point MapPoint(Point p) => d switch
+            Point MapPoint(Point p)
             {
-                // Forward quarter-turn of the visual frame, same convention as the render path's
-                // clockwise bitmap rotation.
-                90  => new Point(oldH - p.Y, p.X),
-                270 => new Point(p.Y, oldW - p.X),
-                _   => new Point(oldW - p.X, oldH - p.Y),   // 180
-            };
+                var (x, y) = QuarterTurn.MapPoint(d, oldW, oldH, p.X, p.Y);
+                return new Point(x, y);
+            }
             Rect MapRect(Rect r)
             {
                 if (r.IsEmpty) return r;
-                var a = MapPoint(new Point(r.X, r.Y));
-                var b = MapPoint(new Point(r.Right, r.Bottom));
-                return new Rect(a, b);   // Rect(Point, Point) normalizes the corners
+                var (x, y, w, h) = QuarterTurn.MapRect(d, oldW, oldH, r.X, r.Y, r.Width, r.Height);
+                return new Rect(x, y, w, h);
             }
+            // Text, images and signatures stay upright while their centre follows the sheet; see
+            // QuarterTurn.MapAnchor for the clamp that keeps the whole item reachable (#169 follow-up).
             Point MapAnchor(double x, double y, double w, double h)
             {
-                var c = MapPoint(new Point(x + w / 2, y + h / 2));
-                // Text, images and signatures stay upright while their centre follows the sheet. A
-                // tall item near the old long edge can therefore need more room on the new axis than
-                // it did before the turn. Keep the complete item reachable rather than preserving an
-                // off-page coordinate the user cannot recover (#169 follow-up).
-                double px = c.X - w / 2;
-                double py = c.Y - h / 2;
-                return new Point(
-                    System.Math.Max(0, System.Math.Min(px, System.Math.Max(0, newW - w))),
-                    System.Math.Max(0, System.Math.Min(py, System.Math.Max(0, newH - h))));
+                var (ax, ay) = QuarterTurn.MapAnchor(d, oldW, oldH, x, y, w, h);
+                return new Point(ax, ay);
             }
 
             foreach (var annot in annots)

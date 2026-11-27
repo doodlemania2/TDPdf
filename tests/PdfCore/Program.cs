@@ -202,6 +202,7 @@ CanvasPixelsTests.Run(Check);
 FaultSinkTests.Run(Check);
 MarkArrangeTests.Run(Check);
 AnglesTests.Run(Check);
+UntestedPureCodeTests.Run(Check, tmp);
 ClosedTabTests.Run(Check);
 SessionStateTests.Run(Check);
 OpenBatchTests.Run(Check);

@@ -62,6 +62,20 @@ namespace TDPdf.Services
         };
 
         /// <summary>
+        /// Finds the font dictionary info for a content-stream font name in a page's font map (see
+        /// <see cref="ReadPageFonts"/>), trying the name as written, with a leading '/', and without
+        /// its subset prefix, with and without the '/'. Null when none matches.
+        /// </summary>
+        internal static PdfFontDictInfo? FindFontInfo(IReadOnlyDictionary<string, PdfFontDictInfo> map, string name)
+        {
+            if (map.TryGetValue(name, out var hit)) return hit;
+            string bare = StripSubsetPrefix(name.TrimStart('/'));
+            return map.TryGetValue(name.StartsWith('/') ? name : "/" + name, out hit) ? hit
+                 : map.TryGetValue(bare, out hit) ? hit
+                 : map.TryGetValue("/" + bare, out hit) ? hit : null;
+        }
+
+        /// <summary>
         /// "ABCDEF+Helvetica" becomes "Helvetica": drops everything up to the first '+', the PDF
         /// font-subset tag. A name with no '+', or one that ends in it, is returned unchanged.
         /// </summary>

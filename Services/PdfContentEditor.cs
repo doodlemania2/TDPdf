@@ -71,12 +71,7 @@ namespace TDPdf
                     }
                     catch { /* an unreadable font table just means no extra styling */ }
                 }
-                if (pageFonts.TryGetValue(name, out var hit)) return hit;
-                string bare = name.TrimStart('/');
-                bare = PdfFontStyle.StripSubsetPrefix(bare);
-                return pageFonts.TryGetValue(name.StartsWith('/') ? name : "/" + name, out hit) ? hit
-                     : pageFonts.TryGetValue(bare, out hit) ? hit
-                     : pageFonts.TryGetValue("/" + bare, out hit) ? hit : null;
+                return PdfFontStyle.FindFontInfo(pageFonts, name);
             }
             double sx = renderWidth / page.Width;
             double sy = renderHeight / page.Height;
