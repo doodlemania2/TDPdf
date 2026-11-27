@@ -318,7 +318,7 @@ namespace TDPdf
             // stays the existing 100% reset. (Upstream v1.6.4)
             else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
-                BeginManualZoom();
+                BeginAnchoredZoom();
                 // Actual size — a true 100% in every view mode, because Zoom.ZoomLevel is true
                 // zoom and MainWindow converts to the tile's layout scale (DisplayZoomFactor).
                 Zoom.SetZoomLevel(1.0);

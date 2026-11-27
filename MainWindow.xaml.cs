@@ -7337,12 +7337,37 @@ namespace TDPdf
             _manualZoomIntent = true;
         }
 
+        /// <summary>The viewport centre's document point (PageContentGrid coordinates) a toolbar / keyboard / dropdown zoom holds still.</summary>
+        private Point? _centreZoomAnchor;
+        private Point _centreZoomTarget;
+
+        /// <summary>
+        /// <see cref="BeginManualZoom"/> for the zoom sources that have no pointer (toolbar, keyboard,
+        /// dropdown): also remembers the document point at the centre of the viewport, so ApplyZoom
+        /// can scroll it back to the centre once the new scale has laid out. Ctrl+wheel and pinch
+        /// keep their own pointer anchor (ContinueZoomGesture).
+        /// </summary>
+        private void BeginAnchoredZoom()
+        {
+            BeginManualZoom();
+            _centreZoomAnchor = null;
+            if (_doc is null || _applyingGestureZoom) return;
+            double vw = PagePreviewPanel.ViewportWidth, vh = PagePreviewPanel.ViewportHeight;
+            if (!(vw > 0) || !(vh > 0)) return;
+            _centreZoomTarget = new Point(vw / 2, vh / 2);
+            try { _centreZoomAnchor = PagePreviewPanel.TranslatePoint(_centreZoomTarget, _pageContentGrid); }
+            catch (InvalidOperationException) { _centreZoomAnchor = null; }   // not in a common visual tree yet
+            // ApplyZoom runs synchronously inside the zoom write; whatever it did not consume
+            // (an equal zoom raises no change) must not leak into a later, unrelated zoom.
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal, (Action)(() => _centreZoomAnchor = null));
+        }
+
         private void ChangeZoomByCommand(ZoomChange change)
         {
             // An explicit zoom stops the view tracking the window size, exactly as the equivalent
             // toolbar buttons do. Without this, Ctrl+0 landed on 100% and then the next window
             // resize snapped straight back to the fit it was on.
-            BeginManualZoom();
+            BeginAnchoredZoom();
             switch (change)
             {
                 case ZoomChange.In:
@@ -7359,11 +7384,11 @@ namespace TDPdf
             }
         }
 
-        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomIn(); }
+        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.ZoomIn(); }
 
-        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomOut(); }
+        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.ZoomOut(); }
 
-        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.Reset(); }
+        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.Reset(); }
 
         // ============================================================
         // True zoom vs. layout scale        (#154, upstream "true 100%")
@@ -7554,11 +7579,16 @@ namespace TDPdf
             // Continuous view is scaled entirely by the shared ScaleTransform above; it must not
             // re-render the (hidden) primary page. Re-anchor the scroll to the current page so the
             // view doesn't jump when zooming.
+            Point? centreAnchor = _centreZoomAnchor;
+            _centreZoomAnchor = null;
             if (_viewMode == ViewMode.Continuous)
             {
                 // ...except after a zoom gesture, which has already scrolled so the point under the
-                // pointer stayed put; snapping to the page top now would undo exactly that.
-                if (!_settlingZoomGesture)
+                // pointer stayed put; snapping to the page top now would undo exactly that. A
+                // toolbar / keyboard / dropdown zoom holds the viewport centre still instead.
+                if (centreAnchor is Point ca)
+                    ScheduleZoomAnchorCorrection(ca, _centreZoomTarget);
+                else if (!_settlingZoomGesture)
                 {
                     int curIdx = PageList.SelectedIndex;
                     Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
@@ -7579,6 +7609,8 @@ namespace TDPdf
                 RenderPage(applyIdx);
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     () => RefreshPageView(applyIdx));
+                if (centreAnchor is Point ca)
+                    ScheduleZoomAnchorCorrection(ca, _centreZoomTarget);
             }
         }
 
@@ -7645,7 +7677,7 @@ namespace TDPdf
             if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             if (option.ZoomLevel is not double zoom) return;
             // User picked an explicit zoom level — stop tracking the window size.
-            BeginManualZoom();
+            BeginAnchoredZoom();
             Zoom.SetZoomLevel(zoom);
         }
 
@@ -7898,8 +7930,12 @@ namespace TDPdf
         /// </summary>
         private void ScheduleZoomAnchorCorrection()
         {
-            if (_zoomGestureAnchor is not Point anchor) return;
-            Point target = _zoomGestureTarget;
+            if (_zoomGestureAnchor is not Point gestureAnchor) return;
+            ScheduleZoomAnchorCorrection(gestureAnchor, _zoomGestureTarget);
+        }
+
+        private void ScheduleZoomAnchorCorrection(Point anchor, Point target)
+        {
             long revision = ++_zoomAnchorRevision;
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)(() =>
             {
