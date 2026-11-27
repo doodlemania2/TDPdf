@@ -87,6 +87,18 @@ internal static class Documenso
         r = DocumensoConfig.Resolve(new(true, "https://dev.example", "https://org.example", true, "https://me.example"));
         Check("the environment variable outranks everything", r is { From: DocumensoConfig.Source.Environment, BaseUrl: "https://dev.example" }, Show(r));
 
+        r = DocumensoConfig.Resolve(new(true, "https://dev.example", "https://org.example", false, "https://me.example"));
+        Check("a pinned policy (AllowUserOverride=0) outranks the environment variable",
+              r is { From: DocumensoConfig.Source.Policy, BaseUrl: "https://org.example" }, Show(r));
+
+        r = DocumensoConfig.Resolve(new(true, "not a url", "https://org.example", false, null));
+        Check("a pinned policy ignores even a malformed environment variable",
+              r is { From: DocumensoConfig.Source.Policy }, Show(r));
+
+        r = DocumensoConfig.Resolve(new(true, "https://dev.example", null, false, null));
+        Check("with no policy URL the environment variable still applies (AllowUserOverride is moot)",
+              r is { From: DocumensoConfig.Source.Environment }, Show(r));
+
         r = DocumensoConfig.Resolve(new(true, null, "https://org.example", true, "https://me.example"));
         Check("a user URL wins over policy when the policy allows overriding",
               r is { From: DocumensoConfig.Source.User, BaseUrl: "https://me.example" }, Show(r));
