@@ -941,9 +941,9 @@ namespace TDPdf
             // pointer operation being live so it can never fight a drag that owns the cursor (a
             // marquee, a pan, an annotation move); those paths all return above or below anyway,
             // but the guard keeps that from being an accident of ordering.
-            if (_currentTool == EditTool.Select && e.LeftButton == MouseButtonState.Released &&
-                !IsPointerOperationActive)
-                UpdateSelectHoverCursor(pos, overLink);
+            if ((_currentTool == EditTool.Select || IsTextMarkupTool(_currentTool)) &&
+                e.LeftButton == MouseButtonState.Released && !IsPointerOperationActive)
+                UpdateSelectHoverCursor(pos, overLink && _currentTool == EditTool.Select);
 
             // Shapes tool, freeform polygon: track the rubber band from the last placed vertex and
             // light the first-vertex snap ring. No button is held during placement, so this runs

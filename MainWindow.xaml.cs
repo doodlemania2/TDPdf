@@ -3687,6 +3687,11 @@ namespace TDPdf
             Telemetry.TrackEvent("Tool.Selected", new Dictionary<string, string> { ["Tool"] = tool.ToString() });
             var previousTool = _currentTool;
             CommitActiveTextBox();
+            // Text already selected when a marking tool is picked gets that mark (one undo step);
+            // CommitFlowingMarkup clears the selection itself.
+            if (tool is EditTool.Highlight or EditTool.Underline or EditTool.Strikethrough
+                && _txtSelHasRange && !_txtSelActive && _currentFile is not null)
+                CommitFlowingMarkup(tool);
             ClearTextSelection();
             CancelActivePointerOperation(removePreview: true);
             _currentTool = tool;
