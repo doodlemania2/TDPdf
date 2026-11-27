@@ -223,6 +223,7 @@ namespace TDPdf
             _annotationCanvas.Children.Clear();
             _textEditorCanvas.Children.Clear();
             _activeTextBox = null;
+            RestoreTextDefaultsAfterEdit();
             ClearSecondaryPages();
 
             if (_ctx.Doc is null)

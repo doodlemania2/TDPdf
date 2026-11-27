@@ -48,6 +48,7 @@ namespace TDPdf
                     // Seed the tool-default style fields from what's actually on this run, so the
                     // style bar (shown below) reflects its real style rather than stale leftovers
                     // from whatever was last edited — same as PlaceTextBox's re-edit path (#135).
+                    RememberTextDefaultsForEdit();
                     _textFontFamily = existingEdit.FontName;
                     _textFontSize = existingEdit.FontSize;
                     _textBold = existingEdit.Bold;
@@ -120,6 +121,7 @@ namespace TDPdf
                 // matching comment in the re-edit branch above). TextRunHit doesn't carry a
                 // detected color — PDF text color isn't recovered here — so black, matching the
                 // hardcoded Foreground this replaces.
+                RememberTextDefaultsForEdit();
                 _textFontFamily = hit.FontName;
                 _textFontSize = hit.FontSize;
                 _textBold = hit.Bold;
@@ -250,6 +252,7 @@ namespace TDPdf
             if (whiteout is not null)
                _textEditorCanvas.Children.Remove(whiteout);
             SetStatus("Text edit cancelled");
+            RestoreTextDefaultsAfterEdit();
         }
 
         private void CommitTextEdit()
@@ -836,6 +839,8 @@ namespace TDPdf
             if (existing is not null)
             {
                 // Adopt the box's style so the box (and the Text-tool settings bar, if visible) reflect it.
+                // Put back when the edit ends, so it does not become the next new box's style.
+                RememberTextDefaultsForEdit();
                 _textColor = existing.GetColor();
                 _textFontSize = existing.FontSize;
                 _textFontFamily = existing.FontName;
@@ -1142,6 +1147,7 @@ namespace TDPdf
                 RenderAllAnnotations(ctx.PageIndex);
             }
             Telemetry.TrackEvent("Annotation.TextEditorClosed", TextEditorTelemetry("Canceled"));
+            RestoreTextDefaultsAfterEdit();
         }
 
         /// <param name="via">
@@ -1149,6 +1155,12 @@ namespace TDPdf
         /// resulting <c>Annotation.TextEditorClosed</c> event — see <see cref="TextEditorTelemetry"/>.
         /// </param>
         private void CommitActiveTextBox([CallerMemberName] string? via = null)
+        {
+            try { CommitActiveTextBoxCore(via); }
+            finally { if (_activeTextBox is null) RestoreTextDefaultsAfterEdit(); }
+        }
+
+        private void CommitActiveTextBoxCore(string? via)
         {
             // This is the app's single "settle any in-progress canvas edit" chokepoint — every
             // save / flatten / print / close / tool switch / tab switch / page change routes

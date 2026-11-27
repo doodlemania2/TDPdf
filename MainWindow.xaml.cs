@@ -137,6 +137,27 @@ namespace TDPdf
         private Color _textFillColor = Colors.White;
         private Border? _textSettingsBar;
 
+        // Re-editing an existing text box or PDF text run seeds the text defaults above so the bar and
+        // the editor show that run's style. Those seeds are for the edit only: the defaults for the next
+        // new box are put back when the edit ends.
+        private (string Family, double Size, Color Color, bool Whiteout, bool Bold, bool Italic,
+            bool Underline, double Spacing, Color Fill)? _textDefaultsBeforeEdit;
+
+        private void RememberTextDefaultsForEdit() =>
+            _textDefaultsBeforeEdit ??= (_textFontFamily, _textFontSize, _textColor, _textWhiteout,
+                _textBold, _textItalic, _textUnderline, _textLetterSpacing, _textFillColor);
+
+        private void RestoreTextDefaultsAfterEdit()
+        {
+            if (_textDefaultsBeforeEdit is not { } d) return;
+            _textDefaultsBeforeEdit = null;
+            _textFontFamily = d.Family; _textFontSize = d.Size; _textColor = d.Color;
+            _textWhiteout = d.Whiteout; _textBold = d.Bold; _textItalic = d.Italic;
+            _textUnderline = d.Underline; _textLetterSpacing = d.Spacing; _textFillColor = d.Fill;
+            // A bar showing the tool defaults must show the restored ones.
+            if (_textSettingsBar is not null && _styleTarget is null) ShowTextSettings();
+        }
+
         // When a settings bar is opened bound to a selected annotation (restyle-in-place),
         // this points at that annotation; null means the bar edits the tool defaults only.
         private PageAnnotation? _styleTarget;
@@ -5597,12 +5618,43 @@ namespace TDPdf
 
             // Tear down any restyle-in-place binding. In Select mode the bound bar exists only for the
             // selection, so hide it; in other tools the visible bar belongs to the active tool — leave it.
+            bool wasBound = _styleTarget is not null;
             _styleTarget = null;
             if (_currentTool == EditTool.Select)
             {
                 HideTextSettings();
                 HideShapeSettings();
                 HideDrawSettings();
+            }
+            else if (wasBound)
+            {
+                // The bar was built for the mark that was just deselected; left alone it would keep
+                // editing that mark. Rebuild it for the active tool, showing the tool's own defaults.
+                RebindStyleBarToTool(_currentTool);
+            }
+        }
+
+        /// <summary>Rebuilds the style bar for <paramref name="tool"/>'s own defaults (nothing bound).</summary>
+        private void RebindStyleBarToTool(EditTool tool)
+        {
+            switch (tool)
+            {
+                case EditTool.Text:
+                case EditTool.EditText:
+                    HideShapeSettings(); HideDrawSettings(); ShowTextSettings();
+                    break;
+                case EditTool.Shape:
+                    HideTextSettings(); HideDrawSettings(); ShowShapeSettings();
+                    break;
+                case EditTool.Draw:
+                case EditTool.Highlight:
+                case EditTool.Underline:
+                case EditTool.Strikethrough:
+                    HideTextSettings(); HideShapeSettings(); ShowDrawSettings(tool);
+                    break;
+                default:
+                    HideTextSettings(); HideShapeSettings(); HideDrawSettings();
+                    break;
             }
         }
 
