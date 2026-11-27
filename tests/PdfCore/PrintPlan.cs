@@ -51,6 +51,14 @@ internal static class PrintPlan
         Check("no turn: Shrink oversized", !PrintSheetPlan.TurnToFit(PrintSheetPlan.ScaleShrink, 792, 612, 816, 1056), "");
         Check("no turn: Custom scale", !PrintSheetPlan.TurnToFit(PrintSheetPlan.ScaleCustom, 792, 612, 816, 1056), "");
         Check("no turn: unusable sizes", !PrintSheetPlan.TurnToFit(Fit, 0, 612, 816, 1056), "");
+
+        // Hairline edge: each axis snaps to the area when within 1.5 px, whatever the scale mode.
+        Check("snap: 1 px short grows past the area", PrintSheetPlan.SnapToArea(719, 720) == 721, "");
+        Check("snap: exactly the area grows past it", PrintSheetPlan.SnapToArea(720, 720) == 721, "");
+        Check("snap: 1.5 px short still snaps", PrintSheetPlan.SnapToArea(718.5, 720) == 721, "");
+        Check("snap: 2 px short is left alone", PrintSheetPlan.SnapToArea(718, 720) == 718, "");
+        Check("snap: within 1.5 px over snaps", PrintSheetPlan.SnapToArea(721, 720) == 721, "");
+        Check("snap: a clearly oversized image is not shrunk", PrintSheetPlan.SnapToArea(900, 720) == 900, "");
         Check("sheet count matches ceil(n/nUp)", PrintSheetPlan.Sheets(pages, 4, false).Count == 2, "");
 
         // Scale: fit 0.5 (page bigger than sheet), actual 1.0.

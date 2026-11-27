@@ -66,6 +66,15 @@ namespace TDPdf.Services
             return (pageW > pageH) != (sheetW > sheetH);
         }
 
+        /// <summary>
+        /// Snaps one axis of the placed image to the printable area. When the image is within
+        /// <paramref name="tolerance"/> of the area it grows to one pixel past it, so the white sheet does
+        /// not show as a hairline at the page edge. Applies to every scale mode; an image clearly larger or
+        /// smaller than the area is left as it is.
+        /// </summary>
+        public static double SnapToArea(double size, double area, double tolerance = 1.5)
+            => Math.Abs(size - area) <= tolerance ? area + 1 : size;
+
         // ---- Two-sided choice persistence ----
 
         /// <summary>

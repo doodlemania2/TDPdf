@@ -1500,14 +1500,11 @@ namespace TDPdf.Services
                     // The page itself is rendered upright at its printed size, whichever way it is turned.
                     if (fetch(idx, turn ? ih : iw, turn ? iw : ih) is BitmapSource bmp)
                     {
-                        // When the result is the fit scale, snap to the printable area when within a pixel of
-                        // filling it so the white sheet doesn't peek through as a 1px hairline at the page edge.
+                        // Snap each axis to the printable area when within 1.5 px of filling it, in every scale
+                        // mode, so the white sheet doesn't peek through as a hairline at the page edge.
                         // (N-up cells below always fit; the Scale combo is a 1-up setting, like Position.)
-                        if (PrintSheetPlan.IsFitLimited(layout.ScaleMode, fitS, 1.0))
-                        {
-                            if (iw >= availW - 1.5) iw = availW + 1;
-                            if (ih >= availH - 1.5) ih = availH + 1;
-                        }
+                        iw = PrintSheetPlan.SnapToArea(iw, availW);
+                        ih = PrintSheetPlan.SnapToArea(ih, availH);
                         double imgW = turn ? ih : iw, imgH = turn ? iw : ih;
                         var img = new Image { Source = bmp, Width = imgW, Height = imgH };
                         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
