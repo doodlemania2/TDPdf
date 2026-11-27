@@ -96,6 +96,7 @@ namespace TDPdf
                 ["C"] = ("Edit", "Copy marks or text"),
                 ["X"] = ("Edit", "Cut marks"),      ["V"] = ("Edit", "Paste marks, picture or text"),
                 ["R"] = ("Edit", "Rotate pages CW"),
+                ["G"] = ("Edit", "Group marks"),
                 ["D0"] = ("View", "Reset zoom"),    ["D1"] = ("View", "Actual size"),
                 ["D2"] = ("View", "Fit width"),     ["D3"] = ("View", "Fit page"),
                 ["Equals"] = ("View", "Zoom in"),   ["Minus"] = ("View", "Zoom out"),
@@ -110,6 +111,7 @@ namespace TDPdf
             [KbLayer.CtrlShift] = new()
             {
                 ["S"] = ("File", "Save as"),
+                ["G"] = ("Edit", "Ungroup marks"),
                 ["Z"] = ("Edit", "Redo"),
                 ["R"] = ("Edit", "Rotate pages CCW"),
                 ["U"] = ("Edit", "Rotate pages 180°"),

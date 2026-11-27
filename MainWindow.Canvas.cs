@@ -280,6 +280,21 @@ namespace TDPdf
                             break;
                         }
 
+                        // Any member of a group picks up the whole group, and drags it.
+                        if (underPress?.GroupId is not null)
+                        {
+                            var members = ExpandToGroups(pageIdx, new[] { underPress });
+                            if (members.Count > 1)
+                            {
+                                ClearSelection();
+                                RenderAllAnnotations(pageIdx);
+                                SelectMarks(members);
+                                BeginMultiMove(pos, underPress);
+                                e.Handled = true;
+                                break;
+                            }
+                        }
+
                         if (underPress is PlacedAnnotation placed)
                         {
                             ClearSelection();
@@ -1339,7 +1354,10 @@ namespace TDPdf
                         {
                             if (HitTestAnnotation(_annotations[pageIdx][i], _selectStart, out Rect bounds))
                             {
-                                SelectAnnotation(_annotations[pageIdx][i], bounds);
+                                if (_annotations[pageIdx][i].GroupId is not null)
+                                    SelectMarks(ExpandToGroups(pageIdx, new[] { _annotations[pageIdx][i] }));
+                                else
+                                    SelectAnnotation(_annotations[pageIdx][i], bounds);
                                 break;
                             }
                         }

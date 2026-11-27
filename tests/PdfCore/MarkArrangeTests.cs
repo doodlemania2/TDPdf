@@ -34,5 +34,18 @@ internal static class MarkArrangeTests
 
         var step0 = MarkArrange.PasteShift((10, 10, 5, 5), 600, 800, 0);
         Check("paste: step 0 shifts nothing", step0 == (0, 0), $"{step0}");
+
+        // ── Groups ──────────────────────────────────────────────────────────────────────
+        string?[] ids = { "a", null, "a", "b", null, "b", "a" };
+        Check("group: a member picks up its whole group, picked first",
+              string.Join(",", MarkGroups.Expand(ids, new[] { 2 })) == "2,0,6", string.Join(",", MarkGroups.Expand(ids, new[] { 2 })));
+        Check("group: an ungrouped mark is just itself",
+              string.Join(",", MarkGroups.Expand(ids, new[] { 1 })) == "1", "");
+        Check("group: two ungrouped marks do not pull each other in",
+              string.Join(",", MarkGroups.Expand(ids, new[] { 1, 4 })) == "1,4", "");
+        Check("group: two groups together, in pick order then list order",
+              string.Join(",", MarkGroups.Expand(ids, new[] { 3, 0 })) == "3,0,2,5,6", string.Join(",", MarkGroups.Expand(ids, new[] { 3, 0 })));
+        Check("group: a repeated or out-of-range pick is ignored",
+              string.Join(",", MarkGroups.Expand(ids, new[] { 3, 3, 99, -1 })) == "3,5", "");
     }
 }

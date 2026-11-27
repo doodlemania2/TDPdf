@@ -419,10 +419,19 @@ namespace TDPdf
             SetStatus(pasted.Count == 1 ? "Pasted 1 mark" : $"Pasted {pasted.Count} marks");
         }
 
-        /// <summary>Pasted copies must not join the group their originals are still in; groups inside the paste get fresh ids.</summary>
+        /// <summary>
+        /// A pasted copy must not join the group its original is still in. Marks that were grouped
+        /// together in the copy stay grouped together, under one fresh id per original group.
+        /// </summary>
         private static void RegroupPasted(List<PageAnnotation> pasted)
         {
-            // Filled in with grouping (#227).
+            var fresh = new Dictionary<string, string>();
+            foreach (var m in pasted)
+            {
+                if (m.GroupId is not { } old) continue;
+                if (!fresh.TryGetValue(old, out var id)) fresh[old] = id = Guid.NewGuid().ToString("N");
+                m.GroupId = id;
+            }
         }
     }
 }

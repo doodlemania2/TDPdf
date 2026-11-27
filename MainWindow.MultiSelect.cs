@@ -100,9 +100,61 @@ namespace TDPdf
             return ExpandToGroups(pageIdx, hits);
         }
 
-        /// <summary>Adds the other members of any group a mark belongs to (none yet: grouping lands later).</summary>
-        private List<PageAnnotation> ExpandToGroups(int pageIdx, IEnumerable<PageAnnotation> marks) =>
-            marks.ToList();
+        /// <summary>The marks plus every other mark on the page that shares a group with one of them.</summary>
+        private List<PageAnnotation> ExpandToGroups(int pageIdx, IEnumerable<PageAnnotation> marks)
+        {
+            var picked = marks.ToList();
+            if (picked.All(m => m.GroupId is null) || !_annotations.TryGetValue(pageIdx, out var list)) return picked;
+            var ids = list.Select(a => a.GroupId).ToList();
+            var indices = MarkGroups.Expand(ids, picked.Select(m => list.IndexOf(m)));
+            var result = picked.Where(m => list.IndexOf(m) < 0).ToList();   // marks not on the page pass through
+            foreach (int i in indices)
+                if (IsSelectableMark(list[i]) && !result.Contains(list[i])) result.Add(list[i]);
+            return result;
+        }
+
+        // ============================================================
+        // Grouping (#227)
+        // ============================================================
+
+        /// <summary>Ctrl+G: the selected marks become one group (marks from older groups join it).</summary>
+        private void GroupSelected()
+        {
+            if (_markSelection.Count < 2)
+            {
+                SetStatus("Select two or more marks to group them");
+                return;
+            }
+            var marks = new List<PageAnnotation>(_markSelection);
+            int page = marks[0].PageIndex;
+            PushPageSnapshot(page);
+            string id = Guid.NewGuid().ToString("N");
+            foreach (var m in marks) m.GroupId = id;
+            MarkDirty();
+            RenderAllAnnotations(page);
+            SelectMarks(marks);
+            SetStatus($"Grouped {marks.Count} marks");
+        }
+
+        /// <summary>Ctrl+Shift+G: every selected mark leaves its group.</summary>
+        private void UngroupSelected()
+        {
+            var marks = new List<PageAnnotation>(_markSelection);
+            if (!marks.Any(m => m.GroupId is not null))
+            {
+                SetStatus("The selection is not grouped");
+                return;
+            }
+            int page = marks[0].PageIndex;
+            PushPageSnapshot(page);
+            foreach (var m in marks) m.GroupId = null;
+            MarkDirty();
+            RenderAllAnnotations(page);
+            SelectMarks(marks);
+            SetStatus("Ungrouped");
+        }
+
+        private bool SelectionIsGrouped => _markSelection.Any(m => m.GroupId is not null);
 
         /// <summary>The topmost selectable mark under a canvas point: placed marks outrank the rest, as in the click path.</summary>
         private PageAnnotation? TopMarkAt(int pageIdx, Point pos)
@@ -135,13 +187,15 @@ namespace TDPdf
             SelectMarks(members);
         }
 
-        private MenuItem? _ctxCut, _ctxCopy, _ctxPaste;
+        private MenuItem? _ctxCut, _ctxCopy, _ctxPaste, _ctxGroup, _ctxUngroup;
 
         /// <summary>Greys the mark commands in the right-click menu that have nothing to act on.</summary>
         private void UpdateMarkMenuState()
         {
             if (_ctxCut is not null) _ctxCut.IsEnabled = HasMarkSelection;
             if (_ctxPaste is not null) _ctxPaste.IsEnabled = CanPasteNow();
+            if (_ctxGroup is not null) _ctxGroup.IsEnabled = IsMultiSelection;
+            if (_ctxUngroup is not null) _ctxUngroup.IsEnabled = SelectionIsGrouped;
         }
 
         /// <summary>The selection a Shift/Ctrl box drag adds to; null for a plain box drag.</summary>

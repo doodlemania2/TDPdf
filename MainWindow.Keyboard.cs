@@ -251,6 +251,16 @@ namespace TDPdf
                 CopyMarksOrText();
                 e.Handled = true;
             }
+            // Ctrl+G groups the selected marks, Ctrl+Shift+G ungroups them. Bare G is the Signature
+            // tool; the modified pair was free.
+            else if (e.Key == Key.G && _doc is not null && !IsTypingTarget()
+                     && (Keyboard.Modifiers == ModifierKeys.Control
+                         || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
+            {
+                if (Keyboard.Modifiers == ModifierKeys.Control) GroupSelected();
+                else UngroupSelected();
+                e.Handled = true;
+            }
             // Ctrl+X / Ctrl+V act on marks only when the caret is not in a text surface (the find
             // bar, a form field, the page-jump box), where they stay ordinary cut and paste.
             else if (e.Key == Key.X && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null

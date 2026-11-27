@@ -2740,6 +2740,10 @@ namespace TDPdf
                 (s, e) => ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr())),
                 "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
             menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
+            _ctxGroup = MakeMenuItem("_Group", (s, e) => GroupSelected(), "Ctrl+G", "Group the selected marks so they move and delete together");
+            _ctxUngroup = MakeMenuItem("U_ngroup", (s, e) => UngroupSelected(), "Ctrl+Shift+G", "Split the selected group back into separate marks");
+            menu.Items.Add(_ctxGroup);
+            menu.Items.Add(_ctxUngroup);
             menu.Items.Add(new Separator());
             // Tool rows carry the toolbar's glyph and the tool's single-key shortcut (see OnPreviewKeyDown).
             menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), "V", "Switch to the select tool", "\uE8B3"));

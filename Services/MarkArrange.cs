@@ -39,3 +39,31 @@ namespace TDPdf.Services
         private static bool Finite(double v) => !double.IsNaN(v) && !double.IsInfinity(v);
     }
 }
+
+namespace TDPdf.Services
+{
+    /// <summary>Which marks a click on one member of a group picks up (#227), without WPF.</summary>
+    internal static class MarkGroups
+    {
+        /// <summary>
+        /// The indices to select when the marks at <paramref name="picked"/> are clicked: the picked
+        /// ones first, in the order given, then every other index that shares a group id with one of
+        /// them, in list order. A null id is "not grouped" and never matches another null.
+        /// </summary>
+        public static List<int> Expand(IReadOnlyList<string?> groupIds, IEnumerable<int> picked)
+        {
+            var result = new List<int>();
+            var ids = new HashSet<string>();
+            foreach (int i in picked)
+            {
+                if (i < 0 || i >= groupIds.Count || result.Contains(i)) continue;
+                result.Add(i);
+                if (groupIds[i] is { } id) ids.Add(id);
+            }
+            if (ids.Count == 0) return result;
+            for (int i = 0; i < groupIds.Count; i++)
+                if (groupIds[i] is { } id && ids.Contains(id) && !result.Contains(i)) result.Add(i);
+            return result;
+        }
+    }
+}
