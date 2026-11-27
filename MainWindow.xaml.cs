@@ -704,9 +704,14 @@ namespace TDPdf
                 bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
                 if (ownsSession) ClaimSavedSession();
                 if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
+                {
                     await OpenRequestedPathAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
+                    // The saved session is not offered and is left alone, so it is still there the
+                    // next time TDPdf starts without a file (HandleSessionOnClose skips it).
+                    _sessionPending = ownsSession && _sessionContributed.Count > 0;
+                }
                 else if (ownsSession)
-                    await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
+                    await OfferSessionRestoreAsync();   // otherwise bring last session's tabs back, or offer to
 
                 if (App.IsPortable())
                 {
@@ -2094,7 +2099,7 @@ namespace TDPdf
             CaptureViewState();
             try
             {
-                if (TDPdf.Properties.Settings.Default.ReopenSession != "No")
+                if (TDPdf.Properties.Settings.Default.ReopenSession != "No" && !_sessionPending)
                     SaveSession(OpenSessionFiles());
             }
             catch { /* never hold up the sign-out over the session list */ }
@@ -2219,6 +2224,13 @@ namespace TDPdf
                     active ?? "");
         }
 
+        /// <summary>The saved view states as they are on disk now (see <see cref="ReadSavedSession"/>).</summary>
+        private static string ReadSavedViewStates()
+        {
+            try { return new TDPdf.Properties.Settings().SessionViewStates ?? ""; }
+            catch { return TDPdf.Properties.Settings.Default.SessionViewStates ?? ""; }
+        }
+
         /// <summary>
         /// First window only: takes responsibility for the session left by the last run, so that
         /// closing this window replaces it (as a lone window always did) rather than adding to it.
@@ -2238,39 +2250,21 @@ namespace TDPdf
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // On close, remember (or forget) the open documents so the next launch can restore them.
-        // Preference "Yes" always remembers, "No" never does, "Ask" prompts once (with an optional
-        // "remember my choice" that locks the answer). Forgetting drops this window's documents;
-        // turning the preference to "No" clears the saved paths entirely, for privacy.
+        // On close, remember (or forget) the open documents so the next launch can offer them back.
+        // "No" never remembers (and clears what was saved, for privacy); anything else remembers.
+        // A saved session this window has not answered yet (TDPdf was launched with a file, or the
+        // restore bar was never used) is left exactly as it was, so it is still there next time.
         private void HandleSessionOnClose()
         {
+            if (_sessionPending) return;
             var openFiles = OpenSessionFiles();
-            if (openFiles.Count == 0) { SaveSession(openFiles); return; }
-
-            bool reopen;
-            switch (TDPdf.Properties.Settings.Default.ReopenSession)
+            if (TDPdf.Properties.Settings.Default.ReopenSession == "No")
             {
-                case "Yes": reopen = true;  break;
-                case "No":  reopen = false; break;
-                default:
-                    string msg = openFiles.Count == 1
-                        ? "Reopen this document next time you open TDPdf?"
-                        : $"Reopen these {openFiles.Count} documents next time you open TDPdf?";
-                    var (res, remember) = TdpDialog.ShowWithCheckbox(
-                        this, msg, "Remember my choice", "TDPdf",
-                        MessageBoxButton.YesNo, MessageBoxImage.Question);
-                    reopen = res == MessageBoxResult.Yes;
-                    if (remember)
-                    {
-                        TDPdf.Properties.Settings.Default.ReopenSession = reopen ? "Yes" : "No";
-                        TDPdf.Properties.Settings.Default.Save();
-                    }
-                    break;
+                if (openFiles.Count > 0) ClearSavedSession();
+                else SaveSession(openFiles);
+                return;
             }
-
-            if (reopen) SaveSession(openFiles);
-            else if (TDPdf.Properties.Settings.Default.ReopenSession == "No") ClearSavedSession();
-            else SaveSession(new List<string>());   // declined this once: forget only this window's
+            SaveSession(openFiles);
         }
 
         /// <summary>Merges this window's documents into the saved session; see the block comment above.</summary>
@@ -2286,12 +2280,17 @@ namespace TDPdf
                     : merged.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, savedActive)) ? savedActive
                     : "";
                 _sessionContributed = TDPdf.Services.FilePathPolicy.NormalizeDistinct(openFiles);
+                var mineStates = _tabs.Select(SnapshotTabState).OfType<TDPdf.Services.TabViewState>()
+                                .Where(t => openFiles.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, t.Path)));
+                string states = TDPdf.Services.SessionState.Merge(ReadSavedViewStates(), merged, mineStates);
                 if (merged.SequenceEqual(saved, StringComparer.OrdinalIgnoreCase)
-                    && string.Equals(active, savedActive, StringComparison.OrdinalIgnoreCase))
+                    && string.Equals(active, savedActive, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(states, ReadSavedViewStates(), StringComparison.Ordinal))
                     return;   // nothing changed: leave user.config alone
                 var s = TDPdf.Properties.Settings.Default;
                 s.SessionFiles = string.Join("|", merged);
                 s.SessionActiveFile = active;
+                s.SessionViewStates = states;
                 s.Save();
             });
         }
@@ -2303,30 +2302,55 @@ namespace TDPdf
                 && ReadSavedSession().Files.Count == 0) return;   // nothing to clear
             s.SessionFiles = "";
             s.SessionActiveFile = "";
+            s.SessionViewStates = "";
             s.Save();
         }
 
         /// <summary>
-        /// Reopens the documents saved from the previous session as tabs, then re-selects the tab that was
-        /// active last time. Skipped when the user opted out ("No"), when nothing was saved, or (by the
-        /// caller) when a file was passed on the command line — that file takes precedence over the session —
-        /// or when this is not the first TDPdf window (the first one already restored it).
+        /// Reopens the documents saved from the previous session as tabs, each back on its page and
+        /// zoom, then re-selects the tab that was active last time. Files that no longer exist are
+        /// skipped and named in the status line; a password-protected file asks for its password
+        /// like any other open (nothing is ever stored for it). Only the first TDPdf window ever
+        /// calls this, so several windows' tabs all come back into that one window.
         /// </summary>
         private async Task RestoreSessionAsync()
         {
-            if (TDPdf.Properties.Settings.Default.ReopenSession == "No") return;
-
+            _sessionPending = false;
+            HideSessionRestoreBar();
             // The list ClaimSavedSession just read under the lock, rather than Settings.Default's
-            // startup copy.
-            var files = _sessionContributed
-                .Where(System.IO.File.Exists)
-                .ToList();
-            if (files.Count == 0) return;
+            // startup copy. Working copies under %TEMP% are never reopened on their own.
+            var (files, missing) = TDPdf.Services.SessionState.SplitExisting(
+                _sessionContributed, System.IO.File.Exists, System.IO.Path.GetTempPath());
+            if (files.Count == 0)
+            {
+                if (missing.Count > 0) ReportSessionSkipped(0, missing);
+                return;
+            }
 
-            foreach (var f in files)
-                await OpenInTabAsync(f);
-
+            var states = TDPdf.Services.SessionState.Parse(ReadSavedViewStates());
             string active = ReadSavedSession().Active;
+            // View mode is one setting for the whole window, so the active tab's decides it.
+            var modeSource = TDPdf.Services.SessionState.For(states,
+                !string.IsNullOrEmpty(active) && files.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, active)) ? active : files[0]);
+
+            int restored = 0;
+            bool modeApplied = false;
+            var failed = new List<string>();
+            foreach (var f in files)
+            {
+                await OpenInTabAsync(f);
+                if (_ctx.Doc is null || !TDPdf.Services.FilePathPolicy.SamePath(_ctx.OriginalPath, f))
+                {
+                    failed.Add(f);   // not a PDF any more, damaged, or the password prompt was cancelled
+                    continue;
+                }
+                restored++;
+                var state = TDPdf.Services.SessionState.For(states, f);
+                if (!modeApplied) { state = state with { ViewMode = modeSource.ViewMode }; }
+                await ApplyTabViewStateAsync(state, applyViewMode: !modeApplied);
+                modeApplied = true;
+            }
+
             if (!string.IsNullOrEmpty(active))
             {
                 var target = _tabs.FirstOrDefault(t =>
@@ -2337,6 +2361,20 @@ namespace TDPdf
                     RebuildTabStrip();
                 }
             }
+            ReportSessionSkipped(restored, missing, failed);
+        }
+
+        private void ReportSessionSkipped(int restored, List<string> missing, List<string>? failed = null)
+        {
+            string opened = restored == 1 ? "Restored 1 tab" : $"Restored {restored} tabs";
+            string Names(List<string> paths) => paths.Count <= 3
+                ? string.Join(", ", paths.Select(p => System.IO.Path.GetFileName(p)))
+                : $"{string.Join(", ", paths.Take(3).Select(p => System.IO.Path.GetFileName(p)))} and {paths.Count - 3} more";
+            var notes = new List<string>();
+            if (missing.Count > 0) notes.Add($"{Names(missing)} no longer exist{(missing.Count == 1 ? "s" : "")}");
+            if (failed is { Count: > 0 }) notes.Add($"{Names(failed)} could not be opened");
+            if (notes.Count == 0) { SetStatus(opened); return; }
+            SetStatusHeld($"{opened}; {string.Join("; ", notes)}", 12000);
         }
 
         // ============================================================
@@ -2474,6 +2512,24 @@ namespace TDPdf
             enterNewLine.Unchecked += EnterNewLineChanged;
             panel.Children.Add(enterNewLine);
 
+            var alwaysRestore = new CheckBox
+            {
+                Content = "Always restore last session",
+                IsChecked = TDPdf.Properties.Settings.Default.ReopenSession == "Yes",
+                IsEnabled = TDPdf.Properties.Settings.Default.ReopenSession != "No",
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Reopen the tabs that were open when TDPdf last closed, without asking. Off, TDPdf offers them in a bar at launch.",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            void AlwaysRestoreChanged(object? s, RoutedEventArgs e)
+            {
+                TDPdf.Properties.Settings.Default.ReopenSession = alwaysRestore.IsChecked == true ? "Yes" : "Ask";
+                try { TDPdf.Properties.Settings.Default.Save(); } catch { /* the choice still holds for this session */ }
+            }
+            alwaysRestore.Checked += AlwaysRestoreChanged;
+            alwaysRestore.Unchecked += AlwaysRestoreChanged;
+            panel.Children.Add(alwaysRestore);
+
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
             panel.Children.Add(new TextBlock
@@ -2497,6 +2553,29 @@ namespace TDPdf
             forgetRecent.Checked += ForgetRecentFilesSettingChanged;
             forgetRecent.Unchecked += ForgetRecentFilesSettingChanged;
             panel.Children.Add(forgetRecent);
+
+            // The switch behind session restore: with it on, TDPdf keeps no record of which
+            // documents were open, and turning it on empties what was kept.
+            var forgetSession = new CheckBox
+            {
+                Content = "Don't remember open documents between sessions",
+                IsChecked = TDPdf.Properties.Settings.Default.ReopenSession == "No",
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Stops TDPdf recording which documents were open when it closed. Turning this on also clears the last session.",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            void ForgetSessionChanged(object? s, RoutedEventArgs e)
+            {
+                bool forget = forgetSession.IsChecked == true;
+                TDPdf.Properties.Settings.Default.ReopenSession = forget ? "No"
+                    : alwaysRestore.IsChecked == true ? "Yes" : "Ask";
+                alwaysRestore.IsEnabled = !forget;
+                if (forget) { _sessionPending = false; ClearSavedSession(); HideSessionRestoreBar(); }
+                else { try { TDPdf.Properties.Settings.Default.Save(); } catch { } }
+            }
+            forgetSession.Checked += ForgetSessionChanged;
+            forgetSession.Unchecked += ForgetSessionChanged;
+            panel.Children.Add(forgetSession);
 
             // The read-side companion to the link confirmation's "Don't ask again" checkbox. Without
             // this the opt-out is a one-way trapdoor: ConfirmOpenLink is the only writer of

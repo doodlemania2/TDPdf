@@ -199,6 +199,7 @@ PageMove.Run(Check);
 PageRemap.Run(Check);
 CanvasPixelsTests.Run(Check);
 ClosedTabTests.Run(Check);
+SessionStateTests.Run(Check);
 HighlightMultiplyTests.Run(Check);
 LruCacheTests.Run(Check);
 CropMarginsTests.Run(Check);
