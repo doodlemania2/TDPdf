@@ -448,7 +448,7 @@ namespace TDPdf
             int target = Math.Clamp(ctx.SelectedPageIndex, 0, Math.Max(0, ctx.Doc.PageCount - 1));
             if (PageList.SelectedIndex != target) PageList.SelectedIndex = target;
             ctx.ViewCaptured = true;   // CaptureViewState already stamped ViewModeAtCapture
-            if (ctx.ViewModeAtCapture != ViewMode.Continuous) RestoreTabZoom(ctx);
+            if (ctx.ViewModeAtCapture is not (ViewMode.Continuous or ViewMode.TwoPageContinuous)) RestoreTabZoom(ctx);   // the strips refit themselves
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
             if (!ReferenceEquals(_ctx, ctx)) return;
             PagePreviewPanel.ScrollToHorizontalOffset(ctx.ViewScrollH);
