@@ -132,12 +132,32 @@
   <!-- Colour management: the lcms2 (Little CMS, MIT) native library, embedded like the OCR natives and
        extracted on first use by Services/LcmsNative.cs (LcmsBootstrap). It is used ONLY when its SHA-256
        equals LcmsBootstrap.PinnedSha256, so a file dropped here without updating the pin is ignored (and
-       tests/PdfCore fails). Absent today: without it the managed colour engine is used. -->
-  <ItemGroup>
-    <EmbeddedResource Include="third_party\lcms2\win-x64\lcms2.dll" Condition="Exists('third_party\lcms2\win-x64\lcms2.dll')">
-      <LogicalName>TDPdf.ColorNative.lcms2.dll</LogicalName>
+       tests/PdfCore fails). Without the file the managed colour engine is used.
+       Provenance: third_party\lcms2\SOURCES.md. -->
+  <PropertyGroup>
+    <LcmsNativeFile>$(MSBuildThisFileDirectory)third_party\lcms2\win-x64\liblcms2-2.dll</LcmsNativeFile>
+    <LcmsPinFile>$(MSBuildThisFileDirectory)third_party\lcms2\SHA256SUMS</LcmsPinFile>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(LcmsNativeFile)')">
+    <EmbeddedResource Include="$(LcmsNativeFile)">
+      <LogicalName>TDPdf.ColorNative.liblcms2-2.dll</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+  <!-- The file must be listed in third_party\lcms2\SHA256SUMS ("<sha256>  <file name>") or the build stops. -->
+  <Target Name="VerifyLcmsNativePin" BeforeTargets="BeforeBuild;CoreCompile" Condition="Exists('$(LcmsNativeFile)')">
+    <Error Condition="!Exists('$(LcmsPinFile)')" Text="third_party\lcms2\SHA256SUMS is missing: the lcms2 binary in third_party\lcms2\win-x64 must be pinned by SHA-256." />
+    <ReadLinesFromFile File="$(LcmsPinFile)" Condition="Exists('$(LcmsPinFile)')">
+      <Output TaskParameter="Lines" ItemName="LcmsPinLine" />
+    </ReadLinesFromFile>
+    <GetFileHash Files="$(LcmsNativeFile)" Algorithm="SHA256" HashEncoding="hex">
+      <Output TaskParameter="Items" ItemName="LcmsHashed" />
+    </GetFileHash>
+    <PropertyGroup>
+      <LcmsPins>;@(LcmsPinLine->'%(Identity)', ';');</LcmsPins>
+    </PropertyGroup>
+    <Error Condition="'@(LcmsHashed)' != '' And !$(LcmsPins.Contains(';$([System.String]::Copy(&apos;%(LcmsHashed.FileHash)&apos;).ToLowerInvariant())  %(LcmsHashed.Filename)%(LcmsHashed.Extension);'))"
+           Text="%(LcmsHashed.Filename)%(LcmsHashed.Extension) does not match the SHA-256 pinned in third_party\lcms2\SHA256SUMS ($([System.String]::Copy('%(LcmsHashed.FileHash)').ToLowerInvariant()))." />
+  </Target>
 
   <!-- WebView2's native loader, the OCR way: embedded as a resource and extracted on first use
        (Services/WebView2Bootstrap.cs), which then calls CoreWebView2Environment.SetLoaderDllFolderPath.

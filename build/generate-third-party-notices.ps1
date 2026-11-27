@@ -23,6 +23,8 @@
         extracted at runtime. They have no package metadata at all.
       * ddjvu.exe and djvused.exe (DjVuLibre, GPL-2.0-or-later) are EmbeddedResource files when
         third_party/djvulibre/win-x64 is present at build time (TDPdf.csproj); no package metadata.
+      * liblcms2-2.dll (Little CMS 2.20, MIT) is an EmbeddedResource taken from MSYS2's UCRT64 package
+        (third_party/lcms2); no package metadata. Its licence text is third_party/lcms2/licenses.
       * WebView2Loader.dll is likewise an EmbeddedResource (TDPdf.csproj excludes it as a
         package asset); its licence is the Microsoft.Web.WebView2 package's own BSD-3-Clause.
 
@@ -53,6 +55,8 @@ function Get-PackageFile {
     if (-not (Test-Path $p)) { throw "Missing $p - run 'dotnet restore' first, or update the pinned version in this script." }
     return (Get-Content -Raw -LiteralPath $p)
 }
+
+$lcms2Text = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'third_party/lcms2/licenses/LICENSE-lcms2-MIT')
 
 # ── Component inventory ────────────────────────────────────────────────────────────────────
 # Grouped by licence so one licence text can serve many components, which is what Apache-2.0
@@ -202,6 +206,7 @@ Add-Line '| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 159.0.8138 | BSD
 Add-Line '| Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |'
 Add-Line '| Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |'
 Add-Line ('| Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | {0} | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |' -f $webView2Version)
+Add-Line '| Little CMS (`liblcms2-2.dll`, colour management) | 2.20 | MIT (see 1.5) | https://github.com/mm2/Little-CMS |'
 Add-Line '| DjVuLibre (`ddjvu.exe`, `djvused.exe`, run as separate programs) | version as shipped | GPL-2.0-or-later (see 1.4) | https://djvu.sourceforge.net/ |'
 Add-Line ''
 Add-Line '### 1.1 PDFium'
@@ -243,6 +248,18 @@ Add-Line 'License, version 2 or (at your option) any later version, which is com
 Add-Line 'GNU GPL version 3 that TDPdf is licensed under. Its licence is at'
 Add-Line 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html. The complete corresponding source of'
 Add-Line 'every DjVuLibre release is at https://sourceforge.net/projects/djvu/files/DjVuLibre/.'
+Add-Line ''
+Add-Line '### 1.5 Little CMS'
+Add-Line ''
+Add-Line 'Colour management (ICC profiles, CMYK and soft proofing) uses Little CMS 2.20 (`liblcms2-2.dll`),'
+Add-Line 'the MSYS2 UCRT64 build of the upstream release, which TDPdf extracts on first use and loads'
+Add-Line 'only when its SHA-256 matches the one recorded in the app. Only the MIT-licensed core library'
+Add-Line 'is bundled; the GPL-3.0 `fast_float` plugin from the same package is not. Corresponding'
+Add-Line 'source: https://github.com/mm2/Little-CMS/releases/tag/lcms2.20.'
+Add-Line ''
+Add-Line '```'
+Add-Line $lcms2Text.TrimEnd()
+Add-Line '```'
 Add-Line ''
 Add-Line '---'
 Add-Line ''

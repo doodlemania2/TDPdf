@@ -190,24 +190,25 @@ namespace TDPdf.Services
     }
 
     /// <summary>
-    /// Finds the bundled lcms2.dll the way <c>OcrNativeBootstrap</c> finds the OCR libraries (embedded
+    /// Finds the bundled liblcms2-2.dll the way <c>OcrNativeBootstrap</c> finds the OCR libraries (embedded
     /// resource, extracted to a per-version cache, loaded by exact path), with one addition: the
     /// library is used only when its SHA-256 equals <see cref="PinnedSha256"/>. With no pin, or no
     /// binary in the build, the managed engine is used and nothing native loads.
     /// </summary>
     /// <remarks>
-    /// To ship the native part: build lcms2 2.16 or newer (MIT, https://github.com/mm2/Little-CMS) for
-    /// win-x64 from a signed release tag on tdp-windows-build, drop it at
-    /// third_party/lcms2/win-x64/lcms2.dll, and put its SHA-256 in <see cref="PinnedSha256"/>.
-    /// TDPdf.csproj embeds the file when it exists; a test fails if the file and the pin disagree.
+    /// The bundled file is the MSYS2 UCRT64 build of lcms2 2.20 (third_party/lcms2/win-x64/liblcms2-2.dll,
+    /// provenance in third_party/lcms2/SOURCES.md). It keeps its MSYS2 name because it is always loaded by
+    /// full path, never imported by name. It imports only Windows system libraries (kernel32 and the
+    /// Universal CRT), so there is nothing else to extract. To update it, replace the file, SHA256SUMS and
+    /// <see cref="PinnedSha256"/> together; TDPdf.csproj stops the build and a test fails if they disagree.
     /// </remarks>
     internal static class LcmsBootstrap
     {
-        /// <summary>Hex SHA-256 of the one lcms2.dll this build may load. Empty until a binary is vetted and added.</summary>
-        internal const string PinnedSha256 = "";
+        /// <summary>Hex SHA-256 of the one lcms2.dll this build may load. MSYS2 UCRT64 mingw-w64-lcms2 2.20-1; see third_party/lcms2/SOURCES.md.</summary>
+        internal const string PinnedSha256 = "54ce5a43219a39a52eafd10f40180f75b659dda59c40204795d9be13350055a2";
 
-        internal const string ResourceName = "TDPdf.ColorNative.lcms2.dll";
-        private const string FileName = "lcms2.dll";
+        internal const string ResourceName = "TDPdf.ColorNative.liblcms2-2.dll";
+        private const string FileName = "liblcms2-2.dll";
         private const uint LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100;
         private const uint LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
 

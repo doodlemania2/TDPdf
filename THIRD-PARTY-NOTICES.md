@@ -47,6 +47,7 @@ These ship as native libraries inside the executable and are extracted at runtim
 | Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |
 | Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |
 | Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | 1.0.4314.35 | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |
+| Little CMS (`liblcms2-2.dll`, colour management) | 2.20 | MIT (see 1.5) | https://github.com/mm2/Little-CMS |
 | DjVuLibre (`ddjvu.exe`, `djvused.exe`, run as separate programs) | version as shipped | GPL-2.0-or-later (see 1.4) | https://djvu.sourceforge.net/ |
 
 ### 1.1 PDFium
@@ -1447,6 +1448,39 @@ License, version 2 or (at your option) any later version, which is compatible wi
 GNU GPL version 3 that TDPdf is licensed under. Its licence is at
 https://www.gnu.org/licenses/old-licenses/gpl-2.0.html. The complete corresponding source of
 every DjVuLibre release is at https://sourceforge.net/projects/djvu/files/DjVuLibre/.
+
+### 1.5 Little CMS
+
+Colour management (ICC profiles, CMYK and soft proofing) uses Little CMS 2.20 (`liblcms2-2.dll`),
+the MSYS2 UCRT64 build of the upstream release, which TDPdf extracts on first use and loads
+only when its SHA-256 matches the one recorded in the app. Only the MIT-licensed core library
+is bundled; the GPL-3.0 `fast_float` plugin from the same package is not. Corresponding
+source: https://github.com/mm2/Little-CMS/releases/tag/lcms2.20.
+
+```
+MIT License
+
+Copyright (c) 2023 Marti Maria Saguer
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the 
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to 
+permit persons to whom the Software is furnished to do so, subject
+to the following conditions:
+
+The above copyright notice and this permission notice shall be 
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
 
 ---
 
