@@ -188,8 +188,7 @@ namespace TDPdf.Services
         /// <summary>
         /// <c>POST /envelope/create</c> (multipart): a <c>payload</c> JSON part and one
         /// <c>files</c> part. Returns the new envelope id. Recipients (and their fields) travel
-        /// inline when <see cref="DocumensoCreateEnvelopeRequest.Recipients"/> is set; otherwise
-        /// they are added by the follow-up <c>create-many</c> calls.
+        /// inline in <see cref="DocumensoCreateEnvelopeRequest.Recipients"/>.
         /// </summary>
         /// <remarks>
         /// Documenso scans an uploaded PDF for <c>{{signature, r1}}</c>-style placeholders on its
@@ -234,30 +233,6 @@ namespace TDPdf.Services
             file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
             multipart.Add(file, "files", SafeFileName(fileName));
             return multipart;
-        }
-
-        /// <summary>
-        /// <c>POST /envelope/recipient/create-many</c>. Returns the created recipients — their
-        /// <c>id</c>s are what every field must reference.
-        /// </summary>
-        internal async Task<IReadOnlyList<DocumensoRecipient>> CreateRecipientsAsync(string envelopeId,
-            IReadOnlyList<DocumensoRecipientDraft> recipients, CancellationToken ct)
-        {
-            var body = new { envelopeId, data = recipients };
-            var r = await PostJsonAsync<DataList<DocumensoRecipient>>("/envelope/recipient/create-many", body, ct).ConfigureAwait(false);
-            return r.Data;
-        }
-
-        /// <summary>
-        /// <c>POST /envelope/field/create-many</c>. Fields cannot be changed once the envelope is
-        /// distributed, so this must complete before <see cref="DistributeAsync"/>.
-        /// </summary>
-        internal async Task<IReadOnlyList<DocumensoField>> CreateFieldsAsync(string envelopeId,
-            IReadOnlyList<DocumensoFieldDraft> fields, CancellationToken ct)
-        {
-            var body = new { envelopeId, data = fields };
-            var r = await PostJsonAsync<DataList<DocumensoField>>("/envelope/field/create-many", body, ct).ConfigureAwait(false);
-            return r.Data;
         }
 
         /// <summary>
