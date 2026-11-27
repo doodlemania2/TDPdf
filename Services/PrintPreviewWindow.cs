@@ -43,7 +43,6 @@ namespace TDPdf.Services
         private readonly string _pdfPath;
         private readonly IReadOnlyList<Size> _pageSizes;   // in points
         private readonly int _pageCount;
-        private IDocReader? _previewReader;                // shared by every GetPageBitmap call; UI thread only
         private readonly BitmapSource?[] _cache;           // lazily rasterized previews (RenderDpi)
 
         private readonly List<PrintQueue> _queues = [];
@@ -170,8 +169,6 @@ namespace TDPdf.Services
         {
             base.OnClosed(e);
             try { _server?.Dispose(); } catch { /* best effort */ }
-            try { _previewReader?.Dispose(); } catch { /* best effort */ }
-            _previewReader = null;
         }
 
         // Resolves a themed brush, falling back to a sensible system brush when the
@@ -1394,17 +1391,14 @@ namespace TDPdf.Services
 
             try
             {
-                // One reader for every uncached page of this preview (UI thread only), released in OnClosed.
-                _previewReader ??= DocLib.Instance.GetDocReader(
-                    _pdfPath, new PageDimensions(RenderDpi / PointPerInch));
-                using var pr = _previewReader.GetPageReader(idx);
-                int w = pr.GetPageWidth();
-                int h = pr.GetPageHeight();
+                // The whole page at the preview density, lowered only when a poster-size page would
+                // exceed what PDFium and WPF can hold (see PrintRasterBox).
+                var (pageWd, pageHd) = PageDips(idx);
+                var box = PrintRasterBox.For(pageWd, pageHd, RenderDpi);
                 // #141: with the annotations the file carries — what the preview shows has to match
                 // what the spooled sheet prints. White background matches the white sheet. Rendered
                 // as for print, so annotation Print flags decide what shows here too.
-                var raw = PageRaster.RenderBgra(pr, _pdfPath, idx, w, h, forPrint: true);
-                var bmp = PageRaster.ToFrozenBitmap(raw, w, h, RenderDpi, RenderDpi);
+                var bmp = PageRaster.RenderBoxBitmap(_pdfPath, idx, box, forPrint: true);
                 if (bmp is null) return null;
                 _cache[idx] = bmp;
                 return bmp;
@@ -1413,6 +1407,14 @@ namespace TDPdf.Services
             {
                 return null;
             }
+        }
+
+        // The page's own size in DIPs (its size in points at 96 per inch), floored at 1 so a page with a
+        // missing size can never produce a zero-pixel box.
+        private (double W, double H) PageDips(int idx)
+        {
+            var sz = idx >= 0 && idx < _pageSizes.Count ? _pageSizes[idx] : new Size(612, 792);
+            return (Math.Max(1, sz.Width / PointPerInch * DipPerInch), Math.Max(1, sz.Height / PointPerInch * DipPerInch));
         }
 
         // ---- Sheet composition (shared by the preview and the print path) ----
@@ -1460,13 +1462,13 @@ namespace TDPdf.Services
         // Builds one sheet (aw x ah DIPs, white) holding the given source pages. 1-up honours the
         // scale mode + position + margin; N-up fits each page into its grid cell. Returns null when
         // none of the requested pages could be fetched. Shared by the preview and the print path so
-        // what you see is what prints. The `fetch` delegate supplies the page bitmap (preview cache
-        // for the preview; a fresh 300 DPI render for print).
+        // what you see is what prints. The `fetch` delegate supplies the page bitmap and is told the size
+        // (DIPs) the page will have on the sheet: the preview cache ignores it; print renders 300 DPI of it.
         private Grid? ComposeSheet(
             List<int> idxs,
             double aw,
             double ah,
-            Func<int, BitmapSource?> fetch,
+            Func<int, double, double, BitmapSource?> fetch,
             PrintLayout? frozenLayout = null)
         {
             PrintLayout layout = frozenLayout ?? CapturePrintLayout();
@@ -1481,31 +1483,35 @@ namespace TDPdf.Services
 
             if (layout.NUp <= 1)
             {
-                if (idxs.Count > 0 && fetch(idxs[0]) is BitmapSource bmp)
+                if (idxs.Count > 0)
                 {
                     int idx = idxs[0];
                     double availW = aw - 2 * m, availH = ah - 2 * m;
-                    double fitS    = Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
-                    // Real size: the page's own size in points, converted to DIPs, over its bitmap width.
-                    double actualS = _pageSizes[idx].Width / PointPerInch * DipPerInch / Math.Max(1, bmp.PixelWidth);
-                    double s = PrintSheetPlan.Factor(layout.ScaleMode, fitS, actualS, layout.CustomPercent);
-                    double iw = bmp.PixelWidth * s, ih = bmp.PixelHeight * s;
-                    // When the result is the fit scale, snap to the printable area when within a pixel of
-                    // filling it so the white sheet doesn't peek through as a 1px hairline at the page edge.
-                    // (N-up cells below always fit; the Scale combo is a 1-up setting, like Position.)
-                    if (PrintSheetPlan.IsFitLimited(layout.ScaleMode, fitS, actualS))
+                    // Scale factors are DIPs on the sheet per DIP of the page, so the size the page will be
+                    // printed at is known before the page is rasterized.
+                    var (pageWd, pageHd) = PageDips(idx);
+                    double fitS    = Math.Min(availW / pageWd, availH / pageHd);
+                    double s = PrintSheetPlan.Factor(layout.ScaleMode, fitS, 1.0, layout.CustomPercent);
+                    double iw = pageWd * s, ih = pageHd * s;
+                    if (fetch(idx, iw, ih) is BitmapSource bmp)
                     {
-                        if (iw >= availW - 1.5) iw = availW + 1;
-                        if (ih >= availH - 1.5) ih = availH + 1;
+                        // When the result is the fit scale, snap to the printable area when within a pixel of
+                        // filling it so the white sheet doesn't peek through as a 1px hairline at the page edge.
+                        // (N-up cells below always fit; the Scale combo is a 1-up setting, like Position.)
+                        if (PrintSheetPlan.IsFitLimited(layout.ScaleMode, fitS, 1.0))
+                        {
+                            if (iw >= availW - 1.5) iw = availW + 1;
+                            if (ih >= availH - 1.5) ih = availH + 1;
+                        }
+                        var img = new Image { Source = bmp, Width = iw, Height = ih };
+                        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+                        double offsetH = layout.AlignH == 0 ? 0 : layout.AlignH == 2 ? availW - iw : (availW - iw) / 2;
+                        double offsetV = layout.AlignV == 0 ? 0 : layout.AlignV == 2 ? availH - ih : (availH - ih) / 2;
+                        Canvas.SetLeft(img, m + offsetH);
+                        Canvas.SetTop(img, m + offsetV);
+                        canvas.Children.Add(img);
+                        any = true;
                     }
-                    var img = new Image { Source = bmp, Width = iw, Height = ih };
-                    RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-                    double offsetH = layout.AlignH == 0 ? 0 : layout.AlignH == 2 ? availW - iw : (availW - iw) / 2;
-                    double offsetV = layout.AlignV == 0 ? 0 : layout.AlignV == 2 ? availH - ih : (availH - ih) / 2;
-                    Canvas.SetLeft(img, m + offsetH);
-                    Canvas.SetTop(img, m + offsetV);
-                    canvas.Children.Add(img);
-                    any = true;
                 }
             }
             else
@@ -1523,11 +1529,12 @@ namespace TDPdf.Services
                 for (int i = 0; i < idxs.Count && i < cols * rows; i++)
                 {
                     int idx = idxs[i];
-                    if (fetch(idx) is not BitmapSource bmp) continue;
                     int row = i / cols, col = i % cols;
                     double availW = Math.Max(1, cellW - gap), availH = Math.Max(1, cellH - gap);
-                    double s  = Math.Min(availW / bmp.PixelWidth, availH / bmp.PixelHeight);
-                    double iw = bmp.PixelWidth * s, ih = bmp.PixelHeight * s;
+                    var (pageWd, pageHd) = PageDips(idx);
+                    double s  = Math.Min(availW / pageWd, availH / pageHd);
+                    double iw = pageWd * s, ih = pageHd * s;
+                    if (fetch(idx, iw, ih) is not BitmapSource bmp) continue;
                     var img = new Image { Source = bmp, Width = iw, Height = ih };
                     RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
                     Canvas.SetLeft(img, m + col * cellW + (cellW - iw) / 2);
@@ -1569,7 +1576,7 @@ namespace TDPdf.Services
             // Source pages on this sheet (one for 1-up, up to _nUp for N-up).
             var idxs = plan[sheet];
 
-            var paper = ComposeSheet(idxs, _areaW, _areaH, GetPageBitmap);
+            var paper = ComposeSheet(idxs, _areaW, _areaH, (i, _, _) => GetPageBitmap(i));
             if (paper != null)
             {
                 var vb = new Viewbox { Child = paper, Stretch = Stretch.Uniform, Margin = new Thickness(20) };
@@ -1841,7 +1848,6 @@ namespace TDPdf.Services
             private readonly PrintLayout _layout;
             private readonly Action<int, int> _progress;
             private Size _pageSize;
-            private IDocReader? _reader;
             private int _primedIndex = -1;
             private Grid? _primedSheet;
 
@@ -1900,36 +1906,31 @@ namespace TDPdf.Services
                 try
                 {
                     return _owner.ComposeSheet(_sheets[sheetNumber], _pageSize.Width, _pageSize.Height,
-                                               RenderPrintPage, _layout);
+                                               (i, wd, hd) => RenderPrintPage(i, wd, hd), _layout);
                 }
                 catch { return null; /* an unrenderable sheet is skipped, not fatal to the job */ }
             }
 
-            // Rasterizes one page fresh at a true 300 DPI (never the lighter preview cache). Returns a
-            // frozen bitmap; ComposeSheet's Image holds it only until the sheet is serialized and dropped.
-            private BitmapSource? RenderPrintPage(int idx)
+            // Rasterizes one page fresh at 300 DPI of the size it will have on the sheet (never the lighter
+            // preview cache), lowering the density only when that box would exceed the render limits. A
+            // poster page at a fixed 300 DPI of its full size overflowed the buffer and printed blank.
+            // Returns a frozen bitmap; ComposeSheet's Image holds it only until the sheet is serialized.
+            private BitmapSource? RenderPrintPage(int idx, double printedWDip, double printedHDip)
             {
                 if (idx < 0 || idx >= _owner._pageCount) return null;
                 try
                 {
-                    _reader ??= DocLib.Instance.GetDocReader(
-                        _owner._pdfPath, new PageDimensions(PrintDpi / PointPerInch));
-                    using var pr = _reader.GetPageReader(idx);
-                    int w = pr.GetPageWidth(), h = pr.GetPageHeight();
+                    var box = PrintRasterBox.For(printedWDip, printedHDip, PrintDpi);
                     // #141: with the annotations the file carries - printing used to omit them.
                     // forPrint: each annotation's Print flag decides whether it is on paper.
-                    // The `?? pr.GetImage()` fallback is a last resort and prints WITHOUT annotations; it
-                    // only runs if the annotation-aware render itself returns nothing.
-                    var raw = PageRaster.RenderBgra(pr, _owner._pdfPath, idx, w, h, forPrint: true);
-                    return PageRaster.ToFrozenBitmap(raw, w, h, PrintDpi, PrintDpi);
+                    return PageRaster.RenderBoxBitmap(_owner._pdfPath, idx, box, forPrint: true);
                 }
                 catch { return null; /* skip an unrenderable page rather than fail the whole job */ }
             }
 
             public void Dispose()
             {
-                try { _reader?.Dispose(); } catch { /* best effort */ }
-                _reader = null;
+                // Nothing is held between pages any more; kept so the paginator stays disposable.
             }
         }
 

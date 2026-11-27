@@ -216,6 +216,7 @@ RedactResidue.Run(Check, tmp);
 PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);
 PrintPlan.Run(Check);
+PrintRaster.Run(Check);
 TextSearch.Run(Check, tmp);
 SearchNormalise.Run(Check);
 InvertedText.Run(Check, tmp);
