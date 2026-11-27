@@ -236,6 +236,7 @@ PaperSizeNamesTests.Run(Check);
 InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);
+RegionRasterTests.Run(Check, tmp);
 RedactAnnotations.Run(Check, tmp);
 RedactResidue.Run(Check, tmp);
 RedactCopies.Run(Check, tmp);

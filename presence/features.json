@@ -190,6 +190,22 @@
       "sources": ["MainWindow.Ocr.cs", "Services/Ocr*.cs", "Services/FormOcrPolicy.cs"]
     },
     {
+      "id": "rasterize-region",
+      "name": "Rasterize a region",
+      "status": "ready",
+      "summary": "Turn a boxed area of a page into a picture at the resolution you choose, with its text and graphics taken off the page. This is not redaction.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.RasterizeRegion.cs",
+        "TdpDialog.RasterizeRegion.cs",
+        "Services/RegionRaster.cs",
+        "Services/PdfRegionRasterizer.cs",
+        "Services/PdfTaggedFigure.cs",
+        "Services/PdfiumInterop.RegionRaster.cs"
+      ]
+    },
+    {
       "id": "tabs",
       "name": "Tabs",
       "status": "ready",

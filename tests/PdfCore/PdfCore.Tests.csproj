@@ -68,6 +68,10 @@
     <Compile Include="..\..\Services\PageBlockMove.cs" />
     <Compile Include="..\..\Services\PageIndexRemap.cs" />
     <Compile Include="..\..\Services\CanvasPixels.cs" />
+    <Compile Include="..\..\Services\RegionRaster.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.RegionRaster.cs" />
+    <Compile Include="..\..\Services\PdfRegionRasterizer.cs" />
+    <Compile Include="..\..\Services\PdfTaggedFigure.cs" />
     <Compile Include="..\..\Diagnostics\FaultSink.cs" />
     <Compile Include="..\..\Services\MarkArrange.cs" />
     <Compile Include="..\..\Services\ReleaseNotesMarkdown.cs" />

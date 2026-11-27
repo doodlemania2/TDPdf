@@ -30,7 +30,7 @@ namespace TDPdf.Services
     // the order this PDFium build expects: form (while its page is still alive), then page, then
     // document.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    internal static class PdfiumInterop
+    internal static partial class PdfiumInterop
     {
         internal static readonly object PdfiumLock =
             typeof(DocLib).GetField("Lock",

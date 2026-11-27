@@ -192,6 +192,7 @@ namespace TDPdf
         /// <summary>Greys the mark commands in the right-click menu that have nothing to act on.</summary>
         private void UpdateMarkMenuState()
         {
+            UpdateRasterizeRegionMenuState();
             if (_ctxCut is not null) _ctxCut.IsEnabled = HasMarkSelection;
             if (_ctxPaste is not null) _ctxPaste.IsEnabled = CanPasteNow();
             if (_ctxGroup is not null) _ctxGroup.IsEnabled = IsMultiSelection;
