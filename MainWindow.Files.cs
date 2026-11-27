@@ -2048,6 +2048,7 @@ namespace TDPdf
         private void FileMenu_SubmenuOpened(object sender, RoutedEventArgs e)
         {
             _removePasswordMenuItem.IsEnabled = _doc is not null && _ctx.WasProtected;
+            _reopenClosedTabMenuItem.IsEnabled = _closedTabs.Count > 0;
             UpdateESignatureMenu();   // MainWindow.ESignature.cs
         }
 

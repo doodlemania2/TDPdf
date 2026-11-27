@@ -393,6 +393,7 @@ namespace TDPdf
         private Border _recentFilesBox = null!;
         private StackPanel _recentFilesList = null!;
         private MenuItem _removePasswordMenuItem = null!;
+        private MenuItem _reopenClosedTabMenuItem = null!;
         // Electronic Signature submenu (MainWindow.ESignature.cs); visibility and enablement are
         // set in FileMenu_SubmenuOpened.
         private MenuItem _eSignatureMenuItem = null!;
@@ -568,6 +569,7 @@ namespace TDPdf
             _recentFilesBox = (Border)FindName("RecentFilesBox")!;
             _recentFilesList = (StackPanel)FindName("RecentFilesList")!;
             _removePasswordMenuItem = (MenuItem)FindName("RemovePasswordMenuItem")!;
+            _reopenClosedTabMenuItem = (MenuItem)FindName("ReopenClosedTabMenuItem")!;
             _eSignatureMenuItem = (MenuItem)FindName("ESignatureMenuItem")!;
             _eSignSendMenuItem = (MenuItem)FindName("ESignSendMenuItem")!;
             _eSignSelfMenuItem = (MenuItem)FindName("ESignSelfMenuItem")!;

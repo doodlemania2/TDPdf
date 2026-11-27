@@ -634,9 +634,81 @@ namespace TDPdf
                 if (!_tabs.Contains(ctx)) return;   // the modal pumped messages; it may be gone
             }
 
+            // Remember where the tab was so Ctrl+Shift+T can bring it back. Taken after the dirty
+            // prompt was accepted: unsaved changes are deliberately not part of what comes back.
+            _closedTabs.Push(SnapshotTabState(ctx));
             RemoveTabSilently(ctx);
             SetStatus("Ready");
         }
+
+        // ── Reopen closed tab (Ctrl+Shift+T) ────────────────────────────────────────────────────
+        // A per-window stack of the tabs closed with Ctrl+W / the tab's close button / Close Other
+        // Tabs. Only the user's own file is kept (never a temp or decrypted working copy), so a
+        // password-protected file asks for its password again through the ordinary open path.
+
+        private readonly TDPdf.Services.ClosedTabStack _closedTabs = new();
+
+        /// <summary>Where a tab is now, for reopening it later or saving the session; null when it has no file of its own to come back to.</summary>
+        private TDPdf.Services.TabViewState? SnapshotTabState(DocumentContext ctx)
+        {
+            if (ctx.Doc is null || !IsRecentEligiblePath(ctx.OriginalPath)) return null;
+            if (ReferenceEquals(_ctx, ctx)) CaptureViewState();   // the live tab: park its zoom and page on the context
+            bool fit = ctx.ViewCaptured && ctx.ViewFitMode != ZoomFitMode.None;
+            double zoom = ctx.ViewCaptured && !fit ? ctx.ViewZoomLevel : 0;
+            return new TDPdf.Services.TabViewState(
+                ctx.OriginalPath!,
+                Math.Max(0, ctx.SelectedPageIndex),
+                zoom,
+                ctx.ViewCaptured ? ctx.ViewFitMode.ToString() : nameof(ZoomFitMode.None),
+                _viewMode.ToString());
+        }
+
+        /// <summary>
+        /// Puts a reopened tab back on its page, zoom and view. Waits for the open's own deferred
+        /// view setup (ApplyViewModeOnOpen runs at Background priority) so this is applied after it,
+        /// not overwritten by it. View mode is window-wide, so it is applied only when asked to.
+        /// </summary>
+        private async Task ApplyTabViewStateAsync(TDPdf.Services.TabViewState state, bool applyViewMode)
+        {
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+            if (_doc is null) return;
+            if (applyViewMode && Enum.TryParse(state.ViewMode, out ViewMode mode) && mode != _viewMode) SetViewMode(mode);
+            if (_viewMode != ViewMode.Grid)
+            {
+                if (state.Fit == nameof(ZoomFitMode.Width)) FitToWidth();
+                else if (state.Fit == nameof(ZoomFitMode.Page)) FitToPage();
+                else if (state.Zoom > 0) ApplyRestoredManualZoom(state.Zoom);
+            }
+            int page = Math.Clamp(state.Page, 0, Math.Max(0, _doc.PageCount - 1));
+            if (page != PageList.SelectedIndex) PageList.SelectedIndex = page;
+        }
+
+        /// <summary>Reopens the most recently closed tab that still exists (File menu, Ctrl+Shift+T); repeated calls go further back.</summary>
+        private async Task ReopenClosedTabAsync()
+        {
+            var missing = new List<string>();
+            var entry = _closedTabs.TakeLatestExisting(System.IO.File.Exists, missing);
+            string MissingNote() => missing.Count == 1
+                ? $"{System.IO.Path.GetFileName(missing[0])} no longer exists"
+                : $"{missing.Count} closed files no longer exist";
+            if (entry is null)
+            {
+                SetStatus(missing.Count > 0 ? $"Nothing to reopen: {MissingNote()}" : "No closed tabs to reopen");
+                return;
+            }
+
+            await OpenInTabAsync(entry.Path);
+            bool opened = _ctx.Doc is not null && TDPdf.Services.FilePathPolicy.SamePath(_ctx.OriginalPath, entry.Path);
+            if (!opened)
+            {
+                _closedTabs.Push(entry);   // the open failed or the password prompt was cancelled: keep it for another try
+                return;
+            }
+            await ApplyTabViewStateAsync(entry, applyViewMode: true);
+            if (missing.Count > 0) SetStatus($"Reopened {System.IO.Path.GetFileName(entry.Path)} ({MissingNote()})");
+        }
+
+        private async void ReopenClosedTab_Click(object sender, RoutedEventArgs e) => await ReopenClosedTabAsync();
 
         /// <summary>
         /// The actual tab-removal mechanics, with no dirty-changes prompt — CloseTab gates on that

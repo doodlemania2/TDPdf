@@ -109,6 +109,7 @@ namespace TDPdf
             [KbLayer.CtrlShift] = new()
             {
                 ["S"] = ("File", "Save as"),
+                ["T"] = ("File", "Reopen closed tab"),
                 ["Z"] = ("Edit", "Redo"),
                 ["R"] = ("Edit", "Rotate pages CCW"),
                 ["U"] = ("Edit", "Rotate pages 180°"),
