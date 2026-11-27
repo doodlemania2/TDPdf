@@ -1245,17 +1245,15 @@ namespace TDPdf
 
         private (double WidthPt, double HeightPt)? ShowInsertPageDialog(double currentWPt, double currentHPt)
         {
-            // (Display name, width pt, height pt). Sizes are in PostScript points (72/in).
-            var sizes = new (string Name, double W, double H)[]
+            // (Display name, width pt, height pt). Sizes are in PostScript points (72/in). The presets
+            // are the standard sizes PaperSizeNames recognises, so the list and the page-size names the
+            // rest of the app shows can never drift apart.
+            var sizes = new List<(string Name, double W, double H)>
             {
                 ($"Same as current page ({currentWPt:0}×{currentHPt:0} pt)", currentWPt, currentHPt),
-                ("Letter (8.5 × 11 in)",   612, 792),
-                ("Legal (8.5 × 14 in)",    612, 1008),
-                ("Tabloid (11 × 17 in)",   792, 1224),
-                ("A3 (297 × 420 mm)",      842, 1191),
-                ("A4 (210 × 297 mm)",      595, 842),
-                ("A5 (148 × 210 mm)",      420, 595)
             };
+            foreach (var (name, shortPt, longPt) in TDPdf.Services.PaperSizeNames.Table)
+                sizes.Add((TDPdf.Services.PaperSizeNames.Label(name, shortPt, longPt), shortPt, longPt));
 
             var bgDark   = (SolidColorBrush)FindResource("BgDark");
             var bgPanel  = (SolidColorBrush)FindResource("BgPanel");
@@ -1297,7 +1295,7 @@ namespace TDPdf
             foreach (var s in sizes) sizeBox.Items.Add(s.Name);
             // "Custom…" sits one past the end of the presets, so its combo index IS sizes.Length —
             // every custom-only branch below tests that rather than a magic number.
-            int customIndex = sizes.Length;
+            int customIndex = sizes.Count;
             sizeBox.Items.Add("Custom…");
             sizeBox.SelectedIndex = 0;
             root.Children.Add(sizeBox);

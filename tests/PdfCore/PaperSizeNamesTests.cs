@@ -21,6 +21,13 @@ internal static class PaperSizeNamesTests
             Check($"{name} landscape", PaperSizeNames.Name(h, w) == expectLandscape, $"{PaperSizeNames.Name(h, w)}");
         }
 
+        // The menu labels the Insert Blank Page dialog builds from the table.
+        Check("label: Letter in inches", PaperSizeNames.Label("Letter", 612, 792) == "Letter (8.5 × 11 in)", PaperSizeNames.Label("Letter", 612, 792));
+        Check("label: A4 in millimetres", PaperSizeNames.Label("A4", 595.28, 841.89) == "A4 (210 × 297 mm)", PaperSizeNames.Label("A4", 595.28, 841.89));
+        Check("label: every table entry reads as its own name",
+              PaperSizeNames.Table.All(t => PaperSizeNames.Label(t.Name, t.Short, t.Long).StartsWith(t.Name + " (")
+                                            && PaperSizeNames.Name(t.Short, t.Long) == t.Name),
+              string.Join("; ", PaperSizeNames.Table.Select(t => PaperSizeNames.Label(t.Name, t.Short, t.Long))));
         Check("2 pt off still matches", PaperSizeNames.Name(614, 790) == "Letter", $"{PaperSizeNames.Name(614, 790)}");
         Check("3 pt off does not", PaperSizeNames.Name(615, 792) is null, $"{PaperSizeNames.Name(615, 792)}");
         Check("a custom size has no name", PaperSizeNames.Name(500, 500) is null, "");
