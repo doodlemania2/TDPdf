@@ -36,7 +36,7 @@ namespace TDPdf
     // authoritative record is the --log CSV and the exit code.
     public partial class MainWindow
     {
-        [DllImport("kernel32.dll", EntryPoint = "AttachConsole", SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("kernel32.dll", EntryPoint = "AttachConsole", SetLastError = true)]
         private static extern bool BatchAttachConsole(int dwProcessId);
         private const int BatchAttachParentProcess = -1;
 
