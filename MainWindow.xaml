@@ -400,6 +400,9 @@
              the toolbar's icon size: a 14x5 body with three graduation ticks hanging off its top
              edge, the middle one longer, which is what makes it read as a ruler rather than as
              another rectangle at 16px. -->
+        <!-- The Stamp tool's icon: a rubber stamp (handle, neck, flat base), drawn as geometry for the
+             same reason as the ruler below. -->
+        <Geometry x:Key="StampGeometry">M 6.5,2 H 9.5 V 6 C 9.5,7.2 11.5,7.4 11.5,9.5 H 4.5 C 4.5,7.4 6.5,7.2 6.5,6 Z M 2.5,11 H 13.5 V 13.5 H 2.5 Z</Geometry>
         <Geometry x:Key="MeasureRulerGeometry">M 1.5,5.5 H 14.5 V 10.5 H 1.5 Z M 4.5,5.5 V 8.5 M 8,5.5 V 9.5 M 11.5,5.5 V 8.5</Geometry>
 
         <!-- #177: the two halves of a shortcuts-overlay row. Rows are 2-column Grids (a fixed key
@@ -1236,6 +1239,14 @@
                 <MenuItem Header="Si_gnature Picture" InputGestureText="G"          Click="ToolSignature_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEE56;"/></MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="St_amp"           InputGestureText="A"            Click="ToolStamp_Click">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource StampGeometry}"
+                              Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.2"
+                              StrokeLineJoin="Round" Fill="{x:Null}"
+                              Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="_Crop"            InputGestureText="C"            Click="ToolCrop_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7A8;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1248,6 +1259,14 @@
                               StrokeLineJoin="Round" Fill="{x:Null}"
                               Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
                     </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Water_mark…"                                       Click="Watermark_Click"
+                          ToolTip="Add a text or picture watermark and page numbers to a range of pages">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8D2;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Remove Watermar_k"                                 Click="RemoveWatermark_Click"
+                          ToolTip="Remove the watermarks and page numbers TDPdf added">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE74D;"/></MenuItem.Icon>
                 </MenuItem>
                 <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE90F;"/></MenuItem.Icon>
@@ -1366,6 +1385,12 @@
                     <Button x:Name="ToolEraseBtn" Content="&#xE75C;" Style="{StaticResource ToolbarButton}" Click="ToolErase_Click" ToolTip="Eraser (0 or E): click an annotation to remove it" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Eraser tool" AutomationProperties.HelpText="Click an annotation to delete it. Shortcut 0 or E."/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature Picture (G, Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature Picture tool" AutomationProperties.HelpText="Create and place a picture of your signature. Shortcut G. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
+                    <Button x:Name="ToolStampBtn" Style="{StaticResource ToolbarButton}" Click="ToolStamp_Click" ToolTip="Stamp (A): place Approved, Draft, Confidential and other stamps, your own text, or a picture" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Stamp tool" AutomationProperties.HelpText="Pick a stamp in the tool bar, then click the page to place it. Shortcut A.">
+                        <Path Data="{StaticResource StampGeometry}"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2" StrokeLineJoin="Round" Fill="{x:Null}"
+                              Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
+                    </Button>
                     <Button x:Name="ToolCropBtn" Content="&#xE7A8;" Style="{StaticResource ToolbarButton}" Click="ToolCrop_Click" ToolTip="Crop pages (C, Alt+C)" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Crop tool" AutomationProperties.HelpText="Drag a rectangle on the page, then apply the crop. Shortcut C. Access key Alt+C." AutomationProperties.AccessKey="C" AutomationProperties.LabeledBy="{Binding ElementName=CropToolButtonLabel}"/>
                     <!-- Measure. Content is a vector Path, not a Segoe MDL2 glyph — see the
                          MeasureRulerGeometry resource for why. The stroke binds to the button's own
@@ -1990,6 +2015,7 @@
                                  TrySelectToolByKey. This list and the rendered keyboard drifted apart
                                  once already and it was reported as a bug. -->
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="M"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Measure"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="A"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Stamp"/></Grid>
                             <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Step back to the Select tool"/></Grid>
 
                             <TextBlock Text="HELP" Foreground="{DynamicResource AccentGreen}"

@@ -151,6 +151,7 @@ namespace TDPdf
             ["Shape"] = typeof(ShapeAnnotation),
             ["Signature"] = typeof(SignatureAnnotation),
             ["Image"] = typeof(ImageAnnotation),
+            ["Stamp"] = typeof(StampAnnotation),
         };
 
         private static bool IsCopyable(PageAnnotation a) => ClipTypes.ContainsValue(a.GetType());

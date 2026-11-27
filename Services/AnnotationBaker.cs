@@ -77,14 +77,22 @@ namespace TDPdf.Services
                 // the OCR text layer uses it too. tests/PdfCore pins it against the old inline maths.
                 var (sx, sy, visualToPage) = PdfPageGeometry.RasterToXGraphics(page, renderW, renderH);
 
-                using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
-                // ...then turn the whole drawing back into the frame XGraphics writes in, so every
-                // draw call below keeps working in canvas-scaled coordinates exactly as it always has.
-                if (visualToPage is XMatrix m)
-                    gfx.MultiplyTransform(m, XMatrixOrder.Prepend);
+                using (var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append))
+                {
+                    // ...then turn the whole drawing back into the frame XGraphics writes in, so every
+                    // draw call below keeps working in canvas-scaled coordinates exactly as it always has.
+                    if (visualToPage is XMatrix m)
+                        gfx.MultiplyTransform(m, XMatrixOrder.Prepend);
 
-                foreach (var annot in InPaintOrder(annots))
-                    BakeOne(gfx, annot, sx, sy, text);
+                    foreach (var annot in InPaintOrder(annots))
+                        BakeOne(gfx, annot, sx, sy, text);
+                }
+
+                // Stamps are not burned into the page: each is written as a real /Stamp annotation with
+                // its own appearance stream (Services/StampWriter.cs), in the same page frame as above.
+                foreach (var annot in annots)
+                    if (annot is StampAnnotation stamp)
+                        StampWriter.Write(doc, page, stamp, sx, sy, visualToPage);
             }
         }
 
@@ -147,6 +155,10 @@ namespace TDPdf.Services
 
                     case ImageAnnotation img:
                         BakeImage(gfx, img, sx, sy);
+                        break;
+
+                    // A stamp is a real annotation, written after this pass (see Bake).
+                    case StampAnnotation:
                         break;
                 }
             }

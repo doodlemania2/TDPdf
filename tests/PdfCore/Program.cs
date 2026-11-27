@@ -267,6 +267,8 @@ SaveNormalize.Run(Check);
 PureLogic.Run(Check);
 CleanupSecurity.Run(Check, tmp);
 AnnotationBakeTests.Run(Check, tmp);
+StampTests.Run(Check, tmp);
+WatermarkTests.Run(Check, tmp);
 UpdateCheckTests.Run(Check);
 
 Console.WriteLine();

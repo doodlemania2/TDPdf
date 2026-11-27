@@ -11,7 +11,10 @@ namespace TDPdf
     // Measure is the odd one out and appended like the rest: it is the only member that never
     // produces a PageAnnotation and never touches the document at all. It is a ruler — it draws a
     // transient overlay, reports a distance, and leaves when the tool does.
-    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact, Form, Measure }
+    //
+    // Stamp (3.0) is appended for the same reason: it places a StampAnnotation, a mark that is saved
+    // as a real /Stamp annotation rather than burned into the page.
+    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact, Form, Measure, Stamp }
 
     /// <summary>
     /// Which kind of form field the Form tool places. Not the same enum as
@@ -515,6 +518,46 @@ namespace TDPdf
             PageIndex = PageIndex, Position = Position, Scale = Scale,
             SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData,
             Rotation = Rotation
+        };
+    }
+
+    /// <summary>Where a stamp's picture comes from.</summary>
+    public enum StampKind { Standard, CustomText, Image }
+
+    /// <summary>
+    /// A stamp placed on a page (3.0): one of the standard rubber stamps (Approved, Draft...), a
+    /// custom text stamp, or a picture. It is a placed mark like a signature or picture, so select,
+    /// move, resize, quarter-turn rotation (with the page), copy and paste, grouping and align all
+    /// work on it for free. Unlike the other marks it is NOT burned into the page content on save: the
+    /// baker writes it as a real /Stamp annotation with an appearance stream, so another viewer still
+    /// shows it as a stamp.
+    /// </summary>
+    public class StampAnnotation : PlacedAnnotation
+    {
+        public StampKind Kind { get; set; } = StampKind.Standard;
+
+        /// <summary>The standard stamp's id (for example "Approved"); empty for a custom one.</summary>
+        public string StampId { get; set; } = "";
+
+        /// <summary>The words on a text stamp, already upper-cased by the factory.</summary>
+        public string Label { get; set; } = "";
+
+        public byte ColorR { get; set; } = 30;
+        public byte ColorG { get; set; } = 138;
+        public byte ColorB { get; set; } = 60;
+
+        /// <summary>0.1 to 1. Applied to the whole stamp, in the canvas and in the saved appearance.</summary>
+        public double Opacity { get; set; } = 1.0;
+
+        /// <summary>Base-64 image bytes for <see cref="StampKind.Image"/>; null otherwise.</summary>
+        public string? ImageData { get; set; }
+
+        protected override PageAnnotation CloneCore() => new StampAnnotation
+        {
+            PageIndex = PageIndex, Position = Position, Scale = Scale,
+            SourceWidth = SourceWidth, SourceHeight = SourceHeight, Rotation = Rotation,
+            Kind = Kind, StampId = StampId, Label = Label,
+            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, Opacity = Opacity, ImageData = ImageData
         };
     }
 

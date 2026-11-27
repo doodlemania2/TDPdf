@@ -172,6 +172,9 @@ namespace TDPdf
                 case EditTool.Shape:
                     MouseDownShape(e, pos, pageIdx);
                     break;
+                case EditTool.Stamp:
+                    MouseDownStamp(e, pos, pageIdx);
+                    break;
             }
         }
 

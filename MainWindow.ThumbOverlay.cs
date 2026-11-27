@@ -220,6 +220,14 @@ namespace TDPdf
                     }
                     break;
                 }
+                case StampAnnotation stamp:
+                {
+                    if (!TryGetPlacedSize(stamp, out _, out _)) break;
+                    dc.PushTransform(new TranslateTransform(stamp.Position.X, stamp.Position.Y));
+                    DrawStamp(dc, stamp, dpi);
+                    dc.Pop();
+                    break;
+                }
                 case ImageAnnotation pic:
                 {
                     if (!TryGetPlacedSize(pic, out double pw, out double ph)) break;
