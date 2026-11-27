@@ -32,6 +32,32 @@ namespace TDPdf
             _formTextValues.Count > 0 || _formCheckValues.Count > 0 || _formRadioValues.Count > 0;
 
         /// <summary>
+        /// The turn of a text box, signature or picture and the canvas point it turns about (the
+        /// centre of its unrotated box), or null for anything that cannot be turned.
+        /// </summary>
+        private (int Rotation, double CenterX, double CenterY)? BoxTurn(PageAnnotation annot)
+        {
+            switch (annot)
+            {
+                case TextAnnotation ta:
+                {
+                    int r = AnnotationFrame.Normalize(ta.Rotation);
+                    if (r == 0) return (0, 0, 0);
+                    var sz = MeasureTextAnnotation(ta);
+                    return (r, ta.Position.X + sz.Width / 2, ta.Position.Y + sz.Height / 2);
+                }
+                case PlacedAnnotation pa:
+                {
+                    int r = AnnotationFrame.Normalize(pa.Rotation);
+                    if (r == 0) return (0, 0, 0);
+                    return (r, pa.Position.X + pa.SourceWidth * pa.Scale / 2, pa.Position.Y + pa.SourceHeight * pa.Scale / 2);
+                }
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
         /// Draws the underline for a burned text annotation, when it has one.
         /// </summary>
         /// <remarks>
@@ -199,6 +225,19 @@ namespace TDPdf
 
                 foreach (var annot in InPaintOrder(annots))
                 {
+                    // Text boxes, signatures and pictures can be turned in quarter turns: draw them
+                    // upright in their own box, turned about its centre (the same centre the canvas
+                    // uses), and put the page transform back afterwards.
+                    var turnState = default(XGraphicsState);
+                    bool turned = false;
+                    if (BoxTurn(annot) is { } turn && turn.Rotation != 0)
+                    {
+                        turnState = gfx.Save();
+                        gfx.RotateAtTransform(turn.Rotation, new XPoint(turn.CenterX * sx, turn.CenterY * sy));
+                        turned = true;
+                    }
+                    try
+                    {
                     switch (annot)
                     {
                         case TextAnnotation ta:
@@ -558,6 +597,11 @@ namespace TDPdf
                             }
                             catch { /* skip broken image */ }
                             break;
+                    }
+                    }
+                    finally
+                    {
+                        if (turned) gfx.Restore(turnState);
                     }
                 }
             }

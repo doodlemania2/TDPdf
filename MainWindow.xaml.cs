@@ -137,6 +137,27 @@ namespace TDPdf
         private Color _textFillColor = Colors.White;
         private Border? _textSettingsBar;
 
+        // Re-editing an existing text box or PDF text run seeds the text defaults above so the bar and
+        // the editor show that run's style. Those seeds are for the edit only: the defaults for the next
+        // new box are put back when the edit ends.
+        private (string Family, double Size, Color Color, bool Whiteout, bool Bold, bool Italic,
+            bool Underline, double Spacing, Color Fill)? _textDefaultsBeforeEdit;
+
+        private void RememberTextDefaultsForEdit() =>
+            _textDefaultsBeforeEdit ??= (_textFontFamily, _textFontSize, _textColor, _textWhiteout,
+                _textBold, _textItalic, _textUnderline, _textLetterSpacing, _textFillColor);
+
+        private void RestoreTextDefaultsAfterEdit()
+        {
+            if (_textDefaultsBeforeEdit is not { } d) return;
+            _textDefaultsBeforeEdit = null;
+            _textFontFamily = d.Family; _textFontSize = d.Size; _textColor = d.Color;
+            _textWhiteout = d.Whiteout; _textBold = d.Bold; _textItalic = d.Italic;
+            _textUnderline = d.Underline; _textLetterSpacing = d.Spacing; _textFillColor = d.Fill;
+            // A bar showing the tool defaults must show the restored ones.
+            if (_textSettingsBar is not null && _styleTarget is null) ShowTextSettings();
+        }
+
         // When a settings bar is opened bound to a selected annotation (restyle-in-place),
         // this points at that annotation; null means the bar edits the tool defaults only.
         private PageAnnotation? _styleTarget;
@@ -146,6 +167,7 @@ namespace TDPdf
         private Point _resizeSigStart;
         private double _resizeSigStartScale;
         private PlacedAnnotation? _resizeSigAnnot;
+        private Point _resizeSigVisualTopLeft;   // fixed corner of the turned box while resizing
         private Rectangle? _resizeHandle;
 
         // Placed annotation drag-to-move
@@ -680,7 +702,7 @@ namespace TDPdf
                 bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
                 if (ownsSession) ClaimSavedSession();
                 if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
-                    await OpenInTabAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
+                    await OpenRequestedPathAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
                 else if (ownsSession)
                     await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 
@@ -2431,6 +2453,25 @@ namespace TDPdf
             singleInstance.Unchecked += SingleInstanceSettingChanged;
             panel.Children.Add(singleInstance);
 
+            var enterNewLine = new CheckBox
+            {
+                Content = "Enter adds a new line in text boxes (Ctrl+Enter saves)",
+                IsChecked = TDPdf.Properties.Settings.Default.EnterAddsNewLine,
+                Foreground = BrushResource("TextPrimary"),
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            void EnterNewLineChanged(object? s, RoutedEventArgs e)
+            {
+                TDPdf.Properties.Settings.Default.EnterAddsNewLine = enterNewLine.IsChecked == true;
+                try { TDPdf.Properties.Settings.Default.Save(); } catch { /* the choice still holds for this session */ }
+                SetStatus(enterNewLine.IsChecked == true
+                    ? "Text boxes: Enter adds a new line, Ctrl+Enter saves"
+                    : "Text boxes: Enter saves, Shift+Enter adds a new line");
+            }
+            enterNewLine.Checked += EnterNewLineChanged;
+            enterNewLine.Unchecked += EnterNewLineChanged;
+            panel.Children.Add(enterNewLine);
+
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
             panel.Children.Add(new TextBlock
@@ -2782,7 +2823,7 @@ namespace TDPdf
                     // the primary canvas the user drew on.
                     var dims = AnnotationCanvasSize(doc.Pages[idx]);
                     if (_annotations.TryGetValue(idx, out var anns))
-                        TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h);
+                        TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h, MeasureTextForRotate);
                     RemapAnnotationSnapshots(_undoStack, idx, delta, dims.w, dims.h);
                     RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
                 }
@@ -3734,6 +3775,11 @@ namespace TDPdf
             Telemetry.TrackEvent("Tool.Selected", new Dictionary<string, string> { ["Tool"] = tool.ToString() });
             var previousTool = _currentTool;
             CommitActiveTextBox();
+            // Text already selected when a marking tool is picked gets that mark (one undo step);
+            // CommitFlowingMarkup clears the selection itself.
+            if (tool is EditTool.Highlight or EditTool.Underline or EditTool.Strikethrough
+                && _txtSelHasRange && !_txtSelActive && _currentFile is not null)
+                CommitFlowingMarkup(tool);
             ClearTextSelection();
             CancelActivePointerOperation(removePreview: true);
             _currentTool = tool;
@@ -5215,8 +5261,7 @@ namespace TDPdf
                     return bounds.Contains(pos);
 
                 case TextAnnotation ta:
-                    var taSize = MeasureTextAnnotation(ta);
-                    bounds = new Rect(ta.Position.X, ta.Position.Y, taSize.Width, taSize.Height);
+                    bounds = TextVisualRect(ta);
                     return bounds.Contains(pos);
 
                 case InkAnnotation ia when ia.Points.Count > 0:
@@ -5255,15 +5300,11 @@ namespace TDPdf
                     return bounds.Contains(pos);
 
                 case SignatureAnnotation sa:
-                    double sigW = sa.SourceWidth * sa.Scale;
-                    double sigH = sa.SourceHeight * sa.Scale;
-                    bounds = new Rect(sa.Position.X, sa.Position.Y, sigW, sigH);
+                    bounds = PlacedVisualRect(sa);
                     return bounds.Contains(pos);
 
                 case ImageAnnotation ia:
-                    double iaW = ia.SourceWidth * ia.Scale;
-                    double iaH = ia.SourceHeight * ia.Scale;
-                    bounds = new Rect(ia.Position.X, ia.Position.Y, iaW, iaH);
+                    bounds = PlacedVisualRect(ia);
                     return bounds.Contains(pos);
 
                 case ShapeAnnotation shp:
@@ -5402,8 +5443,19 @@ namespace TDPdf
 
             // Restyle-in-place: reopen the matching settings bar bound to this annotation.
             _styleTarget = annot;
+            _restylePre = annot.Clone();
+            _restyleStepOpen = false;
             ShowStyleBarForSelection(annot);
         }
+
+        // Undo for restyling a selected mark (colour, size, opacity, width, font...). One user
+        // action is one undo step: the first change pushes the page as it was before the change, and
+        // further changes to the same mark join that step until it is deselected, another mark is
+        // selected, or RestyleStepIdle passes with no change (a slider drag changes continuously).
+        private static readonly TimeSpan RestyleStepIdle = TimeSpan.FromSeconds(1);
+        private PageAnnotation? _restylePre;      // the bound mark as it was before its latest change
+        private bool _restyleStepOpen;
+        private DateTime _restyleLastChange;
 
         /// <summary>
         /// Shows the settings bar matching the selected annotation, bound to it (restyle-in-place).
@@ -5442,6 +5494,19 @@ namespace TDPdf
         /// </summary>
         private void RestyleLive(PageAnnotation annot)
         {
+            var now = DateTime.UtcNow;
+            if (_restylePre is not null && ReferenceEquals(annot, _styleTarget) &&
+                _annotations.TryGetValue(annot.PageIndex, out var pageList))
+            {
+                if (!_restyleStepOpen || now - _restyleLastChange > RestyleStepIdle)
+                {
+                    var before = pageList.Select(a => ReferenceEquals(a, annot) ? _restylePre.Clone() : a.Clone()).ToList();
+                    PushUndo(new UndoEntry(UndoKind.PageSnapshot, annot.PageIndex, PageAnnotations: before));
+                    _restyleStepOpen = true;
+                }
+                _restyleLastChange = now;
+                _restylePre = annot.Clone();
+            }
             MarkDirty();
             RenderAllAnnotations(annot.PageIndex);
             if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
@@ -5508,7 +5573,7 @@ namespace TDPdf
         /// HitTest case will accept as a hit — used after move/resize to refresh the
         /// stored bounds without re-hit-testing the original cursor position.
         /// </summary>
-        private static Point GetAnyPointInside(PageAnnotation annot) => annot switch
+        private Point GetAnyPointInside(PageAnnotation annot) => annot switch
         {
             // Polygon: a vertex is always ON the outline, so it satisfies the edge test whether or
             // not the shape is filled (the box centre would miss a concave outline polygon).
@@ -5522,10 +5587,13 @@ namespace TDPdf
                 => new Point(m.LineRects[0].X + 1, m.LineRects[0].Y + 1),
             HighlightAnnotation h => new Point(h.Bounds.X + 1, h.Bounds.Y + 1),
             InkAnnotation i when i.Points.Count > 0 => i.Points[0],
-            TextAnnotation t => new Point(t.Position.X + 1, t.Position.Y + 1),
+            TextAnnotation t => t.Rotation == 0 ? new Point(t.Position.X + 1, t.Position.Y + 1)
+                                                : TopLeftInside(TextVisualRect(t)),
             TextEditAnnotation tea => new Point(tea.OriginalBounds.X + 1, tea.OriginalBounds.Y + 1),
-            SignatureAnnotation sg => new Point(sg.Position.X + 1, sg.Position.Y + 1),
-            ImageAnnotation ig => new Point(ig.Position.X + 1, ig.Position.Y + 1),
+            SignatureAnnotation sg => sg.Rotation == 0 ? new Point(sg.Position.X + 1, sg.Position.Y + 1)
+                                                       : TopLeftInside(PlacedVisualRect(sg)),
+            ImageAnnotation ig => ig.Rotation == 0 ? new Point(ig.Position.X + 1, ig.Position.Y + 1)
+                                                   : TopLeftInside(PlacedVisualRect(ig)),
             _ => new Point(0, 0)
         };
 
@@ -5551,8 +5619,36 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// A redraw or re-selection can land while a resize drag is still live. The geometry the drag
+        /// already applied stays, the document is marked dirty if it changed, and the undo step pushed
+        /// when the drag began is kept (the mouse-up that would have finished it no longer finds a
+        /// resize in progress).
+        /// </summary>
+        private void FinishResizeInProgress()
+        {
+            if (!(_isResizingSig || _isResizingImage || _isResizingAnnot)) return;
+            bool changed = false;
+            if (_isResizingSig && _resizeSigAnnot is not null && _resizeSigAnnot.Scale != _resizeSigStartScale)
+                changed = true;
+            if (_isResizingImage && _resizingImageEdit is not null &&
+                _resizingImageEdit.TargetBounds != _imageResizeOriginalBounds)
+                changed = true;
+            if (_isResizingAnnot && _resizingAnnot is not null && !GeometryUnchanged(_resizingAnnot, _resizeOriginalGeom))
+                changed = true;
+            _isResizingSig = false;
+            _isResizingImage = false;
+            _isResizingAnnot = false;
+            _resizingImageEdit = null;
+            if (_annotationCanvas.IsMouseCaptured) _annotationCanvas.ReleaseMouseCapture();
+            if (changed) MarkDirty();
+        }
+
         private void ClearSelection()
         {
+            FinishResizeInProgress();
+            _restyleStepOpen = false;
+            _restylePre = null;
             if (_selectionBorder is not null)
             {
                 _annotationCanvas.Children.Remove(_selectionBorder);
@@ -5587,12 +5683,43 @@ namespace TDPdf
 
             // Tear down any restyle-in-place binding. In Select mode the bound bar exists only for the
             // selection, so hide it; in other tools the visible bar belongs to the active tool — leave it.
+            bool wasBound = _styleTarget is not null;
             _styleTarget = null;
             if (_currentTool == EditTool.Select)
             {
                 HideTextSettings();
                 HideShapeSettings();
                 HideDrawSettings();
+            }
+            else if (wasBound)
+            {
+                // The bar was built for the mark that was just deselected; left alone it would keep
+                // editing that mark. Rebuild it for the active tool, showing the tool's own defaults.
+                RebindStyleBarToTool(_currentTool);
+            }
+        }
+
+        /// <summary>Rebuilds the style bar for <paramref name="tool"/>'s own defaults (nothing bound).</summary>
+        private void RebindStyleBarToTool(EditTool tool)
+        {
+            switch (tool)
+            {
+                case EditTool.Text:
+                case EditTool.EditText:
+                    HideShapeSettings(); HideDrawSettings(); ShowTextSettings();
+                    break;
+                case EditTool.Shape:
+                    HideTextSettings(); HideDrawSettings(); ShowShapeSettings();
+                    break;
+                case EditTool.Draw:
+                case EditTool.Highlight:
+                case EditTool.Underline:
+                case EditTool.Strikethrough:
+                    HideTextSettings(); HideShapeSettings(); ShowDrawSettings(tool);
+                    break;
+                default:
+                    HideTextSettings(); HideShapeSettings(); HideDrawSettings();
+                    break;
             }
         }
 
@@ -5847,6 +5974,11 @@ namespace TDPdf
             {
                 Canvas.SetLeft(spaced, ta.Position.X);
                 Canvas.SetTop(spaced, ta.Position.Y);
+                if (ta.Rotation != 0)
+                {
+                    var spacedBox = MeasureTextAnnotation(ta);
+                    ApplyAnnotationRotation(spaced, ta.Rotation, spacedBox.Width / 2, spacedBox.Height / 2);
+                }
                 _annotationCanvas.Children.Add(spaced);
                 return;
             }
@@ -5878,6 +6010,11 @@ namespace TDPdf
                 tb.Background = TdpDialog.FrozenSolidColorBrush(ta.GetFillColor());
             Canvas.SetLeft(tb, ta.Position.X);
             Canvas.SetTop(tb, ta.Position.Y);
+            if (ta.Rotation != 0)
+            {
+                var tbBox = MeasureTextAnnotation(ta);
+                ApplyAnnotationRotation(tb, ta.Rotation, tbBox.Width / 2, tbBox.Height / 2);
+            }
             _annotationCanvas.Children.Add(tb);
         }
 
@@ -6056,6 +6193,38 @@ namespace TDPdf
                 if (annots[i] is TextEditAnnotation or ImageEditAnnotation) yield return annots[i];
             for (int i = 0; i < annots.Count; i++)
                 if (annots[i] is not (TextEditAnnotation or ImageEditAnnotation)) yield return annots[i];
+        }
+
+        private (double W, double H) MeasureTextForRotate(TextAnnotation ta)
+        {
+            var sz = MeasureTextAnnotation(ta);
+            return (sz.Width, sz.Height);
+        }
+
+        /// <summary>The box a text annotation occupies on the canvas once its rotation is applied.</summary>
+        private Rect TextVisualRect(TextAnnotation ta)
+        {
+            var sz = MeasureTextAnnotation(ta);
+            var (x, y, w, h) = AnnotationFrame.VisualRect(ta.Position.X, ta.Position.Y, sz.Width, sz.Height, ta.Rotation);
+            return new Rect(x, y, w, h);
+        }
+
+        private static Point TopLeftInside(Rect r) => new Point(r.X + 1, r.Y + 1);
+
+        /// <summary>The box a signature or picture occupies on the canvas once its rotation is applied.</summary>
+        private static Rect PlacedVisualRect(PlacedAnnotation pa)
+        {
+            var (x, y, w, h) = AnnotationFrame.VisualRect(pa.Position.X, pa.Position.Y,
+                pa.SourceWidth * pa.Scale, pa.SourceHeight * pa.Scale, pa.Rotation);
+            return new Rect(x, y, w, h);
+        }
+
+        /// <summary>Turns a drawn element about the centre of its unrotated box (a no-op at 0).</summary>
+        private static void ApplyAnnotationRotation(UIElement element, int rotation, double boxCenterX, double boxCenterY)
+        {
+            int rot = AnnotationFrame.Normalize(rotation);
+            if (rot == 0) return;
+            element.RenderTransform = new RotateTransform(rot, boxCenterX, boxCenterY);
         }
 
         private Size MeasureTextAnnotation(TextAnnotation ta)
@@ -6381,6 +6550,7 @@ namespace TDPdf
                                 };
                                 Canvas.SetLeft(imgCtrl, sa.Position.X);
                                 Canvas.SetTop(imgCtrl, sa.Position.Y);
+                                ApplyAnnotationRotation(imgCtrl, sa.Rotation, sigW / 2, sigH / 2);
                                 _annotationCanvas.Children.Add(imgCtrl);
                             }
                             catch { /* skip broken image */ }
@@ -6403,6 +6573,9 @@ namespace TDPdf
                                     sigPoly.Points.Add(new Point(
                                         sa.Position.X + pt.X * sa.Scale,
                                         sa.Position.Y + pt.Y * sa.Scale));
+                                // The points are absolute canvas coordinates, so the turn's centre is too.
+                                ApplyAnnotationRotation(sigPoly, sa.Rotation,
+                                    sa.Position.X + sigW / 2, sa.Position.Y + sigH / 2);
                                 _annotationCanvas.Children.Add(sigPoly);
                             }
                         }
@@ -6428,6 +6601,7 @@ namespace TDPdf
                             };
                             Canvas.SetLeft(iaCtrl, ia.Position.X);
                             Canvas.SetTop(iaCtrl, ia.Position.Y);
+                            ApplyAnnotationRotation(iaCtrl, ia.Rotation, iaW / 2, iaH / 2);
                             _annotationCanvas.Children.Add(iaCtrl);
                         }
                         catch { /* skip broken image */ }

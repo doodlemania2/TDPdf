@@ -1221,12 +1221,24 @@ namespace TDPdf
 
             using (var k = hive.CreateSubKey(
                 @"Software\Classes\TDPdf.pdf\shell\open\command"))
-                k.SetValue("", $"\"{installExe}\" \"%1\"");
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.Open(installExe));
+
+            // Print and Print to: Explorer's Print menu item and a file dropped on a printer. Both run
+            // the headless --print command (MainWindow.Cli.cs), which sends the file to the queue and
+            // exits without showing a window: 0 sent, 1 failed, 2 bad arguments or no such printer.
+            using (var k = hive.CreateSubKey(
+                @"Software\Classes\TDPdf.pdf\shell\print\command"))
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.Print(installExe));
+            using (var k = hive.CreateSubKey(
+                @"Software\Classes\TDPdf.pdf\shell\printto\command"))
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.PrintTo(installExe));
 
             // Associate .pdf extension — adds TDPdf to the "Open with" list
             using (var k = hive.CreateSubKey(
                 @"Software\Classes\.pdf\OpenWithProgids"))
                 k.SetValue("TDPdf.pdf", new byte[0], RegistryValueKind.None);
+
+            RegisterImageOpenWith(hive, installExe);
 
             // RegisteredApplications capability (used by Default Programs UI)
             using (var k = hive.CreateSubKey(
@@ -1244,6 +1256,48 @@ namespace TDPdf
 
             // Tell the shell file associations have changed
             SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        // Picture types TDPdf can turn into a PDF (the same list as dropping them on the window).
+        private static readonly string[] ImageOpenWithExtensions =
+            { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff" };
+
+        // ProgID listed under each picture type's OpenWithProgids only. That puts TDPdf in Explorer's
+        // "Open with" list for pictures without ever becoming the default: the default is whatever the
+        // type's own (default) value or the user's UserChoice names, and neither is touched. It is
+        // deliberately NOT added to Capabilities\FileAssociations either, which is what would offer
+        // TDPdf in Default Programs for these types.
+        private const string ImageProgId = "TDPdf.image";
+
+        private static void RegisterImageOpenWith(RegistryKey hive, string installExe)
+        {
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId))
+                k.SetValue("", "Picture (open as a PDF in TDPdf)");
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId + @"\DefaultIcon"))
+                k.SetValue("", $"{installExe},0");
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId + @"\shell\open"))
+                k.SetValue("FriendlyAppName", AppName);
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId + @"\shell\open\command"))
+                k.SetValue("", $"\"{installExe}\" \"%1\"");
+            foreach (var ext in ImageOpenWithExtensions)
+            {
+                using var k = hive.CreateSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids");
+                k.SetValue(ImageProgId, new byte[0], RegistryValueKind.None);
+            }
+        }
+
+        private static void UnregisterImageOpenWith(RegistryKey root)
+        {
+            try { root.DeleteSubKeyTree(@"Software\Classes\" + ImageProgId, throwOnMissingSubKey: false); } catch { }
+            foreach (var ext in ImageOpenWithExtensions)
+            {
+                try
+                {
+                    using var k = root.OpenSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids", writable: true);
+                    k?.DeleteValue(ImageProgId, throwOnMissingValue: false);
+                }
+                catch { }
+            }
         }
 
         // Full path to the stock PDF file-type icon for a given install scope.
@@ -1449,6 +1503,7 @@ namespace TDPdf
                 try { root.DeleteSubKeyTree(
                     @"Software\Microsoft\Windows\CurrentVersion\Uninstall\TDPdf"); } catch { }
                 try { root.DeleteSubKeyTree(@"Software\Classes\TDPdf.pdf"); } catch { }
+                UnregisterImageOpenWith(root);
 
                 try
                 {

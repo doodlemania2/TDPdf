@@ -138,6 +138,16 @@ namespace TDPdf.Properties
             set => this[nameof(SingleInstanceTabs)] = value;
         }
 
+        // Text boxes: false (default) means Enter saves the box and Shift+Enter adds a line; true means
+        // Enter adds a line and only Ctrl+Enter saves.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool EnterAddsNewLine
+        {
+            get => (bool)this[nameof(EnterAddsNewLine)];
+            set => this[nameof(EnterAddsNewLine)] = value;
+        }
+
         // Persisted page view mode (app-wide). One of the ViewMode enum names:
         // "Single", "Continuous", "TwoPage", "Grid". Defaults to Grid, which is
         // the layout the app opened in before view modes were introduced.

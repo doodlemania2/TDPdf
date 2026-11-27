@@ -163,6 +163,8 @@ namespace TDPdf
                     _resizeSigStart = pos;
                     _resizeSigStartScale = rsa.Scale;
                     _resizeSigAnnot = rsa;
+                    var rsaVisual = PlacedVisualRect(rsa);
+                    _resizeSigVisualTopLeft = new Point(rsaVisual.X, rsaVisual.Y);
                     _annotationCanvas.CaptureMouse();
                     e.Handled = true;
                     return;
@@ -872,8 +874,23 @@ namespace TDPdf
                 case TextAnnotation t when original is ValueTuple<Point, double, double> tp:
                 {
                     // Anchor top-left; drag bottom-right to set the wrap Width and box Height.
-                    t.Width = Math.Max(32, tp.Item2 + (cur.X - start.X));
-                    t.Height = Math.Max(t.FontSize + 6, tp.Item3 + (cur.Y - start.Y));
+                    if (t.Rotation == 0)
+                    {
+                        t.Width = Math.Max(32, tp.Item2 + (cur.X - start.X));
+                        t.Height = Math.Max(t.FontSize + 6, tp.Item3 + (cur.Y - start.Y));
+                        break;
+                    }
+                    // Turned box: the handle sits on the TURNED box's bottom-right corner, so the drag
+                    // is applied to its on-screen size, converted back to the box's own width and
+                    // height, and the on-screen top-left is kept where it was.
+                    var (ovx, ovy, ovw, ovh) = AnnotationFrame.VisualRect(
+                        tp.Item1.X, tp.Item1.Y, tp.Item2, tp.Item3, t.Rotation);
+                    double nvw = ovw + (cur.X - start.X), nvh = ovh + (cur.Y - start.Y);
+                    bool tq = AnnotationFrame.IsQuarterTurn(t.Rotation);
+                    t.Width = Math.Max(32, tq ? nvh : nvw);
+                    t.Height = Math.Max(t.FontSize + 6, tq ? nvw : nvh);
+                    var (tnx, tny) = AnnotationFrame.PositionFromVisualTopLeft(ovx, ovy, t.Width, t.Height, t.Rotation);
+                    t.Position = new Point(tnx, tny);
                     break;
                 }
                 case TextEditAnnotation tea when original is ValueTuple<Point, Rect> teo:
@@ -941,9 +958,9 @@ namespace TDPdf
             // pointer operation being live so it can never fight a drag that owns the cursor (a
             // marquee, a pan, an annotation move); those paths all return above or below anyway,
             // but the guard keeps that from being an accident of ordering.
-            if (_currentTool == EditTool.Select && e.LeftButton == MouseButtonState.Released &&
-                !IsPointerOperationActive)
-                UpdateSelectHoverCursor(pos, overLink);
+            if ((_currentTool == EditTool.Select || IsTextMarkupTool(_currentTool)) &&
+                e.LeftButton == MouseButtonState.Released && !IsPointerOperationActive)
+                UpdateSelectHoverCursor(pos, overLink && _currentTool == EditTool.Select);
 
             // Shapes tool, freeform polygon: track the rubber band from the last placed vertex and
             // light the first-vertex snap ring. No button is held during placement, so this runs
@@ -990,7 +1007,12 @@ namespace TDPdf
                 double srcW = IsFinitePositive(_resizeSigAnnot.SourceWidth)
                     ? _resizeSigAnnot.SourceWidth : DefaultSigCanvasW;
                 double startScale = IsFinitePositive(_resizeSigStartScale) ? _resizeSigStartScale : 0.5;
-                double newScale = Math.Max(0.05, startScale + delta / srcW);
+                // A quarter-turned item is dragged along its VISUAL axes: its on-screen width is the
+                // source height, so the drag is measured against that.
+                bool sigQuarter = AnnotationFrame.IsQuarterTurn(_resizeSigAnnot.Rotation);
+                double dragSrcW = sigQuarter && IsFinitePositive(_resizeSigAnnot.SourceHeight)
+                    ? _resizeSigAnnot.SourceHeight : srcW;
+                double newScale = Math.Max(0.05, startScale + delta / dragSrcW);
                 _resizeSigAnnot.Scale = newScale;
 
                 // Update selection border and handle position live. SourceHeight gets the same
@@ -1000,15 +1022,24 @@ namespace TDPdf
                     ? _resizeSigAnnot.SourceHeight : DefaultSigCanvasH;
                 double newW = srcW * newScale;
                 double newH = srcH * newScale;
+                // The visual top-left stays put while the item grows; a turned item's unrotated
+                // position is worked back from it. The border and handle follow the TURNED box.
+                var (visW, visH) = AnnotationFrame.VisualSize(newW, newH, _resizeSigAnnot.Rotation);
+                if (_resizeSigAnnot.Rotation != 0)
+                {
+                    var (npx, npy) = AnnotationFrame.PositionFromVisualTopLeft(
+                        _resizeSigVisualTopLeft.X, _resizeSigVisualTopLeft.Y, newW, newH, _resizeSigAnnot.Rotation);
+                    _resizeSigAnnot.Position = new Point(npx, npy);
+                }
                 if (_selectionBorder is not null)
                 {
-                    _selectionBorder.Width  = newW + 8;
-                    _selectionBorder.Height = newH + 8;
+                    _selectionBorder.Width  = visW + 8;
+                    _selectionBorder.Height = visH + 8;
                 }
                 if (_resizeHandle is not null)
                 {
-                    double hx = _resizeSigAnnot.Position.X + newW - 4 - _resizeHandle.Width / 2;
-                    double hy = _resizeSigAnnot.Position.Y + newH - 4 - _resizeHandle.Height / 2;
+                    double hx = (_resizeSigAnnot.Rotation == 0 ? _resizeSigAnnot.Position.X : _resizeSigVisualTopLeft.X) + visW - 4 - _resizeHandle.Width / 2;
+                    double hy = (_resizeSigAnnot.Rotation == 0 ? _resizeSigAnnot.Position.Y : _resizeSigVisualTopLeft.Y) + visH - 4 - _resizeHandle.Height / 2;
                     Canvas.SetLeft(_resizeHandle, hx);
                     Canvas.SetTop(_resizeHandle, hy);
                 }
@@ -1027,17 +1058,16 @@ namespace TDPdf
                 double dx = pos.X - _dragAnnotStart.X;
                 double dy = pos.Y - _dragAnnotStart.Y;
                 _dragAnnot.Position = new Point(_dragAnnotOrigPos.X + dx, _dragAnnotOrigPos.Y + dy);
-                double w = _dragAnnot.SourceWidth * _dragAnnot.Scale;
-                double h = _dragAnnot.SourceHeight * _dragAnnot.Scale;
+                var dragBox = PlacedVisualRect(_dragAnnot);   // the turned box, which is what is selected
                 if (_selectionBorder is not null)
                 {
-                    Canvas.SetLeft(_selectionBorder, _dragAnnot.Position.X - 4);
-                    Canvas.SetTop(_selectionBorder, _dragAnnot.Position.Y - 4);
+                    Canvas.SetLeft(_selectionBorder, dragBox.X - 4);
+                    Canvas.SetTop(_selectionBorder, dragBox.Y - 4);
                 }
                 if (_resizeHandle is not null)
                 {
-                    Canvas.SetLeft(_resizeHandle, _dragAnnot.Position.X + w - 4 - _resizeHandle.Width / 2);
-                    Canvas.SetTop(_resizeHandle, _dragAnnot.Position.Y + h - 4 - _resizeHandle.Height / 2);
+                    Canvas.SetLeft(_resizeHandle, dragBox.Right - 4 - _resizeHandle.Width / 2);
+                    Canvas.SetTop(_resizeHandle, dragBox.Bottom - 4 - _resizeHandle.Height / 2);
                 }
                 RenderAllAnnotations(_dragAnnot.PageIndex);
                 _annotationCanvas.Children.Add(_selectionBorder!);
@@ -1198,9 +1228,7 @@ namespace TDPdf
                     else
                         MarkDirty();
                     RenderAllAnnotations(da.PageIndex);
-                    double w = da.SourceWidth * da.Scale;
-                    double h = da.SourceHeight * da.Scale;
-                    SelectAnnotation(da, new Rect(da.Position.X, da.Position.Y, w, h));
+                    SelectAnnotation(da, PlacedVisualRect(da));
                 }
                 return;
             }
@@ -1220,9 +1248,7 @@ namespace TDPdf
                     else
                         MarkDirty();
                     RenderAllAnnotations(sa.PageIndex);
-                    double newW = sa.SourceWidth * sa.Scale;
-                    double newH = sa.SourceHeight * sa.Scale;
-                    SelectAnnotation(sa, new Rect(sa.Position.X, sa.Position.Y, newW, newH));
+                    SelectAnnotation(sa, PlacedVisualRect(sa));
                     MarkDirty();
                 }
                 return;
