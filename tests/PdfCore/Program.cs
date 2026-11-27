@@ -217,6 +217,7 @@ PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);
 PrintPlan.Run(Check);
 PrintRaster.Run(Check);
+OcrTextFitTests.Run(Check, tmp);
 TextSearch.Run(Check, tmp);
 SearchNormalise.Run(Check);
 InvertedText.Run(Check, tmp);
