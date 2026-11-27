@@ -6,8 +6,12 @@
 #
 # Every published picture holds TDPdf's own windows and nothing else: the main window, plus any
 # dialog or menu it has open, cut out onto a transparent background. The desktop, the taskbar and
-# its clock never appear. A full-screen grab is taken only when a shot fails, and it goes to -DebugOut,
-# which is uploaded separately and never published.
+# its clock never appear. Each window's own pixels come from PrintWindow, not from the screen, so
+# nothing drawn over the desktop lands in a picture (the "Activate Windows" watermark of an
+# unactivated capture machine, for one); a window falls back to a screen copy only when PrintWindow
+# fails or returns a blank image, and the log says which method each window used. A full-screen
+# grab is taken only when a shot fails, and it goes to -DebugOut, which is uploaded separately and
+# never published.
 #
 # The install shots depend on the machine. On a machine with TDPdf installed for all users (the
 # capture VM, where Intune manages it) only the "managed" prompt can be shown, so that is the one
@@ -37,11 +41,19 @@ public static class W {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int s);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int s);
   public delegate bool EnumProc(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+
+  // Mouse wheel: positive notches scroll up, negative scroll down, at the point (x, y).
+  public static void Wheel(int x, int y, int notches) {
+    SetCursorPos(x, y);
+    mouse_event(0x0800, 0, 0, unchecked((uint)(120 * notches)), UIntPtr.Zero);
+  }
 
   // Visible, uncloaked top-level windows of one process, topmost first.
   public static List<IntPtr> Windows(uint pid) {
@@ -74,29 +86,76 @@ function VisibleRect([IntPtr]$h) {
     $r
 }
 
-# Saves TDPdf's open windows as one picture: each window's pixels copied from the screen into a
-# transparent canvas the size of their combined bounds. Anything between or around them (desktop,
-# taskbar) stays transparent.
+# A window's own pixels through PrintWindow (PW_RENDERFULLCONTENT = 2), as a bitmap the size of the
+# window's full rectangle (GetWindowRect, which includes the invisible resize border). Null when the
+# call fails or the picture is one flat colour, which is what a window that cannot be printed gives.
+function PrintWin([IntPtr]$h, $wr) {
+    $w = $wr.R - $wr.L; $hgt = $wr.B - $wr.T
+    if ($w -lt 8 -or $hgt -lt 8) { return $null }
+    # No alpha channel: GDI leaves it at zero, and the window is opaque anyway.
+    $bmp = New-Object System.Drawing.Bitmap $w, $hgt, ([System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $ok = $false
+    try {
+        $dc = $g.GetHdc()
+        try { $ok = [W]::PrintWindow($h, $dc, 2) } finally { $g.ReleaseHdc($dc) }
+    } catch { $ok = $false }
+    $g.Dispose()
+    if (-not $ok) { $bmp.Dispose(); return $null }
+    # Sample a grid of pixels: all one colour means nothing was drawn.
+    $first = $bmp.GetPixel(0, 0).ToArgb(); $varied = $false
+    for ($yy = 0; $yy -lt 9 -and -not $varied; $yy++) {
+        for ($xx = 0; $xx -lt 13; $xx++) {
+            $px = [int](($w - 1) * $xx / 12); $py = [int](($hgt - 1) * $yy / 8)
+            if ($bmp.GetPixel($px, $py).ToArgb() -ne $first) { $varied = $true; break }
+        }
+    }
+    if (-not $varied) { $bmp.Dispose(); return $null }
+    $bmp
+}
+
+# Saves TDPdf's open windows as one picture: each window's own pixels (PrintWindow, so nothing on the
+# desktop behind or over them can appear) placed in a transparent canvas the size of their combined
+# bounds. Anything between or around them (desktop, taskbar) stays transparent. A window whose pixels
+# PrintWindow cannot give is copied from the screen instead.
 function Shot([string]$name, $proc) {
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $rects = foreach ($h in [W]::Windows([uint32]$proc.Id)) {
+    $wins = @(foreach ($h in [W]::Windows([uint32]$proc.Id)) {
         $r = VisibleRect $h
+        $wr = New-Object W+RECT
+        [W]::GetWindowRect($h, [ref]$wr) | Out-Null
         $l = [Math]::Max($r.L, $screen.Left); $t = [Math]::Max($r.T, $screen.Top)
         $rr = [Math]::Min($r.R, $screen.Right); $b = [Math]::Min($r.B, $screen.Bottom)
-        if ($rr - $l -ge 8 -and $b - $t -ge 8) { [System.Drawing.Rectangle]::FromLTRB($l, $t, $rr, $b) }
-    }
-    if (-not $rects) { throw "no visible TDPdf window for $name" }
-    $u = $rects[0]
-    foreach ($r in $rects) { $u = [System.Drawing.Rectangle]::Union($u, $r) }
+        if ($rr - $l -ge 8 -and $b - $t -ge 8) {
+            @{ H = $h; Rect = [System.Drawing.Rectangle]::FromLTRB($l, $t, $rr, $b); Wr = $wr }
+        }
+    })
+    if (-not $wins) { throw "no visible TDPdf window for $name" }
+    $u = $wins[0].Rect
+    foreach ($w in $wins) { $u = [System.Drawing.Rectangle]::Union($u, $w.Rect) }
     $bmp = New-Object System.Drawing.Bitmap $u.Width, $u.Height, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.Clear([System.Drawing.Color]::Transparent)
-    foreach ($r in $rects) {
-        $g.CopyFromScreen($r.X, $r.Y, $r.X - $u.X, $r.Y - $u.Y, $r.Size)
+    $methods = @()
+    foreach ($w in $wins) {
+        $r = $w.Rect
+        $dest = New-Object System.Drawing.Rectangle ($r.X - $u.X), ($r.Y - $u.Y), $r.Width, $r.Height
+        $win = $null
+        try { $win = PrintWin $w.H $w.Wr } catch { $win = $null }
+        if ($win) {
+            # PrintWindow draws from the window's top-left corner; the visible part starts at r.
+            $src = New-Object System.Drawing.Rectangle ($r.X - $w.Wr.L), ($r.Y - $w.Wr.T), $r.Width, $r.Height
+            $g.DrawImage($win, $dest, $src, [System.Drawing.GraphicsUnit]::Pixel)
+            $win.Dispose()
+            $methods += 'PrintWindow'
+        } else {
+            $g.CopyFromScreen($r.X, $r.Y, $dest.X, $dest.Y, $r.Size)
+            $methods += 'screen copy'
+        }
     }
     $bmp.Save((Join-Path $Out "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose(); $bmp.Dispose()
-    Write-Host "captured $name $($u.Width)x$($u.Height) from $(@($rects).Count) window(s)"
+    Write-Host "captured $name $($u.Width)x$($u.Height) from $($wins.Count) window(s): $($methods -join ', ')"
     DumpProcess $name $proc
 }
 
@@ -172,6 +231,13 @@ function Click([int]$x, [int]$y, [switch]$Double, [switch]$Right) {
     }
 }
 
+# A click with Ctrl held (Ctrl+click edits a whole paragraph in the Edit Existing Text tool).
+function CtrlClick([int]$x, [int]$y) {
+    [W]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+    try { Click $x $y } finally { [W]::keybd_event(0x11, 0, 0x2, [UIntPtr]::Zero) }
+    Start-Sleep -Milliseconds 300
+}
+
 function ClickEl($el, [switch]$Double, [switch]$Right) {
     $r = $el.Current.BoundingRectangle
     Click ([int]($r.X + $r.Width / 2)) ([int]($r.Y + $r.Height / 2)) -Double:$Double -Right:$Right
@@ -212,7 +278,10 @@ function MainWindow($proc) {
 
 # form-fill shows the form overlays, which 2.2.1.0 and earlier draw about 14% too large (#220,
 # fixed after 2.2.1.0). Off by default for those builds; ask for it with -Shots form-fill.
-$OffByDefault = @()
+# epub-open is off by default on every build: the first EPUB on a machine asks for a book layout and
+# the book is laid out by WebView2, neither checked on the capture machine yet; ask for it with
+# -Shots epub-open.
+$OffByDefault = @('epub-open')
 $exeVersion = [version](Get-Item $Exe).VersionInfo.FileVersion
 if ($exeVersion -le [version]'2.2.1.0') { $OffByDefault += 'form-fill' }
 Write-Host "TDPdf $exeVersion; off by default: $($OffByDefault -join ', ')"
@@ -305,6 +374,9 @@ function PageDrag([double]$x1, [double]$y1, [double]$x2, [double]$y2, [switch]$H
 $agreement = Join-Path $Demo 'services-agreement.pdf'
 $incident  = Join-Path $Demo 'incident-report.pdf'
 $form      = Join-Path $Demo 'membership-form.pdf'
+$agreementV2 = Join-Path $Demo 'services-agreement-v2.pdf'   # the agreement revised: build/screenshots/make-compare-demo.py
+$bakery    = Join-Path $Demo 'bakery-price-list.pdf'            # a page with a picture: build/screenshots/make-picture-demo.py
+$epub      = Join-Path $Demo 'window-garden.epub'               # a two-chapter book: build/screenshots/make-epub-demo.py
 $managed   = (Get-ItemProperty 'HKLM:\SOFTWARE\TDPdf' -ErrorAction SilentlyContinue).Installed -eq 1
 Write-Host "TDPdf installed for all users on this machine: $managed"
 
@@ -515,6 +587,118 @@ Attempt 'form-build' {
     Start-Sleep -Seconds 1
     Park
     Shot 'form-build' $app.P
+}
+
+# ════ 3.0 features ════
+# Each of these starts from its own fresh session, so nothing from an earlier shot is on the page.
+
+# ── multi-select: three marks on the agreement, picked up together with a drag box ──
+# Highlight, shape and text box as in the markup shot. The Select tool's drag box starts on empty
+# page (the top-left margin, no text character, no mark) and releases over all three, which selects
+# them (MainWindow.MultiSelect.cs: a box that touches marks selects them). The page then shows an
+# outline per mark and one group box.
+Attempt 'multi-select' {
+    Session $agreement
+    InvokeEl (FindId $app.Root 'ToolHighlightBtn'); Start-Sleep -Milliseconds 400
+    PageDrag 0.117 0.220 0.600 0.220
+    InvokeEl (FindId $app.Root 'ToolShapeBtn'); Start-Sleep -Milliseconds 400
+    PageDrag 0.105 0.268 0.375 0.298
+    InvokeEl (FindId $app.Root 'ToolTextBtn'); Start-Sleep -Milliseconds 400
+    PageClick 0.600 0.100
+    Start-Sleep -Milliseconds 600
+    Keys 'Approved, ready to sign'
+    InvokeEl (FindId $app.Root 'ToolSelectBtn'); Start-Sleep -Milliseconds 600
+    PageDrag 0.040 0.065 0.820 0.312
+    Park
+    Start-Sleep -Seconds 1
+    Shot 'multi-select' $app.P
+}
+
+# ── stamps: the Stamp tool (shortcut A) with Approved, its default, placed near the title ──
+Attempt 'stamps' {
+    Session $agreement
+    InvokeEl (FindId $app.Root 'ToolStampBtn'); Start-Sleep -Seconds 1
+    PageClick 0.700 0.090
+    Start-Sleep -Seconds 1
+    Park
+    Shot 'stamps' $app.P
+}
+
+# ── compare: the agreement against its revised copy, which is the other open tab ───
+# Tools > Compare PDFs asks which open tab to compare with; the first (the only other tab) is
+# selected, and its Compare button opens the compare window with the list of changes.
+Attempt 'compare' {
+    Session $agreementV2, $agreement
+    InvokeEl (MenuPath 'Tools', 'Compare PDFs')
+    Start-Sleep -Seconds 2
+    InvokeEl (FindInApp 'Compare')
+    Start-Sleep -Seconds 8
+    Park
+    Shot 'compare' $app.P
+}
+
+# ── picture-edit: the Select Picture tool (key 3), clicking the logo on the bakery page ──
+# The logo's centre is 0.265 across and 0.235 down the page (make-picture-demo.py).
+Attempt 'picture-edit' {
+    Session $bakery
+    InvokeEl (FindId $app.Root 'ToolEditImageBtn'); Start-Sleep -Milliseconds 600
+    PageClick 0.265 0.235
+    Start-Sleep -Seconds 2
+    Park
+    Shot 'picture-edit' $app.P
+}
+
+# ── paragraph-edit: Ctrl+click a line in the Edit Existing Text tool opens the whole paragraph ──
+# The first line of section 1 sits at 0.222 down the page.
+Attempt 'paragraph-edit' {
+    Session $agreement
+    InvokeEl (FindId $app.Root 'ToolEditTextBtn'); Start-Sleep -Milliseconds 600
+    $p = PagePoint 0.300 0.222
+    CtrlClick $p[0] $p[1]
+    Start-Sleep -Seconds 2
+    Shot 'paragraph-edit' $app.P
+}
+
+# ── accessibility: Tools > Check Accessibility, its panel with the results ─────────
+Attempt 'accessibility' {
+    Session $agreement
+    InvokeEl (MenuPath 'Tools', 'Check Accessibility')
+    Start-Sleep -Seconds 5
+    Park
+    Shot 'accessibility' $app.P
+}
+
+# ── print-color: the print window scrolled to its COLOR section, opened. Print is never pressed. ──
+Attempt 'print-color' {
+    Session $agreement
+    Keys '^p'
+    Start-Sleep -Seconds 5
+    # The options column scrolls: wheel it to the bottom, open COLOR, wheel again to bring it into view.
+    $r = (FindInApp 'PRINTER').Current.BoundingRectangle
+    $cx = [int]($r.X + 120); $cy = [int]($r.Y + 150)
+    [W]::Wheel($cx, $cy, -30); Start-Sleep -Milliseconds 600
+    ClickEl (FindInApp 'COLOR'); Start-Sleep -Milliseconds 600
+    [W]::Wheel($cx, $cy, -30); Start-Sleep -Milliseconds 600
+    Park
+    Shot 'print-color' $app.P
+}
+
+# ── epub-open: an EPUB book opened in a tab. Off by default (see $OffByDefault): the first EPUB
+# on a machine asks for a book layout, and the book is laid out by WebView2, neither of which has
+# been checked on the capture machine. Ask for it with -Shots epub-open. ──
+Attempt 'epub-open' {
+    Quit
+    $p = Start-Process -FilePath $Exe -ArgumentList "`"$epub`"" -PassThru
+    $h = MainWindow $p
+    [W]::MoveWindow($h, 40, 30, 1600, 1000, $true) | Out-Null
+    $script:app = @{ P = $p; H = $h; Root = $UIA::FromHandle($h) }
+    Front
+    # The first-open layout question, when this profile has not answered it yet.
+    try { InvokeEl (FindInApp 'Open book' 6) } catch { Write-Host 'no book layout question' }
+    Start-Sleep -Seconds 15
+    Front
+    Park
+    Shot 'epub-open' $app.P
 }
 
 # ════ install ════
