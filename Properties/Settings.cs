@@ -8,6 +8,17 @@ namespace TDPdf.Properties
 
         public static Settings Default => defaultInstance;
 
+        // True in any version's first run (no user.config yet); App.EnsureSettingsHealthy then calls
+        // Upgrade() to bring the previous version's settings across and clears it. Without this every
+        // update silently reset all preferences, because the settings folder is named for the version.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool SettingsUpgradeRequired
+        {
+            get => (bool)this[nameof(SettingsUpgradeRequired)];
+            set => this[nameof(SettingsUpgradeRequired)] = value;
+        }
+
         [UserScopedSetting]
         [DefaultSettingValue("System")]
         public string Theme

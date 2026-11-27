@@ -261,6 +261,14 @@ namespace TDPdf
                 }
             }
 
+            // Heal a corrupt user.config and carry settings over from the previous version BEFORE
+            // any Settings.Default access (the headless CLI commands below read settings too, then
+            // the single-instance check, theme load, and MainWindow field initializers). A
+            // truncated user.config — from a hard shutdown, a full disk, or a roaming-profile sync
+            // conflict — otherwise throws an uncaught ConfigurationErrorsException and the app dies
+            // before any window or crash handler exists.
+            EnsureSettingsHealthy();
+
             // Headless CLI commands (see MainWindow.Cli.cs; --batch-resave in MainWindow.BatchMode.cs). Checked
             // AFTER the install/telemetry flags above but BEFORE the single-instance mutex
             // and any window, so a --command runs headless, works while a GUI instance is
@@ -272,15 +280,6 @@ namespace TDPdf
                 Shutdown(cliExit);
                 return;
             }
-
-            // Interactive launch. Heal a corrupt user.config BEFORE any
-            // Settings.Default access (the single-instance check, theme
-            // load, and MainWindow field initializers all read settings).
-            // A truncated user.config — from a hard shutdown, a full disk,
-            // or a roaming-profile sync conflict — otherwise throws an
-            // uncaught ConfigurationErrorsException and the app dies before
-            // any window or crash handler exists.
-            EnsureSettingsHealthy();
 
             // Wire crash handling FIRST so failures anywhere below (theme
             // load, single-instance pipe, window construction) are caught,
@@ -434,6 +433,21 @@ namespace TDPdf
             {
                 // Force ApplicationSettingsBase to parse user.config now.
                 _ = TDPdf.Properties.Settings.Default.Theme;
+
+                // .NET keeps user.config in a folder named for the assembly version, so every
+                // update starts from an empty file unless the previous version's settings are
+                // pulled across. Upgrade() does that once per version: SettingsUpgradeRequired
+                // defaults to true in a new version's (absent) file, is cleared and saved here, and
+                // so stays false until the next version ships. The folder name also carries a hash
+                // of the exe path: the per-user install path is stable, so an installed copy keeps
+                // its settings, while a portable copy run from a NEW path starts fresh.
+                var settings = TDPdf.Properties.Settings.Default;
+                if (settings.SettingsUpgradeRequired)
+                {
+                    settings.Upgrade();
+                    settings.SettingsUpgradeRequired = false;
+                    settings.Save();
+                }
             }
             catch (System.Configuration.ConfigurationErrorsException ex)
             {
