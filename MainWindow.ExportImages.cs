@@ -52,7 +52,7 @@ namespace TDPdf
                 // prompt would ask about the wrong file. We ask about the real ones below.
                 OverwritePrompt = false
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowSave(dlg, FileDialogPurpose.ExportImages, this)) return;
 
             // The picked file is only a folder plus a base name: each page becomes its own file.
             string outDir = System.IO.Path.GetDirectoryName(dlg.FileName) ?? string.Empty;

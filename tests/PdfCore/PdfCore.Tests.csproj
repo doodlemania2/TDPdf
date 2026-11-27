@@ -109,6 +109,8 @@
     <Compile Include="..\..\Services\PdfEncryptionScan.cs" />
     <Compile Include="..\..\Services\ProtectedSave.cs" />
     <Compile Include="..\..\Services\FilePathPolicy.cs" />
+    <Compile Include="..\..\Services\FileDialogPolicy.cs" />
+    <Compile Include="..\..\Services\FileDialogFilters.cs" />
     <Compile Include="..\..\Services\ClosedTabStack.cs" />
     <Compile Include="..\..\Services\SessionState.cs" />
     <Compile Include="..\..\Services\OpenBatchReport.cs" />

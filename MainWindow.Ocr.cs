@@ -798,7 +798,7 @@ namespace TDPdf
                 CheckFileExists = false,
                 CheckPathExists = true
             };
-            if (!ShowPdfSaveDialog(dlg)) return;
+            if (!ShowPdfSaveDialog(dlg, FileDialogPurpose.SearchablePdf)) return;
             string outPath = dlg.FileName;
 
             // Snapshot the current document (with its rotations) to a temp; we render and re-open from this so
@@ -968,7 +968,7 @@ namespace TDPdf
                 CheckFileExists = false,
                 CheckPathExists = true
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowSave(dlg, FileDialogPurpose.ExtractText, this)) return;
             string outPath = dlg.FileName;
             bool markdown = Path.GetExtension(outPath).Equals(".md", StringComparison.OrdinalIgnoreCase);
 

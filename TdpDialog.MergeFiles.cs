@@ -188,20 +188,16 @@ namespace TDPdf
 
             private async Task AddFilesAsync()
             {
-                var dlg = new Microsoft.Win32.OpenFileDialog
-                {
-                    Filter = "PDF files|*.pdf",
-                    Title = "Add PDFs to merge",
-                    Multiselect = true,
-                };
-                if (dlg.ShowDialog(_win) != true) return;
-                await AddPathsAsync(dlg.FileNames);
+                var pick = FileDialogs.PickDocuments(_win, FileDialogPurpose.MergeFiles, "Add PDFs to merge",
+                    FileDialogFilters.Pdf, multiselect: true, offerNewWindow: false);
+                if (pick is not { } chosen) return;
+                await AddPathsAsync(chosen.Files);
             }
 
             private async Task AddFolderAsync()
             {
                 var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "Add every PDF in a folder" };
-                if (dlg.ShowDialog(_win) != true) return;
+                if (!FileDialogs.ShowFolder(dlg, FileDialogPurpose.MergeFolder, _win)) return;
                 await AddPathsAsync(new[] { dlg.FolderName });
             }
 
