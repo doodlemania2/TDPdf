@@ -241,6 +241,7 @@ RedactResidue.Run(Check, tmp);
 RedactCopies.Run(Check, tmp);
 RedactHidden.Run(Check, tmp);
 SignatureMerge.Run(Check, tmp);
+SignatureInkTests.Run(Check);
 PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);
 PrintPlan.Run(Check);

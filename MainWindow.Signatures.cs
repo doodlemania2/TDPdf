@@ -235,6 +235,30 @@ namespace TDPdf
                         ShowSignaturePopup(); // refresh
                     };
                     itemGrid.Children.Add(delBtn);
+
+                    var editBtn = new Button
+                    {
+                        Content = "\ue70f",
+                        FontSize = 10,
+                        Width = 18, Height = 18,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        VerticalAlignment = VerticalAlignment.Top,
+                        Margin = new Thickness(0, 0, 22, 0),
+                        Background = BrushResource("BgHover"),
+                        Foreground = (SolidColorBrush)FindResource("AccentGreen"),
+                        BorderThickness = new Thickness(0),
+                        Cursor = Cursors.Hand,
+                        Padding = new Thickness(0),
+                        ToolTip = "Edit this signature",
+                        Style = (Style)FindResource("ToolbarButton")
+                    };
+                    AutomationProperties.SetName(editBtn, "Edit signature");
+                    editBtn.Click += (s, e) =>
+                    {
+                        HideSignaturePopup();
+                        EditSavedSignature(sigCopy);
+                    };
+                    itemGrid.Children.Add(editBtn);
                     listPanel.Children.Add(itemGrid);
                 }
                 scroll.Content = listPanel;
@@ -253,6 +277,20 @@ namespace TDPdf
                     HorizontalAlignment = HorizontalAlignment.Center
                 });
             }
+
+            // Optional date line under the next signature placed.
+            var dateBox = new CheckBox
+            {
+                Content = "Add date under the signature",
+                IsChecked = _sigAddDate,
+                Foreground = (SolidColorBrush)FindResource("TextPrimary"),
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 12,
+                Margin = new Thickness(6, 6, 6, 2),
+                ToolTip = "Writes today's date (yyyy-MM-dd) as a line of text under the signature. It is a label, not a digital timestamp."
+            };
+            dateBox.Click += (s, e) => _sigAddDate = dateBox.IsChecked == true;
+            stack.Children.Add(dateBox);
 
             // Separator
             stack.Children.Add(new Rectangle
@@ -394,8 +432,8 @@ namespace TDPdf
                 if (stroke.Count < 2) continue;
                 var poly = new Polyline
                 {
-                    Stroke = Brushes.Black,
-                    StrokeThickness = 1.5,
+                    Stroke = SignatureInkBrush(sig.InkColor),
+                    StrokeThickness = SignatureInk.ResolvePenWidth(sig.PenWidth) * 0.75,
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round
@@ -404,173 +442,6 @@ namespace TDPdf
                     poly.Points.Add(new Point(pt.X * scale + offsetX, pt.Y * scale + offsetY));
                 canvas.Children.Add(poly);
             }
-        }
-
-        private void OpenSignatureCreator()
-        {
-            // The shared dialog shell (design width 460 at scale 1), so this follows the app size
-            // and stays on screen; its title bar already carries the close button.
-            var (win, rootStack, closeWinBtn) = TdpDialog.CreateShellWithClose(this, "Create Signature", 460);
-            closeWinBtn.Click += (_, _2) => win.Close();
-
-            var contentArea = new StackPanel();
-
-            // Drawing canvas
-            var canvasBorder = new Border
-            {
-                Background = Brushes.White,
-                Margin = new Thickness(12, 12, 12, 4),
-                CornerRadius = new CornerRadius(4),
-                Height = 170
-            };
-            var drawCanvas = new Canvas
-            {
-                Background = Brushes.White,
-                ClipToBounds = true,
-                Cursor = Cursors.Pen
-            };
-            canvasBorder.Child = drawCanvas;
-
-            // Placeholder text
-            var placeholder = new TextBlock
-            {
-                Text = "Draw your signature here",
-                Foreground = BrushResource("TextSecondary"),
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 14, FontStyle = FontStyles.Italic,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                IsHitTestVisible = false
-            };
-            drawCanvas.Children.Add(placeholder);
-
-            // Drawing state
-            var strokes = new List<List<Point>>();
-            List<Point>? currentStroke = null;
-            Polyline? currentPoly = null;
-
-            drawCanvas.MouseLeftButtonDown += (s, e) =>
-            {
-                if (placeholder.Visibility == Visibility.Visible)
-                    placeholder.Visibility = Visibility.Collapsed;
-                currentStroke = [];
-                var pos = e.GetPosition(drawCanvas);
-                currentStroke.Add(pos);
-                currentPoly = new Polyline
-                {
-                    Stroke = Brushes.Black,
-                    StrokeThickness = 2,
-                    StrokeLineJoin = PenLineJoin.Round,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round
-                };
-                currentPoly.Points.Add(pos);
-                drawCanvas.Children.Add(currentPoly);
-                drawCanvas.CaptureMouse();
-            };
-
-            drawCanvas.MouseMove += (s, e) =>
-            {
-                if (currentStroke is null || currentPoly is null) return;
-                var pos = e.GetPosition(drawCanvas);
-                pos.X = Math.Clamp(pos.X, 0, drawCanvas.ActualWidth);
-                pos.Y = Math.Clamp(pos.Y, 0, drawCanvas.ActualHeight);
-                currentStroke.Add(pos);
-                currentPoly.Points.Add(pos);
-            };
-
-            drawCanvas.MouseLeftButtonUp += (s, e) =>
-            {
-                if (currentStroke is not null && currentStroke.Count > 1)
-                    strokes.Add(currentStroke);
-                else if (currentPoly is not null)
-                    drawCanvas.Children.Remove(currentPoly);
-                currentStroke = null;
-                currentPoly = null;
-                drawCanvas.ReleaseMouseCapture();
-            };
-
-            contentArea.Children.Add(canvasBorder);
-
-            // Buttons
-            var btnPanel = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(12, 4, 12, 12)
-            };
-
-            var clearBtn = new Button
-            {
-                Content = "Clear",
-                Style = (Style)FindResource("DarkButton"),
-                Padding = new Thickness(16, 6, 16, 6),
-                Margin = new Thickness(0, 0, 8, 0),
-                Background = BrushResource("BgHover"),
-                Foreground = BrushResource("TextPrimary"),
-                BorderBrush = BrushResource("BorderDim"),
-                BorderThickness = new Thickness(1),
-                FontFamily = new FontFamily("Consolas")
-            };
-            clearBtn.Click += (s, e) =>
-            {
-                strokes.Clear();
-                drawCanvas.Children.Clear();
-                placeholder.Visibility = Visibility.Visible;
-                drawCanvas.Children.Add(placeholder);
-            };
-
-            var saveBtn = new Button
-            {
-                Content = "Save Signature",
-                Style = (Style)FindResource("DarkButton"),
-                Padding = new Thickness(16, 6, 16, 6),
-                Background = BrushResource("AccentGreenDim"),
-                Foreground = BrushResource("AccentGreen"),
-                BorderBrush = BrushResource("AccentGreen"),
-                BorderThickness = new Thickness(1),
-                FontFamily = new FontFamily("Consolas"),
-                FontWeight = FontWeights.SemiBold
-            };
-            saveBtn.Click += (s, e) =>
-            {
-                if (strokes.Count == 0)
-                {
-                    TdpDialog.Show(this, "Draw a signature first.", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-
-                double cw = drawCanvas.ActualWidth > 0 ? drawCanvas.ActualWidth : 400;
-                double ch = drawCanvas.ActualHeight > 0 ? drawCanvas.ActualHeight : 150;
-
-                var saved = new SavedSignature
-                {
-                    CanvasWidth = cw,
-                    CanvasHeight = ch,
-                    Name = $"Signature {_savedSignatures.Count + 1}"
-                };
-                foreach (var stroke in strokes)
-                {
-                    var sPts = stroke.Select(p => new SerializablePoint { X = p.X, Y = p.Y }).ToList();
-                    saved.Strokes.Add(sPts);
-                }
-                _savedSignatures.Add(saved);
-                PersistSignatures();
-
-                // Auto-select the new signature for placement
-                _pendingSignature = saved;
-                _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                SetStatus("Signature picture saved. Click on the page to place it");
-
-                win.Close();
-            };
-
-            btnPanel.Children.Add(clearBtn);
-            btnPanel.Children.Add(saveBtn);
-            contentArea.Children.Add(btnPanel);
-
-            rootStack.Children.Add(contentArea);
-            win.ShowDialog();
         }
 
         // "Type a signature": the user types their name, picks a handwriting font and
@@ -878,54 +749,6 @@ namespace TDPdf
             return (Convert.ToBase64String(ms.ToArray()), w, h);
         }
 
-        private void ImportImageSignature()
-        {
-            var dlg = new OpenFileDialog
-            {
-                Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
-                Title = "Import Signature Image"
-            };
-            if (dlg.ShowDialog(this) != true) return;
-
-            try
-            {
-                var bmp = new System.Windows.Media.Imaging.BitmapImage();
-                bmp.BeginInit();
-                bmp.UriSource = new Uri(dlg.FileName);
-                bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-                bmp.EndInit();
-                if (bmp.CanFreeze) bmp.Freeze();
-                byte[] pngBytes;
-                using (var ms = new System.IO.MemoryStream())
-                {
-                    var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
-                    encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
-                    encoder.Save(ms);
-                    pngBytes = ms.ToArray();
-                }
-
-                var saved = new SavedSignature
-                {
-                    Name = System.IO.Path.GetFileNameWithoutExtension(dlg.FileName),
-                    CanvasWidth = bmp.PixelWidth,
-                    CanvasHeight = bmp.PixelHeight,
-                    ImageData = Convert.ToBase64String(pngBytes)
-                };
-                _savedSignatures.Add(saved);
-                PersistSignatures();
-
-                _pendingSignature = saved;
-                _annotationCanvas.Cursor = GrabbingCursor;   // carrying a signature until it is dropped
-                SetStatus("Image loaded. Click on the page to place it");
-                ShowSignaturePopup(); // refresh to show the new entry
-            }
-            catch (Exception ex)
-            {
-                TdpDialog.Show(this, $"Failed to import image:\n{ex.Message}", "TDPdf",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
         // ------------------------------------------------------------------
         // Placement ghost (upstream #468): a faint copy of the pending signature follows the pointer
         // over the page, the wheel resizes it, and a click drops it at that size.
@@ -933,6 +756,8 @@ namespace TDPdf
 
         private const double SigPlaceMinScale = 0.15, SigPlaceMaxScale = 2.0;
         private double _sigPlaceScale = 0.5;
+        // "Add date under the signature" in the picker; applies to each signature placed while it is on.
+        private bool _sigAddDate;
         private Canvas? _sigGhost;
         private bool _sigGhostLeaveHooked;
 
@@ -963,7 +788,8 @@ namespace TDPdf
         /// <summary>Builds (or rebuilds at a new scale) the ghost for the pending signature.</summary>
         private Canvas? BuildSignatureGhost(SavedSignature sig, double scale)
         {
-            double w = SigCanvasW(sig) * scale, h = SigCanvasH(sig) * scale;
+            double strip = _sigAddDate ? SignatureInk.DateStripFor(SigCanvasH(sig)) : 0;
+            double w = SigCanvasW(sig) * scale, h = (SigCanvasH(sig) + strip) * scale;
             if (!double.IsFinite(w) || !double.IsFinite(h) || w <= 0 || h <= 0) return null;
             var host = new Canvas
             {
@@ -987,7 +813,7 @@ namespace TDPdf
                     if (bmp.CanFreeze) bmp.Freeze();
                     host.Children.Add(new System.Windows.Controls.Image
                     {
-                        Source = bmp, Width = w, Height = h,
+                        Source = bmp, Width = w, Height = h - strip * scale,
                         Stretch = Stretch.Uniform, IsHitTestVisible = false
                     });
                 }
@@ -1000,8 +826,8 @@ namespace TDPdf
                     if (stroke.Count < 2) continue;
                     var poly = new Polyline
                     {
-                        Stroke = Brushes.Black,
-                        StrokeThickness = 2 * scale,   // as the placed signature draws it
+                        Stroke = SignatureInkBrush(sig.InkColor),
+                        StrokeThickness = SignatureInk.ResolvePenWidth(sig.PenWidth) * scale,   // as the placed signature draws it
                         StrokeLineJoin = PenLineJoin.Round,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round,
@@ -1010,6 +836,13 @@ namespace TDPdf
                     foreach (var pt in stroke) poly.Points.Add(new Point(pt.X * scale, pt.Y * scale));
                     host.Children.Add(poly);
                 }
+            }
+            if (strip > 0)
+            {
+                var date = MakeSignatureDateBlock(SignatureInk.FormatDate(DateTime.Now), strip, SigCanvasW(sig), scale,
+                    sig.ImageData is null ? sig.InkColor : null);
+                Canvas.SetTop(date, h - strip * scale);
+                host.Children.Add(date);
             }
             return host;
         }
@@ -1069,6 +902,7 @@ namespace TDPdf
             _pendingSignature = null;
             RemoveSignatureGhost();
 
+            double dateStrip = _sigAddDate ? SignatureInk.DateStripFor(SigCanvasH(sig)) : 0;
             var annot = new SignatureAnnotation
             {
                 PageIndex = pageIdx,
@@ -1078,8 +912,14 @@ namespace TDPdf
                 // is a divisor in the resize drag, and a 0 there produces an infinite Scale that is
                 // then saved on the annotation and crashes every subsequent render.
                 SourceWidth = SigCanvasW(sig),
-                SourceHeight = SigCanvasH(sig),
-                ImageData = sig.ImageData
+                SourceHeight = SigCanvasH(sig) + dateStrip,
+                ImageData = sig.ImageData,
+                // A drawn signature carries its colour and width; a picture's colour is in the picture.
+                InkColor = sig.ImageData is null ? sig.InkColor : null,
+                PenWidth = sig.ImageData is null ? sig.PenWidth : null,
+                // The date is fixed now, so it does not change when the file is reopened later.
+                DateText = dateStrip > 0 ? SignatureInk.FormatDate(DateTime.Now) : null,
+                DateStrip = dateStrip
             };
 
             // Drawn signature — convert serializable points to WPF points

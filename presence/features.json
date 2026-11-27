@@ -141,6 +141,15 @@
       "sources": ["MainWindow.Signatures.cs", "Services/SignatureStoreFile.cs"]
     },
     {
+      "id": "signature-editor",
+      "name": "Signature editor",
+      "status": "ready",
+      "summary": "Choose the ink colour and pen width of a drawn signature, clean up a photographed one with a threshold and a soft edge, add today's date under it, and save it as a PNG to use on the signing page.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.SignatureEditor.cs", "MainWindow.Signatures.cs", "Services/SignatureInk.cs", "Services/AnnotationBaker.cs"]
+    },
+    {
       "id": "pages",
       "name": "Organise pages",
       "status": "ready",

@@ -1098,6 +1098,9 @@
                     <MenuItem x:Name="ESignRequestsMenuItem" Header="Signature _Requests…"  Click="ESignRequests_Click">
                         <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE9D5;"/></MenuItem.Icon>
                     </MenuItem>
+                    <MenuItem x:Name="ESignExportSignatureMenuItem" Header="E_xport Signature Picture…" Click="ESignExportSignature_Click">
+                        <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE896;"/></MenuItem.Icon>
+                    </MenuItem>
                     <Separator/>
                     <MenuItem x:Name="ESignVerifyMenuItem"   Header="_Verify Signatures…"   Click="ESignVerify_Click">
                         <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEA18;"/></MenuItem.Icon>

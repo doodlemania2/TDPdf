@@ -462,6 +462,9 @@ namespace TDPdf.Services
 
         private static void BakeSignature(XGraphics gfx, SignatureAnnotation sa, double sx, double sy)
         {
+            // The date line, when there is one, takes the bottom DateStrip units of the box; the
+            // signature itself fills the rest.
+            double strip = SignatureStrip(sa);
             if (sa.ImageData is not null)
             {
                 try
@@ -471,14 +474,15 @@ namespace TDPdf.Services
                     double imgX = sa.Position.X * sx;
                     double imgY = sa.Position.Y * sy;
                     double imgW = sa.SourceWidth * sa.Scale * sx;
-                    double imgH = sa.SourceHeight * sa.Scale * sy;
+                    double imgH = (sa.SourceHeight - strip) * sa.Scale * sy;
                     gfx.DrawImage(xImg, imgX, imgY, imgW, imgH);
                 }
                 catch { /* skip broken image */ }
             }
             else
             {
-                var sigPen = new XPen(XColors.Black, 2 * sa.Scale * sx)
+                var (ir, ig, ib) = SignatureInk.ResolveColor(sa.InkColor);
+                var sigPen = new XPen(XColor.FromArgb(255, ir, ig, ib), SignatureInk.ResolvePenWidth(sa.PenWidth) * sa.Scale * sx)
                 {
                     LineJoin = XLineJoin.Round,
                     LineCap = XLineCap.Round
@@ -495,6 +499,29 @@ namespace TDPdf.Services
                     }
                 }
             }
+            BakeSignatureDate(gfx, sa, strip, sx, sy);
+        }
+
+        /// <summary>The date strip height of a signature, or 0 when it has no usable date line.</summary>
+        private static double SignatureStrip(SignatureAnnotation sa) =>
+            SignatureInk.EffectiveDateStrip(sa.DateText, sa.DateStrip, sa.SourceHeight);
+
+        private static void BakeSignatureDate(XGraphics gfx, SignatureAnnotation sa, double strip, double sx, double sy)
+        {
+            if (strip <= 0 || string.IsNullOrEmpty(sa.DateText)) return;
+            try
+            {
+                double fontUnits = SignatureInk.DateFontSize(strip, sa.SourceWidth);
+                var font = TdpFontResolver.TryCreate(PdfFontStyle.DefaultFamily, fontUnits * sa.Scale * sy, XFontStyle.Regular);
+                if (font is null) return;
+                // Ink colour for a drawn signature; a picture's colour is inside the picture, so black.
+                var (ir, ig, ib) = sa.ImageData is null ? SignatureInk.ResolveColor(sa.InkColor) : ((byte)0, (byte)0, (byte)0);
+                var brush = new XSolidBrush(XColor.FromArgb(255, ir, ig, ib));
+                double x = sa.Position.X * sx;
+                double baseline = (sa.Position.Y + (sa.SourceHeight - strip) * sa.Scale + strip * sa.Scale * 0.78) * sy;
+                gfx.DrawString(sa.DateText, font, brush, x, baseline);
+            }
+            catch { /* a date line that cannot be written must not lose the signature */ }
         }
 
         private static void BakeImage(XGraphics gfx, ImageAnnotation ia, double sx, double sy)
