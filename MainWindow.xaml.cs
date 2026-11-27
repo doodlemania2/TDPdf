@@ -3512,7 +3512,7 @@ namespace TDPdf
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Open link failed: {ex}");
+                FaultSink.Report("OpenLink", ex);
                 SetStatus("Could not open the link.");
             }
         }

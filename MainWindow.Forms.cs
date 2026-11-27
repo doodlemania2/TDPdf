@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using TDPdf.Diagnostics;
 using TDPdf.Services;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
@@ -92,7 +93,12 @@ namespace TDPdf
 
             List<FormFieldInfo> fields;
             try { fields = GetPageFormFields(pageIndex, canvasW, canvasH); }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RenderFormFields: {ex}"); return; }
+            catch (Exception ex)
+            {
+                FaultSink.Report("Forms.RenderFormFields", ex);
+                SetStatus("Some form fields on this page could not be shown.");
+                return;
+            }
             if (fields.Count == 0) return;
 
             // Authoring mode. Live controls are the wrong thing while the Form tool is out: they
@@ -443,7 +449,7 @@ namespace TDPdf
                     store[sib.Key] = fit is null ? value : fit(value, sib.CombLen);
                 }
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"SpreadPendingByName: {ex}"); }
+            catch (Exception ex) { FaultSink.Report("Forms.SpreadPendingByName", ex); }
         }
 
         /// <summary>
@@ -680,7 +686,7 @@ namespace TDPdf
                         FormFieldSiblings.GroupIdOf(ann)));
                 }
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"GetPageFormFields: {ex}"); }
+            catch (Exception ex) { FaultSink.Report("Forms.GetPageFormFields", ex); }
 
             return result;
         }
@@ -840,7 +846,12 @@ namespace TDPdf
                 }
                 catch { }
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"WriteFormValuesToDocument: {ex}"); }
+            catch (Exception ex)
+            {
+                // An outer failure drops every form value still to be written while the save carries
+                // on, so it is reported to the user like a single bad field is.
+                NoteFormWriteFailure("(some form fields; the save hit an unexpected error)", ex);
+            }
         }
 
         // Names of fields whose value or appearance could not be written by the last
@@ -849,10 +860,15 @@ namespace TDPdf
 
         private void NoteFormWriteFailure(PdfDictionary widget, Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"form field write failed: {ex}");
             string name = FormFieldSiblings.QualifiedName(widget);
             if (string.IsNullOrEmpty(name)) name = "(unnamed field)";
-            if (!_formWriteFailures.Contains(name)) _formWriteFailures.Add(name);
+            NoteFormWriteFailure(name, ex);
+        }
+
+        private void NoteFormWriteFailure(string fieldLabel, Exception ex)
+        {
+            FaultSink.Report("Forms.WriteFormValue", ex);
+            if (!_formWriteFailures.Contains(fieldLabel)) _formWriteFailures.Add(fieldLabel);
         }
 
         /// <summary>
@@ -1230,7 +1246,7 @@ namespace TDPdf
             catch (Exception ex)
             {
                 // Never let this fail the save — fall back to the legacy literal path.
-                System.Diagnostics.Debug.WriteLine($"TryGenerateUnicodeFieldAppearance: {ex}");
+                FaultSink.Report("Forms.TryGenerateUnicodeFieldAppearance", ex);
                 return false;
             }
         }

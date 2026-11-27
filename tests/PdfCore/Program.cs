@@ -198,6 +198,7 @@ Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);
 CanvasPixelsTests.Run(Check);
+FaultSinkTests.Run(Check);
 MarkArrangeTests.Run(Check);
 ClosedTabTests.Run(Check);
 SessionStateTests.Run(Check);
