@@ -236,6 +236,7 @@ OutsideChange.Run(Check, tmp);
 ZoomAnchor.Run(Check);
 WindowFit.Run(Check);
 WindowPlacement.Run(Check);
+SplitViewTests.Run(Check);
 PaperSizeNamesTests.Run(Check);
 InkDots.Run(Check, tmp);
 RegionCopy.Run(Check, tmp);

@@ -945,6 +945,7 @@ namespace TDPdf
 
         private void New_Click(object sender, RoutedEventArgs e)
         {
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus(ReadOnlyGate.RefusedStatus); return; }
             Telemetry.TrackEvent("File.New");
             _ = NewDocumentAsync();
         }
@@ -1973,6 +1974,7 @@ namespace TDPdf
         /// </summary>
         private async Task SaveInPlaceAsync(bool removingPassword = false)
         {
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus(ReadOnlyGate.RefusedStatus); return; }   // never writes the file
             using var op = Telemetry.StartOperation("SaveInPlace");
             if (_doc is null || _currentFile is null) return;
             CommitActiveTextBox();
@@ -2148,6 +2150,7 @@ namespace TDPdf
         // asks for a copy WITHOUT the password; an ordinary Save As keeps it.
         private async Task SaveAsCore(bool removingPassword)
         {
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus(ReadOnlyGate.RefusedStatus); return; }
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             if (!ConfirmSaveWithPendingRedactions()) return;
             if (!ConfirmSaveOverDigitalSignature()) return;
@@ -2267,6 +2270,7 @@ namespace TDPdf
 
         private async void SaveFlattened_Click(object sender, RoutedEventArgs e)
         {
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus(ReadOnlyGate.RefusedStatus); return; }
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             // Flatten is not redaction, and is the easiest of the three saves to mistake for it.
             // It rasterises the page, so the marked words stop being selectable text — but they are

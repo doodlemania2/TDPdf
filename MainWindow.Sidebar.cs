@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PdfSharpCore.Pdf;
+using TDPdf.Services;
 
 namespace TDPdf
 {
@@ -521,6 +522,7 @@ namespace TDPdf
             chipMenu.Items.Add(closeOthers);
             chipMenu.Items.Add(MakeMenuItem("Move to New Window", (_, _) => _ = TearOffTabToNewWindowAsync(ctx), null,
                 "Open this document alone in a new TDPdf window", "\uE78B"));
+            AddSplitViewItemsToTabMenu(chipMenu, ctx);   // #232
             // OriginalPath, not the working path: after a decrypt-on-open or a structural edit the
             // working file is a temp copy, and revealing %TEMP% is not what "containing folder"
             // means. A document with no home on disk (a merge result, say) has nothing to show.
@@ -577,7 +579,7 @@ namespace TDPdf
                 if (ctx.Chip.Child is StackPanel sp && sp.Children.Count > 0 && sp.Children[0] is TextBlock tb)
                 {
                     string name = string.IsNullOrEmpty(ctx.DisplayName) ? "Untitled.pdf" : ctx.DisplayName;
-                    tb.Text = (ctx.IsDirty ? "● " : "") + name;
+                    tb.Text = (ctx.IsDirty ? "● " : "") + name + (ReadOnlyGate.ProcessIsReadOnly ? " (read-only)" : "");
                     tb.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
                     tb.Foreground = active ? BrushResource("TextPrimary") : BrushResource("TextSecondary");
                     // Chip text truncates at 180px (TextTrimming.CharacterEllipsis in BuildTabChip),
@@ -598,9 +600,10 @@ namespace TDPdf
         // window) so windows become distinguishable at the OS level, not just inside the app.
         private void UpdateWindowTitle()
         {
-            if (_ctx.Doc is null) { Title = "TDPdf"; return; }
+            string readOnlyNote = ReadOnlyGate.ProcessIsReadOnly ? " [Read-only view]" : "";
+            if (_ctx.Doc is null) { Title = "TDPdf" + readOnlyNote; return; }
             string name = string.IsNullOrEmpty(_ctx.DisplayName) ? "Untitled.pdf" : _ctx.DisplayName;
-            Title = _tabs.Count > 1 ? $"{name} - TDPdf ({_tabs.Count} tabs)" : $"{name} - TDPdf";
+            Title = (_tabs.Count > 1 ? $"{name} - TDPdf ({_tabs.Count} tabs)" : $"{name} - TDPdf") + readOnlyNote;
         }
 
         /// <summary>Closes a tab (prompting if it has unsaved changes) and activates a neighbor.</summary>
@@ -989,6 +992,7 @@ namespace TDPdf
         private void PageList_PreviewMouseMove(object sender, MouseEventArgs e)
         {
             if (e.LeftButton != MouseButtonState.Pressed) return;
+            if (ReadOnlyGate.ProcessIsReadOnly) return;   // no page reordering in a read-only view
             var diff = _dragStartPoint - e.GetPosition(null);
             if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
                 Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
@@ -1239,6 +1243,7 @@ namespace TDPdf
         private async void PageList_Drop(object sender, DragEventArgs e)
         {
             HidePageDropLine();
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus(ReadOnlyGate.RefusedStatus); return; }
             // #172: a FileDrop appends; anything carrying the internal page payload falls through to
             // the reorder below, unchanged.
             if (_doc is not null && !e.Data.GetDataPresent(typeof(int[])))

@@ -103,6 +103,20 @@ namespace TDPdf
 
             if (IsKeyOwnedByTypingSurface(e)) return;
 
+            // #232: a read-only window refuses the chords that edit or save. The Ctrl chords are
+            // KeyBindings, which run after this preview handler, so stopping them here covers both.
+            if (ReadOnlyGate.ProcessIsReadOnly)
+            {
+                var m = Keyboard.Modifiers;
+                string keyName = e.Key == Key.System ? e.SystemKey.ToString() : e.Key.ToString();
+                if (ReadOnlyGate.IsChordBlocked(keyName, m.HasFlag(ModifierKeys.Control), m.HasFlag(ModifierKeys.Shift), m.HasFlag(ModifierKeys.Alt)))
+                {
+                    e.Handled = true;
+                    SetStatus(ReadOnlyGate.RefusedStatus);
+                    return;
+                }
+            }
+
             if (TryPagesPanelKeys(e)) return;
 
             // Standard shortcuts (Ctrl+N/O/S/W/Z, Ctrl+Shift+S, Ctrl+P, Ctrl+F, F1, Alt+F/E/V/T/H)
@@ -635,6 +649,13 @@ namespace TDPdf
         /// </summary>
         private bool TrySelectToolByKey(Key key)
         {
+            // Signature (G) and Crop (C) open their own popups instead of going through SetTool,
+            // which refuses every other editing tool in a read-only window.
+            if (ReadOnlyGate.ProcessIsReadOnly && (key == Key.G || key == Key.C))
+            {
+                SetStatus(ReadOnlyGate.RefusedStatus);
+                return true;
+            }
             switch (key)
             {
                 case Key.V: SetTool(EditTool.Select); return true;
