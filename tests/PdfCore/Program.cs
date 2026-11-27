@@ -278,6 +278,8 @@ AnnotationBakeTests.Run(Check, tmp);
 StampTests.Run(Check, tmp);
 WatermarkTests.Run(Check, tmp);
 UpdateCheckTests.Run(Check);
+EpubTests.Run(Check, tmp);
+DjvuTests.Run(Check, tmp);
 
 Console.WriteLine();
 try { Directory.Delete(tmp, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }

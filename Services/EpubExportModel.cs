@@ -42,7 +42,7 @@ namespace TDPdf.Services
 
     internal sealed record EpubEmbeddedFont(string Key, string Family, byte[] Bytes, string Extension, string MediaType);
 
-    internal sealed class EpubBook
+    internal sealed class EpubExportBook
     {
         internal string Title = "";
         internal string? Author;
@@ -71,7 +71,7 @@ namespace TDPdf.Services
 
     internal sealed class EpubExportResult
     {
-        internal EpubBook Book = new();
+        internal EpubExportBook Book = new();
         internal int Pages, TaggedPages, ScannedPages, PictureCount;
         internal List<string> EmbeddedFonts = new();
         /// <summary>Fonts left out, each with the reason, for the notice after the export.</summary>
@@ -80,7 +80,7 @@ namespace TDPdf.Services
     }
 
     /// <summary>XML text helpers: escaping and removal of characters XML 1.0 cannot carry.</summary>
-    internal static class EpubXml
+    internal static class EpubExportXml
     {
         internal static string Escape(string? s)
         {

@@ -26,7 +26,7 @@ internal static class FileDialogTests
         Check("file dialogs: empty filter is empty", FileDialogPolicy.ParseFilter(null).Count == 0, "");
         Check("file dialogs: filter round-trips",
               FileDialogPolicy.BuildFilter(parsed) == "PDF files|*.pdf|All files|*.*", "");
-        Check("file dialogs: Open filter is PDF-only today", FileDialogFilters.OpenDocuments == "PDF files|*.pdf", FileDialogFilters.OpenDocuments);
+        Check("file dialogs: Open filter offers PDFs and books", FileDialogFilters.OpenDocuments == "All supported documents|*.pdf;*.epub;*.djvu;*.djv|PDF files|*.pdf|EPUB books|*.epub|DjVu books|*.djvu;*.djv", FileDialogFilters.OpenDocuments);
         string withEpub = FileDialogFilters.BuildOpenFilter(new[] { ("EPUB books", "*.epub") });
         Check("file dialogs: extra types lead with All supported",
               withEpub == "All supported documents|*.pdf;*.epub|PDF files|*.pdf|EPUB books|*.epub", withEpub);

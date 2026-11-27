@@ -17,9 +17,13 @@ namespace TDPdf.Services
 
         /// <summary>
         /// Document types File > Open accepts besides PDF, as (name, pattern) pairs, for example
-        /// ("EPUB books", "*.epub"). Empty today.
+        /// ("EPUB books", "*.epub").
         /// </summary>
-        public static readonly (string Name, string Pattern)[] ExtraOpenTypes = [];
+        public static readonly (string Name, string Pattern)[] ExtraOpenTypes =
+        [
+            ("EPUB books", "*.epub"),
+            ("DjVu books", "*.djvu;*.djv"),
+        ];
 
         /// <summary>The filter File > Open shows.</summary>
         public static string OpenDocuments => BuildOpenFilter(ExtraOpenTypes);

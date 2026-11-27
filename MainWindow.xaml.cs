@@ -8400,7 +8400,7 @@ namespace TDPdf
             {
                 if (Directory.Exists(p)) return true;
                 if (p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) return true;
-                if (IsOpenablePath(p)) return true;
+                if (IsOpenablePath(p) || IsBookPath(p)) return true;
             }
             return false;
         }

@@ -1037,7 +1037,7 @@ namespace TDPdf
                     {
                         await OpenInTabAsync(file);
                         bool ok = failures.Count == before && _ctx.Doc is not null
-                                  && TDPdf.Services.FilePathPolicy.SamePath(_ctx.OriginalPath, file);
+                                  && (TDPdf.Services.FilePathPolicy.SamePath(_ctx.OriginalPath, file) || IsBookPath(file));
                         if (ok) opened++;
                     }
                     catch (Exception ex)
@@ -2702,6 +2702,7 @@ namespace TDPdf
         private async Task OnPathsDropped(string[] paths)
         {
             var found    = new List<string>();
+            var books    = new List<string>();   // EPUB and DjVu: converted and opened one per tab, never merged
             var tempDirs = new List<string>();   // extracted-zip temp dirs we may need to clean up
             bool expanded = false;               // a folder or archive was expanded
             try
@@ -2721,6 +2722,7 @@ namespace TDPdf
                         var dir = ExtractZipToTemp(p);
                         if (dir != null) { expanded = true; tempDirs.Add(dir); CollectOpenable(dir, found); }
                     }
+                    else if (IsBookPath(p)) books.Add(p);
                     else if (IsOpenablePath(p)) found.Add(p);
                 }
             }
@@ -2731,6 +2733,9 @@ namespace TDPdf
                     "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
+
+            foreach (var book in books) await OpenInTabAsync(book);
+            if (found.Count == 0 && books.Count > 0) { CleanupDirs(tempDirs); return; }
 
             if (found.Count == 0)
             {

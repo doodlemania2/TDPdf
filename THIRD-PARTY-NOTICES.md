@@ -47,6 +47,7 @@ These ship as native libraries inside the executable and are extracted at runtim
 | Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |
 | Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |
 | Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | 1.0.4314.35 | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |
+| DjVuLibre (`ddjvu.exe`, `djvused.exe`, run as separate programs) | version as shipped | GPL-2.0-or-later (see 1.4) | https://djvu.sourceforge.net/ |
 
 ### 1.1 PDFium
 
@@ -1434,6 +1435,18 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+### 1.4 DjVuLibre
+
+TDPdf opens DjVu books by running DjVuLibre's `ddjvu.exe` and `djvused.exe` as separate
+programs, one page at a time; it does not link to them. A build that includes them carries
+the two programs and the libraries they need inside the executable and extracts them on first
+use; a build that does not uses a DjVuLibre installed under Program Files. DjVuLibre is by
+Leon Bottou, Yann LeCun and contributors and is licensed under the GNU General Public
+License, version 2 or (at your option) any later version, which is compatible with the
+GNU GPL version 3 that TDPdf is licensed under. Its licence is at
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.html. The complete corresponding source of
+every DjVuLibre release is at https://sourceforge.net/projects/djvu/files/DjVuLibre/.
 
 ---
 

@@ -1078,6 +1078,10 @@
                 <MenuItem Header="Export as EPUB…"                                  Click="ExportEpub_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE736;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- #235: how EPUB books are laid out as pages (page size, margin, text size). -->
+                <MenuItem Header="_Book Layout…"                                    Click="BookLayout_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7BC;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="_Merge…"                                          Click="Merge_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE710;"/></MenuItem.Icon>

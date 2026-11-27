@@ -288,7 +288,7 @@ namespace TDPdf.Services
 
         // ── Metadata and chapters ─────────────────────────────────────────────────────────────
 
-        private static void ReadMetadata(string path, PdfPigDoc pig, EpubBook book)
+        private static void ReadMetadata(string path, PdfPigDoc pig, EpubExportBook book)
         {
             string? title = null, author = null;
             try { title = pig.Information.Title; author = pig.Information.Author; } catch { }
@@ -323,7 +323,7 @@ namespace TDPdf.Services
             return items.Where(i => i.PageIndex < pig.NumberOfPages).ToList();
         }
 
-        private static void BuildChapters(PdfPigDoc pig, EpubExportOptions opt, List<int> selected, List<BookBlock> all, EpubBook book)
+        private static void BuildChapters(PdfPigDoc pig, EpubExportOptions opt, List<int> selected, List<BookBlock> all, EpubExportBook book)
         {
             if (all.Count == 0) return;
             var outline = ReadOutline(pig);

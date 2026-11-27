@@ -107,9 +107,9 @@ internal static class EpubExportTests
 
     // ── The package ───────────────────────────────────────────────────────────────────────────
 
-    private static EpubBook SampleBook()
+    private static EpubExportBook SampleBook()
     {
-        var b = new EpubBook { Title = "A & B <Book>", Author = "Ann \"Q\" O'Neil", Language = "en-GB" };
+        var b = new EpubExportBook { Title = "A & B <Book>", Author = "Ann \"Q\" O'Neil", Language = "en-GB" };
         b.Images.Add(new EpubImage("img001", new byte[] { 1, 2, 3 }, "png", "image/png"));
         b.Fonts.Add(new EpubEmbeddedFont("Face", "tdpdffont1", new byte[] { 0, 1, 0, 0 }, "ttf", "font/ttf"));
         var c1 = new EpubChapter { Title = "One & only" };
@@ -292,7 +292,7 @@ internal static class EpubExportTests
         return p;
     }
 
-    private static string AllText(EpubBook b) => string.Join("\n", b.Chapters.SelectMany(c => c.Blocks).Select(x => x.Kind + ":" + x.Text));
+    private static string AllText(EpubExportBook b) => string.Join("\n", b.Chapters.SelectMany(c => c.Blocks).Select(x => x.Kind + ":" + x.Text));
 
     // ── Reading order, headings, lists, running heads ─────────────────────────────────────────
 

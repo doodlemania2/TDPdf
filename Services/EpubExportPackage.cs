@@ -5,7 +5,7 @@ using System.Text;
 namespace TDPdf.Services
 {
     /// <summary>
-    /// Writes an <see cref="EpubBook"/> as an EPUB 3 package: the mimetype entry first and stored,
+    /// Writes an <see cref="EpubExportBook"/> as an EPUB 3 package: the mimetype entry first and stored,
     /// container.xml, an OPF package document, a nav document built from the outline, an NCX for
     /// EPUB 2 readers, one stylesheet, the chapters as XHTML, and the pictures and fonts.
     /// </summary>
@@ -15,7 +15,7 @@ namespace TDPdf.Services
 
         internal static string ChapterPath(int index) => $"text/ch{index + 1:000}.xhtml";
 
-        internal static void Write(EpubBook book, Stream output)
+        internal static void Write(EpubExportBook book, Stream output)
         {
             using var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true, entryNameEncoding: new UTF8Encoding(false));
 
@@ -49,16 +49,16 @@ namespace TDPdf.Services
 
         // ── OPF ───────────────────────────────────────────────────────────────────────────────
 
-        private static string Opf(EpubBook b)
+        private static string Opf(EpubExportBook b)
         {
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
             sb.Append("<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\" xml:lang=\"")
-              .Append(EpubXml.Escape(b.Language)).Append("\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n");
-            sb.Append("<dc:identifier id=\"bookid\">").Append(EpubXml.Escape(b.Identifier)).Append("</dc:identifier>\n");
-            sb.Append("<dc:title>").Append(EpubXml.Escape(b.Title)).Append("</dc:title>\n");
-            if (!string.IsNullOrWhiteSpace(b.Author)) sb.Append("<dc:creator>").Append(EpubXml.Escape(b.Author)).Append("</dc:creator>\n");
-            sb.Append("<dc:language>").Append(EpubXml.Escape(b.Language)).Append("</dc:language>\n");
+              .Append(EpubExportXml.Escape(b.Language)).Append("\">\n<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n");
+            sb.Append("<dc:identifier id=\"bookid\">").Append(EpubExportXml.Escape(b.Identifier)).Append("</dc:identifier>\n");
+            sb.Append("<dc:title>").Append(EpubExportXml.Escape(b.Title)).Append("</dc:title>\n");
+            if (!string.IsNullOrWhiteSpace(b.Author)) sb.Append("<dc:creator>").Append(EpubExportXml.Escape(b.Author)).Append("</dc:creator>\n");
+            sb.Append("<dc:language>").Append(EpubExportXml.Escape(b.Language)).Append("</dc:language>\n");
             sb.Append("<meta property=\"dcterms:modified\">").Append(b.ModifiedUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")).Append("</meta>\n");
             sb.Append("</metadata>\n<manifest>\n");
             sb.Append("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
@@ -80,12 +80,12 @@ namespace TDPdf.Services
 
         private static string Href(EpubNavEntry e) => ChapterPath(e.ChapterIndex) + (e.Fragment is null ? "" : "#" + e.Fragment);
 
-        private static string Nav(EpubBook b)
+        private static string Nav(EpubExportBook b)
         {
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-            sb.Append($"<html xmlns=\"{Xhtml}\" xmlns:epub=\"http://www.idpf.org/2007/ops\" lang=\"{EpubXml.Escape(b.Language)}\" xml:lang=\"{EpubXml.Escape(b.Language)}\">\n");
-            sb.Append("<head><meta charset=\"utf-8\"/><title>").Append(EpubXml.Escape(b.Title)).Append("</title></head>\n<body>\n");
+            sb.Append($"<html xmlns=\"{Xhtml}\" xmlns:epub=\"http://www.idpf.org/2007/ops\" lang=\"{EpubExportXml.Escape(b.Language)}\" xml:lang=\"{EpubExportXml.Escape(b.Language)}\">\n");
+            sb.Append("<head><meta charset=\"utf-8\"/><title>").Append(EpubExportXml.Escape(b.Title)).Append("</title></head>\n<body>\n");
             sb.Append("<nav epub:type=\"toc\" id=\"toc\"><h1>Contents</h1>\n");
             var entries = b.Nav.Count > 0 ? b.Nav : b.Chapters.Select((c, i) => new EpubNavEntry(c.Title, 1, i, null)).ToList();
             AppendNavList(sb, entries);
@@ -109,8 +109,8 @@ namespace TDPdf.Services
                 while (depth > level) { sb.Append("</li>\n</ol>\n"); depth--; open = true; }
                 if (depth < level) { sb.Append("\n<ol>\n"); depth++; open = false; }
                 else if (open) sb.Append("</li>\n");
-                sb.Append("<li><a href=\"").Append(EpubXml.Escape(Href(entries[i]))).Append("\">")
-                  .Append(EpubXml.Escape(string.IsNullOrWhiteSpace(entries[i].Title) ? "Untitled" : entries[i].Title)).Append("</a>");
+                sb.Append("<li><a href=\"").Append(EpubExportXml.Escape(Href(entries[i]))).Append("\">")
+                  .Append(EpubExportXml.Escape(string.IsNullOrWhiteSpace(entries[i].Title) ? "Untitled" : entries[i].Title)).Append("</a>");
                 open = true;
                 prevLevel = level;
             }
@@ -118,19 +118,19 @@ namespace TDPdf.Services
             sb.Append("</li>\n</ol>\n");
         }
 
-        private static string Ncx(EpubBook b)
+        private static string Ncx(EpubExportBook b)
         {
             var entries = b.Nav.Count > 0 ? b.Nav : b.Chapters.Select((c, i) => new EpubNavEntry(c.Title, 1, i, null)).ToList();
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\">\n<head>");
-            sb.Append("<meta name=\"dtb:uid\" content=\"").Append(EpubXml.Escape(b.Identifier)).Append("\"/>");
+            sb.Append("<meta name=\"dtb:uid\" content=\"").Append(EpubExportXml.Escape(b.Identifier)).Append("\"/>");
             sb.Append("<meta name=\"dtb:depth\" content=\"1\"/><meta name=\"dtb:totalPageCount\" content=\"0\"/><meta name=\"dtb:maxPageNumber\" content=\"0\"/></head>\n");
-            sb.Append("<docTitle><text>").Append(EpubXml.Escape(b.Title)).Append("</text></docTitle>\n<navMap>\n");
+            sb.Append("<docTitle><text>").Append(EpubExportXml.Escape(b.Title)).Append("</text></docTitle>\n<navMap>\n");
             for (int i = 0; i < entries.Count; i++)
             {
                 sb.Append($"<navPoint id=\"np{i + 1}\" playOrder=\"{i + 1}\"><navLabel><text>")
-                  .Append(EpubXml.Escape(string.IsNullOrWhiteSpace(entries[i].Title) ? "Untitled" : entries[i].Title))
-                  .Append("</text></navLabel><content src=\"").Append(EpubXml.Escape(Href(entries[i]))).Append("\"/></navPoint>\n");
+                  .Append(EpubExportXml.Escape(string.IsNullOrWhiteSpace(entries[i].Title) ? "Untitled" : entries[i].Title))
+                  .Append("</text></navLabel><content src=\"").Append(EpubExportXml.Escape(Href(entries[i]))).Append("\"/></navPoint>\n");
             }
             sb.Append("</navMap>\n</ncx>\n");
             return sb.ToString();
@@ -138,7 +138,7 @@ namespace TDPdf.Services
 
         // ── Style and chapters ────────────────────────────────────────────────────────────────
 
-        private static string Css(EpubBook b)
+        private static string Css(EpubExportBook b)
         {
             var sb = new StringBuilder();
             foreach (var f in b.Fonts)
@@ -155,14 +155,14 @@ namespace TDPdf.Services
             return sb.ToString();
         }
 
-        private static string Chapter(EpubBook b, EpubChapter ch, int index)
+        private static string Chapter(EpubExportBook b, EpubChapter ch, int index)
         {
             var embedded = b.Fonts.ToDictionary(f => f.Key, f => f.Family);
             var anchors = b.Nav.Where(n => n.ChapterIndex == index && n.Fragment != null).Select(n => n.Fragment!).ToHashSet();
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-            sb.Append($"<html xmlns=\"{Xhtml}\" lang=\"{EpubXml.Escape(b.Language)}\" xml:lang=\"{EpubXml.Escape(b.Language)}\">\n");
-            sb.Append("<head><meta charset=\"utf-8\"/><title>").Append(EpubXml.Escape(string.IsNullOrWhiteSpace(ch.Title) ? b.Title : ch.Title))
+            sb.Append($"<html xmlns=\"{Xhtml}\" lang=\"{EpubExportXml.Escape(b.Language)}\" xml:lang=\"{EpubExportXml.Escape(b.Language)}\">\n");
+            sb.Append("<head><meta charset=\"utf-8\"/><title>").Append(EpubExportXml.Escape(string.IsNullOrWhiteSpace(ch.Title) ? b.Title : ch.Title))
               .Append("</title><link rel=\"stylesheet\" type=\"text/css\" href=\"../book.css\"/></head>\n<body>\n");
 
             int lastPage = int.MinValue;
@@ -185,7 +185,7 @@ namespace TDPdf.Services
                     {
                         headingNo++;
                         int lv = Math.Clamp(blk.Level, 1, 6);
-                        sb.Append($"<h{lv} id=\"h{index + 1}-{headingNo}\">").Append(EpubXml.Escape(blk.Text)).Append($"</h{lv}>\n");
+                        sb.Append($"<h{lv} id=\"h{index + 1}-{headingNo}\">").Append(EpubExportXml.Escape(blk.Text)).Append($"</h{lv}>\n");
                         break;
                     }
                     case BookBlockKind.Paragraph:
@@ -204,7 +204,7 @@ namespace TDPdf.Services
                         var img = b.Images.FirstOrDefault(i => i.Id == blk.ImageId);
                         if (img is null) break;
                         sb.Append("<figure><img src=\"../images/").Append(img.Id).Append('.').Append(img.Extension)
-                          .Append("\" alt=\"").Append(EpubXml.Escape(blk.Alt ?? "")).Append("\"/></figure>\n");
+                          .Append("\" alt=\"").Append(EpubExportXml.Escape(blk.Alt ?? "")).Append("\"/></figure>\n");
                         break;
                     }
                     case BookBlockKind.Table:
@@ -213,7 +213,7 @@ namespace TDPdf.Services
                         {
                             sb.Append("<tr>");
                             foreach (var (text, header) in row)
-                                sb.Append(header ? "<th>" : "<td>").Append(EpubXml.Escape(text)).Append(header ? "</th>" : "</td>");
+                                sb.Append(header ? "<th>" : "<td>").Append(EpubExportXml.Escape(text)).Append(header ? "</th>" : "</td>");
                             sb.Append("</tr>\n");
                         }
                         sb.Append("</table>\n");
@@ -230,7 +230,7 @@ namespace TDPdf.Services
             foreach (var r in runs)
             {
                 if (r.Text.Length == 0) continue;
-                string text = EpubXml.Escape(r.Text);
+                string text = EpubExportXml.Escape(r.Text);
                 if (r.FontKey != null && embedded.TryGetValue(r.FontKey, out var fam))
                     sb.Append("<span class=\"").Append(fam).Append("\">").Append(text).Append("</span>");
                 else

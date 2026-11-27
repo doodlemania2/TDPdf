@@ -1337,6 +1337,7 @@ namespace TDPdf
                 k.SetValue("TDPdf.pdf", new byte[0], RegistryValueKind.None);
 
             RegisterImageOpenWith(hive, installExe);
+            RegisterBookOpenWith(hive, installExe);
 
             // RegisteredApplications capability (used by Default Programs UI)
             using (var k = hive.CreateSubKey(
@@ -1381,6 +1382,54 @@ namespace TDPdf
             {
                 using var k = hive.CreateSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids");
                 k.SetValue(ImageProgId, new byte[0], RegistryValueKind.None);
+            }
+        }
+
+        // Books TDPdf converts to a PDF when it opens them (#235). Same shape as the picture types above:
+        // one ProgID per kind, listed under each extension's OpenWithProgids only, so TDPdf is offered in
+        // Explorer's "Open with" and never becomes the default, and not added to Capabilities either.
+        private const string EpubProgId = "TDPdf.epub";
+        private const string DjvuProgId = "TDPdf.djvu";
+        private static readonly (string ProgId, string Description, string[] Extensions)[] BookOpenWith =
+        {
+            (EpubProgId, "EPUB book (open as a PDF in TDPdf)", new[] { ".epub" }),
+            (DjvuProgId, "DjVu book (open as a PDF in TDPdf)", new[] { ".djvu", ".djv" }),
+        };
+
+        private static void RegisterBookOpenWith(RegistryKey hive, string installExe)
+        {
+            foreach (var (progId, description, extensions) in BookOpenWith)
+            {
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId))
+                    k.SetValue("", description);
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId + @"\DefaultIcon"))
+                    k.SetValue("", $"{installExe},0");
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId + @"\shell\open"))
+                    k.SetValue("FriendlyAppName", AppName);
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId + @"\shell\open\command"))
+                    k.SetValue("", $"\"{installExe}\" \"%1\"");
+                foreach (var ext in extensions)
+                {
+                    using var k = hive.CreateSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids");
+                    k.SetValue(progId, new byte[0], RegistryValueKind.None);
+                }
+            }
+        }
+
+        private static void UnregisterBookOpenWith(RegistryKey root)
+        {
+            foreach (var (progId, _, extensions) in BookOpenWith)
+            {
+                try { root.DeleteSubKeyTree(@"Software\Classes\" + progId, throwOnMissingSubKey: false); } catch { }
+                foreach (var ext in extensions)
+                {
+                    try
+                    {
+                        using var k = root.OpenSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids", writable: true);
+                        k?.DeleteValue(progId, throwOnMissingValue: false);
+                    }
+                    catch { }
+                }
             }
         }
 
@@ -1602,6 +1651,7 @@ namespace TDPdf
                     @"Software\Microsoft\Windows\CurrentVersion\Uninstall\TDPdf"); } catch { }
                 try { root.DeleteSubKeyTree(@"Software\Classes\TDPdf.pdf"); } catch { }
                 UnregisterImageOpenWith(root);
+                UnregisterBookOpenWith(root);
 
                 try
                 {
