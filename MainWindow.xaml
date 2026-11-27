@@ -976,7 +976,7 @@
         <Border x:Name="CustomTitleBar" Grid.Row="0" Background="{DynamicResource TitleBarBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
             <Grid>
-                <Grid x:Name="ChromeA11yLabels" Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
+                <Grid Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
                     <TextBlock x:Name="MinimizeButtonLabel" Text="Minimize window"/>
                     <TextBlock x:Name="MaximizeButtonLabel" Text="Maximize or restore window"/>
                     <TextBlock x:Name="CloseWindowButtonLabel" Text="Close window"/>
@@ -987,7 +987,7 @@
                          title bar and footer are deliberately NOT scaled, so the logo never moves
                          out from under the cursor. The press is left unhandled so it still bubbles
                          to TitleBar_MouseLeftButtonDown for window drag / double-click maximize. -->
-                    <Border x:Name="LogoBar" Background="Transparent" Padding="4,0"
+                    <Border Background="Transparent" Padding="4,0"
                             VerticalAlignment="Stretch"
                             MouseWheel="LogoBar_MouseWheel"
                             AutomationProperties.Name="TDPdf app size"
@@ -1300,7 +1300,7 @@
                  the wider spacer between them instead of alignment. The toolbar's row is Auto-height
                  (see the outer Grid.RowDefinitions), so wrapping only grows this Border, never clips. -->
             <WrapPanel Orientation="Horizontal">
-                <Grid x:Name="ToolbarA11yLabels" Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
+                <Grid Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
                     <TextBlock x:Name="OpenButtonLabel" Text="Open"/><TextBlock x:Name="CloseFileButtonLabel" Text="Close file"/>
                     <TextBlock x:Name="MergeButtonLabel" Text="Merge PDFs"/><TextBlock x:Name="SplitButtonLabel" Text="Extract pages"/>
                     <TextBlock x:Name="DeleteButtonLabel" Text="Delete selected pages"/><TextBlock x:Name="MoveUpButtonLabel" Text="Move page up"/>
@@ -1317,7 +1317,7 @@
                 </Grid>
                 <!-- File operations -->
                     <Button Content="&#xE7C3;" Style="{StaticResource ToolbarButton}" Click="New_Click" ToolTip="New Blank Document (Ctrl+N)" KeyboardNavigation.TabIndex="3" AutomationProperties.Name="New blank document" AutomationProperties.HelpText="Create a single blank A4 page as a new document. Shortcut Ctrl+N." AutomationProperties.AccessKey="N"/>
-                    <Button x:Name="OpenBtn" Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O). Right-click for recent files." KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
+                    <Button Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O). Right-click for recent files." KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
                     <Button x:Name="CloseFileBtn" Content="&#xE711;" Style="{StaticResource ToolbarButton}" Click="CloseFile_Click" ToolTip="Close File (Ctrl+W, Alt+W)" IsEnabled="False" KeyboardNavigation.TabIndex="5" AutomationProperties.Name="Close file" AutomationProperties.HelpText="Close the current PDF and return to the start view. Shortcut Ctrl+W. Access key Alt+W." AutomationProperties.AccessKey="W" AutomationProperties.LabeledBy="{Binding ElementName=CloseFileButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE710;" Style="{StaticResource ToolbarButton}" Click="Merge_Click" ToolTip="Merge PDFs (Alt+M)" KeyboardNavigation.TabIndex="6" AutomationProperties.Name="Merge PDFs" AutomationProperties.HelpText="Combine additional PDFs into this document. Access key Alt+M." AutomationProperties.AccessKey="M" AutomationProperties.LabeledBy="{Binding ElementName=MergeButtonLabel}"/>
@@ -1327,7 +1327,7 @@
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE74A;" Style="{StaticResource ToolbarButton}" Click="MoveUp_Click" ToolTip="Move Page Up (Alt+U)" KeyboardNavigation.TabIndex="9" AutomationProperties.Name="Move page up" AutomationProperties.HelpText="Move the selected page earlier in the document. Access key Alt+U." AutomationProperties.AccessKey="U" AutomationProperties.LabeledBy="{Binding ElementName=MoveUpButtonLabel}"/>
                     <Button Content="&#xE74B;" Style="{StaticResource ToolbarButton}" Click="MoveDown_Click" ToolTip="Move Page Down (Alt+N)" KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Move page down" AutomationProperties.HelpText="Move the selected page later in the document. Access key Alt+N." AutomationProperties.AccessKey="N" AutomationProperties.LabeledBy="{Binding ElementName=MoveDownButtonLabel}"/>
-                    <Button x:Name="RotateBtn" Content="&#xE7AD;" Style="{StaticResource ToolbarButton}" Click="RotateBtn_Click" MouseRightButtonUp="RotateBtn_RightButtonUp" ToolTip="Rotate Selected Pages Clockwise. Right-click for counter-clockwise or fine rotate." KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Rotate selected pages" AutomationProperties.HelpText="Rotate the selected page(s) 90 degrees clockwise. Right-click for counter-clockwise or a fine-angle transform." AutomationProperties.LabeledBy="{Binding ElementName=RotateButtonLabel}"/>
+                    <Button Content="&#xE7AD;" Style="{StaticResource ToolbarButton}" Click="RotateBtn_Click" MouseRightButtonUp="RotateBtn_RightButtonUp" ToolTip="Rotate Selected Pages Clockwise. Right-click for counter-clockwise or fine rotate." KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Rotate selected pages" AutomationProperties.HelpText="Rotate the selected page(s) 90 degrees clockwise. Right-click for counter-clockwise or a fine-angle transform." AutomationProperties.LabeledBy="{Binding ElementName=RotateButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button x:Name="SaveAsBtn" Content="&#xE74E;" Style="{StaticResource ToolbarButtonAccent}" Click="SaveAs_Click" ToolTip="Save As (Ctrl+Shift+S, Alt+S)" KeyboardNavigation.TabIndex="11" AutomationProperties.Name="Save as" AutomationProperties.HelpText="Save the PDF with annotations to a new file. Shortcut Ctrl+Shift+S. Access key Alt+S." AutomationProperties.AccessKey="S" AutomationProperties.LabeledBy="{Binding ElementName=SaveAsButtonLabel}"/>
                     <Button Content="&#xE8B9;" Style="{StaticResource ToolbarButton}" Click="SaveFlattened_Click" ToolTip="Save Flattened PDF (Alt+F)" KeyboardNavigation.TabIndex="12" AutomationProperties.Name="Save flattened PDF" AutomationProperties.HelpText="Rasterize all pages and save a fully uneditable PDF. Access key Alt+F." AutomationProperties.AccessKey="F" AutomationProperties.LabeledBy="{Binding ElementName=SaveFlattenedButtonLabel}"/>
@@ -1412,7 +1412,7 @@
                 </ScrollViewer>
                 <!-- Every open tab by name, so a document doesn't have to be hunted for by scrolling
                      past a long run of truncated, same-width chips once many files are open. -->
-                <Button x:Name="TabOverflowBtn" Grid.Column="1" Content="&#xE70D;"
+                <Button Grid.Column="1" Content="&#xE70D;"
                         FontFamily="Segoe MDL2 Assets" FontSize="10"
                         Width="24" Height="24" Margin="4,4,0,4" Padding="0"
                         Background="Transparent" BorderThickness="0"
@@ -1423,7 +1423,7 @@
             </Grid>
         </Border>
 
-        <Grid Grid.Row="4" x:Name="MainContentGrid" KeyboardNavigation.TabNavigation="Continue">
+        <Grid Grid.Row="4" KeyboardNavigation.TabNavigation="Continue">
             <Grid.ColumnDefinitions>
                 <!-- SidebarCol never collapses to 0 — it shrinks to 24px (the toggle strip width). -->
                 <ColumnDefinition x:Name="SidebarCol" Width="180" MinWidth="24" MaxWidth="260"/>
@@ -1621,7 +1621,7 @@
                                     <Grid Margin="4,0,4,6">
                                         <TextBlock Text="Recent files" FontFamily="Segoe UI" FontSize="12" FontWeight="SemiBold"
                                                    Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center"/>
-                                        <Button x:Name="ClearRecentBtn" Content="Clear recent files" Click="ClearRecent_Click"
+                                        <Button Content="Clear recent files" Click="ClearRecent_Click"
                                                 HorizontalAlignment="Right" Cursor="Hand" FontFamily="Segoe UI" FontSize="11"
                                                 Foreground="{DynamicResource TextSecondary}" Background="Transparent"
                                                 BorderThickness="0" Padding="4,1"
@@ -1783,7 +1783,7 @@
                              ToolTip="App size. Scroll to resize the menu, toolbar, tab strip and sidebar, or click to reset to 100% (Ctrl+Shift+0)."
                              AutomationProperties.Name="App size"
                              AutomationProperties.HelpText="Scales the application chrome between 70 and 250 percent. Scroll the mouse wheel to change it, or press Control Shift Plus and Control Shift Minus. Click to reset. The document page keeps its own zoom."/>
-                    <Button x:Name="StatusZoomButton" Content="{Binding Zoom.DisplayText, RelativeSource={RelativeSource AncestorType=Window}}"
+                    <Button Content="{Binding Zoom.DisplayText, RelativeSource={RelativeSource AncestorType=Window}}"
                              Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
                              FontFamily="Consolas" FontSize="10"
                              Click="ResetZoom_Click" ToolTip="Reset zoom to 100% (Ctrl+0)" AutomationProperties.Name="Current zoom" AutomationProperties.HelpText="Reset zoom to 100 percent. Shortcut Control zero."/>
@@ -1994,7 +1994,7 @@
         </Grid>
 
         <!-- Film grain overlay — main content area only -->
-        <Border x:Name="GrainOverlay"
+        <Border
                 Grid.Row="4"
                 IsHitTestVisible="False"
                 Opacity="0.15"
