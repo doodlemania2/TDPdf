@@ -188,6 +188,7 @@ Forms.Run(Check, tmp);
 FormSiblings.Run(Check, tmp);
 FieldChromeTests.Run(Check, tmp);
 FontDictStyleTests.Run(Check);
+FormMergeTests.Run(Check, tmp);
 HostileInput.Run(Check, tmp);
 NameGroups.Run(Check, tmp);
 FontRuns.Run(Check);
