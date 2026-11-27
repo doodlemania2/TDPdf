@@ -18,8 +18,8 @@ namespace TDPdf
         // print and the page views work on it unchanged. The tab is an UNSAVED tab (the same
         // FinalizeUnsavedTab the image import uses): Ctrl+S goes to Save As, which writes a PDF, and
         // nothing can write back over the .epub or .djvu. Conversion itself is in Services/Epub* (laid out by
-        // WebView2, served from the zip with script off) and Services/Djvu* (DjVuLibre's own programs, run as
-        // separate processes).
+        // WebView2, served from the zip with script off) and Services/Djvu* (DjVuLibre's library, run in a
+        // separate worker process: TDPdf.exe --djvu-worker).
 
         private static bool IsBookPath(string p) => BookKinds.Of(p) != BookKind.None;
 
@@ -110,20 +110,18 @@ namespace TDPdf
 
         private Task<BookConversionResult> ConvertDjvuAsync(string path, string tempPdf, CancellationToken ct)
         {
-            var tools = DjvuNativeBootstrap.Locate();
-            if (tools is null)
+            var launch = DjvuWorkerLaunch.ForThisApp();
+            if (launch is null || !DjvuNativeBootstrap.IsBundled)
                 return Task.FromException<BookConversionResult>(new BookConversionException(DjvuMissingMessage));
             void Report((int Page, int Total) p) => SetWorkerStatus($"Opening book... page {Math.Min(p.Page + 1, p.Total)} of {p.Total}  (Esc to cancel)");
             return Task.Run(() =>
             {
-                using var decoder = DjvuLibreDecoder.Open(tools, path, ct);
+                using var decoder = DjvuLibreDecoder.Open(launch, path, ct);
                 return DjvuToPdf.Convert(decoder, tempPdf, null, new Progress<(int Page, int Total)>(Report), ct);
             }, ct);
         }
 
-        internal const string DjvuMissingMessage =
-            "Opening DjVu books needs DjVuLibre, and this copy of TDPdf does not include it. " +
-            "Install DjVuLibre from djvu.sourceforge.net (it installs to Program Files\\DjVuLibre) and open the book again.";
+        internal const string DjvuMissingMessage = "This copy of TDPdf was built without DjVu support.";
 
         // ── layout options (EPUB) ─────────────────────────────────────────────────────────────
 
@@ -290,8 +288,9 @@ namespace TDPdf
                     result = CliRunPumped(() => EpubToPdf.ConvertAsync(inPath, temp, layout, CancellationToken.None));
                 else
                 {
-                    var tools = DjvuNativeBootstrap.Locate() ?? throw new BookConversionException(DjvuMissingMessage);
-                    using var decoder = DjvuLibreDecoder.Open(tools, inPath, CancellationToken.None);
+                    var launch = DjvuWorkerLaunch.ForThisApp();
+                    if (launch is null || !DjvuNativeBootstrap.IsBundled) throw new BookConversionException(DjvuMissingMessage);
+                    using var decoder = DjvuLibreDecoder.Open(launch, inPath, CancellationToken.None);
                     result = DjvuToPdf.Convert(decoder, temp, null,
                         new Progress<(int Page, int Total)>(p => { if (p.Page == 0 || p.Page == p.Total || p.Page % 20 == 0) con.WriteLine($"Page {p.Page}/{p.Total}"); }),
                         CancellationToken.None);

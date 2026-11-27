@@ -125,33 +125,293 @@ internal static class DjvuTests
         BadPnm("djvu pnm hostile: 16-bit samples", Encoding.ASCII.GetBytes("P5\n1 1\n65535\n\0\0"));
         BadPnm("djvu pnm hostile: empty", Array.Empty<byte>());
 
-        // ── the process launcher ────────────────────────────────────────────────────────────
+        // ── the wire protocol between TDPdf and its DjVu worker ─────────────────────────────
+        {
+            var ms = new MemoryStream();
+            DjvuWorkerProtocol.WriteFrame(ms, DjvuFrame.Open, new byte[] { 1, 2, 3 });
+            ms.Position = 0;
+            var (ft, fp) = DjvuWorkerProtocol.ReadFrame(ms, 100);
+            Check("djvu protocol: a frame round-trips", ft == DjvuFrame.Open && fp.SequenceEqual(new byte[] { 1, 2, 3 }) && ms.Length == 6 + 3, "");
+
+            var emptyFrame = new MemoryStream();
+            DjvuWorkerProtocol.WriteFrame(emptyFrame, DjvuFrame.Quit, ReadOnlySpan<byte>.Empty);
+            emptyFrame.Position = 0;
+            var (qt, qp) = DjvuWorkerProtocol.ReadFrame(emptyFrame, 0);
+            Check("djvu protocol: an empty frame round-trips", qt == DjvuFrame.Quit && qp.Length == 0, "");
+
+            static bool Bad<T>(Func<T> f) where T : notnull
+            {
+                try { f(); return false; } catch (InvalidDataException) { return true; } catch (EndOfStreamException) { return true; }
+            }
+            Check("djvu protocol hostile: a frame without the magic byte is refused", Bad(() => DjvuWorkerProtocol.ReadFrame(new MemoryStream(new byte[] { 0x00, 0x4F, 0, 0, 0, 0 }), 100)), "");
+            Check("djvu protocol hostile: a length over the cap is refused before anything is read or allocated",
+                Bad(() => DjvuWorkerProtocol.ReadFrame(new MemoryStream(new byte[] { 0xD7, 0x50, 0xFF, 0xFF, 0xFF, 0x7F }), 1000)), "");
+            Check("djvu protocol hostile: a length of 4 GB is refused", Bad(() => DjvuWorkerProtocol.ReadFrame(new MemoryStream(new byte[] { 0xD7, 0x50, 0xFF, 0xFF, 0xFF, 0xFF }), long.MaxValue)), "");
+            Check("djvu protocol hostile: a frame cut short is an end of stream", Bad(() => DjvuWorkerProtocol.ReadFrame(new MemoryStream(new byte[] { 0xD7, 0x50, 9, 0, 0, 0, 1 }), 100)), "");
+            Check("djvu protocol hostile: a pipe that ends is an end of stream", Bad(() => DjvuWorkerProtocol.ReadFrame(new MemoryStream(), 100)), "");
+
+            DjvuWorkerProtocol.CheckHello(DjvuFrame.Hello, DjvuWorkerProtocol.EncodeHello());
+            Check("djvu protocol: the hello says who and which version", Bad(() => { DjvuWorkerProtocol.CheckHello(DjvuFrame.Hello, new byte[8]); return 0; })
+                  && Bad(() => { DjvuWorkerProtocol.CheckHello(DjvuFrame.Open, DjvuWorkerProtocol.EncodeHello()); return 0; })
+                  && Bad(() => { var h = DjvuWorkerProtocol.EncodeHello(); h[4] = 99; DjvuWorkerProtocol.CheckHello(DjvuFrame.Hello, h); return 0; }), "");
+
+            var header = new DjvuBookHeader(new[] { new DjvuPageInfo(300, 200, 300), new DjvuPageInfo(2550, 3300, 150) },
+                new Dictionary<string, int> { ["a.djvu"] = 0, ["b é.djvu"] = 1 });
+            var back = DjvuWorkerProtocol.DecodeOpenReply(DjvuWorkerProtocol.EncodeOpenReply(header));
+            Check("djvu protocol: the open reply (page sizes and names) round-trips",
+                back.Pages.SequenceEqual(header.Pages) && back.PageIds["a.djvu"] == 0 && back.PageIds["b é.djvu"] == 1 && back.PageIds.Count == 2, "");
+            Check("djvu protocol: the open request round-trips a path with non-ASCII characters", DjvuWorkerProtocol.DecodeOpenRequest(DjvuWorkerProtocol.EncodeOpenRequest(@"C:\Bücher\書.djvu")) == @"C:\Bücher\書.djvu", "");
+
+            byte[] ValidOpen() => DjvuWorkerProtocol.EncodeOpenReply(header);
+            var zeroPages = new byte[8]; // 0 pages, 0 ids
+            var tooMany = new byte[8]; BitConverter.TryWriteBytes(tooMany, DjvuWorkerProtocol.MaxPages + 1);
+            var lying = new byte[8]; BitConverter.TryWriteBytes(lying, 50_000);   // says 50000 pages, has none
+            var trailing = ValidOpen().Concat(new byte[] { 1 }).ToArray();
+            var cutOpen = ValidOpen().Take(20).ToArray();
+            var absurdSize = DjvuWorkerProtocol.EncodeOpenReply(new DjvuBookHeader(new[] { new DjvuPageInfo(int.MaxValue, int.MaxValue, 300) }, new Dictionary<string, int>()));
+            Check("djvu protocol hostile: an open reply with no pages, too many, a lying count, trailing bytes, a cut-short list or an absurd page is refused",
+                Bad(() => DjvuWorkerProtocol.DecodeOpenReply(zeroPages)) && Bad(() => DjvuWorkerProtocol.DecodeOpenReply(tooMany)) &&
+                Bad(() => DjvuWorkerProtocol.DecodeOpenReply(lying)) && Bad(() => DjvuWorkerProtocol.DecodeOpenReply(trailing)) &&
+                Bad(() => DjvuWorkerProtocol.DecodeOpenReply(cutOpen)) && Bad(() => DjvuWorkerProtocol.DecodeOpenReply(absurdSize)), "");
+            Check("djvu protocol hostile: an empty path is refused", Bad(() => DjvuWorkerProtocol.DecodeOpenRequest(Array.Empty<byte>())), "");
+
+            var (pi, pmax) = DjvuWorkerProtocol.DecodePageRequest(DjvuWorkerProtocol.EncodePageRequest(3, 1_000_000), 5);
+            Check("djvu protocol: the page request round-trips and its pixel cap is clamped", pi == 3 && pmax == 1_000_000 &&
+                DjvuWorkerProtocol.DecodePageRequest(DjvuWorkerProtocol.EncodePageRequest(0, long.MaxValue), 5).MaxPixels == DjvuPnm.MaxPixels, "");
+            Check("djvu protocol hostile: a page request out of range or with no pixels is refused",
+                Bad(() => DjvuWorkerProtocol.DecodePageRequest(DjvuWorkerProtocol.EncodePageRequest(5, 10), 5)) &&
+                Bad(() => DjvuWorkerProtocol.DecodePageRequest(DjvuWorkerProtocol.EncodePageRequest(-1, 10), 5)) &&
+                Bad(() => DjvuWorkerProtocol.DecodePageRequest(DjvuWorkerProtocol.EncodePageRequest(0, 0), 5)), "");
+            Check("djvu protocol: the text request round-trips and is range checked", DjvuWorkerProtocol.DecodeTextRequest(DjvuWorkerProtocol.EncodeTextRequest(4), 5) == 4 &&
+                Bad(() => DjvuWorkerProtocol.DecodeTextRequest(DjvuWorkerProtocol.EncodeTextRequest(5), 5)), "");
+
+            foreach (var (kind, w, h) in new[] { (DjvuPageKind.Bitonal, 10, 3), (DjvuPageKind.Gray, 7, 2), (DjvuPageKind.Color, 5, 4) })
+            {
+                var data = new byte[DjvuWorkerProtocol.RasterBytes(kind, w, h)];
+                for (int i = 0; i < data.Length; i++) data[i] = (byte)(i * 7 + 1);
+                var r = DjvuWorkerProtocol.DecodePageReply(DjvuWorkerProtocol.EncodePageReply(new DjvuRaster(kind, w, h, data)));
+                Check($"djvu protocol: a {kind} page picture round-trips", r.Kind == kind && r.Width == w && r.Height == h && r.Data.SequenceEqual(data), "");
+                var streamed = new MemoryStream();
+                DjvuWorkerProtocol.WritePageReply(streamed, kind, w, h, data);
+                streamed.Position = 0;
+                var (sft, sfp) = DjvuWorkerProtocol.ReadFrame(streamed, 10_000);
+                Check($"djvu protocol: a {kind} picture written straight from its buffer reads back the same", sft == DjvuFrame.Page && DjvuWorkerProtocol.DecodePageReply(sfp).Data.SequenceEqual(data), "");
+            }
+            var okPic = DjvuWorkerProtocol.EncodePageReply(new DjvuRaster(DjvuPageKind.Gray, 2, 2, new byte[4]));
+            var shortPic = okPic.Take(okPic.Length - 1).ToArray();
+            var bigPic = okPic.Concat(new byte[] { 0 }).ToArray();
+            var badKind = (byte[])okPic.Clone(); badKind[0] = 9;
+            var huge = (byte[])okPic.Clone(); BitConverter.TryWriteBytes(huge.AsSpan(1), 100_000); BitConverter.TryWriteBytes(huge.AsSpan(5), 100_000);
+            var neg = (byte[])okPic.Clone(); BitConverter.TryWriteBytes(neg.AsSpan(1), -4);
+            Check("djvu protocol hostile: a picture that is short, long, of an unknown kind, absurdly large or of negative size is refused",
+                Bad(() => DjvuWorkerProtocol.DecodePageReply(shortPic)) && Bad(() => DjvuWorkerProtocol.DecodePageReply(bigPic)) && Bad(() => DjvuWorkerProtocol.DecodePageReply(badKind)) &&
+                Bad(() => DjvuWorkerProtocol.DecodePageReply(huge)) && Bad(() => DjvuWorkerProtocol.DecodePageReply(neg)) && Bad(() => DjvuWorkerProtocol.DecodePageReply(new byte[3])), "");
+
+            string reason = DjvuWorkerProtocol.DecodeError(Encoding.UTF8.GetBytes("bad\u0007 thing\r\nsecond line"));
+            Check("djvu protocol: an error reason has its control characters taken out and is bounded",
+                reason == "bad  thing  second line" && DjvuWorkerProtocol.DecodeError(Encoding.UTF8.GetBytes(new string('x', 5000))).Length == DjvuWorkerProtocol.MaxErrorChars
+                && DjvuWorkerProtocol.EncodeError(new string('y', 5000)).Length == DjvuWorkerProtocol.MaxErrorChars, reason);
+
+            // What the worker sends for hidden text is the library's own printout, UTF-8 bytes; the parent's parsers read it as before.
+            byte[] sexpBytes = Encoding.UTF8.GetBytes("(page 0 0 300 200 (word 10 150 80 180 \"Café\"))");
+            var wordsFromWorker = DjvuText.ParsePageText(DjvuWorkerProtocol.DecodeSexp(sexpBytes), 200);
+            Check("djvu protocol: text printed by the library as UTF-8 reads back with its accents", wordsFromWorker.Count == 1 && wordsFromWorker[0].Text == "Café", string.Join("|", wordsFromWorker));
+        }
+
+        // ── the worker's command line ───────────────────────────────────────────────────────
+        Check("djvu worker launch: exactly '--djvu-worker 1' is a worker launch", DjvuWorkerProtocol.IsWorkerLaunch(new[] { "--djvu-worker", "1" }) &&
+              DjvuWorkerProtocol.IsWorkerLaunch(DjvuWorkerProtocol.WorkerArguments()), "");
+        Check("djvu worker launch: anything else is the normal app (no arguments, a file, another version, extra arguments, wrong case, a typo)",
+              !DjvuWorkerProtocol.IsWorkerLaunch(Array.Empty<string>()) && !DjvuWorkerProtocol.IsWorkerLaunch(new[] { "--djvu-worker" }) &&
+              !DjvuWorkerProtocol.IsWorkerLaunch(new[] { "--djvu-worker", "2" }) && !DjvuWorkerProtocol.IsWorkerLaunch(new[] { "--djvu-worker", "1", "x" }) &&
+              !DjvuWorkerProtocol.IsWorkerLaunch(new[] { "--DJVU-WORKER", "1" }) && !DjvuWorkerProtocol.IsWorkerLaunch(new[] { "--djvu-worker=1" }) &&
+              !DjvuWorkerProtocol.IsWorkerLaunch(new[] { "book.djvu", "1" }) && !DjvuWorkerProtocol.IsWorkerLaunch(new[] { "1", "--djvu-worker" }), "");
+
+        // ── the bundled DLLs: pinned, the right set, nothing else, and self-contained ──────
+        {
+            string? root = AppContext.BaseDirectory;
+            while (root is not null && !File.Exists(Path.Combine(root, "TDPdf.csproj"))) root = Path.GetDirectoryName(root);
+            string dir = root is null ? "" : Path.Combine(root, "third_party", "djvulibre");
+            string win = Path.Combine(dir, "win-x64");
+            if (root is null || !Directory.Exists(win)) Check("djvu bundle: third_party/djvulibre/win-x64 is in the source tree", false, "not found");
+            else
+            {
+                var files = Directory.GetFiles(win).Select(Path.GetFileName).Select(f => f!).OrderBy(f => f, StringComparer.Ordinal).ToList();
+                Check("djvu bundle: the folder holds exactly the five library DLLs, no programs",
+                    files.SequenceEqual(DjvuNativeBootstrap.LibraryNames.OrderBy(f => f, StringComparer.Ordinal)) && !files.Any(f => f.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)), string.Join(",", files));
+                var pins = File.ReadAllLines(Path.Combine(dir, "SHA256SUMS")).Where(l => l.Trim().Length > 0)
+                    .Select(l => (Hash: l[..64], Name: l[66..])).ToDictionary(p => p.Name, p => p.Hash, StringComparer.Ordinal);
+                bool pinned = pins.Count == files.Count && files.All(f => pins.TryGetValue(f, out var h) &&
+                    string.Equals(h, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(win, f)))), StringComparison.OrdinalIgnoreCase));
+                Check("djvu bundle: every file matches its SHA-256 in SHA256SUMS, and nothing else is pinned", pinned, "");
+
+                // The import closure: every DLL a bundled DLL imports is another bundled DLL or part of Windows.
+                var set = new HashSet<string>(files, StringComparer.OrdinalIgnoreCase);
+                var problems = new List<string>();
+                foreach (string f in files)
+                {
+                    var pe = PeImports.Read(File.ReadAllBytes(Path.Combine(win, f)));
+                    if (pe.Machine != 0x8664) problems.Add(f + " is not x64");
+                    foreach (string imp in pe.Imports)
+                        if (!set.Contains(imp) && !PeImports.IsWindowsSystemLibrary(imp)) problems.Add($"{f} imports {imp}");
+                }
+                Check("djvu bundle: the DLLs are x64 and import only each other and Windows system libraries", problems.Count == 0, string.Join("; ", problems));
+                var main = PeImports.Read(File.ReadAllBytes(Path.Combine(win, DjvuNativeBootstrap.MainLibrary)));
+                Check("djvu bundle: the library's own imports include the runtime DLLs the bundle carries", main.Imports.Contains("libjpeg-8.dll", StringComparer.OrdinalIgnoreCase) &&
+                      main.Imports.Contains("libstdc++-6.dll", StringComparer.OrdinalIgnoreCase) && main.Imports.Contains("libgcc_s_seh-1.dll", StringComparer.OrdinalIgnoreCase), string.Join(",", main.Imports));
+                var lic = Path.Combine(dir, "licenses");
+                Check("djvu bundle: SOURCES.md and the licence texts are present",
+                    File.Exists(Path.Combine(dir, "SOURCES.md")) && new[] { "djvulibre/COPYING", "libjpeg-turbo/LICENSE.md", "gcc-runtime/COPYING3", "gcc-runtime/COPYING.RUNTIME", "winpthreads/COPYING" }
+                        .All(p => File.Exists(Path.Combine(lic, p))), "");
+                string sources = File.ReadAllText(Path.Combine(dir, "SOURCES.md"));
+                Check("djvu bundle: SOURCES.md names every bundled DLL", DjvuNativeBootstrap.LibraryNames.All(n => sources.Contains(n, StringComparison.Ordinal)), "");
+            }
+            var hostile = new byte[] { (byte)'M', (byte)'Z', 0, 0 };
+            bool refused = false;
+            try { PeImports.Read(hostile); } catch (InvalidDataException) { refused = true; }
+            Check("djvu bundle: the import reader refuses a file that is not a PE image", refused, "");
+        }
+
+        // ── the worker process: a stand-in for TDPdf.exe --djvu-worker (this program, --fake-djvu-worker) ──
+        {
+            DjvuWorkerLaunch Fake(string mode)
+            {
+                string exe = Environment.ProcessPath!;
+                var args = new List<string>();
+                if (Path.GetFileNameWithoutExtension(exe).Equals("dotnet", StringComparison.OrdinalIgnoreCase)) args.Add(System.Reflection.Assembly.GetEntryAssembly()!.Location);
+                args.Add("--fake-djvu-worker"); args.Add(mode);
+                return new DjvuWorkerLaunch(exe, args, TestHostEnvironment());
+            }
+            var quick = new DjvuProcessLimits(TimeSpan.FromSeconds(30), 10_000_000, 0);
+            var hangs = new DjvuProcessLimits(TimeSpan.FromMilliseconds(1500), 10_000_000, 0);
+            var capped = new DjvuProcessLimits(TimeSpan.FromSeconds(30), 2_000, 0);
+
+            using (var d = DjvuLibreDecoder.Open(Fake("ok"), "/books/a.djvu", CancellationToken.None, quick, quick))
+            {
+                Check("djvu worker: pages, sizes and names come from the worker", d.PageCount == 3 && d.GetPageInfo(0) == new DjvuPageInfo(160, 40, 300) && d.GetPageInfo(2).Dpi == 100, "");
+                var bit = d.Render(0, 1_000_000, CancellationToken.None);
+                var col = d.Render(1, 1_000_000, CancellationToken.None);
+                Check("djvu worker: a page renders (bitonal and colour)", bit.Kind == DjvuPageKind.Bitonal && bit.Width == 160 && bit.Data.Length == 20 * 40 && bit.Data[0] == 0xAA &&
+                      col.Kind == DjvuPageKind.Color && col.Data.Length == 160 * 40 * 3 && col.Data[0] == 200, $"{bit.Kind} {col.Kind}");
+                var w = d.GetWords(0);
+                Check("djvu worker: the hidden text arrives and parses", w.Count == 1 && w[0].Text == "Café" && w[0].Top == 10, string.Join("|", w));
+                var o = d.GetOutline();
+                Check("djvu worker: the outline arrives, with a page name resolved to its page", o.Count == 2 && o[0].Title == "Start" && o[0].PageIndex == 0 && o[1].PageIndex == 2, string.Join("|", o.Select(x => x.Title)));
+                bool outOfRange = false;
+                try { d.Render(3, 1000, CancellationToken.None); } catch (InvalidDataException) { outOfRange = true; }
+                Check("djvu worker: a request the worker refuses (page out of range) fails alone, and the same worker still renders", outOfRange && d.Render(0, 1_000_000, CancellationToken.None).Width == 160, "");
+                var res = DjvuToPdf.Convert(d, Path.Combine(tmp, "djvu-worker.pdf"), null, null, CancellationToken.None);
+                Check("djvu worker: a whole book converts to a PDF through the worker", res.Pages == 3 && File.Exists(Path.Combine(tmp, "djvu-worker.pdf")), "");
+            }
+
+            using (var d = DjvuLibreDecoder.Open(Fake("error-on-page:1"), "/books/a.djvu", CancellationToken.None, quick, quick))
+            {
+                bool failed = false;
+                try { d.Render(1, 1_000_000, CancellationToken.None); } catch (InvalidDataException ex) { failed = ex.Message.Contains("cannot decode"); }
+                var next = d.Render(0, 1_000_000, CancellationToken.None);
+                Check("djvu worker: a page the worker reports as undecodable fails that page only, and the worker stays", failed && next.Width == 160, "");
+            }
+
+            using (var d = DjvuLibreDecoder.Open(Fake("die-on-page:1"), "/books/a.djvu", CancellationToken.None, quick, quick))
+            {
+                bool died = false;
+                try { d.Render(1, 1_000_000, CancellationToken.None); } catch (IOException) { died = true; }
+                var next = d.Render(0, 1_000_000, CancellationToken.None);
+                Check("djvu worker: a crash fails that page; the next request starts a fresh worker and reopens the book", died && next.Width == 160, "");
+                var conv = DjvuToPdf.Convert(d, Path.Combine(tmp, "djvu-crashpage.pdf"), null, null, CancellationToken.None);
+                Check("djvu worker: a book with a page that crashes the worker converts with that page blank and says so", conv.Pages == 3 && conv.Notices.Any(n => n.Contains("could not be read")), string.Join("|", conv.Notices));
+            }
+
+            using (var d = DjvuLibreDecoder.Open(Fake("hang-on-page:1"), "/books/a.djvu", CancellationToken.None, hangs, quick))
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                bool timedOut = false;
+                try { d.Render(1, 1_000_000, CancellationToken.None); } catch (TimeoutException) { timedOut = true; }
+                var el = sw.Elapsed;
+                var next = d.Render(0, 1_000_000, CancellationToken.None);
+                Check("djvu worker: a hang is killed at the time limit and the next page works", timedOut && el < TimeSpan.FromSeconds(15) && next.Width == 160, $"{el}");
+            }
+
+            using (var cts = new CancellationTokenSource())
+            using (var d = DjvuLibreDecoder.Open(Fake("hang-on-page:1"), "/books/a.djvu", CancellationToken.None, quick, quick))
+            {
+                cts.CancelAfter(500);
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                bool canceled = false;
+                try { d.Render(1, 1_000_000, cts.Token); } catch (OperationCanceledException) { canceled = true; }
+                Check("djvu worker: cancelling kills the worker at once", canceled && sw.Elapsed < TimeSpan.FromSeconds(15), $"{sw.Elapsed}");
+            }
+
+            using (var d = DjvuLibreDecoder.Open(Fake("big-on-page:1"), "/books/a.djvu", CancellationToken.None, capped, quick))
+            {
+                bool refused = false;
+                try { d.Render(1, 1_000_000, CancellationToken.None); } catch (IOException) { refused = true; }
+                Check("djvu worker: an answer bigger than the cap is refused without reading it", refused, "");
+            }
+
+            using (var d = DjvuLibreDecoder.Open(Fake("junk-on-page:1"), "/books/a.djvu", CancellationToken.None, quick, quick))
+            {
+                bool refused = false;
+                try { d.Render(1, 1_000_000, CancellationToken.None); } catch (IOException) { refused = true; }
+                Check("djvu worker: output that is not the protocol fails the request", refused, "");
+            }
+
+            using (var d = DjvuLibreDecoder.Open(Fake("die-on-every-page"), "/books/a.djvu", CancellationToken.None, quick, quick))
+            {
+                int failedPages = 0; bool opened = false;
+                for (int i = 0; i < 3; i++) { try { d.Render(i, 1_000_000, CancellationToken.None); } catch (IOException) { failedPages++; } catch (BookConversionException) { opened = true; } }
+                bool sticky = false;
+                try { d.Render(0, 1_000_000, CancellationToken.None); } catch (BookConversionException) { sticky = true; }
+                Check("djvu worker: three crashes in a row make the whole book unreadable, with the plain message, and it stays that way",
+                      failedPages == 2 && opened && sticky, $"{failedPages} {opened} {sticky}");
+                bool abortsConversion = false; string msg = "";
+                try { DjvuToPdf.Convert(d, Path.Combine(tmp, "djvu-allcrash.pdf"), null, null, CancellationToken.None); } catch (BookConversionException ex) { abortsConversion = true; msg = ex.Message; }
+                Check("djvu worker: a book that keeps crashing the worker stops the conversion with 'couldn't be opened'", abortsConversion && msg.Contains("couldn't be opened") && !File.Exists(Path.Combine(tmp, "djvu-allcrash.pdf")), msg);
+            }
+
+            string OpenMessage(string mode, DjvuProcessLimits? lim = null)
+            {
+                try { using var d = DjvuLibreDecoder.Open(Fake(mode), "/books/a.djvu", CancellationToken.None, quick, lim ?? quick); return "opened"; }
+                catch (BookConversionException ex) { return ex.Message; }
+                catch (Exception ex) { return "WRONG " + ex.GetType().Name; }
+            }
+            Check("djvu worker: a worker that dies at once is 'this DjVu file couldn't be opened'", OpenMessage("die-at-start") == DjvuLibreDecoder.CouldNotOpen, OpenMessage("die-at-start"));
+            Check("djvu worker: a worker that never says hello is given up on at the time limit",
+                OpenMessage("silent-at-start", new DjvuProcessLimits(TimeSpan.FromMilliseconds(800), 1000, 0)) == DjvuLibreDecoder.CouldNotOpen, "");
+            Check("djvu worker: a worker that says something other than hello is refused", OpenMessage("bad-hello") == DjvuLibreDecoder.CouldNotOpen, OpenMessage("bad-hello"));
+            Check("djvu worker: junk instead of the open reply is refused", OpenMessage("junk-on-open") == DjvuLibreDecoder.CouldNotOpen, OpenMessage("junk-on-open"));
+            string notDjvu = OpenMessage("error-on-open");
+            Check("djvu worker: the library's own reason is added to the plain message", notDjvu.StartsWith(DjvuLibreDecoder.CouldNotOpen, StringComparison.Ordinal) && notDjvu.Contains("not a DjVu"), notDjvu);
+            bool noExe = false;
+            try { DjvuLibreDecoder.Open(new DjvuWorkerLaunch("/no/such/worker", new[] { "x" }), "/books/a.djvu", CancellationToken.None); } catch (BookConversionException) { noExe = true; }
+            Check("djvu worker: a worker that cannot be started is 'couldn't be opened'", noExe, "");
+            using var preCancel = new CancellationTokenSource(); preCancel.Cancel();
+            bool preCanceled = false;
+            try { DjvuLibreDecoder.Open(Fake("ok"), "/books/a.djvu", preCancel.Token); } catch (OperationCanceledException) { preCanceled = true; }
+            Check("djvu worker: opening an already cancelled request starts nothing", preCanceled, "");
+        }
+
+        // The test program is a framework-dependent app, which finds its runtime through DOTNET_ROOT; the real worker is TDPdf.exe, self-contained.
+        static Dictionary<string, string> TestHostEnvironment()
+        {
+            string rt = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory().TrimEnd(Path.DirectorySeparatorChar);
+            string? root = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(rt)));
+            return root is null ? new() : new() { ["DOTNET_ROOT"] = root };
+        }
+
+        // The worker's environment: a nearly empty one, so a book (or a bug) cannot reach the user's.
         if (!OperatingSystem.IsWindows())
         {
-            var lim = new DjvuProcessLimits(TimeSpan.FromSeconds(10), 1_000_000, 0);
-            var ok = DjvuProcess.Run("/bin/sh", new[] { "-c", "printf hi; printf oops 1>&2; exit 3" }, lim, CancellationToken.None);
-            Check("djvu process: exit code, stdout and stderr come back", ok.ExitCode == 3 && Encoding.ASCII.GetString(ok.Stdout) == "hi" && ok.Stderr == "oops", $"{ok.ExitCode}");
-            bool timedOut = false; var sw = System.Diagnostics.Stopwatch.StartNew();
-            try { DjvuProcess.Run("/bin/sh", new[] { "-c", "sleep 30" }, new DjvuProcessLimits(TimeSpan.FromMilliseconds(500), 1000, 0), CancellationToken.None); }
-            catch (TimeoutException) { timedOut = true; }
-            Check("djvu process: a hang is killed at the time limit", timedOut && sw.Elapsed < TimeSpan.FromSeconds(8), $"{sw.Elapsed}");
-            bool big = false;
-            try { DjvuProcess.Run("/bin/sh", new[] { "-c", "head -c 5000000 /dev/zero" }, new DjvuProcessLimits(TimeSpan.FromSeconds(20), 100_000, 0), CancellationToken.None); }
-            catch (InvalidDataException) { big = true; }
-            Check("djvu process: output past the cap stops the process", big, "");
-            using var cts = new CancellationTokenSource(300);
-            bool canceled = false; sw.Restart();
-            try { DjvuProcess.Run("/bin/sh", new[] { "-c", "sleep 30" }, new DjvuProcessLimits(TimeSpan.FromSeconds(60), 1000, 0), cts.Token); }
-            catch (OperationCanceledException) { canceled = true; }
-            Check("djvu process: cancelling kills the child", canceled && sw.Elapsed < TimeSpan.FromSeconds(8), $"{sw.Elapsed}");
-            bool missing = false;
-            try { DjvuProcess.Run("/no/such/ddjvu", Array.Empty<string>(), lim, CancellationToken.None); } catch (IOException) { missing = true; }
-            Check("djvu process: a missing program is an IOException with a message", missing, "");
-            var env = DjvuProcess.Run("/usr/bin/env", Array.Empty<string>(), lim, CancellationToken.None);
-            string envText = Encoding.ASCII.GetString(env.Stdout);
-            Check("djvu process: the child gets a nearly empty environment", !envText.Contains("HOME=") && !envText.Contains("USER="), envText.Replace('\n', ' '));
+            string exe = Environment.ProcessPath!;
+            var eargs = new List<string>();
+            if (Path.GetFileNameWithoutExtension(exe).Equals("dotnet", StringComparison.OrdinalIgnoreCase)) eargs.Add(System.Reflection.Assembly.GetEntryAssembly()!.Location);
+            eargs.Add("--fake-djvu-worker"); eargs.Add("ok");
+            var lim = new DjvuProcessLimits(TimeSpan.FromSeconds(30), 10_000_000, 0);
+            using var d = DjvuLibreDecoder.Open(new DjvuWorkerLaunch(exe, eargs, TestHostEnvironment()), "/books/a.djvu", CancellationToken.None, lim, lim);
+            string envText = d.GetWords(2).FirstOrDefault().Text ?? "";
+            Check("djvu worker: the child gets a nearly empty environment (no HOME, no USER)", envText.StartsWith("home=unset user=unset", StringComparison.Ordinal) && envText.Contains("temp=set"), envText);
         }
-        else Console.WriteLine("  (process launcher limits are exercised on macOS and Linux)");
+        else Console.WriteLine("  (the worker process is exercised on macOS and Linux)");
 
         // ── the PDF pipeline, with a fake decoder ───────────────────────────────────────────
         {
@@ -263,49 +523,145 @@ internal static class DjvuTests
             Check("djvu pdf: a book with no pages is refused", empty, "");
         }
 
-        // ── against the real DjVuLibre, when this machine has it ───────────────────────────
-        string? ddjvu = Which("ddjvu"), djvused = Which("djvused");
-        string fixture = Path.Combine(AppContext.BaseDirectory, "fixtures", "book.djvu");
-        if (ddjvu is null || djvused is null || !File.Exists(fixture))
+        // ── the real library ────────────────────────────────────────────────────────────────
+        // DjVuLibre is bundled as Windows DLLs (third_party/djvulibre/win-x64), loaded only by the worker
+        // process (TDPdf.exe --djvu-worker), so no check here opens a real book: on this machine the real
+        // decode cannot run. What is checked above is everything around it: the wire protocol, the
+        // launcher's limits and recovery, and that the bundled files are the pinned, self-contained set.
+        // tests/PdfCore/fixtures/book.djvu is a two-page book for a run on Windows.
+        Console.WriteLine("  SKIP  djvu real decode: the library is Windows-only; the checks above cover the protocol, the launcher and the bundle");
+    }
+}
+
+/// <summary>
+/// A stand-in for <c>TDPdf.exe --djvu-worker</c>: this test program started with <c>--fake-djvu-worker &lt;mode&gt;</c>.
+/// It speaks the real protocol (<see cref="DjvuWorkerProtocol"/>) over stdin and stdout with made-up pages, and
+/// can misbehave on cue, so the parent's limits and recovery are tested with real child processes.
+/// </summary>
+internal static class DjvuFakeWorker
+{
+    public static int Run(string mode)
+    {
+        string kind = mode.Split(':')[0];
+        int target = mode.Contains(':') ? int.Parse(mode.Split(':')[1]) : -1;
+        using var input = Console.OpenStandardInput();
+        using var output = Console.OpenStandardOutput();
+        if (kind == "die-at-start") return 9;
+        if (kind == "silent-at-start") { Thread.Sleep(60_000); return 0; }
+        if (kind == "bad-hello")
         {
-            Console.WriteLine("  SKIP  djvu real tools: DjVuLibre (ddjvu, djvused) not found on this machine; the checks below did not run");
+            var h = DjvuWorkerProtocol.EncodeHello(); h[4] = 99;
+            DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Hello, h);
+            Thread.Sleep(60_000);
+            return 0;
         }
-        else
+        DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Hello, DjvuWorkerProtocol.EncodeHello());
+        var pages = new[] { new DjvuPageInfo(160, 40, 300), new DjvuPageInfo(160, 40, 150), new DjvuPageInfo(160, 40, 100) };
+        while (true)
         {
-            using var dec = DjvuLibreDecoder.Open(new DjvuTools(ddjvu, djvused), fixture, CancellationToken.None);
-            Check("djvu real: page count and sizes from djvused", dec.PageCount == 2 && dec.GetPageInfo(0) == new DjvuPageInfo(300, 200, 300) && dec.GetPageInfo(1).Dpi == 150, "");
-            var r0 = dec.Render(0, 100_000_000, CancellationToken.None);
-            var r1 = dec.Render(1, 100_000_000, CancellationToken.None);
-            Check("djvu real: a bitonal page comes back as 1-bit, a colour page as RGB", r0.Kind == DjvuPageKind.Bitonal && r0.Width == 300 && r1.Kind == DjvuPageKind.Color && r1.Data.Length == 300 * 200 * 3, $"{r0.Kind} {r1.Kind}");
-            var rs = dec.Render(0, 150 * 100, CancellationToken.None);
-            Check("djvu real: a page over the pixel cap is rendered smaller", rs.Width * rs.Height <= 150 * 100 + 300 && rs.Width < 300, $"{rs.Width}x{rs.Height}");
-            var w = dec.GetWords(0);
-            Check("djvu real: hidden text with UTF-8 and escapes", w.Count == 2 && w[0].Text == "Café" && w[1].Text == "a\"b\\c éx", string.Join("|", w.Select(x => x.Text)));
-            var o = dec.GetOutline();
-            Check("djvu real: outline", o.Count == 2 && o[0].Title == "Chapter \"One\"" && o[0].Children[0].Title == "Sub é" && o[0].Children[0].PageIndex == 1 && o[1].PageIndex == 1, string.Join("|", o.Select(x => x.Title)));
-
-            string outPdf = Path.Combine(tmp, "djvu-real.pdf");
-            var res = DjvuToPdf.Convert(dec, outPdf, null, null, CancellationToken.None);
-            using (var pig = UglyToad.PdfPig.PdfDocument.Open(outPdf))
-                Check("djvu real: converts to a PDF with searchable text", res.Pages == 2 && pig.GetPage(1).GetWords().Any(x => x.Text == "Café"), "");
-
-            // A file that is not DjVu is refused with a reason, and a truncated one does not hang or crash anything.
-            string junk = Path.Combine(tmp, "junk.djvu");
-            File.WriteAllText(junk, "garbage");
-            bool refused = false;
-            try { DjvuLibreDecoder.Open(new DjvuTools(ddjvu, djvused), junk, CancellationToken.None); } catch (BookConversionException) { refused = true; }
-            Check("djvu real: a file that is not DjVu is refused", refused, "");
-            string cut = Path.Combine(tmp, "cut.djvu");
-            File.WriteAllBytes(cut, File.ReadAllBytes(fixture).Take(150).ToArray());
-            bool survived;
-            try
+            (DjvuFrame type, byte[] payload) f;
+            try { f = DjvuWorkerProtocol.ReadFrame(input, DjvuWorkerProtocol.MaxRequestBytes); } catch (EndOfStreamException) { return 0; }
+            switch (f.type)
             {
-                using var d2 = DjvuLibreDecoder.Open(new DjvuTools(ddjvu, djvused), cut, CancellationToken.None);
-                var r = DjvuToPdf.Convert(d2, Path.Combine(tmp, "djvu-cut.pdf"), null, null, CancellationToken.None);
-                survived = r.Pages >= 1;
+                case DjvuFrame.Quit: return 0;
+                case DjvuFrame.Open:
+                    DjvuWorkerProtocol.DecodeOpenRequest(f.payload);
+                    if (kind == "junk-on-open") { output.Write(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }); output.Flush(); break; }
+                    if (kind == "error-on-open") { DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Error, DjvuWorkerProtocol.EncodeError("this is not a DjVu document")); break; }
+                    DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Open, DjvuWorkerProtocol.EncodeOpenReply(new DjvuBookHeader(pages,
+                        new Dictionary<string, int> { ["a.djvu"] = 0, ["b.djvu"] = 1, ["c.djvu"] = 2 })));
+                    break;
+                case DjvuFrame.Page:
+                {
+                    int i;
+                    try { (i, _) = DjvuWorkerProtocol.DecodePageRequest(f.payload, pages.Length); }
+                    catch (InvalidDataException ex) { DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Error, DjvuWorkerProtocol.EncodeError(ex.Message)); break; }
+                    if (kind == "die-on-every-page" || (kind == "die-on-page" && i == target)) return 7;
+                    if (kind == "hang-on-page" && i == target) { Thread.Sleep(60_000); return 0; }
+                    if (kind == "error-on-page" && i == target) { DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Error, DjvuWorkerProtocol.EncodeError("cannot decode page")); break; }
+                    if (kind == "big-on-page" && i == target) { output.Write(new byte[] { 0xD7, (byte)DjvuFrame.Page, 0x40, 0x4B, 0x4C, 0x00 }); output.Flush(); Thread.Sleep(60_000); return 0; }
+                    if (kind == "junk-on-page" && i == target) { output.Write(new byte[100]); output.Flush(); break; }
+                    if (i == 0)
+                    {
+                        var bits = new byte[20 * 40]; Array.Fill(bits, (byte)0xAA);
+                        DjvuWorkerProtocol.WritePageReply(output, DjvuPageKind.Bitonal, 160, 40, bits);
+                    }
+                    else
+                    {
+                        var rgb = new byte[160 * 40 * 3]; Array.Fill(rgb, (byte)200);
+                        DjvuWorkerProtocol.WritePageReply(output, DjvuPageKind.Color, 160, 40, rgb);
+                    }
+                    break;
+                }
+                case DjvuFrame.Text:
+                {
+                    int i = DjvuWorkerProtocol.DecodeTextRequest(f.payload, pages.Length);
+                    string word = i == 2
+                        ? $"home={(Environment.GetEnvironmentVariable("HOME") is null ? "unset" : "set")} user={(Environment.GetEnvironmentVariable("USER") is null ? "unset" : "set")} temp={(Environment.GetEnvironmentVariable("TEMP") is null ? "unset" : "set")}"
+                        : "Café";
+                    DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Text, Encoding.UTF8.GetBytes($"(page 0 0 160 40 (word 10 10 80 30 \"{word}\"))"));
+                    break;
+                }
+                case DjvuFrame.Outline:
+                    DjvuWorkerProtocol.WriteFrame(output, DjvuFrame.Outline, Encoding.UTF8.GetBytes("(bookmarks (\"Start\" \"#1\") (\"End\" \"#c.djvu\"))"));
+                    break;
+                default: return 8;
             }
-            catch (BookConversionException) { survived = true; }
-            Check("djvu real: a truncated book either opens with blank pages or is refused, never hangs", survived, "");
+        }
+    }
+}
+
+/// <summary>
+/// A small reader for the import table of a Windows DLL (PE32+), used to check that the bundled DjVuLibre
+/// DLLs import only each other and Windows system libraries. Reads normal and delay-load imports.
+/// </summary>
+internal static class PeImports
+{
+    internal sealed record Result(int Machine, IReadOnlyList<string> Imports);
+
+    internal static bool IsWindowsSystemLibrary(string name)
+    {
+        string n = name.ToLowerInvariant();
+        return n.StartsWith("api-ms-win-", StringComparison.Ordinal) || n is "kernel32.dll" or "advapi32.dll" or "user32.dll" or "ws2_32.dll"
+            or "msvcrt.dll" or "ucrtbase.dll" or "ntdll.dll" or "shell32.dll" or "ole32.dll" or "oleaut32.dll" or "bcrypt.dll" or "crypt32.dll";
+    }
+
+    internal static Result Read(byte[] d)
+    {
+        try
+        {
+            if (d.Length < 0x40 || d[0] != 'M' || d[1] != 'Z') throw new InvalidDataException("not an MZ image");
+            int pe = BitConverter.ToInt32(d, 0x3C);
+            if (pe < 0 || pe + 24 > d.Length || d[pe] != 'P' || d[pe + 1] != 'E' || d[pe + 2] != 0 || d[pe + 3] != 0) throw new InvalidDataException("not a PE image");
+            int machine = BitConverter.ToUInt16(d, pe + 4), nsec = BitConverter.ToUInt16(d, pe + 6), optSize = BitConverter.ToUInt16(d, pe + 20);
+            int opt = pe + 24;
+            if (BitConverter.ToUInt16(d, opt) != 0x20B) throw new InvalidDataException("not PE32+");
+            int dirs = opt + 112;
+            var secs = new List<(uint Va, uint Size, uint Raw)>();
+            for (int i = 0; i < nsec; i++)
+            {
+                int o = opt + optSize + i * 40;
+                uint vs = BitConverter.ToUInt32(d, o + 8), va = BitConverter.ToUInt32(d, o + 12), rawSize = BitConverter.ToUInt32(d, o + 16), raw = BitConverter.ToUInt32(d, o + 20);
+                secs.Add((va, Math.Max(vs, rawSize), raw));
+            }
+            int Rva(uint r)
+            {
+                foreach (var (va, size, raw) in secs) if (r >= va && r < va + size) return (int)(raw + (r - va));
+                throw new InvalidDataException("bad RVA");
+            }
+            string Str(int o) { int e = Array.IndexOf(d, (byte)0, o); return Encoding.ASCII.GetString(d, o, e - o); }
+            var names = new List<string>();
+            uint imp = BitConverter.ToUInt32(d, dirs + 8);
+            if (imp != 0)
+                for (int o = Rva(imp); BitConverter.ToUInt32(d, o + 12) != 0; o += 20) names.Add(Str(Rva(BitConverter.ToUInt32(d, o + 12))));
+            uint delay = BitConverter.ToUInt32(d, dirs + 13 * 8);
+            if (delay != 0)
+                for (int o = Rva(delay); BitConverter.ToUInt32(d, o + 4) != 0; o += 32) names.Add(Str(Rva(BitConverter.ToUInt32(d, o + 4))));
+            return new Result(machine, names.Distinct(StringComparer.OrdinalIgnoreCase).ToList());
+        }
+        catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException or OverflowException)
+        {
+            throw new InvalidDataException("not a readable PE image", ex);
         }
     }
 }

@@ -21,8 +21,10 @@
         lcms, OpenJPEG, zlib, libjpeg-turbo, IJG and ICU. No scanner will find it.
       * leptonica and the tesseract engine are EmbeddedResource blobs in TDPdf.csproj,
         extracted at runtime. They have no package metadata at all.
-      * ddjvu.exe and djvused.exe (DjVuLibre, GPL-2.0-or-later) are EmbeddedResource files when
-        third_party/djvulibre/win-x64 is present at build time (TDPdf.csproj); no package metadata.
+      * The DjVuLibre library (libdjvulibre-21.dll, GPL-2.0-or-later) and the four runtime DLLs it
+        imports are EmbeddedResource files taken from MSYS2 packages (third_party/djvulibre/win-x64,
+        TDPdf.csproj); no package metadata. third_party/djvulibre/SOURCES.md names each package and
+        its source; the licence texts are read from third_party/djvulibre/licenses.
       * WebView2Loader.dll is likewise an EmbeddedResource (TDPdf.csproj excludes it as a
         package asset); its licence is the Microsoft.Web.WebView2 package's own BSD-3-Clause.
 
@@ -151,6 +153,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 # ── Emit ───────────────────────────────────────────────────────────────────────────────────
 
 $sb = [System.Text.StringBuilder]::new()
+# Licence texts of the DjVuLibre library bundle, copied from the MSYS2 packages (third_party/djvulibre/licenses).
+$djvuLicenses = Join-Path $repoRoot 'third_party/djvulibre/licenses'
+$gccRuntimeExceptionText = Get-Content -Raw -LiteralPath (Join-Path $djvuLicenses 'gcc-runtime/COPYING.RUNTIME')
+$libjpegTurboText        = Get-Content -Raw -LiteralPath (Join-Path $djvuLicenses 'libjpeg-turbo/LICENSE.md')
+$winpthreadsText         = Get-Content -Raw -LiteralPath (Join-Path $djvuLicenses 'winpthreads/COPYING')
+
 function Add-Line { param([string]$Text = '') ; [void]$sb.AppendLine($Text) }
 
 Add-Line '# Third-party notices for TDPdf'
@@ -202,7 +210,10 @@ Add-Line '| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 159.0.8138 | BSD
 Add-Line '| Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |'
 Add-Line '| Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |'
 Add-Line ('| Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | {0} | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |' -f $webView2Version)
-Add-Line '| DjVuLibre (`ddjvu.exe`, `djvused.exe`, run as separate programs) | version as shipped | GPL-2.0-or-later (see 1.4) | https://djvu.sourceforge.net/ |'
+Add-Line '| DjVuLibre library (`libdjvulibre-21.dll`) | 3.5.30 | GPL-2.0-or-later (see 1.4) | https://djvu.sourceforge.net/ |'
+Add-Line '| libjpeg-turbo (`libjpeg-8.dll`, used by DjVuLibre) | 3.2.1 | IJG and BSD-3-Clause (see 1.4) | https://libjpeg-turbo.org/ |'
+Add-Line '| GCC runtime (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`, used by DjVuLibre) | 16.2.0 | GPL-3.0-or-later with the GCC Runtime Library Exception (see 1.4) | https://gcc.gnu.org/ |'
+Add-Line '| winpthreads (`libwinpthread-1.dll`, used by DjVuLibre) | 14.0.0 (mingw-w64 e3d18511) | MIT and BSD-3-Clause (see 1.4) | https://www.mingw-w64.org/ |'
 Add-Line ''
 Add-Line '### 1.1 PDFium'
 Add-Line ''
@@ -234,15 +245,45 @@ Add-Line '```'
 Add-Line ''
 Add-Line '### 1.4 DjVuLibre'
 Add-Line ''
-Add-Line 'TDPdf opens DjVu books by running DjVuLibre''s `ddjvu.exe` and `djvused.exe` as separate'
-Add-Line 'programs, one page at a time; it does not link to them. A build that includes them carries'
-Add-Line 'the two programs and the libraries they need inside the executable and extracts them on first'
-Add-Line 'use; a build that does not uses a DjVuLibre installed under Program Files. DjVuLibre is by'
-Add-Line 'Leon Bottou, Yann LeCun and contributors and is licensed under the GNU General Public'
-Add-Line 'License, version 2 or (at your option) any later version, which is compatible with the'
-Add-Line 'GNU GPL version 3 that TDPdf is licensed under. Its licence is at'
-Add-Line 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html. The complete corresponding source of'
-Add-Line 'every DjVuLibre release is at https://sourceforge.net/projects/djvu/files/DjVuLibre/.'
+Add-Line 'TDPdf opens DjVu books with DjVuLibre''s library. It is not run as a program: `TDPdf.exe`'
+Add-Line 'starts a second copy of itself (`--djvu-worker`) that loads the library and calls it, so that a'
+Add-Line 'damaged book can crash only that copy. The library and the four runtime DLLs it needs are'
+Add-Line 'unchanged files from MSYS2''s UCRT64 packages, embedded in the executable and extracted on first'
+Add-Line 'use. DjVuLibre is by Leon Bottou, Yann LeCun and contributors and is licensed under the GNU'
+Add-Line 'General Public License, version 2 or (at your option) any later version, which is compatible'
+Add-Line 'with the GNU GPL version 3 that TDPdf is licensed under. Its licence is at'
+Add-Line 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html and in `third_party/djvulibre/licenses/`.'
+Add-Line ''
+Add-Line 'Corresponding source for what ships: each package below has an MSYS2 recipe, an upstream source'
+Add-Line 'archive and an MSYS2 source package. `third_party/djvulibre/SOURCES.md` in the TDPdf source lists'
+Add-Line 'them with exact versions and SHA-256 values; the same links are here.'
+Add-Line ''
+Add-Line '| Package (MSYS2 UCRT64) | DLL | Recipe | Upstream source | MSYS2 source package |'
+Add-Line '|---|---|---|---|---|'
+Add-Line '| mingw-w64-ucrt-x86_64-djvulibre 3.5.30-2 | `libdjvulibre-21.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-djvulibre | https://downloads.sourceforge.net/djvu/djvulibre-3.5.30.tar.gz | https://repo.msys2.org/mingw/sources/mingw-w64-djvulibre-3.5.30-2.src.tar.zst |'
+Add-Line '| mingw-w64-ucrt-x86_64-libjpeg-turbo 3.2.1-1 | `libjpeg-8.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-libjpeg-turbo | https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.1/libjpeg-turbo-3.2.1.tar.gz | https://repo.msys2.org/mingw/sources/mingw-w64-libjpeg-turbo-3.2.1-1.src.tar.zst |'
+Add-Line '| mingw-w64-ucrt-x86_64-libstdc++ 16.2.0-7 and mingw-w64-ucrt-x86_64-libgcc 16.2.0-7 | `libstdc++-6.dll`, `libgcc_s_seh-1.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc | https://ftp.gnu.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz | https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-7.src.tar.zst |'
+Add-Line '| mingw-w64-ucrt-x86_64-libwinpthread 14.0.0.r598.ge3d18511f-1 | `libwinpthread-1.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-winpthreads | https://sourceforge.net/p/mingw-w64/mingw-w64/ (commit e3d18511f9759d455cae20c34703eea4a0723cf3) | https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst |'
+Add-Line ''
+Add-Line 'The GCC runtime libraries are GPL-3.0-or-later with the GCC Runtime Library Exception 3.1, which'
+Add-Line 'permits combining them with programs under any licence; the full text of version 3 of the GPL is'
+Add-Line 'at https://www.gnu.org/licenses/gpl-3.0.html. The exception, as shipped with the package:'
+Add-Line ''
+Add-Line '```'
+Add-Line $gccRuntimeExceptionText.TrimEnd()
+Add-Line '```'
+Add-Line ''
+Add-Line 'libjpeg-turbo, as shipped with the package (`LICENSE.md`):'
+Add-Line ''
+Add-Line '```'
+Add-Line $libjpegTurboText.TrimEnd()
+Add-Line '```'
+Add-Line ''
+Add-Line 'winpthreads, as shipped with the package (`COPYING`):'
+Add-Line ''
+Add-Line '```'
+Add-Line $winpthreadsText.TrimEnd()
+Add-Line '```'
 Add-Line ''
 Add-Line '---'
 Add-Line ''
