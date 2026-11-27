@@ -1104,6 +1104,10 @@
                     </MenuItem>
                 </MenuItem>
                 <Separator/>
+                <!-- #224: lists and saves the files embedded in the PDF; never opens them. -->
+                <MenuItem Header="Attac_hments…"                                     Click="Attachments_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE723;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Document _Info…"   InputGestureText="F12"          Click="DocumentInfo_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE946;"/></MenuItem.Icon>
                 </MenuItem>

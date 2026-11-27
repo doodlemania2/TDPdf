@@ -185,6 +185,7 @@ ImageGuard.Run(Check, tmp);
 Raster.Run(Check, tmp, Geometry.RenderFirstPage);
 Flatten.Run(Check, tmp, Geometry.RenderFirstPage);
 FlattenDpi.Run(Check, tmp);
+AttachmentTests.Run(Check);
 Forms.Run(Check, tmp);
 FormSiblings.Run(Check, tmp);
 FieldChromeTests.Run(Check, tmp);

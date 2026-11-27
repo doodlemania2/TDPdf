@@ -285,6 +285,15 @@
       "sources": ["Services/TableExtractor.cs"]
     },
     {
+      "id": "attachments",
+      "name": "Save attached files",
+      "status": "ready",
+      "summary": "See the files attached to a PDF with their size, date and description, and save one or all of them. Names are made safe, programs and scripts are flagged before saving, and nothing is ever opened for you.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Attachments.cs", "Services/AttachmentNames.cs", "Services/PdfAttachments.cs"]
+    },
+    {
       "id": "themes",
       "name": "Light, dark and night",
       "status": "ready",
