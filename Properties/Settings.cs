@@ -463,6 +463,42 @@ namespace TDPdf.Properties
             set => this[nameof(DocumensoDefaultSigningOrder)] = value;
         }
 
+        // --- Books (EPUB layout, #235) ---
+
+        // False until the person has chosen a page size once; the first EPUB asks.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool BookLayoutChosen
+        {
+            get => (bool)this[nameof(BookLayoutChosen)];
+            set => this[nameof(BookLayoutChosen)] = value;
+        }
+
+        // A BookLayoutOptions.Papers name; empty means the region's default (Letter, or A4 where metric).
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string BookPaper
+        {
+            get => (string)this[nameof(BookPaper)];
+            set => this[nameof(BookPaper)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("20")]
+        public double BookMarginMm
+        {
+            get => (double)this[nameof(BookMarginMm)];
+            set => this[nameof(BookMarginMm)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("11")]
+        public double BookFontSizePt
+        {
+            get => (double)this[nameof(BookFontSizePt)];
+            set => this[nameof(BookFontSizePt)] = value;
+        }
+
         // There is deliberately no "don't ask again" for the warning before a save strips a digital
         // signature (MainWindow.ConfirmSaveOverDigitalSignature). Design §5.5 sketched one
         // (DocumensoWarnOnSignedSave); it was removed unread in 2.0.0 because ticking it would bring

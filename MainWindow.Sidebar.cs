@@ -36,6 +36,9 @@ namespace TDPdf
         /// </summary>
         private async Task OpenInTabAsync(string path)
         {
+            // An EPUB or DjVu book is converted to a temporary PDF, which then comes back through here
+            // as an ordinary PDF (MainWindow.Books.cs).
+            if (IsBookPath(path)) { await OpenBookAsync(path); return; }
             EnsureActiveTabRegistered();
             var previous = _ctx;
             DocumentContext? created = null;

@@ -43,6 +43,7 @@ namespace TDPdf
         private static readonly string[] CliValueOptions =
         [
             "--log", "--dpi", "--format", "--pages", "--printer", "--lang", "--password", "--copies",
+            "--paper", "--margin", "--font",
         ];
 
         // Valueless switches. These need no entry above (and must not have one, or they
@@ -73,7 +74,7 @@ namespace TDPdf
                 Eq(a, "--version") || Eq(a, "-v") ||
                 Eq(a, "--merge") || Eq(a, "--extract-pages") || Eq(a, "--split") ||
                 Eq(a, "--decrypt") || Eq(a, "--to-image") || Eq(a, "--flatten") ||
-                Eq(a, "--print") || Eq(a, "--ocr") || Eq(a, "--pdfua"));
+                Eq(a, "--print") || Eq(a, "--ocr") || Eq(a, "--pdfua") || Eq(a, "--convert-book"));
             if (command is null) return false;
 
             var con = OpenBatchConsole();
@@ -118,6 +119,9 @@ namespace TDPdf
                         break;
                     case "--pdfua":
                         exitCode = CliPdfUa(positionals, options, con);
+                        break;
+                    case "--convert-book":
+                        exitCode = CliConvertBook(positionals, options, con);
                         break;
                 }
             }
@@ -166,6 +170,9 @@ namespace TDPdf
             "                                           check accessibility (PDF/UA) and print what is wrong;",
             "                                           --json names the standard checked for each file.",
             "                                           A pass means TDPdf's machine checks found nothing.",
+            "  --convert-book <book.epub|book.djvu|book.djv> <out.pdf> [--paper Letter|A4|A5|Book|Pocket] [--margin <mm>] [--font <pt>]",
+            "                                           turn an EPUB or DjVu book into a PDF (the layout options",
+            "                                           are for EPUB; DjVu needs DjVuLibre installed)",
             "  --batch-resave <in> <out> [--log <f.csv>] [--quiet]",
             "                                           resave a file or tree through the standard",
             "                                           open/save pipeline (validation harness)",

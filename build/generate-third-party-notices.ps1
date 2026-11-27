@@ -21,6 +21,8 @@
         lcms, OpenJPEG, zlib, libjpeg-turbo, IJG and ICU. No scanner will find it.
       * leptonica and the tesseract engine are EmbeddedResource blobs in TDPdf.csproj,
         extracted at runtime. They have no package metadata at all.
+      * ddjvu.exe and djvused.exe (DjVuLibre, GPL-2.0-or-later) are EmbeddedResource files when
+        third_party/djvulibre/win-x64 is present at build time (TDPdf.csproj); no package metadata.
       * WebView2Loader.dll is likewise an EmbeddedResource (TDPdf.csproj excludes it as a
         package asset); its licence is the Microsoft.Web.WebView2 package's own BSD-3-Clause.
 
@@ -200,6 +202,7 @@ Add-Line '| PDFium (`pdfium.dll`, via bblanchon.PDFium.Win32) | 159.0.8138 | BSD
 Add-Line '| Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |'
 Add-Line '| Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |'
 Add-Line ('| Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | {0} | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |' -f $webView2Version)
+Add-Line '| DjVuLibre (`ddjvu.exe`, `djvused.exe`, run as separate programs) | version as shipped | GPL-2.0-or-later (see 1.4) | https://djvu.sourceforge.net/ |'
 Add-Line ''
 Add-Line '### 1.1 PDFium'
 Add-Line ''
@@ -228,6 +231,18 @@ Add-Line ''
 Add-Line '```'
 Add-Line $webView2Text.TrimEnd()
 Add-Line '```'
+Add-Line ''
+Add-Line '### 1.4 DjVuLibre'
+Add-Line ''
+Add-Line 'TDPdf opens DjVu books by running DjVuLibre''s `ddjvu.exe` and `djvused.exe` as separate'
+Add-Line 'programs, one page at a time; it does not link to them. A build that includes them carries'
+Add-Line 'the two programs and the libraries they need inside the executable and extracts them on first'
+Add-Line 'use; a build that does not uses a DjVuLibre installed under Program Files. DjVuLibre is by'
+Add-Line 'Leon Bottou, Yann LeCun and contributors and is licensed under the GNU General Public'
+Add-Line 'License, version 2 or (at your option) any later version, which is compatible with the'
+Add-Line 'GNU GPL version 3 that TDPdf is licensed under. Its licence is at'
+Add-Line 'https://www.gnu.org/licenses/old-licenses/gpl-2.0.html. The complete corresponding source of'
+Add-Line 'every DjVuLibre release is at https://sourceforge.net/projects/djvu/files/DjVuLibre/.'
 Add-Line ''
 Add-Line '---'
 Add-Line ''

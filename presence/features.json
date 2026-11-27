@@ -233,6 +233,15 @@
       "sources": ["MainWindow.Ocr.cs", "Services/Ocr*.cs", "Services/FormOcrPolicy.cs"]
     },
     {
+      "id": "read-books",
+      "name": "Read EPUB and DjVu books",
+      "status": "ready",
+      "summary": "Open an EPUB or DjVu book in its own tab. EPUB books are laid out as pages at the page size and text size you pick, with their pictures, links and contents. DjVu scans keep their pictures, text layer and bookmarks. Save As writes a PDF and the book is never changed.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Books.cs", "Services/Epub*.cs", "Services/Djvu*.cs", "Services/Book*.cs", "Services/WebView2Bootstrap.cs"]
+    },
+    {
       "id": "rasterize-region",
       "name": "Rasterize a region",
       "status": "ready",

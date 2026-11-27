@@ -167,6 +167,22 @@
     <Compile Include="..\..\Services\PdfUaValidator.cs" />
     <Compile Include="..\..\Services\PdfUaFixes.cs" />
     <Compile Include="..\..\Services\PdfUaCli.cs" />
+    <Compile Include="..\..\Services\EpubArchive.cs" />
+    <Compile Include="..\..\Services\EpubPackage.cs" />
+    <Compile Include="..\..\Services\EpubFontDeobfuscation.cs" />
+    <Compile Include="..\..\Services\EpubBook.cs" />
+    <Compile Include="..\..\Services\EpubResourceServer.cs" />
+    <Compile Include="..\..\Services\EpubOutline.cs" />
+    <Compile Include="..\..\Services\BookLayoutOptions.cs" />
+    <Compile Include="..\..\Services\BookConversion.cs" />
+    <Compile Include="..\..\Services\DjvuModel.cs" />
+    <Compile Include="..\..\Services\DjvuProcess.cs" />
+    <Compile Include="..\..\Services\DjvuLibreDecoder.cs" />
+    <Compile Include="..\..\Services\DjvuNativeBootstrap.cs" />
+    <Compile Include="..\..\Services\DjvuToPdf.cs" />
+    <!-- A two-page DjVu book (one bitonal, one colour page, hidden text, outline) made with DjVuLibre
+         from synthetic pixels, for the checks that run the real programs when they are installed. -->
+    <None Include="fixtures\book.djvu" CopyToOutputDirectory="PreserveNewest" LinkBase="" />
   </ItemGroup>
 
 </Project>
