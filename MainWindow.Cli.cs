@@ -661,21 +661,11 @@ namespace TDPdf
             {
                 Task.Run(async () =>
                 {
-                    using var http = MakeDownloadClient();
-                    using var resp = await http.GetAsync(url, System.Net.Http.HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-                    resp.EnsureSuccessStatusCode();
-                    var part = dest + ".part";
-                    using (var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
-                    using (var f = File.Create(part))
-                        await s.CopyToAsync(f).ConfigureAwait(false);
-                    if (!OcrModelCatalog.Verify(part, lang, hq))
-                    {
-                        try { File.Delete(part); } catch { /* best-effort */ }
-                        throw new InvalidDataException("the download failed its SHA-256 integrity check and was discarded");
-                    }
-                    if (File.Exists(dest)) File.Delete(dest);
-                    File.Move(part, dest);
+                    using var http = OcrModelDownloader.CreateClient();
+                    await OcrModelDownloader.DownloadAsync(http, lang, hq, dest, null, CancellationToken.None).ConfigureAwait(false);
                 }).GetAwaiter().GetResult();
+                // The GUI records a high-quality arrival so toggling the setting later does not fetch it again.
+                MarkLanguageHq(lang, hq);
                 return true;
             }
             catch (Exception ex)

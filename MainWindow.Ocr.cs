@@ -98,15 +98,6 @@ namespace TDPdf
             set { Properties.Settings.Default.OcrHighQuality = value; Properties.Settings.Default.Save(); }
         }
 
-        // Download URL for a language's traineddata, honoring the HQ preference. Both tiers are pinned to a
-        // fixed commit and a SHA-256 per file (OcrModelCatalog), checked in DownloadTrainedDataAsync.
-        // Standard tier uses tessdata_fast: the same integer LSTM model as the full "tessdata" repo but without
-        // the unused legacy-engine data, so it is ~4MB with identical LSTM accuracy. HQ uses tessdata_best
-        // (float LSTM): larger but the most accurate.
-        private static string LanguageDataUrl(string code, bool highQuality) =>
-            OcrModelCatalog.UrlFor(code, highQuality)
-            ?? throw new InvalidOperationException($"No pinned OCR model for language '{code}'.");
-
         private static string NameForCode(string code)
         {
             foreach (var (c, n) in OcrLanguageCatalog) if (c == code) return n;
@@ -259,51 +250,17 @@ namespace TDPdf
             return root;
         }
 
-        private static HttpClient MakeDownloadClient()
-        {
-            // Timeout covers connect + headers; the body is bounded by the cancellation token instead.
-            var http = new HttpClient { Timeout = TimeSpan.FromSeconds(100) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("TDPdf-OCR");
-            return http;
-        }
-
-        // Streams one traineddata file to destFile, showing MB progress and honoring the cancel token; writes
-        // via a .part file and atomically moves into place only on full success. The finished file must match
-        // the SHA-256 pinned in OcrModelCatalog for this language and tier, or it is deleted and the download
-        // fails. Throws on cancel/error.
-        private async Task DownloadTrainedDataAsync(HttpClient http, string code, bool highQuality, string destFile, string label, CancellationToken ct)
-        {
-            string url = LanguageDataUrl(code, highQuality);
-            string part = destFile + ".part";
-            using (var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct))
+        // Streams one traineddata file to destFile, showing MB progress. The download itself (the .part
+        // file, the pinned SHA-256 check, the atomic move into place) is OcrModelDownloader, shared with
+        // the command line. Throws on cancel/error.
+        private Task DownloadTrainedDataAsync(HttpClient http, string code, bool highQuality, string destFile, string label, CancellationToken ct) =>
+            OcrModelDownloader.DownloadAsync(http, code, highQuality, destFile, (read, total) =>
             {
-                resp.EnsureSuccessStatusCode();
-                long? total = resp.Content.Headers.ContentLength;
-                using var netStream = await resp.Content.ReadAsStreamAsync(ct);
-                using var fileStream = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-
-                var buffer = new byte[81920];
-                long read = 0;
-                int n;
-                while ((n = await netStream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
-                {
-                    await fileStream.WriteAsync(buffer.AsMemory(0, n), ct);
-                    read += n;
-                    double mb = read / 1048576.0;
-                    SetWorkerStatus(total.HasValue
-                        ? $"{label} {mb:F1} / {total.Value / 1048576.0:F1} MB  (Esc to cancel)"
-                        : $"{label} {mb:F1} MB  (Esc to cancel)");
-                }
-            }
-            if (!OcrModelCatalog.Verify(part, code, highQuality))
-            {
-                TDPdf.Services.TempFilePolicy.TryDelete(part);
-                throw new InvalidDataException(
-                    $"The downloaded {code} language data failed its integrity check (SHA-256 mismatch), so it was discarded.");
-            }
-            if (File.Exists(destFile)) File.Delete(destFile);
-            File.Move(part, destFile);
-        }
+                double mb = read / 1048576.0;
+                SetWorkerStatus(total.HasValue
+                    ? $"{label} {mb:F1} / {total.Value / 1048576.0:F1} MB  (Esc to cancel)"
+                    : $"{label} {mb:F1} MB  (Esc to cancel)");
+            }, ct);
 
         // Downloads a single language's traineddata (standard or HQ, per the toggle) and selects it.
         private async Task DownloadOcrLanguage(string code, string name)
@@ -313,7 +270,7 @@ namespace TDPdf
             string dest = Path.Combine(tessDir, code + ".traineddata");
             try
             {
-                using var http = MakeDownloadClient();
+                using var http = OcrModelDownloader.CreateClient();
                 bool hqNow = OcrHighQuality;
                 await DownloadTrainedDataAsync(http, code, hqNow, dest, $"Downloading {name}...", ct);
                 MarkLanguageHq(code, hqNow);
@@ -324,14 +281,12 @@ namespace TDPdf
             }
             catch (OperationCanceledException)
             {
-                TDPdf.Services.TempFilePolicy.TryDelete(dest + ".part");
                 if (ct.IsCancellationRequested) SetStatus($"{name} download cancelled");
                 else TdpDialog.Show(this, $"Downloading {name} timed out. Check your connection and try again.",
                     "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             catch (Exception ex)
             {
-                TDPdf.Services.TempFilePolicy.TryDelete(dest + ".part");
                 TdpDialog.Show(this, $"Could not download {name} language data:\n{ex.Message}", "TDPdf",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
@@ -370,7 +325,7 @@ namespace TDPdf
             var failed = new List<string>();
             try
             {
-                using var http = MakeDownloadClient();
+                using var http = OcrModelDownloader.CreateClient();
                 int i = 0;
                 foreach (var code in toDownload)
                 {
@@ -384,7 +339,7 @@ namespace TDPdf
                         MarkLanguageHq(code, true);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
-                    catch { failed.Add(name); TDPdf.Services.TempFilePolicy.TryDelete(dest + ".part"); }
+                    catch { failed.Add(name); }
                 }
                 if (ct.IsCancellationRequested) SetStatus("High quality download cancelled");
                 else if (failed.Count > 0) SetStatus($"High quality models installed; failed: {string.Join(", ", failed)}");
@@ -425,7 +380,7 @@ namespace TDPdf
             try
             {
                 string tessDir = OcrNativeBootstrap.EnsureTessDataDir();
-                using var http = MakeDownloadClient();
+                using var http = OcrModelDownloader.CreateClient();
                 for (int i = 0; i < missing.Count; i++)
                 {
                     string code = missing[i];
