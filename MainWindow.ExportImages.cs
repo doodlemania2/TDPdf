@@ -37,7 +37,7 @@ namespace TDPdf
             if (ShowExportImagesDialog(pageCount) is not { } choice) return;
 
             // Same page-range syntax (and blank = all rule) as the print dialog.
-            var pages = Services.PrintPreviewWindow.ParseRange(choice.Range, pageCount);
+            var pages = Services.PageRangeSpec.ParseLenient(choice.Range, pageCount);
             if (pages.Count == 0) { TdpDialog.Show(this, "That page range doesn't select any pages."); return; }
 
             string format = choice.Jpeg ? PageImageExporter.JpgFormat : PageImageExporter.PngFormat;
@@ -263,7 +263,7 @@ namespace TDPdf
             root.Children.Add(countHint);
             void UpdateCount()
             {
-                int selected = Services.PrintPreviewWindow.ParseRange(rangeBox.Text, pageCount).Count;
+                int selected = Services.PageRangeSpec.ParseLenient(rangeBox.Text, pageCount).Count;
                 countHint.Text = $"{selected} of {pageCount} page(s) will be exported, one file per page.";
             }
 
@@ -277,7 +277,7 @@ namespace TDPdf
             // the others differ, rather than silently showing page 1's size for a mixed document.
             void UpdatePixelHint()
             {
-                var pages = Services.PrintPreviewWindow.ParseRange(rangeBox.Text, pageCount);
+                var pages = Services.PageRangeSpec.ParseLenient(rangeBox.Text, pageCount);
                 if (_doc is null || pages.Count == 0 || !PageImageExporter.TryParseDpi(dpiBox.Text, out double previewDpi))
                 {
                     pixelHint.Text = string.Empty;

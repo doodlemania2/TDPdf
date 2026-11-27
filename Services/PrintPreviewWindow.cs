@@ -1439,11 +1439,13 @@ namespace TDPdf.Services
         // from what the preview showed.
         //
         // The subset filters on the 1-based page NUMBER the user sees, so 0-based index 0 is page 1 = odd.
-        // Unlike ParseRange, an empty result here is meaningful (e.g. a 1-page document with "Even pages
+        // An empty result is meaningful (a typo in the Pages box, or a 1-page document with "Even pages
         // only") and is NOT widened back to every page — callers treat it as "nothing to print".
+        // The text is read by PageRangeSpec.ParseLenient, the app's one lenient page-range syntax,
+        // which Export Pages as Images shares (hint text included).
         private List<int> SelectedIndices()
         {
-            var list = ParseRange(_pagesBox.Text, _pageCount);
+            var list = PageRangeSpec.ParseLenient(_pagesBox.Text, _pageCount);
             if (_subset == 0) return list;
 
             bool wantOdd = _subset == 1;
@@ -2016,50 +2018,6 @@ namespace TDPdf.Services
                 return;
             }
             base.OnClosing(e);
-        }
-
-        // Parses "1-3,5" style ranges into sorted 0-based indices. Blank = all pages; a range that
-        // matches no page returns empty and the callers surface it (never widened back to every page).
-        // Internal because it is the app's one page-range syntax: the print dialog and the
-        // image export (File ▸ Export Pages as Images…) share it, hint text included.
-        internal static List<int> ParseRange(string? text, int count)
-        {
-            text = text?.Trim() ?? "";
-            if (text.Length == 0) return [.. Enumerable.Range(0, count)];
-
-            var set = new SortedSet<int>();
-            foreach (var raw in text.Split(','))
-            {
-                var part = raw.Trim();
-                if (part.Length == 0) continue;
-                if (part.Contains('-'))
-                {
-                    var seg = part.Split('-');
-                    if (seg.Length == 2 &&
-                        int.TryParse(seg[0].Trim(), out int a) &&
-                        int.TryParse(seg[1].Trim(), out int b))
-                    {
-                        if (a > b) (a, b) = (b, a);
-                        // Clamp the ends rather than testing each i inside the loop. With the test
-                        // inside, "1-2147483647" ran i++ past int.MaxValue, wrapped to int.MinValue,
-                        // and i <= b was true again — the loop never ended. The Pages box drives the
-                        // preview live, so that froze the app on a keystroke. Same output either way.
-                        if (a < 1) a = 1;
-                        if (b > count) b = count;
-                        for (int i = a; i <= b; i++) set.Add(i - 1);
-                    }
-                }
-                else if (int.TryParse(part, out int v))
-                {
-                    if (v >= 1 && v <= count) set.Add(v - 1);
-                }
-            }
-            // A blank box already returned every page above, so reaching here with nothing resolved
-            // means the text matched no page — a number past the end, or a typo. Return the empty set
-            // and let the callers surface it (the preview says "No pages selected", the print guard
-            // blocks). Falling back to every page here meant a slipped keystroke in the Pages box
-            // silently spooled the whole document.
-            return [.. set];
         }
 
         // ---- Button / control factory (matches our themed dialog buttons, no blue hover chrome) ----
