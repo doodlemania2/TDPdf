@@ -74,7 +74,7 @@ namespace TDPdf
                 ["V"] = ("Tools", "Select"),            ["P"] = ("Tools", "Pan / hand"),
                 ["D1"] = ("Tools", "Text"),             ["T"] = ("Tools", "Text"),
                 ["D2"] = ("Tools", "Edit existing text"), ["X"] = ("Tools", "Edit existing text"),
-                ["D3"] = ("Tools", "Edit existing image"),
+                ["D3"] = ("Tools", "Select picture"),
                 ["D4"] = ("Tools", "Insert image"),      ["I"] = ("Tools", "Insert image"),
                 ["D5"] = ("Tools", "Highlight"),        ["H"] = ("Tools", "Highlight"),
                 ["D6"] = ("Tools", "Strikethrough"),    ["K"] = ("Tools", "Strikethrough"),

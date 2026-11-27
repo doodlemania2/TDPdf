@@ -379,6 +379,17 @@ namespace TDPdf
                 e.Handled = true;
                 return true;
             }
+            // A selected picture lets go first (#244).
+            if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None && HasPictureSelection)
+            {
+                int picPage = _pictureSel!.PageIndex;
+                FlushPictureNudge();
+                ClearSelection();
+                RenderAllAnnotations(picPage);
+                SetStatus("Selection cleared");
+                e.Handled = true;
+                return true;
+            }
             // Esc first lets go of a mark selection (one mark or many), before anything steps down.
             if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None && HasMarkSelection)
             {
@@ -424,6 +435,24 @@ namespace TDPdf
             // to compete with, and Delete has to mean "remove the field I just clicked".
             if (e.Key == Key.Delete && TryDeleteSelectedFormField())
             {
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.Delete && HasPictureSelection)
+            {
+                DeletePicture();
+                e.Handled = true;
+                return true;
+            }
+            if (HasPictureSelection && _doc is not null
+                     && Keyboard.FocusedElement is not (ComboBox or ComboBoxItem or Slider or System.Windows.Controls.Primitives.TextBoxBase)
+                     && (Keyboard.Modifiers == ModifierKeys.None || Keyboard.Modifiers == ModifierKeys.Shift)
+                     && (e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Up || e.Key == Key.Down))
+            {
+                double picStep = Keyboard.Modifiers == ModifierKeys.Shift ? 10 : 1;
+                NudgePicture(
+                    e.Key == Key.Left ? -picStep : e.Key == Key.Right ? picStep : 0,
+                    e.Key == Key.Up ? -picStep : e.Key == Key.Down ? picStep : 0);
                 e.Handled = true;
                 return true;
             }

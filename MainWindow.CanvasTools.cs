@@ -213,11 +213,14 @@ namespace TDPdf
             e.Handled = true;
         }
 
-        /// <summary>Edit Existing Image press.</summary>
+        /// <summary>Select Picture press.</summary>
         private void MouseDownEditImage(MouseButtonEventArgs e, Point pos, int pageIdx)
         {
             CommitActiveTextBox();
-            EditImageAtPosition(pos, pageIdx);
+            // A picture the PDF carries is selected, moved and resized in the file (MainWindow.PageImages.cs);
+            // anything else, and overlay edits already made, go the cover-and-redraw way as before.
+            if (!TryPictureMouseDown(pos, pageIdx))
+                EditImageAtPosition(pos, pageIdx);
             e.Handled = true;
         }
 

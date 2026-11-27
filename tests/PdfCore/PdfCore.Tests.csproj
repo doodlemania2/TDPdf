@@ -45,6 +45,11 @@
     <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
     <Compile Include="..\..\Services\PdfiumInterop.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.Images.cs" />
+    <Compile Include="..\..\Services\PdfImageObjects.cs" />
+    <Compile Include="..\..\Services\PicturePlacement.cs" />
+    <Compile Include="..\..\Services\ColorKeyMask.cs" />
+    <Compile Include="..\..\Services\PictureOrientation.cs" />
     <Compile Include="..\..\Services\CmapCoverage.cs" />
     <Compile Include="..\..\Services\ZipLimits.cs" />
     <Compile Include="..\..\Services\PdfItems.cs" />
