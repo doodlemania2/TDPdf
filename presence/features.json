@@ -61,6 +61,19 @@
       ]
     },
     {
+      "id": "compare-pdfs",
+      "name": "Compare two PDFs",
+      "status": "ready",
+      "summary": "See what changed between two versions of a document: words added or removed, pages added, removed or moved, and areas that look different, side by side or laid over each other.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.Compare.cs",
+        "Services/CompareWindow.cs",
+        "Services/PdfCompare*.cs"
+      ]
+    },
+    {
       "id": "redaction",
       "name": "Redaction",
       "status": "ready",

@@ -1246,6 +1246,10 @@
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE90F;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
+                <MenuItem Header="Comp_are PDFs…"  InputGestureText="Alt+Shift+V"  Click="ComparePdfs_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8AB;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
                 <!-- OCR submenu is rebuilt on open (OcrMenu_SubmenuOpened); the placeholder keeps the
                      submenu arrow visible so the event fires. -->
                 <MenuItem Header="_OCR" SubmenuOpened="OcrMenu_SubmenuOpened">
@@ -1910,6 +1914,7 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+O"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Open"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+W"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Close file"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+T"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Reopen closed tab"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Alt+Shift+V"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Compare two PDFs"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+N"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="New blank document"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Save"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Save As"/></Grid>
