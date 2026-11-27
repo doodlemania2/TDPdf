@@ -981,10 +981,36 @@ namespace TDPdf
         private async void Open_Click(object sender, RoutedEventArgs e)
         {
             Telemetry.TrackEvent("File.Open");
-            var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Open PDF", Multiselect = true };
-            if (dlg.ShowDialog(this) != true) return;
+            var pick = FileDialogs.PickDocuments(this, FileDialogPurpose.Open, "Open PDF",
+                FileDialogFilters.OpenDocuments, multiselect: true, offerNewWindow: true);
+            if (pick is not { } chosen) return;
 
-            await OpenManyAsync(dlg.FileNames);
+            if (chosen.NewWindow) { OpenFilesInNewWindows(chosen.Files); return; }
+            await OpenManyAsync(chosen.Files);
+        }
+
+        /// <summary>
+        /// The "Open in a new window" box in the Open dialog: each file gets its own TDPdf window,
+        /// the same way a torn-off tab does.
+        /// </summary>
+        private void OpenFilesInNewWindows(IEnumerable<string> files)
+        {
+            foreach (var file in files)
+            {
+                try
+                {
+                    var psi = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+                    psi.ArgumentList.Add("--new-window");
+                    psi.ArgumentList.Add(file);
+                    System.Diagnostics.Process.Start(psi);
+                }
+                catch (Exception ex)
+                {
+                    Telemetry.TrackCrash(ex, "File.OpenNewWindow", recoverable: true);
+                    SetStatus($"Could not open a new window: {ex.Message}");
+                    return;
+                }
+            }
         }
 
         /// <summary>
@@ -1034,20 +1060,22 @@ namespace TDPdf
         {
             Telemetry.TrackEvent("File.Merge");
             if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
-            var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Select PDF to merge", Multiselect = true };
-            if (dlg.ShowDialog(this) != true) return;
+            var mergePick = FileDialogs.PickDocuments(this, FileDialogPurpose.Merge, "Select PDF to merge",
+                FileDialogFilters.Pdf, multiselect: true, offerNewWindow: false);
+            if (mergePick is not { } mergeChosen) return;
+            string[] mergeFiles = mergeChosen.Files;
             // RunPageOperation commits the active text box and rolls back a partial merge.
             RunPageOperation("Merge", () =>
             {
                 var doc = _doc!;
                 _mergeFormRenames = 0;
-                foreach (var file in dlg.FileNames)
+                foreach (var file in mergeFiles)
                     AppendPdfFileToDoc(doc, file);
                 // Merge only ever APPENDS, so every existing page keeps its number and its geometry:
                 // the unsaved annotations are still exactly right and need no remapping. The default
                 // clear used to throw them all away for pages the merge never touched.
                 SaveTempAndReload(keepAnnotations: true);
-                SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages"
+                SetStatus($"Merged {mergeFiles.Length} file(s), {_doc?.PageCount} total pages"
                     + (_mergeFormRenames > 0 ? $"; {_mergeFormRenames} form field name(s) already in use were renamed" : ""));
             });
         }
@@ -2124,12 +2152,12 @@ namespace TDPdf
         /// prompt was for the name as typed, so when the corrected name exists the question is
         /// asked again here, and "No" goes back to the dialog.
         /// </remarks>
-        private bool ShowPdfSaveDialog(SaveFileDialog dlg, Window? owner = null)
+        private bool ShowPdfSaveDialog(SaveFileDialog dlg, FileDialogPurpose purpose = FileDialogPurpose.SaveAs, Window? owner = null)
         {
             owner ??= this;
             while (true)
             {
-                if (dlg.ShowDialog(owner) != true) return false;
+                if (!FileDialogs.ShowSave(dlg, purpose, owner)) return false;
                 string name = dlg.FileName;
                 if (name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) return true;
                 string corrected = name + ".pdf";
@@ -2165,7 +2193,7 @@ namespace TDPdf
                     dlg.FileName = System.IO.Path.GetFileName(seed);
             }
             catch { /* malformed seed path — just open the dialog with its defaults */ }
-            if (!ShowPdfSaveDialog(dlg)) return;
+            if (!ShowPdfSaveDialog(dlg, FileDialogPurpose.SaveAs)) return;
             using var op = Telemetry.StartOperation("SaveAs");
             string targetFile = dlg.FileName;
             string status = "";
@@ -2293,7 +2321,7 @@ namespace TDPdf
             if (_doc is null || _currentFile is null) return;   // closed while the readout was computed
             if (ShowFlattenOptionsDialog(optionSizes, autoFirst, autoLargest) is not { } flattenChoice) return;
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
-            if (!ShowPdfSaveDialog(dlg)) return;
+            if (!ShowPdfSaveDialog(dlg, FileDialogPurpose.SaveFlattened)) return;
             using var op = Telemetry.StartOperation("SaveFlattened");
             var ct = BeginCancellableOp("Flattening page 1...  (Esc to cancel)");
             string targetFile = dlg.FileName;
@@ -2406,7 +2434,7 @@ namespace TDPdf
                 Title = "Export Tables to CSV",
                 FileName = baseName + ".csv"
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowSave(dlg, FileDialogPurpose.ExportTables, this)) return;
 
             using var op = Telemetry.StartOperation("ExportTablesCsv");
             SetFileOperationBusy(true, "Exporting tables...");

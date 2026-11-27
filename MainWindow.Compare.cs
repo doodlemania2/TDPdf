@@ -38,9 +38,10 @@ namespace TDPdf
             if (pick < others.Count) otherTab = others[pick];
             else
             {
-                var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Compare with" };
-                if (dlg.ShowDialog(this) != true) return;
-                otherFile = dlg.FileName;
+                var comparePick = FileDialogs.PickDocuments(this, FileDialogPurpose.Compare, "Compare with",
+                    FileDialogFilters.Pdf, multiselect: false, offerNewWindow: false);
+                if (comparePick is not { } compareChosen) return;
+                otherFile = compareChosen.Files[0];
             }
 
             string leftName = string.IsNullOrEmpty(leftCtx.DisplayName) ? "(untitled)" : leftCtx.DisplayName;

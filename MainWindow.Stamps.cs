@@ -97,9 +97,9 @@ namespace TDPdf
             var dlg = new OpenFileDialog
             {
                 Title = "Choose a picture for the stamp",
-                Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|All files|*.*"
+                Filter = FileDialogFilters.Images
             };
-            if (dlg.ShowDialog(this) != true) return false;
+            if (!FileDialogs.ShowOpen(dlg, FileDialogPurpose.Picture, this)) return false;
             try
             {
                 if (new FileInfo(dlg.FileName).Length > MaxStampImageBytes)

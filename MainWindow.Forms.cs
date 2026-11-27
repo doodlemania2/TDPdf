@@ -1454,7 +1454,7 @@ namespace TDPdf
                 Filter = "Form data (*.fdf;*.xfdf)|*.fdf;*.xfdf|All files|*.*",
                 Title = "Import Form Data",
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowOpen(dlg, FileDialogPurpose.FormData, this)) return;
 
             IReadOnlyList<ImportedField> imported;
             try

@@ -331,8 +331,8 @@ namespace TDPdf
             choose.Margin = new Thickness(0, 0, 8, 0);
             choose.Click += (_, _) =>
             {
-                var dlg = new OpenFileDialog { Title = "Choose a picture for the watermark", Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|All files|*.*" };
-                if (dlg.ShowDialog(win) != true) return;
+                var dlg = new OpenFileDialog { Title = "Choose a picture for the watermark", Filter = FileDialogFilters.Images };
+                if (!FileDialogs.ShowOpen(dlg, FileDialogPurpose.Picture, win)) return;
                 try
                 {
                     if (new FileInfo(dlg.FileName).Length > MaxStampImageBytes) throw new InvalidDataException("That picture is larger than 20 MB.");

@@ -170,7 +170,7 @@ namespace TDPdf
             };
             string ext = Path.GetExtension(dlg.FileName);
             if (ext.Length > 1) dlg.Filter = $"{ext[1..].ToUpperInvariant()} file|*{ext}|All files|*.*";
-            if (dlg.ShowDialog(owner) != true) return;
+            if (!FileDialogs.ShowSave(dlg, FileDialogPurpose.Attachment, owner)) return;
             try
             {
                 var bytes = entry.ReadBytes();
@@ -187,7 +187,7 @@ namespace TDPdf
         private void SaveAttachmentsToFolder(Window owner, IReadOnlyList<AttachmentEntry> entries)
         {
             var folderDlg = new OpenFolderDialog { Title = "Save attachments in" };
-            if (folderDlg.ShowDialog(owner) != true) return;
+            if (!FileDialogs.ShowFolder(folderDlg, FileDialogPurpose.AttachmentsFolder, owner)) return;
             string folder = folderDlg.FolderName;
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) return;
 

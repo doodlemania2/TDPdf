@@ -114,7 +114,7 @@ namespace TDPdf
             browse.Click += (_, _2) =>
             {
                 var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "Save extracted pages in", InitialDirectory = folderBox.Text };
-                if (dlg.ShowDialog(win) == true) folderBox.Text = dlg.FolderName;
+                if (FileDialogs.ShowFolder(dlg, FileDialogPurpose.ExtractPagesFolder, win)) folderBox.Text = dlg.FolderName;
             };
             var folderRow = new Grid();
             folderRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

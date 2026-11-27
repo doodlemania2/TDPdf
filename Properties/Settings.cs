@@ -180,6 +180,17 @@ namespace TDPdf.Properties
             set => this[nameof(RecentFiles)] = value;
         }
 
+        // Folders recently used in the Open / Save / export dialogs (most-recent first, capped at 8),
+        // shown in the dialog's left-hand list. Full paths joined by '|'. Follows the same privacy
+        // switch as the recent-files list.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string RecentFolders
+        {
+            get => (string)this[nameof(RecentFolders)];
+            set => this[nameof(RecentFolders)] = value;
+        }
+
         // Privacy switch for the recent-files list (#146, upstream v1.6.5). When true, opening a
         // document no longer records its path, so nothing about the user's documents accumulates on
         // a shared machine. Turning it on in the Settings dialog also empties the stored list.

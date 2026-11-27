@@ -341,6 +341,15 @@
       "sources": ["Services/MeasureGeometry.cs"]
     },
     {
+      "id": "file-dialogs",
+      "name": "Smarter Open and Save dialogs",
+      "status": "ready",
+      "summary": "Open and Save remember a separate folder for each job, list your recent folders beside Quick Access, show a preview of the PDF you pick, and can open the file in a new window.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["Services/FileDialogs.cs", "Services/FileDialogs.Com.cs", "Services/FileDialogPolicy.cs", "Services/FileDialogFilters.cs"]
+    },
+    {
       "id": "export-images",
       "name": "Export pages as images",
       "status": "ready",

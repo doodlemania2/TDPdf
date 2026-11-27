@@ -456,10 +456,10 @@ namespace TDPdf
         {
             var dlg = new OpenFileDialog
             {
-                Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
+                Filter = FileDialogFilters.ImagesBasic,
                 Title = "Import Signature Image"
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowOpen(dlg, FileDialogPurpose.SignaturePicture, this)) return;
             try
             {
                 OpenImageSignatureEditor(File.ReadAllBytes(dlg.FileName), System.IO.Path.GetFileNameWithoutExtension(dlg.FileName), null);
@@ -721,7 +721,7 @@ namespace TDPdf
                 FileName = baseName + ".png",
                 OverwritePrompt = true
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowSave(dlg, FileDialogPurpose.SignatureExport, this)) return;
             try
             {
                 AtomicFileWriter.Write(staging => File.WriteAllBytes(staging, png), dlg.FileName, CancellationToken.None);

@@ -95,7 +95,7 @@ namespace TDPdf
                     _ => "Save signed copy",
                 },
             };
-            if (!ShowPdfSaveDialog(dlg, owner)) return null;
+            if (!ShowPdfSaveDialog(dlg, FileDialogPurpose.SignedDownload, owner)) return null;
             string dest = dlg.FileName;
             string name = Path.GetFileName(dest);
             string extra = "";

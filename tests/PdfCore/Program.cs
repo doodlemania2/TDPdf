@@ -201,6 +201,7 @@ Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);
 CanvasPixelsTests.Run(Check);
+FileDialogTests.Run(Check);
 FaultSinkTests.Run(Check);
 MarkArrangeTests.Run(Check);
 AnglesTests.Run(Check);

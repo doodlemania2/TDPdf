@@ -586,10 +586,10 @@ namespace TDPdf
         {
             var dlg = new OpenFileDialog
             {
-                Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
+                Filter = FileDialogFilters.ImagesBasic,
                 Title = "Select replacement image"
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowOpen(dlg, FileDialogPurpose.Picture, this)) return;
 
             PushPageSnapshot(edit.PageIndex);
             edit.ReplacementImagePath = dlg.FileName;

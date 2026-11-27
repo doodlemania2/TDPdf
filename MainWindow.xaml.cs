@@ -535,6 +535,13 @@ namespace TDPdf
             // whether a second LAUNCH folds into this window, but once two windows exist (via a
             // tab tear-off, or SingleInstanceTabs being off) either one can be a drop target.
             _windowTransferServer = new WindowTransferServer(Dispatcher, ImportTabFromAnotherWindowAsync);
+            // File dialogs list the active document's folder first; warm the recent-folder checks in the background.
+            FileDialogs.DocumentFolderProvider = () =>
+            {
+                string? original = _ctx.OriginalPath;
+                return string.IsNullOrEmpty(original) ? null : System.IO.Path.GetDirectoryName(original);
+            };
+            FileDialogs.WarmUp();
             var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             if (v != null) VersionLabel.Text = $"v{v.Major}.{v.Minor}.{v.Build}";
             _annotationCanvas = (Canvas)FindName("AnnotationCanvas")!;

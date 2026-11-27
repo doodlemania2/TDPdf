@@ -985,9 +985,9 @@ namespace TDPdf
             var dlg = new OpenFileDialog
             {
                 Title = "Insert Image",
-                Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tiff;*.tif|All files|*.*"
+                Filter = FileDialogFilters.Images
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowOpen(dlg, FileDialogPurpose.Picture, this)) return;
 
             try
             {
