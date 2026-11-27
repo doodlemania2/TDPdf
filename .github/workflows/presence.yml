@@ -21,10 +21,12 @@ concurrency:
 
 jobs:
   presence:
-    uses: doodlemania2/fleet-presence-dispatch/.github/workflows/presence-dispatch.yml@main
+    uses: doodlemania2/fleet-presence-dispatch/.github/workflows/presence-dispatch.yml@514436269bfcfa3aa4e1250e32144ae06dbd295d # main 2026-11-27
     with:
       property: tdpdf
       targets: '["doodlemania2/tdpdf-site"]'
       runner: tdpdf
+      # The helper script is fetched at this ref too; keep it equal to the pin above.
+      kit_ref: 514436269bfcfa3aa4e1250e32144ae06dbd295d
     secrets:
       dispatch_token: ${{ secrets.FLEET_DISPATCH_TOKEN }}
