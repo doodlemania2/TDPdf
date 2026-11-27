@@ -41,6 +41,8 @@ permissions:
 
 jobs:
   release:
+    # A tag push needs the permission to push the tag; a manual run is limited to the repo owner.
+    if: github.event_name == 'push' || github.actor == github.repository_owner
     runs-on: tdpdf
     # The `secrets` context is NOT available in step-level `if:`, so presence is
     # resolved once here into plain env flags (job-level `env` may read secrets)

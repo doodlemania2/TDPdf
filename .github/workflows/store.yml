@@ -28,6 +28,8 @@ concurrency:
 
 jobs:
   store:
+    # Only the repo owner may start this (anyone with write access can press workflow_dispatch).
+    if: github.actor == github.repository_owner
     runs-on: tdpdf
     timeout-minutes: 30
     env:
