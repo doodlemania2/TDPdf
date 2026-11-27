@@ -523,6 +523,15 @@ namespace TDPdf
                 e.Handled = true;
                 return true;
             }
+            // Alt+Shift+V: compare the open document with another PDF (#239). Alt arrives as
+            // Key.System with the letter in SystemKey, and the chord is claimed here before the menu
+            // bar can treat it as an access key.
+            if (e.Key == Key.System && e.SystemKey == Key.V && Keyboard.Modifiers == (ModifierKeys.Alt | ModifierKeys.Shift))
+            {
+                ShowCompare();
+                e.Handled = true;
+                return true;
+            }
             // Menu key / Shift+F10 opens the right-click menu at the current selection (Windows
             // keyboard-accessibility convention). (Upstream v1.6.4)
             if ((e.Key == Key.Apps

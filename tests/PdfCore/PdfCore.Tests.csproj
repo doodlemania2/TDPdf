@@ -153,6 +153,14 @@
     <Compile Include="..\..\Services\UpdateCheckPolicy.cs" />
     <Compile Include="..\..\Services\PdfFonts.cs" />
     <Compile Include="..\..\Services\FontCoverage.cs" />
+    <Compile Include="..\..\Services\PdfCompareText.cs" />
+    <Compile Include="..\..\Services\PdfCompareAlign.cs" />
+    <Compile Include="..\..\Services\PdfCompareRaster.cs" />
+    <Compile Include="..\..\Services\PdfCompareEngine.cs" />
+    <Compile Include="..\..\Services\PdfUaReport.cs" />
+    <Compile Include="..\..\Services\PdfUaValidator.cs" />
+    <Compile Include="..\..\Services\PdfUaFixes.cs" />
+    <Compile Include="..\..\Services\PdfUaCli.cs" />
   </ItemGroup>
 
 </Project>

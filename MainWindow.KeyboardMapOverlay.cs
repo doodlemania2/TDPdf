@@ -132,6 +132,7 @@ namespace TDPdf
             [KbLayer.Alt] = new()
             {
                 ["Left"] = ("Nav", "Back"), ["Right"] = ("Nav", "Forward"),
+                ["V"] = ("Tools", "Compare PDFs (with Shift)"),
             },
         };
 
