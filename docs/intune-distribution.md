@@ -165,6 +165,17 @@ downloads or installs anything itself**: on a managed device, updates stay Intun
 
 If your egress policy blocks `api.github.com`, the check fails quietly and nothing else changes.
 
+## What's new window
+
+After an update, TDPdf opens that version's release notes once (they are inside the exe; nothing is
+downloaded). It does not open on a fresh install, in command-line modes, or in a window made by moving
+a tab. Users can turn it off under **Settings ▸ Show what's new after updates**, and **Help ▸ What's
+New** always opens it.
+
+| Value | Effect |
+|---|---|
+| `HKLM\SOFTWARE\Policies\TDPdf\WhatsNew` → `Enabled` (DWORD) | `0` stops the window opening by itself and greys out the Settings box. Absent or any other value leaves it on. Help ▸ What's New still works. |
+
 ## Electronic Signature
 
 **File ▸ Electronic Signature** sends documents for signature through a signing service,

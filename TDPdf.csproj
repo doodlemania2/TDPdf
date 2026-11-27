@@ -157,6 +157,15 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- The running version's user-facing release notes, shown once after an update and from
+       Help > What's New. The file may be absent for a dev version; the build then simply has
+       no notes and the window says so. -->
+  <ItemGroup>
+    <EmbeddedResource Include=".github\release-notes\v$(Version).md" Condition="Exists('.github\release-notes\v$(Version).md')">
+      <LogicalName>TDPdf.ReleaseNotes.md</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- GPL3 source bundle: produces <AppName>-<Version>-src.zip in the publish folder every time you Publish.
        Shells out to Windows PowerShell on Windows and to pwsh elsewhere: the CI release runs on a LINUX
        runner, where `powershell` does not exist, so this Exec failed every time and — because it is

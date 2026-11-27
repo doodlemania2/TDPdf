@@ -202,6 +202,7 @@ MarkArrangeTests.Run(Check);
 ClosedTabTests.Run(Check);
 SessionStateTests.Run(Check);
 OpenBatchTests.Run(Check);
+WhatsNewTests.Run(Check);
 HighlightMultiplyTests.Run(Check);
 LruCacheTests.Run(Check);
 CropMarginsTests.Run(Check);
