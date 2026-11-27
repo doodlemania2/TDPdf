@@ -2,7 +2,8 @@ using System.Windows;
 
 namespace TDPdf
 {
-    // "What's new": the running version's release notes, shown once after an update and from Help.
+    // "What's new": the release notes of every version since the last one seen, shown once after an
+    // update, and the running version's from Help.
     public partial class MainWindow
     {
         /// <summary>
@@ -12,8 +13,9 @@ namespace TDPdf
         /// </summary>
         private void ShowWhatsNewIfUpdated(Version running)
         {
-            if (!TDPdf.Services.WhatsNewState.ShouldShowAtLaunchAndRecord(running)) return;
-            Dispatcher.BeginInvoke(new Action(() => TDPdf.Services.WhatsNewWindow.Show(this)),
+            var versions = TDPdf.Services.WhatsNewState.VersionsToShowAtLaunchAndRecord(running);
+            if (versions.Count == 0) return;
+            Dispatcher.BeginInvoke(new Action(() => TDPdf.Services.WhatsNewWindow.Show(this, versions)),
                 System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
 

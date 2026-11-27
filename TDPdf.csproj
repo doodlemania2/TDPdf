@@ -157,12 +157,12 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <!-- The running version's user-facing release notes, shown once after an update and from
-       Help > What's New. The file may be absent for a dev version; the build then simply has
-       no notes and the window says so. -->
+  <!-- The user-facing release notes (.github/release-notes/v*.md), shown by What's new after an
+       update and from Help > What's New. Each is embedded as TDPdf.ReleaseNotes.v<version>.md;
+       Only v2.0.1.0 and later are embedded: older files were not written for users. -->
   <ItemGroup>
-    <EmbeddedResource Include=".github\release-notes\v$(Version).md" Condition="Exists('.github\release-notes\v$(Version).md')">
-      <LogicalName>TDPdf.ReleaseNotes.md</LogicalName>
+    <EmbeddedResource Include=".github\release-notes\v*.md" Exclude=".github\release-notes\v1.*.md;.github\release-notes\v2.0.0.0.md">
+      <LogicalName>TDPdf.ReleaseNotes.%(Filename).md</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

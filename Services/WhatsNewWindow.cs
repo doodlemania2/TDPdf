@@ -8,7 +8,7 @@ using System.Windows.Shell;
 namespace TDPdf.Services
 {
     /// <summary>
-    /// The themed "What's new in TDPdf" window: the running version's release notes, rendered from
+    /// The themed "What's new in TDPdf" window: one or more versions' release notes, rendered from
     /// the Markdown embedded in the exe (see <see cref="ReleaseNotesMarkdown"/>), with the
     /// "Show what's new after updates" box. Custom chrome like the other TDPdf dialogs, but
     /// resizable, with a scrolling body.
@@ -18,11 +18,17 @@ namespace TDPdf.Services
         private static Brush B(string key) =>
             Application.Current?.TryFindResource(key) as Brush ?? SystemColors.WindowTextBrush;
 
-        /// <summary>Shows the notes modally over <paramref name="owner"/>.</summary>
-        internal static void Show(Window? owner)
+        /// <summary>
+        /// Shows the notes modally over <paramref name="owner"/>: each of <paramref name="versions"/>,
+        /// newest first (after an update that skipped versions), or the running version's alone.
+        /// </summary>
+        internal static void Show(Window? owner, IReadOnlyList<Version>? versions = null)
         {
-            string? markdown = WhatsNewState.LoadEmbeddedNotes();
             var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            var wanted = versions is { Count: > 0 } ? versions
+                : running is not null ? new[] { running } : Array.Empty<Version>();
+            var notes = wanted.Select(WhatsNewState.LoadEmbeddedNotes)
+                .Where(m => m is not null).Select(m => m!).ToList();
 
             var win = new Window
             {
@@ -98,14 +104,24 @@ namespace TDPdf.Services
 
             // Body
             var body = new StackPanel { Margin = new Thickness(22, 16, 22, 16) };
-            if (markdown is null)
+            if (notes.Count == 0)
             {
                 body.Children.Add(Para("This build does not include release notes. They are published at https://tdpdf.com/changelog/."));
             }
             else
             {
-                foreach (var block in ReleaseNotesMarkdown.Parse(markdown))
-                    body.Children.Add(Render(block));
+                for (int i = 0; i < notes.Count; i++)
+                {
+                    var blocks = ReleaseNotesMarkdown.Parse(notes[i]);
+                    for (int j = 0; j < blocks.Count; j++)
+                    {
+                        var element = Render(blocks[j]);
+                        // Space each older version's notes off from the one above it.
+                        if (i > 0 && j == 0 && element is FrameworkElement fe)
+                            fe.Margin = new Thickness(fe.Margin.Left, fe.Margin.Top + 28, fe.Margin.Right, fe.Margin.Bottom);
+                        body.Children.Add(element);
+                    }
+                }
             }
             var scroll = new ScrollViewer
             {

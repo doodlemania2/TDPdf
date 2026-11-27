@@ -67,5 +67,24 @@ internal static class WhatsNewTests
         Check("whatsnew: unreadable stored value does not show", !WhatsNewPolicy.ShouldShow("garbage", true, v3, true, true), "");
         Check("whatsnew: version compare is numeric, not text", WhatsNewPolicy.ShouldShow("2.9.0.0", true, new Version(2, 10, 0, 0), true, true), "");
         Check("whatsnew: stored value is the running version", WhatsNewPolicy.VersionToStore(v3) == "3.0.0.0", "");
+        // Every version missed since the last one seen, newest first.
+        var avail = new[] { "1.30.0.0", "2.0.0.0", "2.0.1.0", "2.2.1.0", "2.3.0.0", "2.4.0.0", "3.0.0.0", "3.1.0.0" }
+            .Select(Version.Parse).ToList();
+        string Seq(IReadOnlyList<Version> l) => string.Join(",", l);
+        var skipped = WhatsNewPolicy.VersionsToShow(avail, "2.2.1.0", v3);
+        Check("whatsnew: skipped updates show each missed version, newest first", Seq(skipped) == "3.0.0.0,2.4.0.0,2.3.0.0", Seq(skipped));
+        Check("whatsnew: one-step update shows just the running version", Seq(WhatsNewPolicy.VersionsToShow(avail, "2.4.0.0", v3)) == "3.0.0.0", "");
+        Check("whatsnew: nothing stored shows only the running version", Seq(WhatsNewPolicy.VersionsToShow(avail, null, v3)) == "3.0.0.0", "");
+        Check("whatsnew: unreadable stored value shows only the running version", Seq(WhatsNewPolicy.VersionsToShow(avail, "garbage", v3)) == "3.0.0.0", "");
+        Check("whatsnew: versions newer than the running one are never shown", !WhatsNewPolicy.VersionsToShow(avail, "2.0.0.0", v3).Contains(new Version(3, 1, 0, 0)), "");
+        var old = WhatsNewPolicy.VersionsToShow(avail, "1.0.0.0", v3);
+        Check("whatsnew: notes older than 2.0.1.0 are never offered", old.All(x => x >= WhatsNewPolicy.OldestNotes) && old.Contains(new Version(2, 0, 1, 0)), Seq(old));
+        var many = Enumerable.Range(0, 30).Select(i => new Version(2, 5, i, 0)).ToList();
+        Check("whatsnew: a long gap is capped", WhatsNewPolicy.VersionsToShow(many, "2.0.1.0", new Version(2, 5, 29, 0)).Count == WhatsNewPolicy.MaxVersionsShown, "");
+        Check("whatsnew: resource name gives its version", WhatsNewPolicy.VersionFromResourceName("TDPdf.ReleaseNotes.v2.3.0.0.md") == new Version(2, 3, 0, 0), "");
+        Check("whatsnew: other resource names give no version",
+            WhatsNewPolicy.VersionFromResourceName("TDPdf.ReleaseNotes.md") is null
+            && WhatsNewPolicy.VersionFromResourceName("TDPdf.THIRD-PARTY-NOTICES.md") is null
+            && WhatsNewPolicy.VersionFromResourceName("TDPdf.ReleaseNotes.v2.3.md") is null, "");
     }
 }

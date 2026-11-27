@@ -25,15 +25,27 @@ namespace TDPdf.Services
         private const string ShowValue = "ShowWhatsNew";
         private const string UpdateStampValue = "LastUpdateCheckUtc";   // written by UpdateCheck since 2.x
 
-        /// <summary>Name of the embedded copy of the running version's release notes.</summary>
-        internal const string ResourceName = "TDPdf.ReleaseNotes.md";
-
-        /// <summary>The running version's notes, or null when this build has none (a dev build).</summary>
-        internal static string? LoadEmbeddedNotes()
+        /// <summary>The versions this build carries notes for (embedded as TDPdf.ReleaseNotes.v&lt;version&gt;.md).</summary>
+        internal static IReadOnlyList<Version> AvailableVersions()
         {
             try
             {
-                using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(ResourceName);
+                return Assembly.GetExecutingAssembly().GetManifestResourceNames()
+                    .Select(WhatsNewPolicy.VersionFromResourceName)
+                    .Where(v => v is not null && v >= WhatsNewPolicy.OldestNotes)
+                    .Select(v => v!)
+                    .ToList();
+            }
+            catch { return Array.Empty<Version>(); }
+        }
+
+        /// <summary>One version's notes, or null when this build has none for it.</summary>
+        internal static string? LoadEmbeddedNotes(Version version)
+        {
+            try
+            {
+                using var stream = Assembly.GetExecutingAssembly()
+                    .GetManifestResourceStream("TDPdf.ReleaseNotes.v" + version + ".md");
                 if (stream is null) return null;
                 using var reader = new StreamReader(stream);
                 string text = reader.ReadToEnd();
@@ -77,11 +89,11 @@ namespace TDPdf.Services
         }
 
         /// <summary>
-        /// Decides whether to open the notes at this launch, then records the running version so the
+        /// The versions whose notes to open at this launch (none when they should not open), then records the running version so the
         /// next launch will not. Call once, after the main window is shown. Runs before the update
         /// check's first stamp so "has run before" is still truthful on a fresh install.
         /// </summary>
-        internal static bool ShouldShowAtLaunchAndRecord(Version running)
+        internal static IReadOnlyList<Version> VersionsToShowAtLaunchAndRecord(Version running)
         {
             try
             {
@@ -99,9 +111,10 @@ namespace TDPdf.Services
                     using var key = Registry.CurrentUser.CreateSubKey(StatePath);
                     key?.SetValue(LastSeenValue, WhatsNewPolicy.VersionToStore(running), RegistryValueKind.String);
                 }
-                return show && LoadEmbeddedNotes() is not null;
+                if (!show) return Array.Empty<Version>();
+                return WhatsNewPolicy.VersionsToShow(AvailableVersions(), lastSeen, running);
             }
-            catch { return false; }
+            catch { return Array.Empty<Version>(); }
         }
     }
 }
