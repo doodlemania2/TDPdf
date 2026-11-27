@@ -106,6 +106,15 @@
       "sources": ["MainWindow.Forms.cs", "Services/PdfFormText.cs", "Services/FormFieldSiblings.cs", "Services/PdfFieldChrome.cs", "Services/PdfFormMerge.cs"]
     },
     {
+      "id": "import-form-data",
+      "name": "Import form data",
+      "status": "ready",
+      "summary": "Fill a form from an FDF or XFDF file. Fields are matched by name, the whole import is one undo step, and any names the form does not have are listed.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Forms.cs", "Services/FormDataParsers.cs", "Services/FormImport.cs"]
+    },
+    {
       "id": "form-building",
       "name": "Create forms",
       "status": "ready",

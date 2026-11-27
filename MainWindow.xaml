@@ -1249,6 +1249,10 @@
                 <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE90F;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- #225: fills the form from an FDF or XFDF file; one undo step. -->
+                <MenuItem Header="Import Fo_rm Data…"                               Click="ImportFormData_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8E5;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <!-- OCR submenu is rebuilt on open (OcrMenu_SubmenuOpened); the placeholder keeps the
                      submenu arrow visible so the event fires. -->
