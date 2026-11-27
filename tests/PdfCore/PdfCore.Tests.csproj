@@ -85,6 +85,8 @@
     <Compile Include="..\..\Services\PdfTaggedFigure.cs" />
     <Compile Include="..\..\Diagnostics\FaultSink.cs" />
     <Compile Include="..\..\Services\MarkArrange.cs" />
+    <Compile Include="..\..\Services\ContextMenuModel.cs" />
+    <Compile Include="..\..\Services\MenuLayouts.cs" />
     <Compile Include="..\..\Services\ReleaseNotesMarkdown.cs" />
     <Compile Include="..\..\Services\WhatsNewPolicy.cs" />
     <Compile Include="..\..\Services\HighlightMultiply.cs" />

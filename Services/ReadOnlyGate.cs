@@ -26,7 +26,7 @@ namespace TDPdf.Services
             "open", "close", "reopen closed tab", "print", "export pages as images", "export tables to csv",
             "extract pages", "document info", "attachments", "exit", "electronic signature", "verify signatures",
             // Edit
-            "find", "copy", "select all",
+            "find", "copy", "select all", "edit menu",
             // Tools
             "select", "pan / hand", "compare pdfs", "settings",
             // Context menus

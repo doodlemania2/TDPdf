@@ -225,22 +225,6 @@ namespace TDPdf
             _splitViewMenu.Items.Add(end);
         }
 
-        /// <summary>The split-view entries for a tab's right-click menu.</summary>
-        private void AddSplitViewItemsToTabMenu(ContextMenu menu, DocumentContext ctx)
-        {
-            if (!ReadOnlyGate.ProcessIsReadOnly)
-            {
-                var move = MakeMenuItem("Open in Split View", (_, _) => _ = SplitMoveTabAsync(ctx), null,
-                    "Move this tab to a new window beside this one", "");
-                move.IsEnabled = _tabs.Count > 1;
-                menu.Items.Add(move);
-            }
-            var copy = MakeMenuItem("View Side by Side", (_, _) => SplitViewCopy(ctx), null,
-                "Show this document in a read-only window beside this one. It updates when you save.", "");
-            copy.IsEnabled = ctx.Doc is not null && ctx.OriginalPath is not null;
-            menu.Items.Add(copy);
-        }
-
         // ── The read-only window ───────────────────────────────────────────────────────────────
 
         private static readonly string[] ReadOnlyDisabledToolbarButtons =

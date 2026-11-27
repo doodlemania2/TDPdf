@@ -532,26 +532,8 @@ namespace TDPdf
                 _tabDragCandidate = null;
             };
 
-            // Right-click menu. Rebuilt with the strip on every tab change, so "Close Other Tabs"
-            // can be enabled purely from the current count with no live refresh to maintain.
-            var chipMenu = new ContextMenu();
-            chipMenu.Items.Add(MakeMenuItem("Close Tab", (_, _) => CloseTab(ctx), "Ctrl+W",
-                "Close this document", "\uE8BB"));
-            var closeOthers = MakeMenuItem("Close Other Tabs", (_, _) => CloseOtherTabs(ctx), "Ctrl+Shift+W",
-                "Close every open document except this one", "\uE711");
-            closeOthers.IsEnabled = _tabs.Count > 1;
-            chipMenu.Items.Add(closeOthers);
-            chipMenu.Items.Add(MakeMenuItem("Move to New Window", (_, _) => _ = TearOffTabToNewWindowAsync(ctx), null,
-                "Open this document alone in a new TDPdf window", "\uE78B"));
-            AddSplitViewItemsToTabMenu(chipMenu, ctx);   // #232
-            // OriginalPath, not the working path: after a decrypt-on-open or a structural edit the
-            // working file is a temp copy, and revealing %TEMP% is not what "containing folder"
-            // means. A document with no home on disk (a merge result, say) has nothing to show.
-            var openFolder = MakeMenuItem("Open Containing Folder", (_, _) => RevealInExplorer(ctx.OriginalPath), null,
-                "Show this document in File Explorer", "\uE8DA");
-            openFolder.IsEnabled = ctx.OriginalPath is not null;
-            chipMenu.Items.Add(openFolder);
-            chip.ContextMenu = chipMenu;
+            // Right-click menu: refilled each time it opens (MainWindow.ContextMenus.cs).
+            AttachTabMenu(chip, ctx);
             return chip;
         }
 

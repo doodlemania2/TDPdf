@@ -553,6 +553,25 @@ namespace TDPdf.Properties
             set => this[nameof(BookFontSizePt)] = value;
         }
 
+        // Right-click menus (#237): whether rows show their shortcut keys, and the user's own order and
+        // hidden items per menu kind, as one JSON string (see Services/MenuLayouts). Empty means every
+        // menu is in its default arrangement.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool ShowMenuShortcuts
+        {
+            get => (bool)this[nameof(ShowMenuShortcuts)];
+            set => this[nameof(ShowMenuShortcuts)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string MenuLayouts
+        {
+            get => (string)this[nameof(MenuLayouts)];
+            set => this[nameof(MenuLayouts)] = value;
+        }
+
         // There is deliberately no "don't ask again" for the warning before a save strips a digital
         // signature (MainWindow.ConfirmSaveOverDigitalSignature). Design §5.5 sketched one
         // (DocumensoWarnOnSignedSave); it was removed unread in 2.0.0 because ticking it would bring

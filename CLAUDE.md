@@ -75,6 +75,7 @@ Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`.
 | `MainWindow.MultiSelect.cs` | The mark selection set (Shift/Ctrl click, drag box, move/nudge/delete together, restyle together) and grouping |
 | `MainWindow.MarkClipboard.cs` | Copy / cut / paste of marks, pictures and text (private clipboard format, JSON) |
 | `MainWindow.MarkArrange.cs` | Align, space evenly and match size of selected marks (geometry in `Services/MarkArrange.cs`) |
+| `MainWindow.ContextMenus.cs` | Every right-click menu, built for what is under the pointer from `Services/ContextMenuModel.cs` (quick-action row, colour/opacity/width rows, the user's order from `Services/MenuLayouts.cs`, "Edit Menu…" in `TdpDialog.EditMenu.cs`) |
 | `MainWindow.Search.cs` | Search bar (Ctrl+F) and match navigation |
 | `MainWindow.Keyboard.cs` | Keyboard shortcut dispatch |
 | `MainWindow.KeyboardMapOverlay.cs` | Visual keyboard for the F1 / Ctrl+? shortcuts overlay |

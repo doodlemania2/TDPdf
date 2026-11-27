@@ -2666,6 +2666,7 @@ namespace TDPdf
             });
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 0, 0, 12) });
+            AddMenuSettingsSection(panel);         // MainWindow.ContextMenus.cs
             AddColorSettingsSection(panel);        // MainWindow.MonitorColor.cs
             AddESignatureSettingsSection(panel);   // MainWindow.ESignature.cs
 
@@ -2851,101 +2852,6 @@ namespace TDPdf
             GrainBrush.ImageSource = bmp;
         }
 
-        private void BuildContextMenu()
-        {
-            var menu = new ContextMenu();
-
-            _ctxCut = MakeMenuItem("Cu_t", (s, e) => CutMarks(), "Ctrl+X", "Cut the selected marks to the clipboard", "\uE8C6");
-            _ctxCopy = MakeMenuItem("_Copy", (s, e) => CopyMarksOrText(), "Ctrl+C", "Copy the selected marks, or the selected text, to the clipboard", "\uE8C8");
-            _ctxPaste = MakeMenuItem("P_aste", (s, e) => PasteFromClipboard(), "Ctrl+V", "Paste marks, a picture or text from the clipboard onto this page", "\uE77F");
-            menu.Items.Add(_ctxCut);
-            menu.Items.Add(_ctxCopy);
-            menu.Items.Add(_ctxPaste);
-            AddPictureMenuItems(menu);
-            menu.Items.Add(MakeMenuItem("Edit Paragraph", (s, e) => EditParagraphFromMenu(), "Ctrl+click",
-                "Edit the whole paragraph under the pointer and reflow it in its own font", "\uE104"));
-            menu.Opened += (_, _) => UpdateMarkMenuState();
-            menu.Items.Add(MakeMenuItem(
-                PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
-                (s, e) => ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr())),
-                "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
-            menu.Items.Add(BuildRasterizeRegionMenuItem());
-            menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
-            _ctxGroup = MakeMenuItem("_Group", (s, e) => GroupSelected(), "Ctrl+G", "Group the selected marks so they move and delete together");
-            _ctxUngroup = MakeMenuItem("U_ngroup", (s, e) => UngroupSelected(), "Ctrl+Shift+G", "Split the selected group back into separate marks");
-            menu.Items.Add(_ctxGroup);
-            menu.Items.Add(_ctxUngroup);
-            _ctxArrange = BuildArrangeSubmenu();
-            menu.Items.Add(_ctxArrange);
-            menu.Items.Add(new Separator());
-            // Tool rows carry the toolbar's glyph and the tool's single-key shortcut (see OnPreviewKeyDown).
-            menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), "V", "Switch to the select tool", "\uE8B3"));
-            menu.Items.Add(MakeMenuItem("_Text Tool", (s, e) => SetTool(EditTool.Text), "1", "Switch to the text tool", "\uE8D2"));
-            menu.Items.Add(MakeMenuItem("Edit Existing Text", (s, e) => SetTool(EditTool.EditText), "2", "Switch to the existing text edit tool", "\uE104"));
-            menu.Items.Add(MakeMenuItem("Select Picture", (s, e) => SetTool(EditTool.EditImage), "3", "Switch to the picture tool: select, move, resize, replace or extract a picture the PDF carries", "\uEB9F"));
-            menu.Items.Add(MakeMenuItem("_Highlight Tool", (s, e) => SetTool(EditTool.Highlight), "5", "Switch to the highlight tool", "\uED56"));
-            menu.Items.Add(MakeMenuItem("_Draw Tool", (s, e) => SetTool(EditTool.Draw), "9", "Switch to the draw tool", "\uED63"));
-            menu.Items.Add(MakeMenuItem("_Crop Tool", (s, e) => SetTool(EditTool.Crop), "C", "Switch to the crop tool", "\uE7A8"));
-            menu.Items.Add(MakeMenuItem("_Redact", (s, e) => SetTool(EditTool.Redact), "R",
-                "Mark areas whose content is permanently removed from the file", "\uE73B"));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("De_lete Selected", (s, e) => DeleteSelected(), "Delete", "Delete the selected annotation", "\uE74D"));
-            menu.Items.Add(MakeMenuItem("_Undo Last", (s, e) => Undo_Click(s!, e), "Ctrl+Z", "Undo the last annotation change", "\uE7A7"));
-            menu.Items.Add(MakeMenuItem("Cle_ar Page Annotations", (s, e) => ClearAnnotations_Click(s!, e), null, "Clear all annotations on this page", "\uED62"));
-
-            _annotationCanvas.ContextMenu = menu;
-        }
-
-        private void PageList_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
-        {
-            if (_doc is null) return;
-            var menu = new ContextMenu();
-            int[] selectedPages = SelectedPageIndices();
-            menu.Items.Add(MakeMenuItem("Insert Blank Page After", (s, ev) => InsertBlankPage_Click(s!, ev), null, null, "\uE7C3"));
-            // Pluralised on the plain count, unlike the Move rows below: every selected page is
-            // duplicated whether or not the selection is contiguous, so there is no equivalent of
-            // movesBlock's "does this actually move more than one page" question to ask.
-            var duplicate = MakeMenuItem(selectedPages.Length > 1 ? "Duplicate Pages" : "Duplicate Page",
-                (s, ev) => DuplicatePages_Click(), null,
-                "Insert a copy of each selected page after the last of them", "\uE8C8");
-            // Greyed rather than falling back to the current page. Duplicating is a structural edit:
-            // it rewrites and reloads the document and takes the unsaved overlay annotations with it
-            // (see SaveTempAndReload), so guessing at what the user meant is expensive to be wrong
-            // about. In practice the list always has a selection \u2014 opening a document and every
-            // reload select a page \u2014 so this state is the genuinely ambiguous one, and a greyed row
-            // says "choose the pages first" without spending anything to say it.
-            duplicate.IsEnabled = selectedPages.Length > 0;
-            menu.Items.Add(duplicate);
-            menu.Items.Add(new Separator());
-            // One Rotate glyph serves both directions: the counter-clockwise row draws it mirrored,
-            // so the pair reads as a matched set instead of two unrelated icons.
-            menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
-            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
-                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", "\uE90F"));
-            menu.Items.Add(new Separator());
-            // #135: a contiguous multi-page selection now moves as a block, so say so \u2014 the rows
-            // used to move exactly one page whatever was selected.
-            bool movesBlock = selectedPages.Length > 1
-                              && selectedPages[^1] - selectedPages[0] == selectedPages.Length - 1;
-            menu.Items.Add(MakeMenuItem(movesBlock ? "Move Pages Up" : "Move Page Up",
-                (s, ev) => MoveUp_Click(s!, ev), null, null, "\uE74A"));
-            menu.Items.Add(MakeMenuItem(movesBlock ? "Move Pages Down" : "Move Page Down",
-                (s, ev) => MoveDown_Click(s!, ev), null, null, "\uE74B"));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("Extract Page(s)", (s, ev) => Split_Click(s!, ev), null, null, "\uE8B1"));
-            menu.Items.Add(MakeMenuItem("Delete Page(s)", (s, ev) => Delete_Click(s!, ev), null, null, "\uE8C6"));
-            menu.Items.Add(new Separator());
-            var twoColumns = MakeMenuItem("Two-Column Thumbnails", (s, ev) => PairedSidebar_Click(s!, ev), null,
-                "Show two page thumbnails per row", "\uE8A9");
-            twoColumns.IsChecked = _pairedSidebar;
-            menu.Items.Add(twoColumns);
-            menu.PlacementTarget = PageList;
-            menu.IsOpen = true;
-            e.Handled = true;
-        }
-
         private void RotatePages_Click(int delta)
         {
             if (_doc is null) return;
@@ -2987,27 +2893,6 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)FitToPage);
                 SetStatus($"Rotated {indices.Count} page(s)");
             });
-        }
-
-        // Rotate was previously reachable only via right-click on a page thumbnail in the Pages
-        // panel — reported back as "the rotate command is missing" when someone went looking for it
-        // on the toolbar instead. Left-click here does the common case (clockwise); right-click
-        // opens the same CW / CCW / Transform menu the page-list context menu already offers, so
-        // the two entry points stay in sync rather than drifting into two different feature sets.
-        private void RotateBtn_Click(object sender, RoutedEventArgs e) => RotatePages_Click(90);
-
-        private void RotateBtn_RightButtonUp(object sender, MouseButtonEventArgs e)
-        {
-            e.Handled = true;
-            var menu = new ContextMenu();
-            menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
-            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
-                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", ""));
-            menu.PlacementTarget = (UIElement)sender;
-            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
-            menu.IsOpen = true;
         }
 
         private static (int w, int h) AnnotationCanvasSize(PdfPage page)
@@ -3076,7 +2961,7 @@ namespace TDPdf
             if (ReadOnlyGate.ProcessIsReadOnly && !literalHeader && !ReadOnlyGate.IsMenuCommandAllowed(header))
                 item.IsEnabled = false;
             item.Click += click;
-            if (gesture != null)
+            if (gesture != null && TDPdf.Properties.Settings.Default.ShowMenuShortcuts)
                 item.InputGestureText = gesture;
             if (glyph != null)
                 item.Icon = MakeMenuGlyph(glyph, mirrorGlyph);
@@ -3725,16 +3610,11 @@ namespace TDPdf
                 Canvas.SetLeft(overlay, lnk.Cx);
                 Canvas.SetTop(overlay, lnk.Cy);
 
-                // Right-click context menu: copy the target or remove the native PDF annotation.
-                var cm = new ContextMenu();
-                if (lnk.Tag is string uriTag && uriTag.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
-                    cm.Items.Add(MakeMenuItem("Copy Email Address", (_, _) =>
-                        Clipboard.SetText(uriTag["mailto:".Length..]), null, null, "\uE715"));
-                else if (lnk.Tag is string httpTag)
-                    cm.Items.Add(MakeMenuItem("Copy URL", (_, _) => Clipboard.SetText(httpTag), null, null, "\uE71B"));
-                cm.Items.Add(MakeMenuItem("Remove Link from PDF", (_, _) =>
-                    RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex), null, null, "\uE74D"));
-                overlay.ContextMenu = cm;
+                // Right-click menu: copy the target or remove the native PDF annotation (MainWindow.ContextMenus.cs).
+                var linkKind = lnk.Tag is string uri && uri.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) ? LinkMenuKind.Mail
+                             : lnk.Tag is string ? LinkMenuKind.Url : LinkMenuKind.Other;
+                AttachLinkMenu(this, overlay, linkKind, lnk.Tag as string,
+                    () => RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex));
 
                 // #156 pushed the form-field overlays to ZIndex -1 so annotations paint above them.
                 // Links are added to this same canvas BEFORE the fields on the initial page render, so
@@ -7754,20 +7634,6 @@ namespace TDPdf
         {
             if (e.ChangedButton == MouseButton.XButton1)      { NavHistoryGo(back: true);  e.Handled = true; }
             else if (e.ChangedButton == MouseButton.XButton2) { NavHistoryGo(back: false); e.Handled = true; }
-        }
-
-        // Keyboard access to the right-click menu (Menu key / Shift+F10): opens the annotation canvas
-        // context menu centered on the page rather than at the mouse. Placement is set to Center just
-        // for this open and restored on close, so the mouse path keeps its open-at-cursor behavior.
-        private void OpenContextMenuAtSelection()
-        {
-            if (_doc is null || _annotationCanvas.ContextMenu is not ContextMenu cm) return;
-            cm.PlacementTarget = _annotationCanvas;
-            var prevPlacement = cm.Placement;
-            cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Center;
-            void Restore(object? s, RoutedEventArgs a) { cm.Placement = prevPlacement; cm.Closed -= Restore; }
-            cm.Closed += Restore;
-            cm.IsOpen = true;
         }
 
         private void Zoom_PropertyChanged(object? sender, PropertyChangedEventArgs e)
