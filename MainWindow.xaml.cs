@@ -5509,8 +5509,34 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// A redraw or re-selection can land while a resize drag is still live. The geometry the drag
+        /// already applied stays, the document is marked dirty if it changed, and the undo step pushed
+        /// when the drag began is kept (the mouse-up that would have finished it no longer finds a
+        /// resize in progress).
+        /// </summary>
+        private void FinishResizeInProgress()
+        {
+            if (!(_isResizingSig || _isResizingImage || _isResizingAnnot)) return;
+            bool changed = false;
+            if (_isResizingSig && _resizeSigAnnot is not null && _resizeSigAnnot.Scale != _resizeSigStartScale)
+                changed = true;
+            if (_isResizingImage && _resizingImageEdit is not null &&
+                _resizingImageEdit.TargetBounds != _imageResizeOriginalBounds)
+                changed = true;
+            if (_isResizingAnnot && _resizingAnnot is not null && !GeometryUnchanged(_resizingAnnot, _resizeOriginalGeom))
+                changed = true;
+            _isResizingSig = false;
+            _isResizingImage = false;
+            _isResizingAnnot = false;
+            _resizingImageEdit = null;
+            if (_annotationCanvas.IsMouseCaptured) _annotationCanvas.ReleaseMouseCapture();
+            if (changed) MarkDirty();
+        }
+
         private void ClearSelection()
         {
+            FinishResizeInProgress();
             if (_selectionBorder is not null)
             {
                 _annotationCanvas.Children.Remove(_selectionBorder);
