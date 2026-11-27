@@ -38,6 +38,19 @@ internal static class PrintPlan
         Check("odd-only reversed walks 9,7,5,3,1", J(PrintSheetPlan.Sheets(odd, 1, true)) == "[8] [6] [4] [2] [0]", "");
         Check("empty selection has no sheets", PrintSheetPlan.Sheets(Array.Empty<int>(), 4, true).Count == 0, "");
         Check("nUp below 1 is treated as 1", PrintSheetPlan.Sheets(pages, 0, false).Count == 5, "");
+
+        // Fit to page turns a page 90 degrees only when page and sheet orientations differ.
+        const int Fit = PrintSheetPlan.ScaleFit;
+        Check("turn: landscape page on portrait sheet", PrintSheetPlan.TurnToFit(Fit, 792, 612, 816, 1056), "");
+        Check("turn: portrait page on landscape sheet", PrintSheetPlan.TurnToFit(Fit, 612, 792, 1056, 816), "");
+        Check("no turn: same orientation (portrait/portrait)", !PrintSheetPlan.TurnToFit(Fit, 612, 792, 816, 1056), "");
+        Check("no turn: same orientation (landscape/landscape)", !PrintSheetPlan.TurnToFit(Fit, 792, 612, 1056, 816), "");
+        Check("no turn: square page", !PrintSheetPlan.TurnToFit(Fit, 600, 600, 816, 1056), "");
+        Check("no turn: square sheet", !PrintSheetPlan.TurnToFit(Fit, 792, 612, 900, 900), "");
+        Check("no turn: Actual size", !PrintSheetPlan.TurnToFit(PrintSheetPlan.ScaleActual, 792, 612, 816, 1056), "");
+        Check("no turn: Shrink oversized", !PrintSheetPlan.TurnToFit(PrintSheetPlan.ScaleShrink, 792, 612, 816, 1056), "");
+        Check("no turn: Custom scale", !PrintSheetPlan.TurnToFit(PrintSheetPlan.ScaleCustom, 792, 612, 816, 1056), "");
+        Check("no turn: unusable sizes", !PrintSheetPlan.TurnToFit(Fit, 0, 612, 816, 1056), "");
         Check("sheet count matches ceil(n/nUp)", PrintSheetPlan.Sheets(pages, 4, false).Count == 2, "");
 
         // Scale: fit 0.5 (page bigger than sheet), actual 1.0.

@@ -53,6 +53,19 @@ namespace TDPdf.Services
         public static bool IsFitLimited(int mode, double fit, double actual)
             => mode == ScaleFit || !(actual > 0) || (mode == ScaleShrink && fit <= actual);
 
+        /// <summary>
+        /// Whether a 1-up page is turned 90 degrees on the sheet: only for Fit to page, only when the page
+        /// is not square, and only when the page and the sheet are oriented differently (a landscape page
+        /// on a portrait sheet, or the reverse). Every other mode keeps the page upright.
+        /// </summary>
+        public static bool TurnToFit(int mode, double pageW, double pageH, double sheetW, double sheetH)
+        {
+            if (mode != ScaleFit) return false;
+            if (!(pageW > 0) || !(pageH > 0) || !(sheetW > 0) || !(sheetH > 0)) return false;
+            if (pageW == pageH || sheetW == sheetH) return false;
+            return (pageW > pageH) != (sheetW > sheetH);
+        }
+
         // ---- Two-sided choice persistence ----
 
         /// <summary>

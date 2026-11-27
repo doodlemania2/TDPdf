@@ -1490,10 +1490,15 @@ namespace TDPdf.Services
                     // Scale factors are DIPs on the sheet per DIP of the page, so the size the page will be
                     // printed at is known before the page is rasterized.
                     var (pageWd, pageHd) = PageDips(idx);
-                    double fitS    = Math.Min(availW / pageWd, availH / pageHd);
+                    // Fit to page turns a page a quarter turn when page and sheet are oriented differently
+                    // (PrintSheetPlan.TurnToFit). The footprint on the sheet is then the page's height by width.
+                    bool turn = PrintSheetPlan.TurnToFit(layout.ScaleMode, pageWd, pageHd, aw, ah);
+                    double footW = turn ? pageHd : pageWd, footH = turn ? pageWd : pageHd;
+                    double fitS    = Math.Min(availW / footW, availH / footH);
                     double s = PrintSheetPlan.Factor(layout.ScaleMode, fitS, 1.0, layout.CustomPercent);
-                    double iw = pageWd * s, ih = pageHd * s;
-                    if (fetch(idx, iw, ih) is BitmapSource bmp)
+                    double iw = footW * s, ih = footH * s;   // footprint on the sheet
+                    // The page itself is rendered upright at its printed size, whichever way it is turned.
+                    if (fetch(idx, turn ? ih : iw, turn ? iw : ih) is BitmapSource bmp)
                     {
                         // When the result is the fit scale, snap to the printable area when within a pixel of
                         // filling it so the white sheet doesn't peek through as a 1px hairline at the page edge.
@@ -1503,12 +1508,18 @@ namespace TDPdf.Services
                             if (iw >= availW - 1.5) iw = availW + 1;
                             if (ih >= availH - 1.5) ih = availH + 1;
                         }
-                        var img = new Image { Source = bmp, Width = iw, Height = ih };
+                        double imgW = turn ? ih : iw, imgH = turn ? iw : ih;
+                        var img = new Image { Source = bmp, Width = imgW, Height = imgH };
                         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
                         double offsetH = layout.AlignH == 0 ? 0 : layout.AlignH == 2 ? availW - iw : (availW - iw) / 2;
                         double offsetV = layout.AlignV == 0 ? 0 : layout.AlignV == 2 ? availH - ih : (availH - ih) / 2;
-                        Canvas.SetLeft(img, m + offsetH);
-                        Canvas.SetTop(img, m + offsetV);
+                        // The turn is a transform on the Image built here, on the thread that composes the sheet;
+                        // the bitmap stays the frozen one, so nothing crosses threads. It turns about the
+                        // centre of the footprint, so the box is placed by that centre.
+                        if (turn)
+                            img.RenderTransform = new RotateTransform(90, imgW / 2, imgH / 2);
+                        Canvas.SetLeft(img, m + offsetH + (iw - imgW) / 2);
+                        Canvas.SetTop(img, m + offsetV + (ih - imgH) / 2);
                         canvas.Children.Add(img);
                         any = true;
                     }
