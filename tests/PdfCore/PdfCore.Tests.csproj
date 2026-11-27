@@ -110,6 +110,7 @@
     <Compile Include="..\..\Services\ProtectedSave.cs" />
     <Compile Include="..\..\Services\FilePathPolicy.cs" />
     <Compile Include="..\..\Services\ClosedTabStack.cs" />
+    <Compile Include="..\..\Services\SpreadRows.cs" />
     <Compile Include="..\..\Services\SessionState.cs" />
     <Compile Include="..\..\Services\OpenBatchReport.cs" />
     <Compile Include="..\..\Services\FileFingerprint.cs" />

@@ -149,9 +149,9 @@ namespace TDPdf
         /// </remarks>
         private void ApplyPendingViewResume()
         {
-            // Continuous has its own anchor point — RenderContinuousPages re-scrolls once the slot
-            // heights above the target page are final — so its offsets must not be applied here.
-            if (_viewMode == ViewMode.Continuous) return;
+            // The continuous strips have their own anchor point — RenderContinuousPages re-scrolls once
+            // the slot heights above the target page are final — so their offsets must not be applied here.
+            if (IsContinuousFamily) return;
 
             if (_resumeZoomFor is { } zoomCtx)
             {
@@ -212,6 +212,12 @@ namespace TDPdf
 
             _ctx = ctx;
 
+            // #246: the view is per tab. Bring this tab's own mode back (a tab with none yet takes
+            // the last mode the user chose); the layout below is then built for it.
+            ViewMode modeBefore = _viewMode;
+            AdoptContextViewMode(ctx);
+            bool modeChanged = _viewMode != modeBefore;
+
             // Tear down transient overlays/tools tied to the previous document.
             ClearSelection();
             CloseSearchBar();
@@ -257,8 +263,13 @@ namespace TDPdf
             {
                 DropZone.Visibility = Visibility.Collapsed;
                 PagePreviewPanel.Visibility = Visibility.Visible;
-                // View mode is app-wide; make sure the correct layout host is visible for this tab.
-                bool isContinuous = _viewMode == ViewMode.Continuous;
+                // Make sure the layout host for this tab's own view mode is the visible one.
+                bool isContinuous = IsContinuousFamily;
+                if (modeChanged)
+                {
+                    _secondaryRenderCts?.Cancel();
+                    _pageContentPanel.Width = double.NaN;
+                }
                 _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
                 if (PageImage.Parent is FrameworkElement pgChild
                     && pgChild.Parent is FrameworkElement primBorder)
@@ -295,7 +306,7 @@ namespace TDPdf
                     // so it goes on NOW and the incoming page renders at the right size first
                     // time; a FIT measures whatever page is on screen — which at this instant is
                     // still the OUTGOING tab's — so it has to wait for this tab's render.
-                    if (_viewMode != ViewMode.Grid && _viewMode != ViewMode.Continuous)
+                    if (_viewMode != ViewMode.Grid && !IsContinuousFamily)
                     {
                         if (_ctx.ViewFitMode == ZoomFitMode.None) RestoreTabZoom(_ctx);
                         else _resumeZoomFor = resumeCtx;
@@ -304,9 +315,9 @@ namespace TDPdf
 
                 if (idx >= 0)
                 {
-                    if (_viewMode == ViewMode.Continuous)
+                    if (IsContinuousFamily)
                     {
-                        // View mode is app-wide but the continuous strip is per-document; rebuild
+                        // The continuous strip is per-document; rebuild
                         // it for the newly-activated tab. Set the index without firing a stale
                         // scroll, then SetupContinuousView scrolls to the right page.
                         _suppressContinuousScrollSync = true;
@@ -330,6 +341,13 @@ namespace TDPdf
                     // If the index is unchanged, render explicitly.
                     else if (PageList.SelectedIndex == idx) RerenderCurrentPage();
                     else PageList.SelectedIndex = idx;
+
+                    // #246: a tab that comes back in a different view than the tab it replaced, and
+                    // has no zoom of its own to resume, is placed by the standing open rules, as if
+                    // it had just been opened in that view.
+                    if (modeChanged && !resume && !IsContinuousFamily)
+                        _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                            (Action)(() => { if (ReferenceEquals(_ctx, resumeCtx)) ApplyViewModeOnOpen(); }));
                 }
                 else
                 {
@@ -660,19 +678,21 @@ namespace TDPdf
                 Math.Max(0, ctx.SelectedPageIndex),
                 zoom,
                 ctx.ViewCaptured ? ctx.ViewFitMode.ToString() : nameof(ZoomFitMode.None),
-                _viewMode.ToString());
+                (ctx.Mode ?? _lastChosenViewMode).ToString());   // each tab keeps its own view (#246)
         }
 
         /// <summary>
         /// Puts a reopened tab back on its page, zoom and view. Waits for the open's own deferred
         /// view setup (ApplyViewModeOnOpen runs at Background priority) so this is applied after it,
-        /// not overwritten by it. View mode is window-wide, so it is applied only when asked to.
+        /// not overwritten by it. The view mode belongs to the tab (#246), so it is put on the tab
+        /// that was just opened, without touching the "last mode chosen" that new tabs start in.
         /// </summary>
         private async Task ApplyTabViewStateAsync(TDPdf.Services.TabViewState state, bool applyViewMode)
         {
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
             if (_doc is null) return;
-            if (applyViewMode && Enum.TryParse(state.ViewMode, out ViewMode mode) && mode != _viewMode) SetViewMode(mode);
+            if (applyViewMode && Enum.TryParse(state.ViewMode, out ViewMode mode) && Enum.IsDefined(mode) && mode != _viewMode)
+                SetViewMode(mode, userChoice: false);
             if (_viewMode != ViewMode.Grid)
             {
                 if (state.Fit == nameof(ZoomFitMode.Width)) FitToWidth();

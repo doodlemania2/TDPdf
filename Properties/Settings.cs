@@ -159,9 +159,10 @@ namespace TDPdf.Properties
             set => this[nameof(EnterAddsNewLine)] = value;
         }
 
-        // Persisted page view mode (app-wide). One of the ViewMode enum names:
-        // "Single", "Continuous", "TwoPage", "Grid". Defaults to Grid, which is
-        // the layout the app opened in before view modes were introduced.
+        // The page view mode the user chose last. One of the ViewMode enum names:
+        // "Single", "Continuous", "TwoPage", "TwoPageContinuous", "Grid". Each tab keeps its own
+        // view; this is the one a NEW tab starts in. Defaults to Grid, which is the layout the app
+        // opened in before view modes were introduced.
         [UserScopedSetting]
         [DefaultSettingValue("Grid")]
         public string ViewMode

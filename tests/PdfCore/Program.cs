@@ -206,6 +206,7 @@ MarkArrangeTests.Run(Check);
 AnglesTests.Run(Check);
 UntestedPureCodeTests.Run(Check, tmp);
 ClosedTabTests.Run(Check);
+SpreadRowsTests.Run(Check);
 SessionStateTests.Run(Check);
 OpenBatchTests.Run(Check);
 WhatsNewTests.Run(Check);

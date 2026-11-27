@@ -219,11 +219,12 @@ namespace TDPdf
             _continuousSharpW = 0;
             _continuousTops.Clear();
 
-            foreach (UIElement child in _continuousPanel.Children)
+            foreach (var slot in _continuousSlots)
             {
-                if (child is Border { Child: Image image })
+                if (slot is { Child: Image image })
                     image.Source = null;
             }
+            _continuousSlots.Clear();
             _continuousPanel.Children.Clear();
         }
 

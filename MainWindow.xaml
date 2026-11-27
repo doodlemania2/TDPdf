@@ -1174,8 +1174,18 @@
                           Header="Invert I_mages Too" InputGestureText="Shift+N"    Click="DocInvertImages_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB9F;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- The page view of the ACTIVE TAB (each tab keeps its own, #246). The five rows are
+                     built in code (BuildPageViewMenu) and checked by SyncViewModeMenu. -->
+                <MenuItem x:Name="PageViewMenuItem" Header="Page _View">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A9;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Toggle _Sidebar"                                  Click="SidebarToggle_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE700;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- Two thumbnails per row in the Pages sidebar (#246); the same switch is on the
+                     sidebar's right-click menu and in Settings. -->
+                <MenuItem x:Name="PairedSidebarMenuItem" Header="_Two-Column Pages Sidebar" Click="PairedSidebar_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A9;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
                 <!-- Upstream KillerPDF #193: in Two-Page view the cover displays ALONE, so facing
@@ -1183,7 +1193,7 @@
                      (SyncTwoPageBookUi sets IsChecked); only meaningful in Two-Page view, which is
                      why the row says so rather than hiding itself. -->
                 <MenuItem x:Name="TwoPageBookMenuItem"
-                          Header="_Book Layout (Two-Page)" InputGestureText="B"      Click="TwoPageBook_Click">
+                          Header="_Book Layout (Two-Page views)" InputGestureText="B"      Click="TwoPageBook_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8F1;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>

@@ -417,11 +417,22 @@ namespace TDPdf
         private BitmapSource? _primaryPageBitmap;
 
         // ============================================================
-        // View mode (app-wide). Single and Grid behave exactly as the original
-        // single-page / grid layouts did; Continuous and TwoPage are additive.
+        // View mode (per tab, #246). Single and Grid behave exactly as the original
+        // single-page / grid layouts did; Continuous, TwoPage and TwoPageContinuous are additive.
+        // _viewMode is the ACTIVE tab's mode: DocumentContext.Mode keeps each tab's own, and
+        // ActivateContext puts the incoming tab's back. _lastChosenViewMode is the last mode the
+        // user picked (the persisted Settings.ViewMode), which a tab with no mode of its own yet
+        // takes on first use.
         // ============================================================
-        private enum ViewMode { Single, Continuous, TwoPage, Grid }
+        private enum ViewMode { Single, Continuous, TwoPage, TwoPageContinuous, Grid }
         private ViewMode _viewMode = ViewMode.Grid;
+        private ViewMode _lastChosenViewMode = ViewMode.Grid;
+
+        /// <summary>True in the two scrolling strips: Continuous and Two pages, continuous.</summary>
+        private bool IsContinuousFamily => _viewMode is ViewMode.Continuous or ViewMode.TwoPageContinuous;
+
+        /// <summary>True when the strip lays pages out two to a row.</summary>
+        private bool IsPairedStrip => _viewMode == ViewMode.TwoPageContinuous;
 
         // ── Two-Page "book layout" (upstream KillerPDF #193) ───────────────────────────────────
         // Off (default) is the pairing Two-Page has always used: the primary page plus the one
@@ -450,7 +461,8 @@ namespace TDPdf
         // Continuous-view state.
         private StackPanel _continuousPanel = null!;
         private CancellationTokenSource? _continuousRenderCts;
-        private readonly List<double> _continuousTops = [];
+        private readonly List<double> _continuousTops = [];   // top of each page's row, in strip units
+        private readonly List<Border> _continuousSlots = [];   // the slot of each page (see MainWindow.ContinuousView.cs)
         private int _continuousScrollTarget = -1; // re-scroll here once true heights are known
         private double _continuousPageW;
         private bool _suppressContinuousScrollSync;
@@ -581,13 +593,14 @@ namespace TDPdf
             _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
             _invertImagesMenuItem = (MenuItem)FindName("InvertImagesMenuItem")!;
             _twoPageBookMenuItem = (MenuItem)FindName("TwoPageBookMenuItem")!;
+            BuildPageViewMenu();
             _pageBadge = (Border)FindName("PageBadge")!;
             _pageBadgeText = (TextBlock)FindName("PageBadgeText")!;
             _pageBadgeSlide = (TranslateTransform)FindName("PageBadgeSlide")!;
             _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
             // Restore the persisted view mode (defaults to Grid, matching the original layout).
             if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
-                _viewMode = savedVm;
+                _viewMode = _lastChosenViewMode = savedVm;
             _gridViewToggle.IsChecked = _viewMode == ViewMode.Grid;
             // #193: restore the persisted Two-Page book layout and light its View-menu check.
             try { _twoPageBook = TDPdf.Properties.Settings.Default.TwoPageBookLayout; }
@@ -1674,11 +1687,16 @@ namespace TDPdf
             public double ViewZoomLevel = 1.0;
             public ZoomFitMode ViewFitMode = ZoomFitMode.None;
             public bool ViewManualZoomIntent;   // mirrors MainWindow._manualZoomIntent (#201)
-            // The view mode the offsets were captured in. View mode is app-wide, so it can change
-            // while a tab sits in the background, and an offset into the continuous strip means
-            // nothing in Grid — a mismatch drops the resume instead of scrolling somewhere
-            // arbitrary.
+            // The view mode the offsets were captured in. The tab's mode (Mode, below) normally
+            // cannot change while it sits in the background, but a reload can, and an offset into
+            // the continuous strip means nothing in Grid — a mismatch drops the resume instead of
+            // scrolling somewhere arbitrary.
             public ViewMode ViewModeAtCapture = ViewMode.Single;
+
+            // This tab's own page view (#246). Null until the tab is first shown, when it takes the
+            // last mode the user chose; from then on it is only changed by choosing a mode while
+            // this tab is active, and switching to the tab brings it back.
+            public ViewMode? Mode;
 
             // The clickable tab-header chip (built lazily by RebuildTabStrip).
             public Border? Chip;
@@ -2338,12 +2356,8 @@ namespace TDPdf
 
             var states = TDPdf.Services.SessionState.Parse(ReadSavedViewStates());
             string active = ReadSavedSession().Active;
-            // View mode is one setting for the whole window, so the active tab's decides it.
-            var modeSource = TDPdf.Services.SessionState.For(states,
-                !string.IsNullOrEmpty(active) && files.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, active)) ? active : files[0]);
-
+            // Each tab comes back in the view it was saved in (#246).
             int restored = 0;
-            bool modeApplied = false;
             var failed = new List<string>();
             foreach (var f in files)
             {
@@ -2355,9 +2369,7 @@ namespace TDPdf
                 }
                 restored++;
                 var state = TDPdf.Services.SessionState.For(states, f);
-                if (!modeApplied) { state = state with { ViewMode = modeSource.ViewMode }; }
-                await ApplyTabViewStateAsync(state, applyViewMode: !modeApplied);
-                modeApplied = true;
+                await ApplyTabViewStateAsync(state, applyViewMode: true);
             }
 
             if (!string.IsNullOrEmpty(active))
@@ -2453,6 +2465,7 @@ namespace TDPdf
                 (ViewMode.Single,     "Single page"),
                 (ViewMode.Continuous, "Continuous scroll"),
                 (ViewMode.TwoPage,    "Two pages"),
+                (ViewMode.TwoPageContinuous, "Two pages, continuous"),
                 (ViewMode.Grid,       "Grid"),
             })
             {
@@ -3114,8 +3127,8 @@ namespace TDPdf
         /// </summary>
         private void RefreshPageView(int pageIndex)
         {
-            // Continuous manages its own rendering through SetupContinuousView; nothing to do here.
-            if (_viewMode == ViewMode.Continuous) return;
+            // The continuous strips manage their own rendering through SetupContinuousView; nothing to do here.
+            if (IsContinuousFamily) return;
 
             // Row-wrapping in Grid/TwoPage comes from the explicit _pageContentPanel.Width set in
             // RenderAdditionalPages, not from constraining the ScrollViewer's available width — so
@@ -3140,6 +3153,21 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// Makes the window's live <c>_viewMode</c> the one <paramref name="ctx"/> keeps (#246). A tab
+        /// with no mode of its own yet takes the last mode the user chose. Only the field and its
+        /// toolbar / menu marks move here; the caller owns laying the view out.
+        /// </summary>
+        private void AdoptContextViewMode(DocumentContext ctx)
+        {
+            ViewMode mode = ctx.Mode ??= _lastChosenViewMode;
+            if (_viewMode == mode) { SyncViewModeMenu(); return; }
+            _viewMode = mode;
+            _wheelFlipGate.Reset();   // the scroll surface under the wheel just changed
+            _gridViewToggle.IsChecked = mode == ViewMode.Grid;
+            SyncViewModeMenu();
+        }
+
         // The toolbar toggle is a quick switch between Grid and Single views.
         private void GridViewToggle_Click(object sender, RoutedEventArgs e)
         {
@@ -3151,17 +3179,32 @@ namespace TDPdf
         // ============================================================
 
         /// <summary>
-        /// Switches the app-wide page view mode, persists it, swaps the visible layout host
+        /// Switches the ACTIVE TAB's page view mode (#246), swaps the visible layout host
         /// (wrap panel vs. continuous strip), and applies the open-fit rule for the new mode:
-        /// Single/Two-Page → fit page, Continuous → fit width, Grid → existing column-fit.
+        /// Single/Two-Page → fit page, Continuous and Two pages, continuous → fit width,
+        /// Grid → existing column-fit. With <paramref name="userChoice"/> the mode also becomes
+        /// "the last mode chosen" (persisted), which new tabs start in; a restore of a saved
+        /// session or closed tab passes false so it never rewrites that preference.
         /// </summary>
-        private void SetViewMode(ViewMode mode)
+        private void SetViewMode(ViewMode mode, bool userChoice = true)
         {
+            _ctx.Mode = mode;
+            if (userChoice)
+            {
+                _lastChosenViewMode = mode;
+                try
+                {
+                    TDPdf.Properties.Settings.Default.ViewMode = mode.ToString();
+                    TDPdf.Properties.Settings.Default.Save();
+                }
+                catch { /* non-critical user preference */ }
+            }
             if (_viewMode == mode)
             {
                 // Keep the toolbar toggle in sync even on a no-op (e.g. settings re-selecting
                 // the active mode) so it never drifts out of step with _viewMode.
                 _gridViewToggle.IsChecked = mode == ViewMode.Grid;
+                SyncViewModeMenu();
                 return;
             }
             // #131: a view-mode switch is an explicit gesture and belongs on the commit
@@ -3186,14 +3229,9 @@ namespace TDPdf
             // page-flip gesture from the previous mode must not complete against the new one.
             _wheelFlipGate.Reset();
             _gridViewToggle.IsChecked = mode == ViewMode.Grid;
-            try
-            {
-                TDPdf.Properties.Settings.Default.ViewMode = mode.ToString();
-                TDPdf.Properties.Settings.Default.Save();
-            }
-            catch { /* non-critical user preference */ }
+            SyncViewModeMenu();
 
-            bool isContinuous = mode == ViewMode.Continuous;
+            bool isContinuous = mode is ViewMode.Continuous or ViewMode.TwoPageContinuous;
             _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
             // The primary page's parent Border (first child of PageContentGrid) must also hide
             // so its leftover bitmap/overlay doesn't show behind the continuous strip.
@@ -3213,13 +3251,14 @@ namespace TDPdf
                 _continuousBaseBitmaps.Clear();
                 _continuousSharpW = 0;
                 _continuousPanel.Children.Clear();
+                _continuousSlots.Clear();
                 _continuousTops.Clear();
             }
 
             if (_doc is null) return;
             int idx = Math.Max(0, PageList.SelectedIndex);
 
-            if (mode == ViewMode.Continuous)
+            if (isContinuous)
             {
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     () => { SetupContinuousView(idx); ReapplyZoomAfterViewSwitch(keepFit, keepZoom); });
@@ -3276,7 +3315,7 @@ namespace TDPdf
                 Zoom.SetZoomLevel(zoom);
                 SyncLayoutZoom();   // the layout scale differs per mode even at an equal true zoom
             }
-            else if (_viewMode == ViewMode.Continuous) FitToWidth();
+            else if (IsContinuousFamily) FitToWidth();
             else FitToPage();
         }
 
@@ -3301,6 +3340,16 @@ namespace TDPdf
             }
             catch { /* non-critical user preference */ }
             SetStatus(on ? "Book layout on. The cover shows alone" : "Book layout off. Pages pair from the cover");
+            // The two-column Pages sidebar pairs the same way (#246).
+            SyncPairedSidebarBook();
+            if (_doc is not null && _viewMode == ViewMode.TwoPageContinuous)
+            {
+                // The strip re-lays its rows around the page that was on screen.
+                int keep = Math.Max(0, PageList.SelectedIndex);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                    (Action)(() => { if (_viewMode == ViewMode.TwoPageContinuous) SetupContinuousView(keep); }));
+                return;
+            }
             if (_doc is null || _viewMode != ViewMode.TwoPage) return;
             // Re-pair what is on screen. Toggling is an explicit request about pairing, so unlike
             // every other navigation path it is allowed to move the selection onto the new spread's
@@ -3320,7 +3369,11 @@ namespace TDPdf
         private void ApplyViewModeOnOpen()
         {
             if (_doc is null) return;
-            bool isContinuous = _viewMode == ViewMode.Continuous;
+            // #246: a tab that has no view of its own yet starts in the last mode the user chose.
+            // _viewMode may still be another tab's, so it is brought across here (the layout hosts
+            // and the strips below are set up from it).
+            AdoptContextViewMode(_ctx);
+            bool isContinuous = IsContinuousFamily;
             _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
             if (PageImage.Parent is FrameworkElement pageGridChild
                 && pageGridChild.Parent is FrameworkElement primaryBorder)
@@ -3346,7 +3399,7 @@ namespace TDPdf
 
             if (isContinuous)
             {
-                // SetupContinuousView ends in FitToWidth, which is also Continuous's own default;
+                // SetupContinuousView ends in FitToWidth, which is also the strips' own default;
                 // only a remembered Fit Page — or a remembered manual zoom — has to override it,
                 // once the strip exists.
                 SetupContinuousView(Math.Max(0, PageList.SelectedIndex));
@@ -5265,7 +5318,7 @@ namespace TDPdf
             else if (PageList.Items.Count > 0)
                 PageList.SelectedIndex = 0;
 
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 int contIdx = Math.Max(0, PageList.SelectedIndex);
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
@@ -7328,7 +7381,7 @@ namespace TDPdf
 
             // Continuous view caches one slot per page; the page set may have changed (rotate,
             // delete, reorder, crop) so rebuild the strip from the reloaded document.
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 int contIdx = Math.Max(0, PageList.SelectedIndex);
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
@@ -7507,9 +7560,9 @@ namespace TDPdf
                 return;
             }
 
-            // Grid and Continuous are a single scroll over the WHOLE document, so the wheel must
+            // Grid and the continuous strips are a single scroll over the WHOLE document, so the wheel must
             // never be hijacked for page navigation there — it always just scrolls (boosted).
-            if (_viewMode == ViewMode.Grid || _viewMode == ViewMode.Continuous)
+            if (_viewMode == ViewMode.Grid || IsContinuousFamily)
             {
                 ScrollWheel(e);
                 return;
@@ -7585,7 +7638,7 @@ namespace TDPdf
             int cur = PageList.SelectedIndex;
             if (cur < 0) cur = 0;
             int count = _doc.PageCount;
-            if (_viewMode == ViewMode.TwoPage)
+            if (_viewMode is ViewMode.TwoPage or ViewMode.TwoPageContinuous)
             {
                 int baseIdx = SpreadStart(Math.Max(0, cur));   // left page of the current spread
                 // #193: book layout steps cover → 1 → 3 → 5…, because the cover is a row of its
@@ -7750,7 +7803,7 @@ namespace TDPdf
         // true zoom; only the three places that touch layout convert, via LayoutZoomScale.
         private double DisplayZoomFactor()
         {
-            if (_viewMode == ViewMode.Continuous || _doc is null) return 1.0;
+            if (IsContinuousFamily || _doc is null) return 1.0;
             // The page in the PRIMARY tile, which is what the transform is being sized against.
             // RenderPage stamps it on PageImage.Tag; before the first render fall back to the
             // sidebar selection.
@@ -7916,7 +7969,7 @@ namespace TDPdf
             // view doesn't jump when zooming.
             Point? centreAnchor = _centreZoomAnchor;
             _centreZoomAnchor = null;
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 // ...except after a zoom gesture, which has already scrolled so the point under the
                 // pointer stayed put; snapping to the page top now would undo exactly that. A
@@ -8075,12 +8128,13 @@ namespace TDPdf
             if (viewW <= 0) return;
             // Continuous view fits against the strip's natural page width (zoom-independent), not
             // the hidden primary PageImage. Its display factor is 1, so no conversion.
-            if (_viewMode == ViewMode.Continuous)
+            // Two pages, continuous fits the whole row of facing pages, not one page.
+            if (IsContinuousFamily)
             {
                 if (_continuousPageW <= 0) return;
                 _zoomFitMode = ZoomFitMode.Width;
                 _manualZoomIntent = false;   // #201: a fit retires the remembered manual zoom
-                Zoom.SetZoomLevel(viewW / _continuousPageW);
+                Zoom.SetZoomLevel(viewW / ContinuousStripWidth());
                 return;
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
@@ -8098,16 +8152,15 @@ namespace TDPdf
             // this used to silently do nothing (Ctrl+3 and a remembered Fit Page were both dropped
             // in Continuous). Fit against the strip's own slot geometry instead — natural width by
             // the current page's natural height, both already in true-zoom space.
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 if (_doc is null || _doc.PageCount == 0 || _continuousPageW <= 0) return;
                 int idx = Math.Clamp(PageList.SelectedIndex, 0, _doc.PageCount - 1);
-                var slotPage = _doc.Pages[idx];
-                var (pw, ph) = PdfPageGeometry.DisplaySize(slotPage);   // same slot geometry as BuildContinuousView
-                double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
+                // The current page's natural slot, or the taller page of its row in the two-page strip.
+                double slotH = ContinuousNaturalRowHeight(idx);
                 _zoomFitMode = ZoomFitMode.Page;
                 _manualZoomIntent = false;   // #201
-                Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH));
+                Zoom.SetZoomLevel(Math.Min(viewW / ContinuousStripWidth(), viewH / slotH));
                 return;
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
@@ -8363,7 +8416,7 @@ namespace TDPdf
                 // Continuous view: the whole document is one scroll, so a sidebar selection
                 // scrolls the strip rather than re-rendering a single page. The scroll-sync
                 // suppression flag avoids a feedback loop with PagePreviewPanel_ScrollChanged.
-                if (_viewMode == ViewMode.Continuous)
+                if (IsContinuousFamily)
                 {
                     // #197: Continuous never re-renders a primary tile, and the scroll it is about
                     // to run is suppressed, so this is the only place a page change can raise the

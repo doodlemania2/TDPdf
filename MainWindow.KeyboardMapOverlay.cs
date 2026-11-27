@@ -67,7 +67,7 @@ namespace TDPdf
                 ["Esc"] = ("Edit", "Cancel / deselect / back to Select"),
                 ["Menu"] = ("Edit", "Context menu"),
                 // #193: the only bare letter outside the tool set — B was the one still unclaimed.
-                ["B"] = ("View", "Book layout (Two-Page)"),
+                ["B"] = ("View", "Book layout (two-page views)"),
                 // Tool keys (1.19). Digits mirror the toolbar left to right across the ten
                 // mark-making tools; Select / Pan / Signature / Crop / Redact / Measure are letter-only. Every id here
                 // must also exist in KbRows below or the keycap silently never lights.
