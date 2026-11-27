@@ -65,6 +65,25 @@ namespace TDPdf
             return "User-" + (sid ?? Environment.UserName);
         }
 
+        /// <summary>
+        /// True when this process runs from the per-user or the machine-wide install folder, which only
+        /// the user (or an administrator) can write to. A portable copy runs from wherever it was
+        /// downloaded, so files beside it are not trusted.
+        /// </summary>
+        internal static bool RunsFromInstallFolder =>
+            UninstallPolicy.IsInside(AppContext.BaseDirectory, PerUserInstallDir) ||
+            UninstallPolicy.IsInside(AppContext.BaseDirectory, PerMachineInstallDir);
+
+        private static bool IsElevatedOrSystem()
+        {
+            try
+            {
+                using var id = WindowsIdentity.GetCurrent();
+                return id.IsSystem || new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch { return false; }
+        }
+
         private static bool IsSystemContextSafe()
         {
             try { return WindowsIdentity.GetCurrent().IsSystem; }
@@ -261,6 +280,14 @@ namespace TDPdf
                 }
             }
 
+            // Heal a corrupt user.config and carry settings over from the previous version BEFORE
+            // any Settings.Default access (the headless CLI commands below read settings too, then
+            // the single-instance check, theme load, and MainWindow field initializers). A
+            // truncated user.config — from a hard shutdown, a full disk, or a roaming-profile sync
+            // conflict — otherwise throws an uncaught ConfigurationErrorsException and the app dies
+            // before any window or crash handler exists.
+            EnsureSettingsHealthy();
+
             // Headless CLI commands (see MainWindow.Cli.cs; --batch-resave in MainWindow.BatchMode.cs). Checked
             // AFTER the install/telemetry flags above but BEFORE the single-instance mutex
             // and any window, so a --command runs headless, works while a GUI instance is
@@ -272,15 +299,6 @@ namespace TDPdf
                 Shutdown(cliExit);
                 return;
             }
-
-            // Interactive launch. Heal a corrupt user.config BEFORE any
-            // Settings.Default access (the single-instance check, theme
-            // load, and MainWindow field initializers all read settings).
-            // A truncated user.config — from a hard shutdown, a full disk,
-            // or a roaming-profile sync conflict — otherwise throws an
-            // uncaught ConfigurationErrorsException and the app dies before
-            // any window or crash handler exists.
-            EnsureSettingsHealthy();
 
             // Wire crash handling FIRST so failures anywhere below (theme
             // load, single-instance pipe, window construction) are caught,
@@ -434,6 +452,21 @@ namespace TDPdf
             {
                 // Force ApplicationSettingsBase to parse user.config now.
                 _ = TDPdf.Properties.Settings.Default.Theme;
+
+                // .NET keeps user.config in a folder named for the assembly version, so every
+                // update starts from an empty file unless the previous version's settings are
+                // pulled across. Upgrade() does that once per version: SettingsUpgradeRequired
+                // defaults to true in a new version's (absent) file, is cleared and saved here, and
+                // so stays false until the next version ships. The folder name also carries a hash
+                // of the exe path: the per-user install path is stable, so an installed copy keeps
+                // its settings, while a portable copy run from a NEW path starts fresh.
+                var settings = TDPdf.Properties.Settings.Default;
+                if (settings.SettingsUpgradeRequired)
+                {
+                    settings.Upgrade();
+                    settings.SettingsUpgradeRequired = false;
+                    settings.Save();
+                }
             }
             catch (System.Configuration.ConfigurationErrorsException ex)
             {
@@ -597,6 +630,14 @@ namespace TDPdf
             security.SetOwner(me);
             security.AddAccessRule(new PipeAccessRule(me,
                 PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+            // An elevated window must not take file paths from a normal-integrity process in the same
+            // session: that would let an unelevated program make the elevated TDPdf open (and then
+            // save over) files of its choosing. A High mandatory label with NO_WRITE_UP makes the
+            // pipe unwritable by anything running below High. The unelevated launch that cannot
+            // reach it just opens its own window, which is what it already does when the forward
+            // fails. Not applied to a normal window, where the same-user DACL above is the boundary.
+            if (IsElevatedOrSystem())
+                security.SetSecurityDescriptorSddlForm("S:(ML;;NW;;;HI)", AccessControlSections.Audit);
             return NamedPipeServerStreamAcl.Create(SingleInstancePipeName, PipeDirection.In, 1,
                 PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
         }
@@ -1531,9 +1572,6 @@ namespace TDPdf
             // pre-placed at a fixed %TEMP% path runs in its place.
             string dir = installDir.TrimEnd('\\');
             string batName = $"tdpdf_uninstall_{Guid.NewGuid():N}.bat";
-            string tempDir = Path.GetTempPath();
-            string bat = Path.Combine(tempDir, batName);
-            File.WriteAllText(bat, UninstallPolicy.DeferredDeleteScript, Encoding.ASCII);
 
             // The message comes first and the batch starts after it, so the minute of retries is spent
             // after this process is about to exit rather than while a dialog nobody has clicked holds
@@ -1544,7 +1582,23 @@ namespace TDPdf
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
-            var psi = new ProcessStartInfo("cmd.exe", UninstallPolicy.DeferredDeleteArguments(batName))
+            // The batch is written only now, straight before it runs, so nothing can swap it while a
+            // modal prompt is up. An elevated process (and SYSTEM, which is how Intune runs this)
+            // puts it in %WINDIR%\Temp: ordinary users can create files there but cannot modify one
+            // an administrator created, whereas the user's own %TEMP% is writable by any
+            // medium-integrity process in the same session. CreateNew refuses a pre-planted file.
+            string tempDir = IsElevatedOrSystem()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Temp")
+                : Path.GetTempPath();
+            Directory.CreateDirectory(tempDir);
+            string bat = Path.Combine(tempDir, batName);
+            using (var fs = new FileStream(bat, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                byte[] body = Encoding.ASCII.GetBytes(UninstallPolicy.DeferredDeleteScript);
+                fs.Write(body, 0, body.Length);
+            }
+
+            var psi = new ProcessStartInfo(TDPdf.Services.SystemTool.Path("cmd.exe"), UninstallPolicy.DeferredDeleteArguments(batName))
             {
                 WorkingDirectory = tempDir,
                 UseShellExecute  = false,   // required to pass the environment variable

@@ -192,7 +192,7 @@ namespace TDPdf.Services
         {
             try
             {
-                var psi = new ProcessStartInfo("schtasks.exe")
+                var psi = new ProcessStartInfo(SystemTool.Path("schtasks.exe"))
                 {
                     // "Schedule #3" is the enrollment client's own periodic sync.
                     Arguments = $"/Run /TN \"\\Microsoft\\Windows\\EnterpriseMgmt\\{enrollmentId}\\Schedule #3 created by enrollment client\"",

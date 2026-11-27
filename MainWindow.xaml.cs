@@ -359,7 +359,7 @@ namespace TDPdf
         // Signatures are stored under %LocalAppData%\TDPdf\ so the file stays
         // writable when the EXE is installed machine-wide under %ProgramFiles%
         // (no admin rights on that directory). A legacy file next to the EXE
-        // from older builds is migrated on first read.
+        // from older builds is migrated on first read, but only from TDPdf's install folder.
         private static readonly string SignatureDir = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TDPdf");
         private static readonly string SignatureFile = System.IO.Path.Combine(SignatureDir, "signatures.json");

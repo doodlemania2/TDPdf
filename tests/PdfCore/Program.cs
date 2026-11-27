@@ -220,6 +220,8 @@ XrefStreamSize.Run(Check);
 PasswordProtection.Run(Check);
 SelectCursor.Run(Check);
 PortableInstall.Run(Check);
+SystemToolTests.Run(Check);
+DllSearchPathsTests.Run(Check);
 AtomicSave.Run(Check, tmp);
 FilePaths.Run(Check, tmp);
 OutsideChange.Run(Check, tmp);

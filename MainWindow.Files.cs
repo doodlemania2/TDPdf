@@ -1916,7 +1916,7 @@ namespace TDPdf
         /// <summary>
         /// Before a save in place that would remove or weaken the file's password protection (an
         /// AES-256 file opened with its owner password is written back with no password; one opened
-        /// with the user password becomes 128-bit RC4): say exactly what will happen and let the
+        /// with the user password becomes 128-bit RC4; a 40-bit RC4 file stays 40-bit): say exactly what will happen and let the
         /// user save anyway, save elsewhere, or cancel. Asked once per document session. Returns
         /// true to go ahead. "Save As" starts Save As and returns false.
         /// </summary>
@@ -1928,7 +1928,12 @@ namespace TDPdf
             var answer = TdpDialog.ShowYesNoCancel(this,
                 ProtectedSave.ImpactMessage(impact, System.IO.Path.GetFileName(targetFile), _ctx.Protection),
                 "Save Anyway", "Save As...", "Cancel",
-                impact == ProtectedSave.Impact.Removed ? "Password Protection Will Be Removed" : "Encryption Will Be Weakened",
+                impact switch
+                {
+                    ProtectedSave.Impact.Removed => "Password Protection Will Be Removed",
+                    ProtectedSave.Impact.Weak40Bit => "Weak Encryption Stays Weak",
+                    _ => "Encryption Will Be Weakened",
+                },
                 MessageBoxImage.Warning, defaultToCancel: true);
             if (answer == MessageBoxResult.Yes)
             {
@@ -2737,7 +2742,10 @@ namespace TDPdf
                         // normally, including the ones a user genuinely keeps under %TEMP%.
                         if (IsUnderAnyDirectory(f, tempDirs) && _doc is not null &&
                             string.Equals(_currentFile, f, StringComparison.OrdinalIgnoreCase))
+                        {
                             _ctx.OriginalPath = null;
+                            _ctx.TempFiles.Track(f);   // deleted when this tab closes; the startup sweep takes the rest
+                        }
                     }
                     else await OpenImagesAsImportedTabAsync(new[] { f }, System.IO.Path.GetFileName(f));
                 }
@@ -2752,7 +2760,9 @@ namespace TDPdf
                 : $"Opened {found.Count - failed} of {found.Count} item(s) in separate tabs; {failed} failed");
             // Extracted-zip temp dirs are intentionally NOT deleted here: an imported-image tab keeps
             // no handle, but a PDF opened directly from an extracted folder is read lazily, so the
-            // extracted files must survive for the session. The OS clears %TEMP% eventually.
+            // extracted files must survive for the session. Each PDF is owned by its tab and deleted
+            // when the tab closes; the folders themselves go in the startup sweep
+            // (TempFilePolicy.SweepZipDirectories).
         }
 
         // Builds ONE combined PDF from the dropped files on a background thread, then opens it as an
@@ -2854,7 +2864,7 @@ namespace TDPdf
             try
             {
                 Directory.CreateDirectory(dir);
-                System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, dir);
+                ZipLimits.ExtractToDirectory(zipPath, dir);
                 return dir;
             }
             catch { try { Directory.Delete(dir, true); } catch { } return null; }

@@ -13,7 +13,7 @@ A curated sync with upstream KillerPDF 1.9.3 to 1.9.7. As before, upstream's cha
 ### Security
 
 - Links in a PDF open exactly the address TDPdf checked, not the raw text the PDF stored (upstream 1.9.7).
-- Windows system libraries are loaded only from the Windows system folder, so a library planted next to TDPdf in Downloads is never picked up (upstream 1.9.7).
+- TDPdf's own calls into Windows system libraries are made only to the Windows system folder, so a library planted next to TDPdf in Downloads is not picked up by them (upstream 1.9.7). Libraries loaded by the .NET runtime, WPF and PDFium were not covered by this.
 - The working copy a page edit, redaction or undo replaces is deleted at once, instead of staying in the temp folder until the tab closes (upstream 1.9.5).
 - Redaction refuses to save when a redacted word survives in a link address, a script in the file, or document details you chose to keep, and says where (upstream 1.9.5).
 - Each password-protected save gets a new document ID, so saved versions no longer share encryption keys (upstream 1.9.5).

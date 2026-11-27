@@ -126,6 +126,8 @@
     <Compile Include="..\..\Services\InstallerExitCodes.cs" />
     <Compile Include="..\..\Diagnostics\StatusRingBuffer.cs" />
     <Compile Include="..\..\Diagnostics\PrivilegedPathGuard.cs" />
+    <Compile Include="..\..\Services\DllSearchPaths.cs" />
+    <Compile Include="..\..\Services\SystemTool.cs" />
     <Compile Include="..\..\Services\TempFiles.cs" />
   </ItemGroup>
 

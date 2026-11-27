@@ -152,7 +152,7 @@ namespace TDPdf.Services
             "if not defined " + DirVariable + " goto done\r\n" +
             "set tries=0\r\n" +
             ":retry\r\n" +
-            "ping -n 2 127.0.0.1 >nul\r\n" +
+            "\"%SystemRoot%\\System32\\ping.exe\" -n 2 127.0.0.1 >nul\r\n" +
             "rmdir /s /q \"%" + DirVariable + "%\" 2>nul\r\n" +
             "if not exist \"%" + DirVariable + "%\\\" goto done\r\n" +
             "set /a tries+=1\r\n" +

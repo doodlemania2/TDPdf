@@ -76,6 +76,11 @@ namespace TDPdf.Services
             Removed,
             /// <summary>The password is kept but the encryption is weaker (AES becomes 128-bit RC4).</summary>
             Downgraded,
+            /// <summary>
+            /// The file was 40-bit RC4 (revision 2) and is written back as 40-bit RC4: no weaker than
+            /// it was, but weak by any current standard, and a save is the moment to say so.
+            /// </summary>
+            Weak40Bit,
         }
 
         /// <summary>
@@ -83,15 +88,17 @@ namespace TDPdf.Services
         /// <paramref name="reapplicable"/> is false when the protection could not be reproduced
         /// (an AES-256 file opened with its owner password, a PDFium-repaired or rasterised copy).
         /// </summary>
-        internal static Impact Assess(bool wasProtected, bool reapplicable, bool downgraded)
+        internal static Impact Assess(bool wasProtected, bool reapplicable, bool downgraded, bool weak40Bit = false)
         {
             if (!wasProtected) return Impact.None;
             if (!reapplicable) return Impact.Removed;
-            return downgraded ? Impact.Downgraded : Impact.None;
+            if (downgraded) return Impact.Downgraded;
+            return weak40Bit ? Impact.Weak40Bit : Impact.None;
         }
 
         internal static Impact Assess(bool wasProtected, PdfProtection? protection) =>
-            Assess(wasProtected, protection is { CanReapply: true }, protection?.Downgraded ?? false);
+            Assess(wasProtected, protection is { CanReapply: true }, protection?.Downgraded ?? false,
+                   protection is { WrittenLevel: PdfDocumentSecurityLevel.Encrypted40Bit });
 
         /// <summary>
         /// The wording of the confirmation shown before an in-place save that would remove or weaken
@@ -115,6 +122,13 @@ namespace TDPdf.Services
                            (ownerLost ? ", and the original owner password will no longer work" : "") +
                            ". The original is replaced and cannot be recovered.";
                 }
+                case Impact.Weak40Bit:
+                    return $"\"{fileName}\" is protected with 40-bit RC4, an old encryption that is weak by " +
+                           "today's standards and can be broken quickly.\n\n" +
+                           "Saving over it keeps that same weak protection, so it does not make the file any safer. " +
+                           "To protect it properly, use Remove Password and then protect the document again " +
+                           "with a stronger tool, saving the result as a separate file. " +
+                           "The original is replaced and cannot be recovered.";
                 default:
                     return "";
             }

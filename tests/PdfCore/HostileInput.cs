@@ -224,7 +224,34 @@ internal static class HostileInput
             Check("zip: a real archive passes the default limits", ZipLimits.Refusal(zp) is null);
             Check("zip: a real archive over a tiny entry cap is refused", ZipLimits.Refusal(zp, maxEntries: 3) is not null);
             Check("zip: a real archive over a tiny byte cap is refused", ZipLimits.Refusal(zp, maxTotalBytes: 4000) is not null);
-            Check("zip: an unreadable archive is left to extraction to report", ZipLimits.Refusal(Path.Combine(tmp, "missing.zip")) is null);
+            // Extraction counts what it really writes, and keeps every entry inside the folder.
+            string zOut = Path.Combine(tmp, "zip-out-ok");
+            if (Directory.Exists(zOut)) Directory.Delete(zOut, true);
+            ZipLimits.ExtractToDirectory(zp, zOut);
+            Check("zip: extraction writes every entry", Directory.GetFiles(zOut).Length == 5 && new FileInfo(Path.Combine(zOut, "f4.txt")).Length == 1000);
+
+            string zCap = Path.Combine(tmp, "zip-out-cap");
+            if (Directory.Exists(zCap)) Directory.Delete(zCap, true);
+            bool capped = false;
+            try { ZipLimits.ExtractToDirectory(zp, zCap, maxTotalBytes: 2500); } catch (InvalidDataException) { capped = true; }
+            Check("zip: extraction stops once the bytes written pass the cap", capped &&
+                  Directory.GetFiles(zCap).Sum(f => new FileInfo(f).Length) <= 3000);
+
+            string zSlip = Path.Combine(tmp, "slip.zip");
+            if (File.Exists(zSlip)) File.Delete(zSlip);
+            using (var z = System.IO.Compression.ZipFile.Open(zSlip, System.IO.Compression.ZipArchiveMode.Create))
+                using (var w = new StreamWriter(z.CreateEntry("../zip-slip-escaped.txt").Open())) w.Write("x");
+            string zSlipOut = Path.Combine(tmp, "zip-out-slip");
+            if (Directory.Exists(zSlipOut)) Directory.Delete(zSlipOut, true);
+            bool slipped = false;
+            try { ZipLimits.ExtractToDirectory(zSlip, zSlipOut); } catch (IOException) { slipped = true; }
+            Check("zip: an entry that climbs out of the folder is refused and nothing escapes",
+                  slipped && !File.Exists(Path.Combine(tmp, "zip-slip-escaped.txt")));
+
+            bool tooMany = false;
+            try { ZipLimits.ExtractToDirectory(zp, Path.Combine(tmp, "zip-out-many"), maxEntries: 3); } catch (InvalidDataException) { tooMany = true; }
+            Check("zip: extraction refuses past the entry cap", tooMany);
+            Check("zip: an unreadable archive is refused, not waved through", ZipLimits.Refusal(Path.Combine(tmp, "missing.zip")) is { } rm && rm.Contains("could not be read"));
         }
     }
 }

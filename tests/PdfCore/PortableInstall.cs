@@ -92,6 +92,8 @@ internal static class PortableInstall
               script.Contains("if not defined " + UninstallPolicy.DirVariable + " goto done"), "");
         Check("delete script turns delayed expansion off (a ! in the path stays literal)",
               script.Contains("DisableDelayedExpansion"), "");
+        Check("delete script runs ping by full System32 path, never by bare name",
+              script.Contains("\"%SystemRoot%\\System32\\ping.exe\" ") && !script.Contains("\r\nping "), "");
         Check("delete script uses CRLF line endings throughout",
               !script.Replace("\r\n", "").Contains('\n'), "");
 
