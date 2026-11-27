@@ -165,6 +165,28 @@ namespace TDPdf.Services
                     return result;
                 }
 
+                // A removed picture's image must leave the FILE, not just the page: its /XObject entry would
+                // keep the stream through the save's compaction. Reuses the redaction pruning, limited to
+                // this page's XObject names that no content draws any more (a shared dictionary or another
+                // use of the same image keeps it).
+                if (op != PdfiumInterop.PictureOp.SetMatrix)
+                {
+                    string pruned = Path.Combine(dir, $"tdpdf_picturepruned_{Guid.NewGuid():N}.pdf");
+                    try
+                    {
+                        var rects = new Dictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>>
+                            { [pic.PageIndex] = new[] { pic.Bounds } };
+                        if (!PdfRedaction.TryPruneResources(staged, pruned, rects, Array.Empty<int>(),
+                                out _, out string? pruneError, new[] { "/XObject" }))
+                        {
+                            result.Error = "the old picture could not be cleared from the file: " + pruneError;
+                            return result;
+                        }
+                        if (File.Exists(pruned)) File.Copy(pruned, staged, overwrite: true);
+                    }
+                    finally { try { if (File.Exists(pruned)) File.Delete(pruned); } catch { /* temp file */ } }
+                }
+
                 var now = List(staged, pic.PageIndex).Where(p => !p.InForm).ToList();
                 if (!after(before, now))
                 {

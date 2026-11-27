@@ -32,6 +32,7 @@ internal static class PictureTests
         EditsInAFile(Check, tmp);
         RotatedPageEdit(Check, tmp);
         HazardPageIsRefused(Check, tmp);
+        RemovedImageLeavesTheFile(Check, tmp);
     }
 
     // ── placement ────────────────────────────────────────────────────────────────────────────
@@ -475,6 +476,108 @@ internal static class PictureTests
         // The picture can still be read (copy and Save Picture As do not need the gate).
         var lift = PdfImageObjects.Lift(src, pic);
         Check("pictures: a refused page's picture can still be lifted", lift.Ok && lift.Width == 20, lift.Error ?? "");
+    }
+
+
+    // ── a removed picture's image leaves the file ────────────────────────────────────────────
+
+    private static readonly Dictionary<string, string> Needles = new();
+
+    private static PdfDictionary GrayImage(PdfDocument doc, string label)
+    {
+        var raw = new byte[64];
+        new Random(label.GetHashCode() ^ 777).NextBytes(raw);
+        using var ms = new MemoryStream();
+        using (var z = new System.IO.Compression.ZLibStream(ms, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true)) z.Write(raw);
+        var c = ms.ToArray();
+        Needles[label] = System.Text.Encoding.Latin1.GetString(c, 8, 20);
+        var d = new PdfDictionary(doc);
+        d.Elements["/Type"] = new PdfName("/XObject");
+        d.Elements["/Subtype"] = new PdfName("/Image");
+        d.Elements["/Width"] = new PdfInteger(8);
+        d.Elements["/Height"] = new PdfInteger(8);
+        d.Elements["/ColorSpace"] = new PdfName("/DeviceGray");
+        d.Elements["/BitsPerComponent"] = new PdfInteger(8);
+        d.Elements["/Filter"] = new PdfName("/FlateDecode");
+        d.CreateStream(c);
+        doc.Internals.AddObject(d);
+        return d;
+    }
+
+    private static void SetContent(PdfDocument doc, PdfPage page, string content)
+    {
+        var c = new PdfDictionary(doc);
+        c.CreateStream(System.Text.Encoding.ASCII.GetBytes(content));
+        doc.Internals.AddObject(c);
+        page.Elements["/Contents"] = c.Reference;
+    }
+
+    private static bool FileHas(string path, string needle) =>
+        System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(path)).Contains(needle);
+
+    private static void RemovedImageLeavesTheFile(Action<string, bool, string> Check, string tmp)
+    {
+        if (!PdfiumInterop.CanEditPictures) return;
+
+        // One page, two different images.
+        string one = Path.Combine(tmp, "pictures-gone.pdf");
+        {
+            var doc = new PdfDocument();
+            var p = doc.AddPage();
+            var a = GrayImage(doc, "pic-A"); var b = GrayImage(doc, "pic-B");
+            var xo = new PdfDictionary(doc);
+            xo.Elements["/ImA"] = a.Reference; xo.Elements["/ImB"] = b.Reference;
+            var res = new PdfDictionary(doc);
+            res.Elements["/XObject"] = xo;
+            p.Elements["/Resources"] = res;
+            SetContent(doc, p, "q 60 0 0 80 100 600 cm /ImA Do Q q 60 0 0 80 300 300 cm /ImB Do Q");
+            doc.Save(one);
+        }
+        var pics = PdfImageObjects.List(one, 0);
+        Check("pictures gone: fixture has both images and both streams", pics.Count == 2 && FileHas(one, Needles["pic-A"]) && FileHas(one, Needles["pic-B"]), $"{pics.Count}");
+        using (var open = PdfReader.Open(one, PdfDocumentOpenMode.Import))
+        {
+            var target = pics.First(p => p.Bounds.Left < 200);
+            string del = Path.Combine(tmp, "pictures-gone-del.pdf");
+            var r = PdfImageObjects.Delete(one, del, target, open);
+            Check("pictures gone: delete succeeds", r.Ok, r.Error ?? "");
+            Check("pictures gone: the deleted picture's stream is no longer in the file", r.Ok && !FileHas(del, Needles["pic-A"]), "");
+            Check("pictures gone: the other picture's stream is kept", r.Ok && FileHas(del, Needles["pic-B"]) && PdfImageObjects.List(del, 0).Count == 1, "");
+
+            string rep = Path.Combine(tmp, "pictures-gone-rep.pdf");
+            var newPx = Image(8, 8, (x, y) => ((byte)1, (byte)2, (byte)3, (byte)255));
+            var rr = PdfImageObjects.Replace(one, rep, target, newPx, 8, 8, open);
+            Check("pictures gone: replace succeeds", rr.Ok, rr.Error ?? "");
+            Check("pictures gone: after a replace the old image is gone and only the new one is on the page",
+                  rr.Ok && !FileHas(rep, Needles["pic-A"]) && FileHas(rep, Needles["pic-B"]) && PdfImageObjects.List(rep, 0).Count == 2, "");
+        }
+
+        // Two pages sharing one resource dictionary; both draw /ImA. Deleting it on page 1 must keep it for page 2.
+        string two = Path.Combine(tmp, "pictures-shared.pdf");
+        {
+            var doc = new PdfDocument();
+            var p1 = doc.AddPage(); var p2 = doc.AddPage();
+            var a = GrayImage(doc, "pic-S");
+            var xo = new PdfDictionary(doc);
+            xo.Elements["/ImS"] = a.Reference;
+            var res = new PdfDictionary(doc);
+            res.Elements["/XObject"] = xo;
+            doc.Internals.AddObject(res);
+            p1.Elements["/Resources"] = res.Reference;
+            p2.Elements["/Resources"] = res.Reference;
+            SetContent(doc, p1, "q 60 0 0 80 100 600 cm /ImS Do Q");
+            SetContent(doc, p2, "q 60 0 0 80 100 600 cm /ImS Do Q");
+            doc.Save(two);
+        }
+        using (var open = PdfReader.Open(two, PdfDocumentOpenMode.Import))
+        {
+            var target = PdfImageObjects.List(two, 0).Single();
+            string del = Path.Combine(tmp, "pictures-shared-del.pdf");
+            var r = PdfImageObjects.Delete(two, del, target, open);
+            Check("pictures gone: deleting a shared image on one page succeeds", r.Ok, r.Error ?? "");
+            Check("pictures gone: an image another page still draws stays in the file",
+                  r.Ok && FileHas(del, Needles["pic-S"]) && PdfImageObjects.List(del, 1).Count == 1 && PdfImageObjects.List(del, 0).Count == 0, "");
+        }
     }
 
     private static string PageText(string path)
