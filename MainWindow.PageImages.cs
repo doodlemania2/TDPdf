@@ -45,11 +45,11 @@ namespace TDPdf
 {
     public partial class MainWindow : Window
     {
-        private readonly record struct CanvasBox(double X, double Y, double W, double H)
+        private readonly record struct PictureBox(double X, double Y, double W, double H)
         {
             internal Rect ToRect() => new(X, Y, W, H);
             internal (double X, double Y, double W, double H) ToTuple() => (X, Y, W, H);
-            internal static CanvasBox From((double X, double Y, double W, double H) t) => new(t.X, t.Y, t.W, t.H);
+            internal static PictureBox From((double X, double Y, double W, double H) t) => new(t.X, t.Y, t.W, t.H);
         }
 
         private enum PictureDrag { None, Move, Resize }
@@ -58,15 +58,15 @@ namespace TDPdf
         private PagePicture? _pictureSel;
         private PdfDocument? _pictureSelDoc;
         private PictureGate.Decision _pictureGate;
-        private CanvasBox _pictureBox;
-        private CanvasBox? _pictureLive;
+        private PictureBox _pictureBox;
+        private PictureBox? _pictureLive;
         private readonly List<UIElement> _pictureChrome = new();
         private Image? _pictureGhost;
         private BitmapSource? _pictureGhostSource;
 
         private PictureDrag _pictureDrag;
         private Point _pictureDragStart;
-        private CanvasBox _pictureDragBox;
+        private PictureBox _pictureDragBox;
         private Corner _pictureDragCorner;
         private bool _pictureDragMoved;
 
@@ -129,9 +129,9 @@ namespace TDPdf
             return true;
         }
 
-        private CanvasBox? PictureCanvasBox(PagePicture pic) =>
+        private PictureBox? PictureCanvasBox(PagePicture pic) =>
             PictureFrame(pic.PageIndex, out var box, out int rot, out double rw, out double rh)
-                ? CanvasBox.From(PicturePlacement.ToCanvas(box, rot, rw, rh, pic.Bounds))
+                ? PictureBox.From(PicturePlacement.ToCanvas(box, rot, rw, rh, pic.Bounds))
                 : null;
 
         // ============================================================
@@ -216,7 +216,7 @@ namespace TDPdf
             DrawPictureChrome();
         }
 
-        private CanvasBox ChromeBox => _pictureLive ?? _pictureBox;
+        private PictureBox ChromeBox => _pictureLive ?? _pictureBox;
 
         private void DrawPictureChrome()
         {
@@ -265,7 +265,7 @@ namespace TDPdf
             }
         }
 
-        private static (double X, double Y) CornerPoint(CanvasBox b, Corner c) => c switch
+        private static (double X, double Y) CornerPoint(PictureBox b, Corner c) => c switch
         {
             Corner.TopLeft => (b.X, b.Y),
             Corner.TopRight => (b.X + b.W, b.Y),
@@ -285,7 +285,7 @@ namespace TDPdf
         }
 
         /// <summary>A snapshot of what the page shows inside the picture's box, for the drag preview.</summary>
-        private BitmapSource? CaptureGhost(CanvasBox box)
+        private BitmapSource? CaptureGhost(PictureBox box)
         {
             if (_primaryPageBitmap is not BitmapSource source) return null;
             if (CanvasPixels.Region(box.X, box.Y, box.W, box.H,
@@ -356,7 +356,7 @@ namespace TDPdf
 
             _pictureLive = _pictureDrag == PictureDrag.Move
                 ? _pictureDragBox with { X = _pictureDragBox.X + dx, Y = _pictureDragBox.Y + dy }
-                : CanvasBox.From(PicturePlacement.ResizeCanvasBox(
+                : PictureBox.From(PicturePlacement.ResizeCanvasBox(
                     _pictureDragBox.ToTuple(), _pictureDragCorner, dx, dy,
                     keepAspect: (Keyboard.Modifiers & ModifierKeys.Shift) == 0));
             DrawPictureChrome();
