@@ -84,6 +84,7 @@
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
     <Compile Include="..\..\Services\WindowFitMath.cs" />
     <Compile Include="..\..\Services\WindowPlacementMath.cs" />
+    <Compile Include="..\..\Services\PaperSizeNames.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />
     <Compile Include="..\..\Services\InkDot.cs" />
     <Compile Include="..\..\Services\FlattenResolution.cs" />
