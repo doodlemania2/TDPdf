@@ -58,7 +58,23 @@ namespace TDPdf
             }
         }
 
-        public double ThumbHeight => _thumb is { PixelWidth: > 0 } t ? 140.0 * t.PixelHeight / t.PixelWidth : 100;
+        /// <summary>Shown width of the thumbnail; set by the sidebar (it grows when the sidebar is widened).</summary>
+        public double ThumbWidth => Session.ThumbWidth;
+
+        /// <summary>
+        /// Shown height. In the two-column sidebar every cell is the same size, so it is the same for
+        /// every page (the picture is fitted inside it); otherwise it follows the page's own shape.
+        /// </summary>
+        public double ThumbHeight => Session.PairedCells
+            ? Math.Ceiling(Session.ThumbWidth * SidebarWidth.PageAspect)
+            : _thumb is { PixelWidth: > 0 } t ? Session.ThumbWidth * t.PixelHeight / t.PixelWidth : 100;
+
+        /// <summary>Tells the entry's bindings the shown size changed.</summary>
+        public void RefreshLayout()
+        {
+            Raise(nameof(ThumbWidth));
+            Raise(nameof(ThumbHeight));
+        }
         public Visibility ThumbVisibility => _thumb is null ? Visibility.Collapsed : Visibility.Visible;
         public Visibility PlaceholderVisibility => _thumb is null ? Visibility.Visible : Visibility.Collapsed;
 
@@ -87,6 +103,11 @@ namespace TDPdf
         public List<PageThumbItem> Pending { get; } = new();
         public bool Running;
         public bool Cancelled => Cts.IsCancellationRequested;
+
+        /// <summary>Shown thumbnail width for this list (logical pixels); the sidebar keeps it current.</summary>
+        public double ThumbWidth = SidebarWidth.ThumbDefault;
+        /// <summary>True while the list is the two-column one, whose cells are all the same height.</summary>
+        public bool PairedCells;
     }
 
     /// <summary>Per-tab thumbnail state: a bounded LRU of rendered bitmaps and the live session.</summary>

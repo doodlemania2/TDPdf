@@ -846,7 +846,11 @@ namespace TDPdf
             }
             store.PageCount = count;
 
-            var session = new PageThumbSession(ctx, store.Generation);
+            var session = new PageThumbSession(ctx, store.Generation)
+            {
+                ThumbWidth = _thumbWidth,        // the sidebar's current thumbnail size (#246)
+                PairedCells = _pairedSidebar,
+            };
             store.Session = session;
             var items = new List<PageThumbItem>(count);
             for (int i = 0; i < count; i++) items.Add(new PageThumbItem(i, session));
@@ -1051,7 +1055,12 @@ namespace TDPdf
             if (e.Data.GetDataPresent(typeof(int[])))
             {
                 e.Effects = DragDropEffects.Move;
-                ShowPageDropLine(DropTargetIndex(e.GetPosition(PageList)));
+                // The two-column list drops by both x and y and draws a vertical bar.
+                if (!ShowPairedDropLine(e.GetPosition(PageList)))
+                {
+                    ResetDropLineShape();
+                    ShowPageDropLine(DropTargetIndex(e.GetPosition(PageList)));
+                }
             }
             else if (_doc is not null && DroppedOpenablePaths(e).Length > 0)
             {
@@ -1079,6 +1088,9 @@ namespace TDPdf
         /// </remarks>
         private int DropTargetIndex(Point pos)
         {
+            // Two-column list: both coordinates decide, by the cell's horizontal midpoint.
+            if (PairedDropGap(pos) is int gap) return gap;
+
             // The list virtualises, so only some entries have containers. Ask the entry under the
             // pointer first (cheap, and right for the common case of hovering over a page)...
             if (PageList.InputHitTest(pos) is DependencyObject hit

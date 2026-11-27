@@ -748,7 +748,7 @@
                         DataContextChanged="PageThumb_DataContextChanged">
                 <Border Background="White" BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
                         Visibility="{Binding ThumbVisibility}">
-                    <Grid Width="140" Height="{Binding ThumbHeight}" Margin="0,0,0,2">
+                    <Grid Width="{Binding ThumbWidth}" Height="{Binding ThumbHeight}" Margin="0,0,0,2">
                         <Image Source="{Binding Thumb}" Stretch="Uniform"/>
                         <!-- annotations not yet saved into the file -->
                         <Image Source="{Binding Overlay}" Stretch="Fill" IsHitTestVisible="False"/>
@@ -1487,9 +1487,21 @@
         <Grid Grid.Row="4" KeyboardNavigation.TabNavigation="Continue">
             <Grid.ColumnDefinitions>
                 <!-- SidebarCol never collapses to 0 — it shrinks to 24px (the toggle strip width). -->
-                <ColumnDefinition x:Name="SidebarCol" Width="180" MinWidth="24" MaxWidth="260"/>
+                <ColumnDefinition x:Name="SidebarCol" Width="180" MinWidth="24" MaxWidth="296"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
+
+            <!-- Drag handle on the sidebar's right edge (#246). The sidebar can be widened until its
+                 thumbnails reach full size (SidebarWidth.Max, applied in code, scales with the
+                 thumbnails). Its visibility follows the sidebar's, so it is gone when the rail is
+                 collapsed and in full screen. Painted above the sidebar so it gets the pointer. -->
+            <GridSplitter x:Name="SidebarSplitter" Grid.Column="0" Width="6" Margin="0,0,-3,0"
+                          HorizontalAlignment="Right" VerticalAlignment="Stretch"
+                          ResizeDirection="Columns" ResizeBehavior="CurrentAndNext"
+                          Background="Transparent" Cursor="SizeWE" Focusable="False"
+                          Panel.ZIndex="20"
+                          Visibility="{Binding Visibility, ElementName=SidebarBorder}"
+                          AutomationProperties.Name="Resize sidebar"/>
 
             <!-- Sidebar column: inner grid splits content from permanent toggle strip.
                  Named because the app-wide UI scale (MainWindow.AppScale.cs) hangs its LayoutTransform here —

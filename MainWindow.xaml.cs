@@ -663,6 +663,7 @@ namespace TDPdf
             CommandBindings.Add(new CommandBinding(CloseOtherTabsCommand, (_, _) => CloseOtherTabs(_ctx)));
             InitDocInvert();   // #135: restore the persisted display-only dark mode + light the rail moon
             InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
+            InitPairedSidebar();   // #246: two-column Pages sidebar, and the width it may be dragged to
             InitPageSizeReadout();   // upstream v1.8.5: restore the footer page-size chip's unit
             ApplyLayoutShortcutLabels();   // #153: spell the zoom chords for THIS keyboard layout
             LoadSignatures();
@@ -2453,7 +2454,7 @@ namespace TDPdf
 
             panel.Children.Add(new TextBlock
             {
-                Text = "Page view",
+                Text = "Page view (this tab, and new tabs)",
                 FontWeight = FontWeights.SemiBold,
                 Foreground = BrushResource("TextPrimary"),
                 Margin = new Thickness(0, 0, 0, 8)
@@ -2484,6 +2485,16 @@ namespace TDPdf
                 };
                 viewModeGroup.Children.Add(vmRadio);
             }
+            var twoColumnSidebar = new CheckBox
+            {
+                Content = "Two-column page thumbnails in the sidebar",
+                IsChecked = _pairedSidebar,
+                Foreground = BrushResource("TextPrimary"),
+                Margin = new Thickness(0, 4, 0, 6)
+            };
+            twoColumnSidebar.Checked += (_, _) => { if (!_pairedSidebar) SetPairedSidebar(true, persist: true); };
+            twoColumnSidebar.Unchecked += (_, _) => { if (_pairedSidebar) SetPairedSidebar(false, persist: true); };
+            panel.Children.Add(twoColumnSidebar);
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
@@ -2906,6 +2917,11 @@ namespace TDPdf
             menu.Items.Add(new Separator());
             menu.Items.Add(MakeMenuItem("Extract Page(s)", (s, ev) => Split_Click(s!, ev), null, null, "\uE8B1"));
             menu.Items.Add(MakeMenuItem("Delete Page(s)", (s, ev) => Delete_Click(s!, ev), null, null, "\uE8C6"));
+            menu.Items.Add(new Separator());
+            var twoColumns = MakeMenuItem("Two-Column Thumbnails", (s, ev) => PairedSidebar_Click(s!, ev), null,
+                "Show two page thumbnails per row", "\uE8A9");
+            twoColumns.IsChecked = _pairedSidebar;
+            menu.Items.Add(twoColumns);
             menu.PlacementTarget = PageList;
             menu.IsOpen = true;
             e.Handled = true;
