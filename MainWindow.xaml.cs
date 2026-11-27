@@ -2728,7 +2728,13 @@ namespace TDPdf
         {
             var menu = new ContextMenu();
 
-            menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard", "\uE8C8"));
+            _ctxCut = MakeMenuItem("Cu_t", (s, e) => CutMarks(), "Ctrl+X", "Cut the selected marks to the clipboard", "\uE8C6");
+            _ctxCopy = MakeMenuItem("_Copy", (s, e) => CopyMarksOrText(), "Ctrl+C", "Copy the selected marks, or the selected text, to the clipboard", "\uE8C8");
+            _ctxPaste = MakeMenuItem("P_aste", (s, e) => PasteFromClipboard(), "Ctrl+V", "Paste marks, a picture or text from the clipboard onto this page", "\uE77F");
+            menu.Items.Add(_ctxCut);
+            menu.Items.Add(_ctxCopy);
+            menu.Items.Add(_ctxPaste);
+            menu.Opened += (_, _) => UpdateMarkMenuState();
             menu.Items.Add(MakeMenuItem(
                 PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
                 (s, e) => ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr())),
@@ -5342,6 +5348,8 @@ namespace TDPdf
         private void SelectAnnotation(PageAnnotation annot, Rect bounds)
         {
             ClearSelection();
+            // Selecting a mark lets go of any selected text, so Ctrl+C copies the thing picked last.
+            ClearTextSelection();
             _selectedAnnotation = annot;
             _markSelection.Add(annot);
             // #181: the selection chrome is sized from these bounds and WPF rejects NaN/infinity on
@@ -5750,6 +5758,7 @@ namespace TDPdf
             if (_currentFile is null) return;
             int pageIdx = PageList.SelectedIndex;
             if (pageIdx < 0) return;
+            if (HasMarkSelection) { ClearSelection(); RenderAllAnnotations(pageIdx); }   // the text is now what Ctrl+C copies
 
             try
             {

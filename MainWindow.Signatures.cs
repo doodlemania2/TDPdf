@@ -1223,6 +1223,44 @@ namespace TDPdf
                 new Dictionary<string, string> { ["Type"] = "Signature" });
         }
 
+        /// <summary>
+        /// Puts image bytes (any format WPF decodes) on the page as a picture annotation and selects it.
+        /// Shared by Insert Image and by pasting a picture copied in another app, so both size and place
+        /// a picture identically. Throws when the bytes are not an image; callers report that.
+        /// </summary>
+        private void PlaceImageBytes(byte[] imgBytes, Point pos, int pageIdx, string status)
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.StreamSource = new MemoryStream(imgBytes);
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.EndInit();
+
+            double srcW = bmp.PixelWidth > 0 ? bmp.PixelWidth : 400;
+            double srcH = bmp.PixelHeight > 0 ? bmp.PixelHeight : 300;
+
+            // Default scale: fit within 250 canvas pixels on the longest axis
+            const double MaxCanvasDim = 250;
+            double scale = Math.Min(1.0, Math.Min(MaxCanvasDim / srcW, MaxCanvasDim / srcH));
+
+            var imgAnnot = new ImageAnnotation
+            {
+                PageIndex = pageIdx,
+                Position = pos,
+                Scale = scale,
+                SourceWidth = srcW,
+                SourceHeight = srcH,
+                ImageData = Convert.ToBase64String(imgBytes)
+            };
+
+            AddAnnotation(imgAnnot);
+            RenderAllAnnotations(pageIdx);
+            double w = srcW * scale;
+            double h = srcH * scale;
+            SelectAnnotation(imgAnnot, new Rect(pos.X, pos.Y, w, h));
+            SetStatus(status);
+        }
+
         private void PlaceImageFromDialog(Point pos, int pageIdx)
         {
             var dlg = new OpenFileDialog
@@ -1234,36 +1272,8 @@ namespace TDPdf
 
             try
             {
-                var imgBytes = File.ReadAllBytes(dlg.FileName);
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.StreamSource = new MemoryStream(imgBytes);
-                bmp.CacheOption = BitmapCacheOption.OnLoad;
-                bmp.EndInit();
-
-                double srcW = bmp.PixelWidth > 0 ? bmp.PixelWidth : 400;
-                double srcH = bmp.PixelHeight > 0 ? bmp.PixelHeight : 300;
-
-                // Default scale: fit within 250 canvas pixels on the longest axis
-                const double MaxCanvasDim = 250;
-                double scale = Math.Min(1.0, Math.Min(MaxCanvasDim / srcW, MaxCanvasDim / srcH));
-
-                var imgAnnot = new ImageAnnotation
-                {
-                    PageIndex = pageIdx,
-                    Position = pos,
-                    Scale = scale,
-                    SourceWidth = srcW,
-                    SourceHeight = srcH,
-                    ImageData = Convert.ToBase64String(imgBytes)
-                };
-
-                AddAnnotation(imgAnnot);
-                RenderAllAnnotations(pageIdx);
-                double w = srcW * scale;
-                double h = srcH * scale;
-                SelectAnnotation(imgAnnot, new Rect(pos.X, pos.Y, w, h));
-                SetStatus("Image placed. Drag the corner handle to resize, or switch to Select to move/delete");
+                PlaceImageBytes(File.ReadAllBytes(dlg.FileName), pos, pageIdx,
+                    "Image placed. Drag the corner handle to resize, or switch to Select to move/delete");
             }
             catch (Exception ex)
             {

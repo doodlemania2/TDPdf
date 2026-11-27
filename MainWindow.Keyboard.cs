@@ -248,7 +248,21 @@ namespace TDPdf
             }
             else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
             {
-                CopySelectedText();
+                CopyMarksOrText();
+                e.Handled = true;
+            }
+            // Ctrl+X / Ctrl+V act on marks only when the caret is not in a text surface (the find
+            // bar, a form field, the page-jump box), where they stay ordinary cut and paste.
+            else if (e.Key == Key.X && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null
+                     && !IsTypingTarget() && HasMarkSelection)
+            {
+                CutMarks();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null
+                     && !IsTypingTarget())
+            {
+                PasteFromClipboard();
                 e.Handled = true;
             }
             else if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)

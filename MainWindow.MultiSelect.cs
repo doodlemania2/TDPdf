@@ -104,6 +104,46 @@ namespace TDPdf
         private List<PageAnnotation> ExpandToGroups(int pageIdx, IEnumerable<PageAnnotation> marks) =>
             marks.ToList();
 
+        /// <summary>The topmost selectable mark under a canvas point: placed marks outrank the rest, as in the click path.</summary>
+        private PageAnnotation? TopMarkAt(int pageIdx, Point pos)
+        {
+            if (!_annotations.TryGetValue(pageIdx, out var list)) return null;
+            for (int i = list.Count - 1; i >= 0; i--)
+                if (list[i] is PlacedAnnotation pa && HitTestAnnotation(pa, pos, out _)) return pa;
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                var a = list[i];
+                if (a is PlacedAnnotation || !IsSelectableMark(a)) continue;
+                if (HitTestAnnotation(a, pos, out _)) return a;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Right-click on a mark selects it first (unless it is already part of the selection) so the
+        /// menu's Cut, Copy, Group and Align act on what was clicked.
+        /// </summary>
+        private void SelectMarkForContextMenu(MouseButtonEventArgs e)
+        {
+            if (_currentTool != EditTool.Select || IsPointerOperationActive) return;
+            int pageIdx = PageList.SelectedIndex;
+            if (pageIdx < 0) return;
+            var hit = TopMarkAt(pageIdx, e.GetPosition(_annotationCanvas));
+            if (hit is null || _markSelection.Contains(hit)) return;
+            var members = ExpandToGroups(pageIdx, new[] { hit });
+            RenderAllAnnotations(pageIdx);
+            SelectMarks(members);
+        }
+
+        private MenuItem? _ctxCut, _ctxCopy, _ctxPaste;
+
+        /// <summary>Greys the mark commands in the right-click menu that have nothing to act on.</summary>
+        private void UpdateMarkMenuState()
+        {
+            if (_ctxCut is not null) _ctxCut.IsEnabled = HasMarkSelection;
+            if (_ctxPaste is not null) _ctxPaste.IsEnabled = CanPasteNow();
+        }
+
         /// <summary>The selection a Shift/Ctrl box drag adds to; null for a plain box drag.</summary>
         private List<PageAnnotation>? _marqueeBase;
 
@@ -120,8 +160,8 @@ namespace TDPdf
             if (additiveBase is not null) all.AddRange(additiveBase.Where(a => a.PageIndex == pageIdx));
             foreach (var h in hits) if (!all.Contains(h)) all.Add(h);
             if (_selectRect is not null) { _annotationCanvas.Children.Remove(_selectRect); _selectRect = null; }
-            SelectMarks(all);
             RenderAllAnnotations(pageIdx);
+            SelectMarks(all);
             return true;
         }
 
@@ -170,8 +210,9 @@ namespace TDPdf
                 if (removing) next.Remove(m);
                 else if (!next.Contains(m)) next.Add(m);
             }
+            // Render FIRST: it wipes the canvas, and a single mark's border is added on top of it.
+            RenderAllAnnotations(mark.PageIndex);
             SelectMarks(next);
-            if (next.Count > 0) RenderAllAnnotations(mark.PageIndex);
         }
 
         private void ClearMultiChrome()
@@ -285,8 +326,8 @@ namespace TDPdf
                 if (clicked is not null && HasMarkSelection)
                 {
                     var keep = ExpandToGroups(page, new[] { clicked });
-                    SelectMarks(keep);
                     RenderAllAnnotations(page);
+                    SelectMarks(keep);
                 }
                 return;
             }
