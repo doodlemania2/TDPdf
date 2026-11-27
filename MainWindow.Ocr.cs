@@ -297,17 +297,12 @@ namespace TDPdf
             }
             if (!OcrModelCatalog.Verify(part, code, highQuality))
             {
-                TryDeleteFile(part);
+                TDPdf.Services.TempFilePolicy.TryDelete(part);
                 throw new InvalidDataException(
                     $"The downloaded {code} language data failed its integrity check (SHA-256 mismatch), so it was discarded.");
             }
             if (File.Exists(destFile)) File.Delete(destFile);
             File.Move(part, destFile);
-        }
-
-        private static void TryDeleteFile(string path)
-        {
-            try { if (File.Exists(path)) File.Delete(path); } catch { /* best-effort cleanup */ }
         }
 
         // Downloads a single language's traineddata (standard or HQ, per the toggle) and selects it.
@@ -329,14 +324,14 @@ namespace TDPdf
             }
             catch (OperationCanceledException)
             {
-                TryDeleteFile(dest + ".part");
+                TDPdf.Services.TempFilePolicy.TryDelete(dest + ".part");
                 if (ct.IsCancellationRequested) SetStatus($"{name} download cancelled");
                 else TdpDialog.Show(this, $"Downloading {name} timed out. Check your connection and try again.",
                     "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             catch (Exception ex)
             {
-                TryDeleteFile(dest + ".part");
+                TDPdf.Services.TempFilePolicy.TryDelete(dest + ".part");
                 TdpDialog.Show(this, $"Could not download {name} language data:\n{ex.Message}", "TDPdf",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
@@ -389,7 +384,7 @@ namespace TDPdf
                         MarkLanguageHq(code, true);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
-                    catch { failed.Add(name); TryDeleteFile(dest + ".part"); }
+                    catch { failed.Add(name); TDPdf.Services.TempFilePolicy.TryDelete(dest + ".part"); }
                 }
                 if (ct.IsCancellationRequested) SetStatus("High quality download cancelled");
                 else if (failed.Count > 0) SetStatus($"High quality models installed; failed: {string.Join(", ", failed)}");
@@ -853,11 +848,11 @@ namespace TDPdf
 
             // Snapshot the current document (with its rotations) to a temp; we render and re-open from this so
             // the live _doc is never touched. Unburned overlay annotations are not included.
-            string src = MakeTempPdfPath("ocrsrc");
+            string src = NewTempPath("ocrsrc");
             try { _doc.Save(src); }
             catch (Exception ex)
             {
-                TryDeleteFile(src);
+                TDPdf.Services.TempFilePolicy.TryDelete(src);
                 TdpDialog.Show(this, $"Could not prepare the document:\n{ex.Message}", "TDPdf",
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
@@ -883,7 +878,7 @@ namespace TDPdf
             }
             finally
             {
-                TryDeleteFile(src);
+                TDPdf.Services.TempFilePolicy.TryDelete(src);
                 EndCancellableOp();
             }
         }
@@ -1022,12 +1017,12 @@ namespace TDPdf
             string outPath = dlg.FileName;
             bool markdown = Path.GetExtension(outPath).Equals(".md", StringComparison.OrdinalIgnoreCase);
 
-            string src = MakeTempPdfPath("ocrtxt");
+            string src = NewTempPath("ocrtxt");
             int pageCount;
             try { _doc.Save(src); pageCount = _doc.PageCount; }
             catch (Exception ex)
             {
-                TryDeleteFile(src);
+                TDPdf.Services.TempFilePolicy.TryDelete(src);
                 TdpDialog.Show(this, $"Could not prepare the document:\n{ex.Message}", "TDPdf",
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
@@ -1050,7 +1045,7 @@ namespace TDPdf
             }
             finally
             {
-                TryDeleteFile(src);
+                TDPdf.Services.TempFilePolicy.TryDelete(src);
                 EndCancellableOp();
             }
         }
@@ -1096,9 +1091,5 @@ namespace TDPdf
         }
 
         private string SuggestSearchableName() => SuggestBaseName() + "-searchable.pdf";
-
-        // Shared with the image export (MainWindow.ExportImages.cs); TryDeleteFile above is its cleanup twin.
-        private static string MakeTempPdfPath(string purpose) =>
-            Path.Combine(Path.GetTempPath(), $"tdpdf_{purpose}_{Guid.NewGuid():N}.pdf");
     }
 }

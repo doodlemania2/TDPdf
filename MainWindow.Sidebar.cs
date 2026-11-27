@@ -1208,8 +1208,7 @@ namespace TDPdf
                 "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (ask != MessageBoxResult.Yes) return;
 
-            string fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+            string fixedPath = NewTempPath("fixed");
             SetBusy(true, $"Repairing {name}...");
             try
             {

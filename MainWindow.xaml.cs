@@ -5118,8 +5118,8 @@ namespace TDPdf
 
             using var op = Telemetry.StartOperation("Redact");
             SetFileOperationBusy(true, "Redacting...");
-            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_src_{Guid.NewGuid():N}.pdf");
-            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_out_{Guid.NewGuid():N}.pdf");
+            string source = NewTempPath("redact_src");
+            string result = NewTempPath("redact_out");
             try
             {
                 // Redact the CURRENT document, structural edits and all — not the file on disk,
@@ -7175,7 +7175,10 @@ namespace TDPdf
             }
             var tempPath = NewTempPath("temp");
             doc.Save(tempPath);
+            string unrepaired = tempPath;
             var reopened = OpenWorkingCopy(ref tempPath);
+            // PDFium repaired a copy that would not reopen: the file it was made from is no longer wanted.
+            if (!string.Equals(unrepaired, tempPath, StringComparison.OrdinalIgnoreCase)) RetireWorkingCopy(unrepaired);
 
             // The new document is open: from here on nothing can leave the tab without one.
             AdoptWorkingFile(tempPath, reopened, () =>
@@ -7281,7 +7284,7 @@ namespace TDPdf
         /// PDFium, which rebuilds a valid xref and strips encryption while preserving the edit, and
         /// the open is retried; <paramref name="path"/> then names the repaired file.
         /// </summary>
-        private static PdfDocument OpenWorkingCopy(ref string path)
+        private PdfDocument OpenWorkingCopy(ref string path)
         {
             try
             {
@@ -7289,10 +7292,13 @@ namespace TDPdf
             }
             catch (Exception openEx) when (TDPdf.Services.PdfDocumentService.IsXRefException(openEx))
             {
-                var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                var fixedPath = NewTempPath("fixed");
                 if (!TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
+                {
+                    TDPdf.Services.TempFilePolicy.TryDelete(fixedPath);
+                    _ctx.TempFiles.Release(fixedPath);
                     throw; // PDFium also failed — re-throw the original reopen error
+                }
                 path = fixedPath;
                 return PdfReader.Open(path, PdfDocumentOpenMode.Modify);
             }

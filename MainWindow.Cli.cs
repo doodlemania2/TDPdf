@@ -745,7 +745,7 @@ namespace TDPdf
 
         private static string CliTempFile(string tag)
         {
-            string p = Path.Combine(Path.GetTempPath(), $"tdpdf_{tag}_{Guid.NewGuid():N}.pdf");
+            string p = TempFilePolicy.NewPath(tag);
             _cliTemps.Add(p);
             return p;
         }

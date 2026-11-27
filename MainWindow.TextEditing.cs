@@ -387,8 +387,8 @@ namespace TDPdf
                 page, ctx.CanvasBounds.X, ctx.CanvasBounds.Y,
                 ctx.CanvasBounds.Width, ctx.CanvasBounds.Height, dims.w, dims.h);
 
-            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_edit_src_{Guid.NewGuid():N}.pdf");
-            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_edit_out_{Guid.NewGuid():N}.pdf");
+            string source = NewTempPath("edit_src");
+            string result = NewTempPath("edit_out");
             try
             {
                 // Against the CURRENT document, structural edits and all — the file on disk may be

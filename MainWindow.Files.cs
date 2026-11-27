@@ -960,9 +960,8 @@ namespace TDPdf
                 var newDoc = new PdfDocument();
                 newDoc.AddPage(); // one blank A4 page
 
-                tempPath = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(),
-                    $"tdpdf_new_{Guid.NewGuid():N}.pdf");
+                // Untracked here: the new tab owns it (see the TempFiles.Track on tab creation).
+                tempPath = TDPdf.Services.TempFilePolicy.NewPath("new");
                 newDoc.Save(tempPath);
                 newDoc.Close();
 
@@ -2440,8 +2439,7 @@ namespace TDPdf
             if (_doc is null || string.IsNullOrEmpty(current)) return false;
             try
             {
-                var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                var fixedPath = NewTempPath("fixed");
                 bool ok = await System.Threading.Tasks.Task.Run(
                     () => TDPdf.Services.PdfiumInterop.TryPdfiumRepair(current!, fixedPath));
                 if (!ok) return false;
@@ -2587,8 +2585,7 @@ namespace TDPdf
                 }
                 catch
                 {
-                    var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                        $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                    var fixedPath = NewTempPath("fixed");
                     try
                     {
                         if (TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
@@ -2888,7 +2885,7 @@ namespace TDPdf
             }
 
             if (outPdf.PageCount == 0) return null;
-            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_combined_{Guid.NewGuid():N}.pdf");
+            string outPath = TDPdf.Services.TempFilePolicy.NewPath("combined");
             outPdf.Save(outPath);
             return outPath;
         }
@@ -2900,7 +2897,7 @@ namespace TDPdf
             using var pdf = new PdfDocument();
             foreach (var path in imagePaths) AddImagePagesFromFile(pdf, path);
             if (pdf.PageCount == 0) throw new InvalidOperationException("No images could be read.");
-            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_imported_{Guid.NewGuid():N}.pdf");
+            string outPath = TDPdf.Services.TempFilePolicy.NewPath("imported");
             pdf.Save(outPath);
             return outPath;
         }

@@ -114,7 +114,7 @@ namespace TDPdf
             {
                 // The clean copy may have become the live working file (see
                 // PrepareImageExportSourceAsync); only the render source is ours to delete.
-                if (renderSource is not null && renderSource != _currentFile) TryDeleteFile(renderSource);
+                if (renderSource is not null && renderSource != _currentFile) TDPdf.Services.TempFilePolicy.TryDelete(renderSource);
                 EndCancellableOp();
             }
         }
@@ -139,13 +139,13 @@ namespace TDPdf
             bool hasPending = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
             if (!hasPending)
             {
-                var temp = MakeTempPdfPath("exportsrc");
+                var temp = NewTempPath("exportsrc");
                 await _pdfDocumentService.SaveAsync(() => doc.Save(temp), CancellationToken.None);
                 return temp;
             }
 
-            var tempClean  = MakeTempPdfPath("clean");
-            var tempBurned = MakeTempPdfPath("burned");
+            var tempClean  = NewTempPath("clean");
+            var tempBurned = NewTempPath("burned");
             await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
             DrawAnnotationsOnDocument();
 

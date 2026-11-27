@@ -190,7 +190,7 @@ namespace TDPdf
                     double newHpt = composed.PixelHeight * sy;
 
                     // Build a one-page PDF holding the transformed image (the proven image-page pattern).
-                    string tmp = TempPdfPath("xfpage");
+                    string tmp = NewTempPath("xfpage");
                     using (var one = new PdfDocument())
                     {
                         var np = one.AddPage();
@@ -288,8 +288,8 @@ namespace TDPdf
             bool anything = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
             if (!anything) return null;
 
-            var tempClean  = TempPdfPath("xfclean");
-            var tempBurned = TempPdfPath("xfburn");
+            var tempClean  = NewTempPath("xfclean");
+            var tempBurned = NewTempPath("xfburn");
             _doc.Save(tempClean);
             DrawAnnotationsOnDocument();
             _doc.Save(tempBurned);
@@ -301,7 +301,7 @@ namespace TDPdf
             }
             catch (Exception xrefEx) when (PdfDocumentService.IsXRefException(xrefEx))
             {
-                var fixedPath = TempPdfPath("xffixed");
+                var fixedPath = NewTempPath("xffixed");
                 if (!PdfiumInterop.TryPdfiumRepair(tempClean, fixedPath)) throw;
                 unrepaired = tempClean;
                 tempClean = fixedPath;
@@ -503,8 +503,5 @@ namespace TDPdf
             enc.Save(ms);
             return ms.ToArray();
         }
-
-        private static string TempPdfPath(string tag) =>
-            Path.Combine(Path.GetTempPath(), $"tdpdf_{tag}_{Guid.NewGuid():N}.pdf");
     }
 }
