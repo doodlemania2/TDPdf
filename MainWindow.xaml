@@ -1075,6 +1075,10 @@
                 <MenuItem Header="_Merge…"                                          Click="Merge_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE710;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- #242: pick, order and trim several files and folders; the result opens as a new unsaved tab. -->
+                <MenuItem Header="Merge Fi_les…"                                    Click="MergeFiles_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B7;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="E_xtract Pages…"                                  Click="Split_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B1;"/></MenuItem.Icon>
                 </MenuItem>

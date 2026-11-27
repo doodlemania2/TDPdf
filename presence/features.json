@@ -206,6 +206,21 @@
       ]
     },
     {
+      "id": "merge-files",
+      "name": "Merge files",
+      "status": "ready",
+      "summary": "Add PDFs and whole folders, drag them into order, and leave out or rearrange individual pages before they are merged into one new document. Form fields, fonts and bookmarks come along.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.MergeDialog.cs",
+        "TdpDialog.MergeFiles.cs",
+        "Services/MergePlan.cs",
+        "Services/PdfMerger.cs",
+        "Services/PdfFormMerge.cs"
+      ]
+    },
+    {
       "id": "tabs",
       "name": "Tabs",
       "status": "ready",

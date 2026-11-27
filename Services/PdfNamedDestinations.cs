@@ -223,6 +223,50 @@ namespace TDPdf.Services
             }
         }
 
+        /// <summary>
+        /// Like <see cref="RewriteLinks"/>, for pages that are not one consecutive block: rewrites the
+        /// named links on exactly <paramref name="pages"/> (indices in <paramref name="doc"/>) to
+        /// explicit destinations, where <paramref name="nameToTargetPage"/> already holds each name's
+        /// page in <paramref name="doc"/> itself. A name that is not in the map (its page was dropped)
+        /// is left as it is.
+        /// </summary>
+        internal static void RewriteLinksOnPages(
+            PdfDocument doc, IEnumerable<int> pages, IReadOnlyDictionary<string, int> nameToTargetPage)
+        {
+            foreach (int pi in pages)
+            {
+                if (pi < 0 || pi >= doc.PageCount) continue;
+                try
+                {
+                    var annotsArr = doc.Pages[pi].Elements.GetArray("/Annots");
+                    if (annotsArr is null) continue;
+
+                    for (int ai = 0; ai < annotsArr.Elements.Count; ai++)
+                    {
+                        PdfDictionary? ann = annotsArr.Elements[ai] as PdfDictionary ?? PdfItems.DerefDict(annotsArr.Elements[ai]);
+                        if (ann is null) continue;
+                        if (!(ann.Elements["/Subtype"]?.ToString() ?? "").Contains("Link")) continue;
+
+                        var action = ann.Elements.GetDictionary("/A");
+                        if (action is not null)
+                        {
+                            if (!(action.Elements["/S"]?.ToString() ?? "").Contains("GoTo")) continue;
+                            string? name = ExtractName(action.Elements["/D"]);
+                            if (name is not null && nameToTargetPage.TryGetValue(name, out int target) && target < doc.PageCount)
+                                action.Elements["/D"] = MakeExplicitDest(doc, target);
+                        }
+                        else
+                        {
+                            string? name = ExtractName(ann.Elements["/Dest"]);
+                            if (name is not null && nameToTargetPage.TryGetValue(name, out int target) && target < doc.PageCount)
+                                ann.Elements["/Dest"] = MakeExplicitDest(doc, target);
+                        }
+                    }
+                }
+                catch (Exception ex) { FaultSink.Report("NamedDestinations.RewriteLinksOnPages", ex); }
+            }
+        }
+
         internal static string? ExtractName(PdfItem? item)
         {
             if (item is null) return null;
