@@ -2744,6 +2744,8 @@ namespace TDPdf
             _ctxUngroup = MakeMenuItem("U_ngroup", (s, e) => UngroupSelected(), "Ctrl+Shift+G", "Split the selected group back into separate marks");
             menu.Items.Add(_ctxGroup);
             menu.Items.Add(_ctxUngroup);
+            _ctxArrange = BuildArrangeSubmenu();
+            menu.Items.Add(_ctxArrange);
             menu.Items.Add(new Separator());
             // Tool rows carry the toolbar's glyph and the tool's single-key shortcut (see OnPreviewKeyDown).
             menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), "V", "Switch to the select tool", "\uE8B3"));
@@ -5709,6 +5711,7 @@ namespace TDPdf
             _markSelection.Clear();
             _restylePreMulti.Clear();
             ClearMultiChrome();
+            HideArrangeBar();
 
             // Tear down any restyle-in-place binding. In Select mode the bound bar exists only for the
             // selection, so hide it; in other tools the visible bar belongs to the active tool — leave it.

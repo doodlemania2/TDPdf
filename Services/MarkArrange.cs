@@ -36,6 +36,104 @@ namespace TDPdf.Services
             return target - pos;
         }
 
+        // ── Align, distribute, same size (#248) ─────────────────────────────────────────
+
+        public enum AlignEdge { Left, Center, Right, Top, Middle, Bottom }
+
+        /// <summary>A box in canvas DIPs.</summary>
+        public readonly record struct Box(double X, double Y, double W, double H)
+        {
+            public double Right => X + W;
+            public double Bottom => Y + H;
+        }
+
+        private static Box Union(IReadOnlyList<Box> boxes)
+        {
+            double l = double.MaxValue, t = double.MaxValue, r = double.MinValue, b = double.MinValue;
+            foreach (var x in boxes)
+            {
+                l = Math.Min(l, x.X); t = Math.Min(t, x.Y);
+                r = Math.Max(r, x.Right); b = Math.Max(b, x.Bottom);
+            }
+            return new Box(l, t, r - l, b - t);
+        }
+
+        /// <summary>
+        /// How far each box moves (dx, dy, in input order) to line up on the selection's overall
+        /// bounds: its left edge, centre, right edge, top, middle or bottom. Fewer than two boxes, or
+        /// non-finite input, moves nothing.
+        /// </summary>
+        public static (double Dx, double Dy)[] Align(IReadOnlyList<Box> boxes, AlignEdge edge)
+        {
+            var shifts = new (double, double)[boxes.Count];
+            if (boxes.Count < 2 || !AllFinite(boxes)) return shifts;
+            var u = Union(boxes);
+            for (int i = 0; i < boxes.Count; i++)
+            {
+                var b = boxes[i];
+                shifts[i] = edge switch
+                {
+                    AlignEdge.Left => (u.X - b.X, 0),
+                    AlignEdge.Center => (u.X + u.W / 2 - (b.X + b.W / 2), 0),
+                    AlignEdge.Right => (u.Right - b.Right, 0),
+                    AlignEdge.Top => (0, u.Y - b.Y),
+                    AlignEdge.Middle => (0, u.Y + u.H / 2 - (b.Y + b.H / 2)),
+                    _ => (0, u.Bottom - b.Bottom),
+                };
+            }
+            return shifts;
+        }
+
+        /// <summary>
+        /// How far each box moves so the gaps between neighbours are equal, with the two outermost boxes
+        /// staying where they are. Needs three boxes or more; fewer moves nothing. "Neighbours" are
+        /// taken in left-to-right (or top-to-bottom) order of their near edges.
+        /// </summary>
+        public static (double Dx, double Dy)[] Distribute(IReadOnlyList<Box> boxes, bool horizontal)
+        {
+            var shifts = new (double, double)[boxes.Count];
+            if (boxes.Count < 3 || !AllFinite(boxes)) return shifts;
+
+            var order = Enumerable.Range(0, boxes.Count)
+                .OrderBy(i => horizontal ? boxes[i].X : boxes[i].Y).ThenBy(i => i).ToList();
+            var u = Union(boxes);
+            double span = horizontal ? u.W : u.H;
+            double sizes = order.Sum(i => horizontal ? boxes[i].W : boxes[i].H);
+            double gap = (span - sizes) / (boxes.Count - 1);
+
+            double cursor = horizontal ? u.X : u.Y;
+            foreach (int i in order)
+            {
+                double now = horizontal ? boxes[i].X : boxes[i].Y;
+                double d = cursor - now;
+                shifts[i] = horizontal ? (d, 0) : (0, d);
+                cursor += (horizontal ? boxes[i].W : boxes[i].H) + gap;
+            }
+            return shifts;
+        }
+
+        /// <summary>
+        /// The width (or height) each box should end up with so they all match the FIRST box, or null
+        /// for a box that must not change: one that cannot be resized, or that already matches. Fewer
+        /// than two boxes, or a first box that is not a usable size, changes nothing.
+        /// </summary>
+        public static double?[] MatchSize(IReadOnlyList<Box> boxes, IReadOnlyList<bool> resizable, bool width)
+        {
+            var targets = new double?[boxes.Count];
+            if (boxes.Count < 2 || resizable.Count != boxes.Count || !AllFinite(boxes)) return targets;
+            double want = width ? boxes[0].W : boxes[0].H;
+            if (!(want > 0)) return targets;
+            for (int i = 1; i < boxes.Count; i++)
+            {
+                double have = width ? boxes[i].W : boxes[i].H;
+                if (resizable[i] && Math.Abs(have - want) > 1e-6) targets[i] = want;
+            }
+            return targets;
+        }
+
+        private static bool AllFinite(IReadOnlyList<Box> boxes) =>
+            boxes.All(b => Finite(b.X) && Finite(b.Y) && Finite(b.W) && Finite(b.H));
+
         private static bool Finite(double v) => !double.IsNaN(v) && !double.IsInfinity(v);
     }
 }

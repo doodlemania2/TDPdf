@@ -67,6 +67,9 @@ Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`.
 | `MainWindow.Sidebar.cs` | The page sidebar (PageList) / page viewer and multi-document tab switching |
 | `MainWindow.Bookmarks.cs` | Bookmark editing (#133): add / rename / child / reorder / retarget / delete |
 | `MainWindow.Undo.cs` | Snapshot-based undo helpers |
+| `MainWindow.MultiSelect.cs` | The mark selection set (Shift/Ctrl click, drag box, move/nudge/delete together, restyle together) and grouping |
+| `MainWindow.MarkClipboard.cs` | Copy / cut / paste of marks, pictures and text (private clipboard format, JSON) |
+| `MainWindow.MarkArrange.cs` | Align, space evenly and match size of selected marks (geometry in `Services/MarkArrange.cs`) |
 | `MainWindow.Search.cs` | Search bar (Ctrl+F) and match navigation |
 | `MainWindow.Keyboard.cs` | Keyboard shortcut dispatch |
 | `MainWindow.KeyboardMapOverlay.cs` | Visual keyboard for the F1 / Ctrl+? shortcuts overlay |
