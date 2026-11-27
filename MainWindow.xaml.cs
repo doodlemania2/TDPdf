@@ -3026,6 +3026,9 @@ namespace TDPdf
             // Continuous collapses the page panel, so without this the live editor simply went
             // invisible while still being the active one.
             CommitActiveTextBox();
+            // Zoom to carry across the switch: the fit the user is in, or their manual zoom. Leaving
+            // the thumbnail Grid goes back to what it was before Grid was entered.
+            var (keepFit, keepZoom) = CaptureZoomForViewSwitch(_viewMode, mode);
             _viewMode = mode;
             // #399: an offset still owed to a tab switch was measured in the mode we are leaving
             // — Continuous's strip and Grid's wrap panel are different scroll surfaces entirely —
@@ -3074,7 +3077,7 @@ namespace TDPdf
             if (mode == ViewMode.Continuous)
             {
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                    () => SetupContinuousView(idx));
+                    () => { SetupContinuousView(idx); ReapplyZoomAfterViewSwitch(keepFit, keepZoom); });
                 return;
             }
 
@@ -3086,10 +3089,50 @@ namespace TDPdf
             RenderPage(mode == ViewMode.Grid ? 0 : idx);
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
             {
-                if (mode == ViewMode.Single || mode == ViewMode.TwoPage) FitToPage();
+                if (mode == ViewMode.Single || mode == ViewMode.TwoPage) ReapplyZoomAfterViewSwitch(keepFit, keepZoom);
                 // Grid keeps its existing column-fit default (applied via RefreshPageView).
                 RefreshPageView(mode == ViewMode.Grid ? 0 : idx);
             });
+        }
+
+        // Zoom/fit in force just before the thumbnail Grid was entered, for the tab it was entered on.
+        private ZoomFitMode _preGridFit = ZoomFitMode.None;
+        private double _preGridZoom;
+        private DocumentContext? _preGridCtx;
+
+        /// <summary>
+        /// The zoom a view-mode switch should land on. Zoom.ZoomLevel is true zoom, so a manual zoom
+        /// means the same thing in every mode; a fit is replayed against the new mode instead.
+        /// Leaving Grid returns to what was on screen before Grid was entered.
+        /// </summary>
+        private (ZoomFitMode Fit, double Zoom) CaptureZoomForViewSwitch(ViewMode from, ViewMode to)
+        {
+            var result = (_zoomFitMode, Zoom.ZoomLevel);
+            if (from == ViewMode.Grid && _preGridCtx is not null && ReferenceEquals(_preGridCtx, _ctx))
+                result = (_preGridFit, _preGridZoom);
+            if (to == ViewMode.Grid && from != ViewMode.Grid)
+            {
+                _preGridFit = _zoomFitMode;
+                _preGridZoom = Zoom.ZoomLevel;
+                _preGridCtx = _ctx;
+            }
+            if (from == ViewMode.Grid) _preGridCtx = null;
+            return result;
+        }
+
+        private void ReapplyZoomAfterViewSwitch(ZoomFitMode fit, double zoom)
+        {
+            if (fit == ZoomFitMode.Width) FitToWidth();
+            else if (fit == ZoomFitMode.Page) FitToPage();
+            else if (zoom >= ZoomViewModel.MinZoomLevel && zoom <= ZoomViewModel.MaxZoomLevel)
+            {
+                // Not a new decision, so the remembered manual-zoom preference is left alone.
+                _zoomFitMode = ZoomFitMode.None;
+                Zoom.SetZoomLevel(zoom);
+                SyncLayoutZoom();   // the layout scale differs per mode even at an equal true zoom
+            }
+            else if (_viewMode == ViewMode.Continuous) FitToWidth();
+            else FitToPage();
         }
 
         // ── Two-Page book layout (upstream KillerPDF #193) ─────────────────────────────────────
