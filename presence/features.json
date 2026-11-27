@@ -231,6 +231,15 @@
       , "Services/PrintRaster.cs", "Services/ShellVerbCommands.cs"]
     },
     {
+      "id": "flatten-options",
+      "name": "Choose the Save Flattened resolution",
+      "status": "ready",
+      "summary": "Pick Automatic or 72, 150, 200 or 300 dpi before saving a flattened copy, and see the pixel size each choice gives for the first and the largest page.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.FlattenOptions.cs", "Services/FlattenResolution.cs"]
+    },
+    {
       "id": "locked-pdfs",
       "name": "Locked and damaged files",
       "status": "ready",

@@ -80,7 +80,7 @@ namespace TDPdf.Services
             }, cancellationToken);
         }
 
-        public Task SaveFlattenedAsync(string sourcePath, string destinationPath, IReadOnlyList<PdfPageSize> pageSizes, CancellationToken cancellationToken, Action<int, int>? progress = null)
+        public Task SaveFlattenedAsync(string sourcePath, string destinationPath, IReadOnlyList<PdfPageSize> pageSizes, CancellationToken cancellationToken, Action<int, int>? progress = null, double fixedDpi = 0)
         {
             return Task.Run(() =>
             {
@@ -96,7 +96,7 @@ namespace TDPdf.Services
                 // back all-false, which is the old, lossless behaviour.
                 bool[] jpegHints = PdfPageImageEncoder.ReadJpegPageHints(sourcePath, pageCount);
                 // Upstream #462: each page keeps its own resolution (150 floor, 600 ceiling, pixel-capped).
-                double[] pageDpis = FlattenResolution.ReadPageDpis(sourcePath, [.. pageSizes.Select(p => (p.WidthPoint, p.HeightPoint))]);
+                double[] pageDpis = FlattenResolution.ReadPageDpis(sourcePath, [.. pageSizes.Select(p => (p.WidthPoint, p.HeightPoint))], fixedDpi);
 
                 // Rasterize pages across CPU cores. Docnet/PDFium (pdfium.dll) is NOT
                 // thread-safe, so the page render is serialized behind a lock; the
