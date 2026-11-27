@@ -5247,25 +5247,35 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
-            string? supersededFile = _currentFile;
-            _doc?.Close();
-            _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
-            _currentFile = redactedPath;
+            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes;
+            // AdoptWorkingFile retires it.
+            AdoptWorkingFile(redactedPath, null, () =>
+            {
+                _annotations.Clear();
+                _redactionMarks.Clear();
+                ESignDropFieldsForLayoutChange(_ctx);
+                ClearMeasurement();
+                ClearFormState();
+                InvalidateRenderCache();
+                _contentEditor.ClearCache();
+                InvalidateTextRunCache();
+                ClearSelection();
+                _undoStack.Clear();
+                _redoStack.Clear();
+                HideRedactSettings();
+                MarkDirty();
 
-            _annotations.Clear();
-            _redactionMarks.Clear();
-            ESignDropFieldsForLayoutChange(_ctx);
-            ClearMeasurement();
-            ClearFormState();
-            InvalidateRenderCache();
-            _contentEditor.ClearCache();
-            InvalidateTextRunCache();
-            ClearSelection();
-            _undoStack.Clear();
-            _redoStack.Clear();
-            HideRedactSettings();
-            MarkDirty();
+                ReselectAfterAdopt(selectedIdx);
+            });
+        }
 
+        /// <summary>
+        /// Rebuilds the sidebar after a working copy was swapped in and puts the selection back on
+        /// the page that was selected (or the first page), re-running the continuous view when it is
+        /// the active mode.
+        /// </summary>
+        private void ReselectAfterAdopt(int selectedIdx)
+        {
             RefreshPageList(ThumbRefresh.Stale);
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
@@ -5278,9 +5288,6 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
-
-            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes.
-            RetireWorkingCopy(supersededFile);
         }
 
         /// <summary>
@@ -7171,50 +7178,76 @@ namespace TDPdf
             var reopened = OpenWorkingCopy(ref tempPath);
 
             // The new document is open: from here on nothing can leave the tab without one.
-            string? supersededFile = _currentFile;
-            try { doc.Close(); } catch { /* the old instance is discarded either way */ }
-            _doc = reopened;
-            _currentFile = tempPath;
-
-            // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
-            // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
-            // cleared by default. Every caller that can keep them passes keepAnnotations: true
-            // having first made them valid for the new layout: rotation remaps its pages'
-            // annotations through the turn (RotatePages_Click); insert / delete / reorder /
-            // duplicate renumber them with their pages (ApplyPageIndexMap); merge and append-drop
-            // only add pages at the end, so nothing needs to move.
-            if (!keepAnnotations) _annotations.Clear();
-            // Unconditional, for the same reason the redaction marks below are: every caller has
-            // just changed page geometry or page numbering, so a surviving ruler would be two
-            // canvas points measured against a page that is no longer the page they were taken on.
-            ClearMeasurement();
-            // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
-            // a page index, and every caller here has just moved, deleted, reordered or resized
-            // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
-            // remaps its annotations through the turn and keeps them; there is no equivalent for a
-            // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
-            // user a re-drag.
-            if (PendingRedactionCount > 0)
+            AdoptWorkingFile(tempPath, reopened, () =>
             {
-                _redactionMarks.Clear();
-                HideRedactSettings();
-                // Held: every caller of this sets its own status line immediately afterwards
-                // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
-                // marks silently gone.
-                SetStatusHeld("Redaction marks were cleared because the page layout changed. Mark the areas again.", 4000);
+                // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
+                // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
+                // cleared by default. Every caller that can keep them passes keepAnnotations: true
+                // having first made them valid for the new layout: rotation remaps its pages'
+                // annotations through the turn (RotatePages_Click); insert / delete / reorder /
+                // duplicate renumber them with their pages (ApplyPageIndexMap); merge and append-drop
+                // only add pages at the end, so nothing needs to move.
+                if (!keepAnnotations) _annotations.Clear();
+                // Unconditional, for the same reason the redaction marks below are: every caller has
+                // just changed page geometry or page numbering, so a surviving ruler would be two
+                // canvas points measured against a page that is no longer the page they were taken on.
+                ClearMeasurement();
+                // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
+                // a page index, and every caller here has just moved, deleted, reordered or resized
+                // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
+                // remaps its annotations through the turn and keeps them; there is no equivalent for a
+                // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
+                // user a re-drag.
+                if (PendingRedactionCount > 0)
+                {
+                    _redactionMarks.Clear();
+                    HideRedactSettings();
+                    // Held: every caller of this sets its own status line immediately afterwards
+                    // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
+                    // marks silently gone.
+                    SetStatusHeld("Redaction marks were cleared because the page layout changed. Mark the areas again.", 4000);
+                }
+                // Placed Electronic Signature fields are positions on pages for exactly the same reason.
+                ESignDropFieldsForLayoutChange(_ctx);
+                ClearFormState();
+                // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
+                // this tab's captured scroll offset now measures against a layout that no longer
+                // exists. Drop the resume point and let the next activation place the view the way it
+                // did before the feature, rather than restoring a number that means nothing.
+                _ctx.ViewCaptured = false;
+                ClearSelection();
+                MarkDirty();
+                ShowReloadedDocument(selectedIdx);
+            });
+        }
+
+        /// <summary>
+        /// The one way a tab swaps in a new working copy. Every path that replaces the file the
+        /// document is read from goes through here, so the superseded copy is always retired: before
+        /// this existed two of six call sites forgot, and a pre-edit copy holding text the edit had
+        /// replaced sat in %TEMP% until the tab closed.
+        /// </summary>
+        /// <param name="path">The file that becomes <c>_currentFile</c>.</param>
+        /// <param name="opened">The document already opened from <paramref name="path"/> (the caller
+        /// may have had to repair it); null opens it here in Modify mode. It is opened BEFORE the old
+        /// one is closed, so a failure to open leaves the tab holding its old, still-open document.</param>
+        /// <param name="afterSwap">Whatever the caller must do with the new document: clear
+        /// annotations, undo history or selection, refresh the page list. It runs after the swap and
+        /// before the old file is retired, so nothing it rebuilds still reads the file it deletes.</param>
+        private void AdoptWorkingFile(string path, PdfDocument? opened, Action? afterSwap = null)
+        {
+            var previous = _doc;
+            string? superseded = _currentFile;
+            _doc = opened ?? PdfReader.Open(path, PdfDocumentOpenMode.Modify);
+            _currentFile = path;
+            try { previous?.Close(); } catch { /* the old instance is discarded either way */ }
+            try { afterSwap?.Invoke(); }
+            finally
+            {
+                // RetireWorkingCopy skips the new current file, a page operation's held rollback
+                // point, and any file the tab does not own (the user's own is never deleted).
+                RetireWorkingCopy(superseded);
             }
-            // Placed Electronic Signature fields are positions on pages for exactly the same reason.
-            ESignDropFieldsForLayoutChange(_ctx);
-            ClearFormState();
-            // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
-            // this tab's captured scroll offset now measures against a layout that no longer
-            // exists. Drop the resume point and let the next activation place the view the way it
-            // did before the feature, rather than restoring a number that means nothing.
-            _ctx.ViewCaptured = false;
-            ClearSelection();
-            MarkDirty();
-            ShowReloadedDocument(selectedIdx);
-            RetireWorkingCopy(supersededFile);
         }
 
         // Page operations hold their pre-edit working file as a rollback point until they finish;

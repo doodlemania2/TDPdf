@@ -293,19 +293,24 @@ namespace TDPdf
             _doc.Save(tempClean);
             DrawAnnotationsOnDocument();
             _doc.Save(tempBurned);
-            _doc.Close();
+            string? unrepaired = null;
+            PdfDocument clean;
             try
             {
-                _doc = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
+                clean = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
             }
             catch (Exception xrefEx) when (PdfDocumentService.IsXRefException(xrefEx))
             {
                 var fixedPath = TempPdfPath("xffixed");
                 if (!PdfiumInterop.TryPdfiumRepair(tempClean, fixedPath)) throw;
+                unrepaired = tempClean;
                 tempClean = fixedPath;
-                _doc = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
+                clean = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
             }
-            _currentFile = tempClean;
+            // Swaps the burned-in document out for the clean copy and retires the file it was on.
+            AdoptWorkingFile(tempClean, clean);
+            // The copy PDFium had to repair is no longer wanted either; it used to be dropped on the floor.
+            RetireWorkingCopy(unrepaired);
             return tempBurned;
         }
 

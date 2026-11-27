@@ -441,28 +441,16 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
-            _doc?.Close();
-            _doc = PdfReader.Open(editedPath, PdfDocumentOpenMode.Modify);
-            _currentFile = editedPath;
-
-            InvalidateRenderCache();
-            _contentEditor.ClearCache();
-            InvalidateTextRunCache();
-            ClearSelection();
-            MarkDirty();
-
-            RefreshPageList(ThumbRefresh.Stale);
-            if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
-                PageList.SelectedIndex = selectedIdx;
-            else if (PageList.Items.Count > 0)
-                PageList.SelectedIndex = 0;
-
-            if (_viewMode == ViewMode.Continuous)
+            AdoptWorkingFile(editedPath, null, () =>
             {
-                int contIdx = Math.Max(0, PageList.SelectedIndex);
-                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                    (Action)(() => SetupContinuousView(contIdx)));
-            }
+                InvalidateRenderCache();
+                _contentEditor.ClearCache();
+                InvalidateTextRunCache();
+                ClearSelection();
+                MarkDirty();
+
+                ReselectAfterAdopt(selectedIdx);
+            });
         }
 
         /// <summary>

@@ -2609,9 +2609,8 @@ namespace TDPdf
                 return;
             }
 
-            _doc = reopened;
-            _currentFile = reopenedPath;
-            previous?.Close();
+            // Retires the pre-print working copy too, which used to stay in %TEMP% until the tab closed.
+            AdoptWorkingFile(reopenedPath, reopened);
         }
 
         // ============================================================
