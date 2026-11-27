@@ -70,6 +70,33 @@ public static class W {
   }
 }
 "@
+Add-Type -ReferencedAssemblies System.Drawing @"
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+public static class T {
+  // The box of a 24bpp bitmap left after peeling off edge rows and columns that are entirely pure
+  // black (0,0,0): what PrintWindow gives for the transparent shadow margin of a layered window.
+  // Returns {left, top, right, bottom}, right and bottom exclusive. Black inside the window stays.
+  public static int[] Trim(Bitmap b) {
+    int w = b.Width, h = b.Height;
+    var d = b.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+    try {
+      int stride = d.Stride;
+      var px = new byte[Math.Abs(stride) * h];
+      System.Runtime.InteropServices.Marshal.Copy(d.Scan0, px, 0, px.Length);
+      Func<int, bool> rowBlack = y => { for (int x = 0; x < w * 3; x++) if (px[y * stride + x] != 0) return false; return true; };
+      Func<int, bool> colBlack = x => { for (int y = 0; y < h; y++) { int i = y * stride + x * 3; if (px[i] != 0 || px[i + 1] != 0 || px[i + 2] != 0) return false; } return true; };
+      int t = 0, bt = h, l = 0, r = w;
+      while (t < bt - 1 && rowBlack(t)) t++;
+      while (bt - 1 > t && rowBlack(bt - 1)) bt--;
+      while (l < r - 1 && colBlack(l)) l++;
+      while (r - 1 > l && colBlack(r - 1)) r--;
+      return new[] { l, t, r, bt };
+    } finally { b.UnlockBits(d); }
+  }
+}
+"@
 $UIA = [System.Windows.Automation.AutomationElement]
 $Scope = [System.Windows.Automation.TreeScope]
 
@@ -111,6 +138,7 @@ function PrintWin([IntPtr]$h, $wr) {
         }
     }
     if (-not $varied) { $bmp.Dispose(); return $null }
+    $script:lastTrim = [T]::Trim($bmp)
     $bmp
 }
 
@@ -131,24 +159,37 @@ function Shot([string]$name, $proc) {
         }
     })
     if (-not $wins) { throw "no visible TDPdf window for $name" }
+    # Windows() lists them topmost first; handle the bottom one first so dialogs and menus land on top.
+    [array]::Reverse($wins)
+    # PrintWindow renders the transparent shadow margin of a layered window as pure black. Trim those
+    # edge rows and columns off, so only the window itself is kept (black inside the window stays).
+    foreach ($w in $wins) {
+        $w.Bmp = $null
+        try { $script:lastTrim = $null; $w.Bmp = PrintWin $w.H $w.Wr } catch { $w.Bmp = $null }
+        if ($w.Bmp -and $script:lastTrim) {
+            $tr = $script:lastTrim
+            $vis = $w.Rect
+            $tl = [Math]::Max($vis.X, $w.Wr.L + $tr[0]); $tt = [Math]::Max($vis.Y, $w.Wr.T + $tr[1])
+            $tright = [Math]::Min($vis.Right, $w.Wr.L + $tr[2]); $tb = [Math]::Min($vis.Bottom, $w.Wr.T + $tr[3])
+            if ($tright - $tl -ge 8 -and $tb - $tt -ge 8) {
+                $w.Rect = [System.Drawing.Rectangle]::FromLTRB($tl, $tt, $tright, $tb)
+            }
+        }
+    }
     $u = $wins[0].Rect
     foreach ($w in $wins) { $u = [System.Drawing.Rectangle]::Union($u, $w.Rect) }
     $bmp = New-Object System.Drawing.Bitmap $u.Width, $u.Height, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.Clear([System.Drawing.Color]::Transparent)
     $methods = @()
-    # Windows() lists them topmost first; draw the bottom one first so dialogs and menus land on top.
-    [array]::Reverse($wins)
     foreach ($w in $wins) {
         $r = $w.Rect
         $dest = New-Object System.Drawing.Rectangle ($r.X - $u.X), ($r.Y - $u.Y), $r.Width, $r.Height
-        $win = $null
-        try { $win = PrintWin $w.H $w.Wr } catch { $win = $null }
-        if ($win) {
-            # PrintWindow draws from the window's top-left corner; the visible part starts at r.
+        if ($w.Bmp) {
+            # PrintWindow draws from the window's top-left corner; the kept part starts at r.
             $src = New-Object System.Drawing.Rectangle ($r.X - $w.Wr.L), ($r.Y - $w.Wr.T), $r.Width, $r.Height
-            $g.DrawImage($win, $dest, $src, [System.Drawing.GraphicsUnit]::Pixel)
-            $win.Dispose()
+            $g.DrawImage($w.Bmp, $dest, $src, [System.Drawing.GraphicsUnit]::Pixel)
+            $w.Bmp.Dispose()
             $methods += 'PrintWindow'
         } else {
             $g.CopyFromScreen($r.X, $r.Y, $dest.X, $dest.Y, $r.Size)
@@ -214,11 +255,17 @@ function FindInApp([string]$name, [int]$wait = 10) {
     throw "element '$name' not found in TDPdf's windows"
 }
 
+# Polls for up to about 6 s: right after a mark is placed the toolbar can lag a moment. Halfway
+# through, one Escape (drops a popup or an open box, harmless to a placed mark) is tried.
 function FindId($root, [string]$id) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, $id)
-    $e = $root.FindFirst($Scope::Descendants, $cond)
-    if (-not $e) { throw "automation id '$id' not found" }
-    $e
+    for ($i = 0; $i -lt 24; $i++) {
+        $e = $root.FindFirst($Scope::Descendants, $cond)
+        if ($e) { return $e }
+        if ($i -eq 12) { [System.Windows.Forms.SendKeys]::SendWait('{ESC}') }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "automation id '$id' not found"
 }
 
 function Click([int]$x, [int]$y, [switch]$Double, [switch]$Right) {
@@ -376,7 +423,8 @@ function PageDrag([double]$x1, [double]$y1, [double]$x2, [double]$y2, [switch]$H
 $agreement = Join-Path $Demo 'services-agreement.pdf'
 $incident  = Join-Path $Demo 'incident-report.pdf'
 $form      = Join-Path $Demo 'membership-form.pdf'
-$agreementV2 = Join-Path $Demo 'services-agreement-v2.pdf'   # the agreement revised: build/screenshots/make-compare-demo.py
+$quoteV1   = Join-Path $Demo 'garden-quote-v1.pdf'              # the pair Compare is shown on: build/screenshots/make-compare-demo.py
+$quoteV2   = Join-Path $Demo 'garden-quote-v2.pdf'
 $bakery    = Join-Path $Demo 'bakery-price-list.pdf'            # a page with a picture: build/screenshots/make-picture-demo.py
 $epub      = Join-Path $Demo 'window-garden.epub'               # a two-chapter book: build/screenshots/make-epub-demo.py
 $managed   = (Get-ItemProperty 'HKLM:\SOFTWARE\TDPdf' -ErrorAction SilentlyContinue).Installed -eq 1
@@ -627,11 +675,11 @@ Attempt 'stamps' {
     Shot 'stamps' $app.P
 }
 
-# ── compare: the agreement against its revised copy, which is the other open tab ───
+# ── compare: the first quote against its revised copy, which is the other open tab ───
 # Tools > Compare PDFs asks which open tab to compare with; the first (the only other tab) is
 # selected, and its Compare button opens the compare window with the list of changes.
 Attempt 'compare' {
-    Session $agreementV2, $agreement
+    Session $quoteV2, $quoteV1
     InvokeEl (MenuPath 'Tools', 'Compare PDFs')
     Start-Sleep -Seconds 2
     InvokeEl (FindInApp 'Compare')
@@ -671,17 +719,40 @@ Attempt 'accessibility' {
     Shot 'accessibility' $app.P
 }
 
-# ── print-color: the print window scrolled to its COLOR section, opened. Print is never pressed. ──
+# ── print-color: the print window with its COLOR section opened and set to "Let TDPdf manage colors",
+# which is the mode that shows the printer profile, rendering intent and the other controls
+# (AddColorSection in Services/PrintPreviewWindow.cs). Print is never pressed. ──
+# Wheels the options column a few notches at a time until the named element is on screen and clear of
+# the button row, and returns it. $anchor is a point inside the options column.
+function ScrollIntoView([string]$name, $anchor) {
+    $cancelTop = (FindInApp 'Cancel').Current.BoundingRectangle.Y
+    for ($i = 0; $i -lt 20; $i++) {
+        $el = FindInApp $name 4
+        $r = $el.Current.BoundingRectangle
+        if (-not $el.Current.IsOffscreen -and $r.Height -gt 0 -and ($r.Y + $r.Height) -lt ($cancelTop - 12)) { return $el }
+        [W]::Wheel($anchor[0], $anchor[1], -3); Start-Sleep -Milliseconds 400
+    }
+    throw "'$name' never scrolled into view"
+}
+
 Attempt 'print-color' {
     Session $agreement
     Keys '^p'
     Start-Sleep -Seconds 5
-    # The options column scrolls: wheel it to the bottom, open COLOR, wheel again to bring it into view.
     $r = (FindInApp 'PRINTER').Current.BoundingRectangle
-    $cx = [int]($r.X + 120); $cy = [int]($r.Y + 150)
-    [W]::Wheel($cx, $cy, -30); Start-Sleep -Milliseconds 600
-    ClickEl (FindInApp 'COLOR'); Start-Sleep -Milliseconds 600
-    [W]::Wheel($cx, $cy, -30); Start-Sleep -Milliseconds 600
+    $anchor = @([int]($r.X + 120), [int]($r.Y + 150))
+    ClickEl (ScrollIntoView 'COLOR' $anchor)
+    Start-Sleep -Milliseconds 800
+    # Open the mode list (the box sits just under its label) and pick the managed mode.
+    try {
+        $lab = (ScrollIntoView 'Color management' $anchor).Current.BoundingRectangle
+        Click ([int]($lab.X + 100)) ([int]($lab.Y + $lab.Height + 18))
+        Start-Sleep -Milliseconds 600
+        ClickEl (FindInApp 'Let TDPdf manage colors' 4)
+        Start-Sleep -Seconds 2
+    } catch { Write-Host "print-color: mode not changed: $($_.Exception.Message)" }
+    # Wheel on to the bottom so the profile, intent and options show.
+    [W]::Wheel($anchor[0], $anchor[1], -30); Start-Sleep -Milliseconds 600
     Park
     Shot 'print-color' $app.P
 }

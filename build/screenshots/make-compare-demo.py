@@ -1,85 +1,76 @@
 #!/usr/bin/env python3
-"""Writes build/screenshots/demo/services-agreement-v2.pdf, the revised agreement the Compare shot is
-taken against.
+"""Writes build/screenshots/demo/garden-quote-v1.pdf and garden-quote-v2.pdf, the pair the Compare shot
+is taken on.
 
-It appends an incremental update to services-agreement.pdf (the original bytes are kept untouched):
-the fee and the late-payment rate are painted over and rewritten, and a new section 5 is added. The
-people and companies in the file are invented. Plain Python, no packages; a fixed byte layout means
-re-running this changes nothing. Run it again only if you change the changes; the PDF is checked in.
+Both come from one function, so everything outside the four planned differences is identical:
+a changed price, a changed start date, one added sentence and one removed sentence. Plain Python, no
+packages; text is set in the standard Helvetica and Helvetica-Bold (WinAnsi), so it extracts cleanly.
+Every name and number is invented (phones use 555-01xx). A fixed byte layout means re-running this
+changes nothing. Run it again only if you change the quote; the PDFs are checked in.
 """
-import re
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-SRC = HERE / "demo" / "services-agreement.pdf"
-OUT = HERE / "demo" / "services-agreement-v2.pdf"
-
-# Object numbers new to the file (the original uses 1..70).
-CONTENT, TIMES, HELV_B = 71, 72, 73
-PAGE = 2
+HERE = Path(__file__).resolve().parent / "demo"
+W, H = 612, 792
 
 
-def tj(font, size, x, top_y, s):
-    s = s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-    return f"BT /{font} {size} Tf {x} {792 - top_y} Td ({s}) Tj ET\n"
+def esc(s):
+    return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def paint_over(x, top_y, w, h):
-    return f"1 1 1 rg {x} {792 - top_y - h} {w} {h} re f\n"
+def line(x, top, size, s, font="F1"):
+    return f"BT /{font} {size} Tf {x} {H - top} Td ({esc(s)}) Tj ET\n"
 
 
-def build_stream():
-    # The original page stream leaves its ".24 0 0 -.24 0 792 cm" in force, so undo it first.
-    c = "q\n4.1666667 0 0 -4.1666667 0 3300 cm\n"
-    c += paint_over(144, 243, 50, 17)
-    c += paint_over(373, 262, 25, 17)
-    c += "0.1 0.1 0.1 rg\n"
-    c += tj("F20", 11.5, 145, 255, "$19,200,")
-    c += tj("F20", 11.5, 374, 274, "2%")
-    c += "0.1216 0.2275 0.3529 rg\n"
-    c += tj("F21", 10.5, 70, 560, "5. Revisions")
-    c += "0.1 0.1 0.1 rg\n"
-    c += tj("F20", 11.5, 70, 584, "Either party may propose a change in writing. A change takes effect only when both")
-    c += tj("F20", 11.5, 70, 601, "parties have signed it.")
-    c += "Q\n"
+def content(v2):
+    price = "$4,650" if v2 else "$4,200"
+    start = "17 May 2027" if v2 else "3 May 2027"
+    c = "0.18 0.40 0.28 rg\n" + line(72, 80, 24, "Quote for garden landscaping", "F2")
+    c += "0.35 0.35 0.35 rg\n" + line(72, 102, 11, "Prepared by Fernbank Gardens for Dana Whitfield, 14 Mill Lane. Quote 0142.")
+    c += "0.18 0.40 0.28 rg\n" + line(72, 150, 13, "1. What we will do", "F2")
+    c += "0.15 0.15 0.15 rg\n"
+    c += line(72, 174, 11.5, "We will clear the back garden, lay a gravel path and plant two raised beds along the fence.")
+    c += line(72, 192, 11.5, "Topsoil and compost for the beds are included.")
+    if not v2:
+        c += line(72, 210, 11.5, "Old turf is taken away on the first day.")
+    c += "0.18 0.40 0.28 rg\n" + line(72, 252, 13, "2. Price", "F2")
+    c += "0.15 0.15 0.15 rg\n"
+    c += line(72, 276, 11.5, f"The total price is {price}, paid half on acceptance and half on completion.")
+    c += line(72, 294, 11.5, "The price covers all materials and labor for the work listed above.")
+    c += "0.18 0.40 0.28 rg\n" + line(72, 336, 13, "3. Timing", "F2")
+    c += "0.15 0.15 0.15 rg\n"
+    c += line(72, 360, 11.5, f"Work starts on {start} and takes about two weeks, weather permitting.")
+    if v2:
+        c += line(72, 378, 11.5, "We will send a text message the evening before each visit.")
+    c += "0.45 0.45 0.45 rg\n" + line(72, 730, 9, "Fernbank Gardens, 9 Orchard Row. Questions: (555) 014-0133.")
     return c.encode("latin-1")
 
 
-def main():
-    d = SRC.read_bytes()
-    start = int(re.search(rb"startxref\s+(\d+)\s+%%EOF\s*$", d).group(1))
-    i = d.index(b"2 0 obj\n<</Type /Page")
-    j = d.index(b"endobj", i)
-    page = d[i:j].decode("latin-1")
-    page = page.replace("/Font <</F4 4 0 R", f"/Font <</F20 {TIMES} 0 R\n/F21 {HELV_B} 0 R\n/F4 4 0 R", 1)
-    page = page.replace("/Contents 10 0 R", f"/Contents [10 0 R {CONTENT} 0 R]", 1)
-    assert "/F20" in page and f"{CONTENT} 0 R]" in page
-
-    stream = build_stream()
-    out = bytearray(d)
-    if not out.endswith(b"\n"):
-        out += b"\n"
+def build(v2):
+    c = content(v2)
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {W} {H}] /Contents 4 0 R "
+            f"/Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>").encode(),
+        4: f"<< /Length {len(c)} >>\nstream\n".encode() + c + b"\nendstream",
+        5: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        6: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    }
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     off = {}
-
-    def add(n, body):
-        off[n] = len(out)
-        out.extend(f"{n} 0 obj\n".encode() + body + b"\nendobj\n")
-
-    add(PAGE, page.split("obj\n", 1)[1].encode("latin-1"))
-    add(CONTENT, f"<</Length {len(stream)}>>\nstream\n".encode() + stream + b"endstream")
-    add(TIMES, b"<</Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding>>")
-    add(HELV_B, b"<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>")
-
+    for i in sorted(objs):
+        off[i] = len(out)
+        out += f"{i} 0 obj\n".encode() + objs[i] + b"\nendobj\n"
     xref = len(out)
-    out += b"xref\n"
-    out += f"{PAGE} 1\n{off[PAGE]:010d} 00000 n \n".encode()
-    out += f"{CONTENT} 3\n".encode()
-    for n in (CONTENT, TIMES, HELV_B):
-        out += f"{off[n]:010d} 00000 n \n".encode()
-    out += f"trailer\n<</Size 74 /Root 46 0 R /Info 1 0 R /Prev {start}>>\nstartxref\n{xref}\n%%EOF\n".encode()
-    OUT.write_bytes(bytes(out))
-    print(f"wrote {OUT} ({len(out)} bytes)")
+    out += f"xref\n0 {len(objs) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for i in sorted(objs):
+        out += f"{off[i]:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
 
 
 if __name__ == "__main__":
-    main()
+    for name, v2 in (("garden-quote-v1.pdf", False), ("garden-quote-v2.pdf", True)):
+        (HERE / name).write_bytes(build(v2))
+        print("wrote", HERE / name)
