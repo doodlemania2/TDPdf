@@ -6459,6 +6459,7 @@ namespace TDPdf
             // Every annotation change on a page ends up here, so this is also where the sidebar's
             // thumbnail of that page learns its unsaved markup changed (debounced there).
             QueueThumbOverlayRefresh(pageIndex);
+            RestoreAccessibilityOutline(pageIndex);   // #243: the finding last clicked in the accessibility panel
             // Clearing the canvas also drops form-field overlays — restore them so they
             // survive every annotation re-render (edits, undo, selection, …).
             if (!_annotations.ContainsKey(pageIndex))

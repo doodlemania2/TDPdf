@@ -74,6 +74,18 @@
       ]
     },
     {
+      "id": "accessibility-check",
+      "name": "Check accessibility",
+      "status": "ready",
+      "summary": "See what stops a screen reader using a PDF, such as a missing language or title, untagged text, pictures with no description or a skipped heading level, and fix the simple ones in one click. A list covers what only a person can judge.",
+      "audiences": ["user", "it-admin"],
+      "screens": [],
+      "sources": [
+        "MainWindow.Accessibility.cs",
+        "Services/PdfUa*.cs"
+      ]
+    },
+    {
       "id": "redaction",
       "name": "Redaction",
       "status": "ready",

@@ -21,6 +21,7 @@ TDPdf.exe <file.pdf>
 | `--flatten <in.pdf> <out.pdf> [--dpi <n>]` | Turn every page into a picture so the file can't be edited. The default is 150 dpi. |
 | `--print <in.pdf> [--printer <name>] [--pages <range>] [--copies <n>]` | Print without showing a window. Uses the default printer unless you name one. |
 | `--ocr <in.pdf> <out.pdf> [--lang <code>]` | Add hidden, searchable text to scanned pages. English is the default; other languages download the first time you use them. |
+| `--pdfua <file.pdf\|folder> [more ...] [--json]` | Check accessibility (PDF/UA) and list what is wrong. A folder is checked file by file. `--json` names the standard each file was checked against, PDF/UA-1 or PDF/UA-2. A pass means TDPdf's machine checks found nothing, not that the file meets the standard. |
 | `--batch-resave <in> <out> [--log <f.csv>] [--quiet]` | Open and save a file, or every PDF in a folder, through TDPdf's normal open and save steps. Useful for checking a batch of files. |
 | `--version`, `-v` | Show the version. |
 | `--help`, `-h`, `/?` | Show this list. |
@@ -32,6 +33,7 @@ TDPdf.exe <file.pdf>
 | 0 | It worked. |
 | 1 | The job failed. |
 | 2 | The command was written wrong. |
+| 3 | `--pdfua` only: a file failed the checks or was only partly checked. |
 
 The install and uninstall switches (`/install`, `/uninstall`, `/silent`) are covered in
 [Deploying TDPdf in an organisation](intune-distribution.md).

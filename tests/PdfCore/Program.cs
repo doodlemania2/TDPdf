@@ -214,6 +214,7 @@ AnnotationFrameTests.Run(Check);
 PageRangeSpecTests.Run(Check);
 ShellVerbTests.Run(Check);
 CompareTests.Run(Check, tmp);
+PdfUaTests.Run(Check, tmp);
 DateCulture.Run(Check, tmp);
 ProtectedSaveId.Run(Check, tmp);
 SignatureScan.Run(Check);

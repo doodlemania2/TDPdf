@@ -1659,6 +1659,19 @@ namespace TDPdf
             try { if (ESignBuildDocumentInfoSignatures(doc, win) is { } signatures) root.Children.Add(signatures); }
             catch { /* the dialog's job is the metadata; a signature oddity must not take it down */ }
 
+            // #243: the accessibility check is a window of its own; it opens once this dialog has closed.
+            bool openAccessibility = false;
+            var accessLink = new TextBlock
+            {
+                Text = "Check accessibility…",
+                Foreground = accent,
+                TextDecorations = TextDecorations.Underline,
+                Cursor = Cursors.Hand,
+                Margin = new Thickness(0, 8, 0, 0)
+            };
+            accessLink.MouseLeftButtonUp += (_, _) => { openAccessibility = true; win.DialogResult = false; };
+            root.Children.Add(accessLink);
+
             var buttons = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -1709,6 +1722,7 @@ namespace TDPdf
 
             win.Loaded += (_, _) => titleBox.Focus();
             win.ShowDialog();
+            if (openAccessibility) ShowAccessibilityPanel();
         }
 
         /// <summary>

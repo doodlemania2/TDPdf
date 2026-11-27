@@ -1249,6 +1249,9 @@
                 <MenuItem Header="Comp_are PDFs…"  InputGestureText="Alt+Shift+V"  Click="ComparePdfs_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8AB;"/></MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="Check _Accessibility…"                            Click="CheckAccessibility_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE776;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <!-- OCR submenu is rebuilt on open (OcrMenu_SubmenuOpened); the placeholder keeps the
                      submenu arrow visible so the event fires. -->

@@ -73,7 +73,7 @@ namespace TDPdf
                 Eq(a, "--version") || Eq(a, "-v") ||
                 Eq(a, "--merge") || Eq(a, "--extract-pages") || Eq(a, "--split") ||
                 Eq(a, "--decrypt") || Eq(a, "--to-image") || Eq(a, "--flatten") ||
-                Eq(a, "--print") || Eq(a, "--ocr"));
+                Eq(a, "--print") || Eq(a, "--ocr") || Eq(a, "--pdfua"));
             if (command is null) return false;
 
             var con = OpenBatchConsole();
@@ -115,6 +115,9 @@ namespace TDPdf
                         break;
                     case "--ocr":
                         exitCode = CliOcr(positionals, options, con);
+                        break;
+                    case "--pdfua":
+                        exitCode = CliPdfUa(positionals, options, con);
                         break;
                 }
             }
@@ -159,11 +162,17 @@ namespace TDPdf
             "                                           print silently (default printer if none named)",
             "  --ocr <in.pdf> <out.pdf> [--lang <code>] add an invisible searchable text layer (default eng;",
             "                                           other languages download on first use)",
+            "  --pdfua <file.pdf|folder> [more ...] [--json]",
+            "                                           check accessibility (PDF/UA) and print what is wrong;",
+            "                                           --json names the standard checked for each file.",
+            "                                           A pass means TDPdf's machine checks found nothing.",
             "  --batch-resave <in> <out> [--log <f.csv>] [--quiet]",
             "                                           resave a file or tree through the standard",
             "                                           open/save pipeline (validation harness)",
             "",
             "Exit codes: 0 success, 1 operation failed, 2 bad usage.",
+            "  --pdfua: 0 every file passed the machine checks, 3 a file failed or was only partly",
+            "  checked, 1 a file could not be read, 2 bad usage.",
             "Runs headless and works while the TDPdf window is open.",
         ]);
 
@@ -342,6 +351,14 @@ namespace TDPdf
             con.WriteLine("Could not decrypt. If the file needs a password to open, pass --password.");
             return 1;
         }
+
+        // ============================================================
+        // --pdfua <file.pdf|folder> [more ...] [--json]
+        // ============================================================
+        // The checking, the output and the exit codes (0 passed, 3 failed or partly checked, 1 unreadable,
+        // 2 bad usage) live in Services/PdfUaCli.cs so they are tested off Windows.
+        private static int CliPdfUa(List<string> pos, Dictionary<string, string> options, TextWriter con) =>
+            PdfUaCli.Run(pos, options.ContainsKey("--json"), con);
 
         // ============================================================
         // --to-image <in.pdf> <outDir> [--dpi n] [--format png|jpg] [--pages range] [--transparent]
