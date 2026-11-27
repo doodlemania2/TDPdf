@@ -708,6 +708,14 @@ namespace TDPdf
             _dragStartPoint = e.GetPosition(null);
             _pageClickCollapseIndex = -1;
 
+            // A thumbnail click is a jump Alt+Left should retrace. Recorded here, on the press and
+            // before the ListBox's own handler changes the selection: by mouse-up the page it left
+            // is already gone from SelectedIndex.
+            if (e.ClickCount == 1 && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) == 0
+                && ContainerUnderMouse(e.OriginalSource as DependencyObject) is ListBoxItem clicked
+                && !clicked.IsSelected)
+                RecordNavJump();
+
             // #135: WPF's Extended-mode ListBox collapses a multi-page selection to the one clicked
             // page on mouse DOWN (ListBox.NotifyListItemClicked -> MakeSingleSelection), which is
             // one gesture too early for dragging: by the time the pointer has moved far enough to
