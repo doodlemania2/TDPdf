@@ -134,6 +134,14 @@ internal static class CleanupSecurity
         Check("an AES file that can be re-keyed is flagged as downgraded",
               ProtectedSave.Assess(true, true, true) == ProtectedSave.Impact.Downgraded, "");
         Check("an RC4 file written back as RC4 is silent", ProtectedSave.Assess(true, true, false) == I, "");
+        Check("a 40-bit RC4 file written back as 40-bit is flagged, 128-bit stays silent",
+              ProtectedSave.Assess(true, true, false, weak40Bit: true) == ProtectedSave.Impact.Weak40Bit
+              && ProtectedSave.Assess(true, true, false, weak40Bit: false) == I
+              && ProtectedSave.Assess(true, false, false, weak40Bit: true) == ProtectedSave.Impact.Removed
+              && ProtectedSave.Assess(false, true, false, weak40Bit: true) == I, "");
+        string weakMsg = ProtectedSave.ImpactMessage(ProtectedSave.Impact.Weak40Bit, "a.pdf", null);
+        Check("the 40-bit warning names the file, the weakness and the way out",
+              weakMsg.Contains("a.pdf") && weakMsg.Contains("40-bit") && weakMsg.Contains("Remove Password"), weakMsg);
         Check("the dialog text names the file and what will be written",
               ProtectedSave.ImpactMessage(ProtectedSave.Impact.Removed, "a.pdf", null).Contains("NO password")
               && ProtectedSave.ImpactMessage(ProtectedSave.Impact.Downgraded, "a.pdf", null).Contains("RC4")

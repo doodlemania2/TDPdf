@@ -1916,7 +1916,7 @@ namespace TDPdf
         /// <summary>
         /// Before a save in place that would remove or weaken the file's password protection (an
         /// AES-256 file opened with its owner password is written back with no password; one opened
-        /// with the user password becomes 128-bit RC4): say exactly what will happen and let the
+        /// with the user password becomes 128-bit RC4; a 40-bit RC4 file stays 40-bit): say exactly what will happen and let the
         /// user save anyway, save elsewhere, or cancel. Asked once per document session. Returns
         /// true to go ahead. "Save As" starts Save As and returns false.
         /// </summary>
@@ -1928,7 +1928,12 @@ namespace TDPdf
             var answer = TdpDialog.ShowYesNoCancel(this,
                 ProtectedSave.ImpactMessage(impact, System.IO.Path.GetFileName(targetFile), _ctx.Protection),
                 "Save Anyway", "Save As...", "Cancel",
-                impact == ProtectedSave.Impact.Removed ? "Password Protection Will Be Removed" : "Encryption Will Be Weakened",
+                impact switch
+                {
+                    ProtectedSave.Impact.Removed => "Password Protection Will Be Removed",
+                    ProtectedSave.Impact.Weak40Bit => "Weak Encryption Stays Weak",
+                    _ => "Encryption Will Be Weakened",
+                },
                 MessageBoxImage.Warning, defaultToCancel: true);
             if (answer == MessageBoxResult.Yes)
             {
