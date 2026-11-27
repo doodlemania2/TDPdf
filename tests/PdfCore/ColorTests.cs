@@ -319,9 +319,12 @@ internal static class ColorTests
         Check("lcms: bytes matching the pin are accepted, others are not",
               LcmsBootstrap.MatchesPin(sample, hash) && LcmsBootstrap.MatchesPin(sample, hash.ToLowerInvariant())
               && !LcmsBootstrap.MatchesPin([1, 2, 3, 4, 6], hash) && !LcmsBootstrap.MatchesPin(sample, "") && !LcmsBootstrap.MatchesPin(sample, "abcd"), "");
-        string? bundled = FindRepoFile("third_party/lcms2/win-x64/lcms2.dll");
-        Check("lcms: a bundled lcms2.dll, if present, is exactly the pinned one",
+        string? bundled = FindRepoFile("third_party/lcms2/win-x64/liblcms2-2.dll");
+        Check("lcms: a bundled liblcms2-2.dll, if present, is exactly the pinned one",
               bundled is null || LcmsBootstrap.MatchesPin(File.ReadAllBytes(bundled)), bundled ?? "none bundled");
+        string? sums = FindRepoFile("third_party/lcms2/SHA256SUMS");
+        Check("lcms: SHA256SUMS lists the bundled library under the same hash the app pins",
+              sums is null || File.ReadAllText(sums).Contains(LcmsBootstrap.PinnedSha256 + "  liblcms2-2.dll", StringComparison.OrdinalIgnoreCase), sums ?? "no SHA256SUMS");
         Check("lcms: without the library the app engine is the managed one",
               OperatingSystem.IsWindows() || !ColorEngines.Current.IsNative, "");
         Check("lcms: the reason it is missing is stated", ColorEngines.Current.IsNative || ColorEngines.NativeUnavailableReason is { Length: > 10 }, "");
