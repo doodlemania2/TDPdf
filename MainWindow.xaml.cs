@@ -720,6 +720,9 @@ namespace TDPdf
                 // behind, still hitting a bug every one of those releases had fixed.
                 var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
                               ?? new Version(0, 0, 0, 0);
+                // Before the update check stamps its first run, and not for a tear-off window, which
+                // is spun up around one document.
+                if (!isTearOffLaunch) ShowWhatsNewIfUpdated(running);
                 TDPdf.Services.UpdateCheck.StartBackgroundCheck(running);
 
                 // #134: an update CAN land under a running instance — Windows refuses to overwrite
@@ -2471,6 +2474,7 @@ namespace TDPdf
             enterNewLine.Checked += EnterNewLineChanged;
             enterNewLine.Unchecked += EnterNewLineChanged;
             panel.Children.Add(enterNewLine);
+            AddWhatsNewSettingsRow(panel);   // MainWindow.WhatsNew.cs
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 

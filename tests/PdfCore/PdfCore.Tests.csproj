@@ -64,6 +64,8 @@
     <Compile Include="..\..\Services\PageBlockMove.cs" />
     <Compile Include="..\..\Services\PageIndexRemap.cs" />
     <Compile Include="..\..\Services\CanvasPixels.cs" />
+    <Compile Include="..\..\Services\ReleaseNotesMarkdown.cs" />
+    <Compile Include="..\..\Services\WhatsNewPolicy.cs" />
     <Compile Include="..\..\Services\HighlightMultiply.cs" />
     <Compile Include="..\..\Services\LruCache.cs" />
     <Compile Include="..\..\Services\CropMargins.cs" />
