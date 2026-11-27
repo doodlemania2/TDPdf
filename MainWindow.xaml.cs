@@ -2737,6 +2737,7 @@ namespace TDPdf
             // so the pair reads as a matched set instead of two unrelated icons.
             menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
+            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
                 "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", "\uE90F"));
             menu.Items.Add(new Separator());
@@ -2812,6 +2813,7 @@ namespace TDPdf
             var menu = new ContextMenu();
             menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
+            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
                 "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", ""));
             menu.PlacementTarget = (UIElement)sender;

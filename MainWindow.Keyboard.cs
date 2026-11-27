@@ -349,6 +349,14 @@ namespace TDPdf
                 RotatePages_Click(Keyboard.Modifiers == ModifierKeys.Control ? 90 : -90);
                 e.Handled = true;
             }
+            // Ctrl+Shift+U turns the selected pages half way round. Ctrl+U is underline inside a text
+            // box only (that handler never reaches here), and Ctrl+Shift+U was unclaimed.
+            else if (e.Key == Key.U && _doc is not null
+                     && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            {
+                RotatePages_Click(180);
+                e.Handled = true;
+            }
             // Jump history: Alt+Left / Alt+Right retrace bookmark / link / jump-box / Home-End hops,
             // browser-style. Alt makes the key arrive as Key.System with the real key in SystemKey.
             else if (e.Key == Key.System && e.SystemKey == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
