@@ -233,6 +233,7 @@ RedactVerify.Run(Check, tmp);
 RedactAnnotations.Run(Check, tmp);
 RedactResidue.Run(Check, tmp);
 RedactCopies.Run(Check, tmp);
+RedactHidden.Run(Check, tmp);
 SignatureMerge.Run(Check, tmp);
 PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);

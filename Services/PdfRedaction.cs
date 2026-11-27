@@ -58,6 +58,9 @@ namespace TDPdf.Services
 
             /// <summary>Annotations and form widgets removed because they sat under a mark.</summary>
             internal int AnnotationsRemoved { get; set; }
+
+            /// <summary>Attached files removed from the document (all pages, not just marked ones).</summary>
+            internal int AttachmentsRemoved { get; set; }
             internal IReadOnlyList<PdfiumInterop.RedactionOverlap> Partial { get; set; }
                 = Array.Empty<PdfiumInterop.RedactionOverlap>();
 
@@ -97,6 +100,8 @@ namespace TDPdf.Services
             string rasterized = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
             string annotated = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
             string residue = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
+            string attached = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
+            string pruned = Path.Combine(workDir, $"tdpdf_redact_{Guid.NewGuid():N}.pdf");
 
             try
             {
@@ -163,6 +168,17 @@ namespace TDPdf.Services
                 if (annotsRemoved > 0) afterAnnots = annotated;
                 result.AnnotationsRemoved = annotsRemoved;
 
+                // 3b. Attached files. An embedded file, an /AF entry or a file-attachment annotation is
+                //     often the unredacted original, and it can sit on any page, so this is not
+                //     limited to the marked ones.
+                if (!TryRemoveAttachments(afterAnnots, attached, out int attachmentsRemoved, out string? attachError))
+                {
+                    result.Error = attachError ?? "the attached files could not be removed";
+                    return result;
+                }
+                if (File.Exists(attached)) afterAnnots = attached;
+                result.AttachmentsRemoved = attachmentsRemoved;
+
                 // 4. Rasterise the pages the caller opted in for. Everything on those pages is
                 //    replaced by one picture with the marked areas painted out, which is the only
                 //    thing that works when the marked content IS the picture.
@@ -179,6 +195,16 @@ namespace TDPdf.Services
                     afterRaster = rasterized;
                     result.Rasterized = raster.OrderBy(i => i).ToList();
                 }
+
+                // 4b. Resources the regenerated content no longer draws, on the pages that were
+                //     redacted object by object: an image removed from the page is otherwise still
+                //     in the file behind its /XObject entry.
+                if (!TryPruneResources(afterRaster, pruned, request.RectsByPage, raster, out int _, out string? pruneError))
+                {
+                    result.Error = pruneError ?? "the unused page resources could not be removed";
+                    return result;
+                }
+                if (File.Exists(pruned)) afterRaster = pruned;
 
                 // 5a. Private editor data, page thumbnails, structure-tree descriptions and bookmark
                 //     titles: each can hold a second copy of what the marks covered. Always runs,
@@ -227,6 +253,25 @@ namespace TDPdf.Services
                     return result;
                 }
 
+                var imagePages = FindSurvivingImages(verifyPath, request.RectsByPage, raster);
+                if (imagePages.Count > 0)
+                {
+                    result.PagesNeedingRaster = imagePages;
+                    result.Error =
+                        $"redaction could not be confirmed because an image remains inside a redacted area on page{(imagePages.Count == 1 ? "" : "s")} " +
+                        string.Join(", ", imagePages.Select(i => i + 1)) + ", so the file was not written";
+                    return result;
+                }
+
+                var attachmentLeft = FindAttachments(verifyPath);
+                if (attachmentLeft.Count > 0)
+                {
+                    result.Error =
+                        $"redaction could not be confirmed because {attachmentLeft.Count} attached file(s) remain " +
+                        $"({string.Join("; ", attachmentLeft.Distinct().Take(5))}), so the file was not written";
+                    return result;
+                }
+
                 var residual = FindResidue(verifyPath, request.RectsByPage, removedTerms, request.ScrubMetadata);
                 if (residual.Count > 0)
                 {
@@ -252,6 +297,8 @@ namespace TDPdf.Services
                 TryDelete(annotated);
                 TryDelete(scrubbed);
                 TryDelete(residue);
+                TryDelete(attached);
+                TryDelete(pruned);
             }
         }
 
