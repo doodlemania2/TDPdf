@@ -119,25 +119,15 @@ namespace TDPdf
             var fieldBg    = new SolidColorBrush(Color.FromArgb(200, 255, 253, 231));
             var focusBrush = greenBrush;
 
-            // Collect radio buttons per group so we can wire mutual exclusion after the loop.
-            var radioGroups = new Dictionary<string, List<(Ellipse dot, string onVal)>>();
-
-            // Widgets that share one field, by FieldKey, so a change in one updates the others on
-            // the page at once (siblings on other pages read the shared value when they render).
-            // `syncing` stops a sibling's own change handler from echoing the update back.
-            // Keyed by the name group where there is one (separate fields with the same fully
-            // qualified name), else by the field's own key.
+            // Radio groups, and widgets that share one field, are tracked on the context so a change
+            // in one updates the others on the page at once (siblings on other pages read the shared
+            // value when they render). Keyed by the name group where there is one (separate fields
+            // with the same fully qualified name), else by the field's own key.
             _formNameIndex = null;   // fields may have been added, renamed or removed since the last render
-            var textSiblings  = new Dictionary<string, List<TextBox>>();
-            var comboSiblings = new Dictionary<string, List<(ComboBox combo, List<string> exports, List<string> options)>>();
-            var checkSiblings = new Dictionary<string, List<(TextBlock mark, string onVal)>>();
-            bool syncing = false;
-            static string SibKey(FormFieldInfo f) => f.GroupId.Length > 0 ? f.GroupId : "#" + f.FieldKey;
-            static void AddSibling<T>(Dictionary<string, List<T>> map, string key, T item)
+            var st = new FormOverlayContext
             {
-                if (!map.TryGetValue(key, out var list)) map[key] = list = new();
-                list.Add(item);
-            }
+                Green = greenBrush, Dark = darkBrush, FieldBg = fieldBg, Focus = focusBrush,
+            };
 
             bool anyField = false;
             foreach (var f in fields)
@@ -153,250 +143,16 @@ namespace TDPdf
 
                 // -- Text field ----------------------------------------------------
                 if (!f.IsCheckBox && !f.IsRadio && f.FieldType != "/Ch")
-                {
-                    string cur = _formTextValues.TryGetValue(f.FieldKey, out var tv) ? tv : f.CurrentValue;
-                    // Use the shorter canvas dimension as the font size reference so that
-                    // rotated fields (where Cw and Ch are swapped vs. portrait) don't blow up.
-                    double fieldShort = Math.Min(f.Cw, f.Ch);
-                    double fontSize = f.IsMultiLine ? fieldShort * 0.18 : fieldShort * 0.65;
-                    fontSize = Math.Max(10, fontSize);
-                    // #158: a comb field types one character per printed cell. WPF has no comb
-                    // TextBox, so the overlay approximates the cell walk: a monospace face (Consolas'
-                    // advance is ~0.55em) sized so one advance is at most one cell wide, capped at
-                    // MaxLen characters, and left-padded by half a cell minus half a glyph so the
-                    // first character lands in the middle of cell 0 rather than against its left
-                    // wall. It is an approximation on screen only — the SAVED appearance stream
-                    // below places each glyph exactly at its cell centre. IsComb guarantees
-                    // MaxLen > 0 (see FormFieldInfo), so the division is safe.
-                    double combCellW = f.IsComb ? f.Cw / f.MaxLen : 0;
-                    if (f.IsComb) fontSize = Math.Max(9, Math.Min(fontSize, combCellW / 0.55));
-                    var tb = new TextBox
-                    {
-                        Tag             = FormOverlayTag,
-                        Width           = f.Cw,
-                        Height          = f.Ch,
-                        Text            = cur,
-                        MaxLength       = f.IsComb ? f.MaxLen : 0,   // 0 = unlimited (WPF default)
-                        IsReadOnly      = f.IsReadOnly,
-                        AcceptsReturn   = f.IsMultiLine,
-                        TextWrapping    = f.IsMultiLine ? TextWrapping.Wrap : TextWrapping.NoWrap,
-                        VerticalScrollBarVisibility = f.IsMultiLine ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden,
-                        Background      = fieldBg,
-                        Foreground      = Brushes.Black,
-                        CaretBrush      = Brushes.Black,
-                        BorderBrush     = greenBrush,
-                        BorderThickness = new Thickness(1),
-                        FontSize        = fontSize,
-                        Padding         = f.IsComb
-                            ? new Thickness(Math.Max(0, combCellW / 2 - fontSize * 0.275), 0, 0, 0)
-                            : new Thickness(3, 0, 3, 0),
-                        VerticalContentAlignment = f.IsMultiLine ? VerticalAlignment.Top : VerticalAlignment.Center,
-                        ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
-                    };
-                    if (f.IsComb) tb.FontFamily = new FontFamily("Consolas");
-                    tb.GotFocus  += (_, _) => tb.BorderBrush = focusBrush;
-                    tb.LostFocus += (_, _) => tb.BorderBrush = greenBrush;
-                    int capturedKey = f.FieldKey;
-                    string capturedSib = SibKey(f), capturedGroup = f.GroupId;
-                    AddSibling(textSiblings, capturedSib, tb);
-                    // Escape restores what the box held when it got focus (see FormTextBox_PreviewKeyDown).
-                    tb.GotFocus += (_, _) => _formFocusValues.AddOrUpdate(tb, tb.Text);
-                    tb.PreviewKeyDown += FormTextBox_PreviewKeyDown;
-                    tb.TextChanged += (_, _) =>
-                    {
-                        if (syncing) return;
-                        _formTextValues[capturedKey] = tb.Text;
-                        SpreadPendingByName(_formTextValues, capturedGroup, capturedKey, tb.Text, FormFieldSiblings.FitToComb);
-                        MarkDirty();
-                        if (!textSiblings.TryGetValue(capturedSib, out var sibs) || sibs.Count < 2) return;
-                        syncing = true;
-                        try
-                        {
-                            foreach (var other in sibs)
-                            {
-                                if (ReferenceEquals(other, tb)) continue;
-                                string shown = FormFieldSiblings.FitToComb(tb.Text, other.MaxLength);
-                                if (other.Text != shown) other.Text = shown;
-                            }
-                        }
-                        finally { syncing = false; }
-                    };
-                    ctrl = tb;
-                }
+                    ctrl = BuildTextFieldOverlay(f, st);
                 // -- Dropdown / choice --------------------------------------------
                 else if (f.FieldType == "/Ch" && f.Options.Count > 0)
-                {
-                    string cur = _formTextValues.TryGetValue(f.FieldKey, out var tv) ? tv : f.CurrentValue;
-                    var combo = new ComboBox
-                    {
-                        Tag        = FormOverlayTag,
-                        Width      = f.Cw,
-                        Height     = f.Ch,
-                        IsEnabled  = !f.IsReadOnly,
-                        Foreground = Brushes.Black,
-                        FontSize   = Math.Max(10, Math.Min(f.Cw, f.Ch) * 0.65),
-                        ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
-                    };
-                    foreach (var opt in f.Options) combo.Items.Add(opt);
-
-                    // The list shows display strings; /V carries export values. Select by INDEX so
-                    // the two never have to be equal: match the stored/current value against the
-                    // exports first, then fall back to the display text for files whose /V already
-                    // holds the label (and for plain-string /Opt, where the two are the same).
-                    var exports = f.OptionExports ?? f.Options;
-                    int selIdx = exports.IndexOf(cur);
-                    if (selIdx < 0) selIdx = f.Options.IndexOf(cur);
-                    combo.SelectedIndex = selIdx;   // -1 when /V matches nothing: leave it unset
-
-                    int capturedKey = f.FieldKey;
-                    string capturedSib = SibKey(f), capturedGroup = f.GroupId;
-                    AddSibling(comboSiblings, capturedSib, (combo, exports, f.Options));
-                    combo.SelectionChanged += (_, _) =>
-                    {
-                        if (syncing) return;
-                        int i = combo.SelectedIndex;
-                        if (i < 0) return;
-                        // Write the export value, which is what other viewers read back.
-                        string value = i < exports.Count ? exports[i] : f.Options[i];
-                        _formTextValues[capturedKey] = value;
-                        SpreadPendingByName(_formTextValues, capturedGroup, capturedKey, value);
-                        MarkDirty();
-                        if (!comboSiblings.TryGetValue(capturedSib, out var sibs) || sibs.Count < 2) return;
-                        syncing = true;
-                        try
-                        {
-                            foreach (var (other, oex, oopt) in sibs)
-                            {
-                                if (ReferenceEquals(other, combo)) continue;
-                                int j = oex.IndexOf(value);
-                                if (j < 0) j = oopt.IndexOf(value);
-                                if (j >= 0 && other.SelectedIndex != j) other.SelectedIndex = j;
-                            }
-                        }
-                        finally { syncing = false; }
-                    };
-                    ctrl = combo;
-                }
+                    ctrl = BuildChoiceFieldOverlay(f, st);
                 // -- Checkbox ------------------------------------------------------
                 else if (f.IsCheckBox)
-                {
-                    // The pending value is the FIELD's state name ("/Off" or an on-state), shared by
-                    // every widget of the field; each widget is ticked when it names that widget's
-                    // own on-state, so siblings with different export values behave correctly.
-                    bool isChecked = _formCheckValues.TryGetValue(f.FieldKey, out var cv)
-                        ? FormFieldSiblings.IsOn(cv, f.OnValue)
-                        : FormFieldSiblings.InitiallyChecked(f.CurrentValue, f.OnValue, f.WidgetState);
-
-                    // Custom border-based checkbox — WPF's built-in CheckBox indicator
-                    // doesn't scale with Width/Height, so we draw it ourselves.
-                    double checkFs = Math.Min(f.Cw, f.Ch) * 0.72;
-                    var checkMark = new TextBlock
-                    {
-                        Text       = "✓",
-                        FontSize   = checkFs,
-                        FontWeight = FontWeights.Bold,
-                        Foreground = darkBrush,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment   = VerticalAlignment.Center,
-                        Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed,
-                    };
-                    var box = new Border
-                    {
-                        Tag             = FormOverlayTag,
-                        Width           = f.Cw,
-                        Height          = f.Ch,
-                        Background      = fieldBg,
-                        BorderBrush     = greenBrush,
-                        BorderThickness = new Thickness(1.5),
-                        CornerRadius    = new CornerRadius(2),
-                        Cursor          = f.IsReadOnly ? Cursors.Arrow : Cursors.Hand,
-                        Child           = checkMark,
-                        ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
-                    };
-                    AddSibling(checkSiblings, SibKey(f), (checkMark, f.OnValue));
-                    if (!f.IsReadOnly)
-                    {
-                        int capturedKey = f.FieldKey;
-                        string capturedSib = SibKey(f), capturedGroup = f.GroupId;
-                        string capturedOn = f.OnValue;
-                        box.MouseLeftButtonDown += (_, e) =>
-                        {
-                            string value = FormFieldSiblings.Toggle(checkMark.Visibility == Visibility.Visible, capturedOn);
-                            _formCheckValues[capturedKey] = value;
-                            SpreadPendingByName(_formCheckValues, capturedGroup, capturedKey, value);
-                            if (checkSiblings.TryGetValue(capturedSib, out var sibs))
-                                foreach (var (mark, on) in sibs)
-                                    mark.Visibility = FormFieldSiblings.IsOn(value, on) ? Visibility.Visible : Visibility.Collapsed;
-                            MarkDirty();
-                            e.Handled = true;
-                        };
-                    }
-                    ctrl = box;
-                }
+                    ctrl = BuildCheckBoxOverlay(f, st);
                 // -- Radio button --------------------------------------------------
                 else if (f.IsRadio)
-                {
-                    string groupSelected = _formRadioValues.TryGetValue(f.FieldName, out var rv) ? rv
-                        : f.CurrentValue; // CurrentValue = parent /V = currently selected on-value
-                    bool isSelected = groupSelected == f.OnValue;
-
-                    double size  = Math.Min(f.Cw, f.Ch) * 0.88;
-                    double inner = size * 0.52;
-
-                    var dot = new Ellipse
-                    {
-                        Width  = inner,
-                        Height = inner,
-                        Fill   = darkBrush,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment   = VerticalAlignment.Center,
-                        Visibility = isSelected ? Visibility.Visible : Visibility.Collapsed,
-                    };
-                    var ring = new Ellipse
-                    {
-                        Width           = size,
-                        Height          = size,
-                        Stroke          = greenBrush,
-                        StrokeThickness = 1.5,
-                        Fill            = fieldBg,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment   = VerticalAlignment.Center,
-                    };
-                    var grid = new Grid { Width = f.Cw, Height = f.Ch };
-                    grid.Children.Add(ring);
-                    grid.Children.Add(dot);
-
-                    var radioBorder = new Border
-                    {
-                        Tag        = FormOverlayTag,
-                        Width      = f.Cw,
-                        Height     = f.Ch,
-                        Background = Brushes.Transparent,
-                        Cursor     = f.IsReadOnly ? Cursors.Arrow : Cursors.Hand,
-                        Child      = grid,
-                        ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
-                    };
-
-                    if (!radioGroups.TryGetValue(f.FieldName, out var groupList))
-                        radioGroups[f.FieldName] = groupList = new();
-                    groupList.Add((dot, f.OnValue));
-
-                    if (!f.IsReadOnly)
-                    {
-                        string capturedGroup = f.FieldName;
-                        string capturedOn    = f.OnValue;
-                        radioBorder.MouseLeftButtonDown += (_, e) =>
-                        {
-                            _formRadioValues[capturedGroup] = capturedOn;
-                            if (radioGroups.TryGetValue(capturedGroup, out var gl))
-                                foreach (var (d, ov) in gl)
-                                    d.Visibility = ov == capturedOn ? Visibility.Visible : Visibility.Collapsed;
-                            MarkDirty();
-                            e.Handled = true;
-                        };
-                    }
-                    ctrl = radioBorder;
-                }
+                    ctrl = BuildRadioOverlay(f, st);
 
                 if (ctrl is null) continue;
                 Canvas.SetLeft(ctrl, f.Cx);
@@ -419,6 +175,287 @@ namespace TDPdf
 
             if (anyField)
                 SetStatus($"Page {pageIndex + 1} of {_doc.PageCount} contains fillable form fields");
+        }
+
+        // ------------------------------------------------------------
+        // Form field overlays: one builder per field kind
+        // ------------------------------------------------------------
+
+        /// <summary>
+        /// What the overlay builders of one <see cref="RenderFormFields"/> pass share: the brushes,
+        /// and the sibling tables that let a change in one widget of a field update the others on
+        /// the page at once (the "syncing" flag stops a sibling's own change handler from echoing
+        /// the update back).
+        /// </summary>
+        private sealed class FormOverlayContext
+        {
+            public required SolidColorBrush Green { get; init; }
+            public required SolidColorBrush Dark { get; init; }
+            public required SolidColorBrush FieldBg { get; init; }
+            public required SolidColorBrush Focus { get; init; }
+            public Dictionary<string, List<(Ellipse dot, string onVal)>> RadioGroups { get; } = new();
+            public Dictionary<string, List<TextBox>> TextSiblings { get; } = new();
+            public Dictionary<string, List<(ComboBox combo, List<string> exports, List<string> options)>> ComboSiblings { get; } = new();
+            public Dictionary<string, List<(TextBlock mark, string onVal)>> CheckSiblings { get; } = new();
+            public bool Syncing { get; set; }
+        }
+
+        private static string SibKey(FormFieldInfo f) => f.GroupId.Length > 0 ? f.GroupId : "#" + f.FieldKey;
+
+        private static void AddSibling<T>(Dictionary<string, List<T>> map, string key, T item)
+        {
+            if (!map.TryGetValue(key, out var list)) map[key] = list = new();
+            list.Add(item);
+        }
+
+        /// <summary>The overlay for a text field (single line, multi-line or comb).</summary>
+        private UIElement BuildTextFieldOverlay(FormFieldInfo f, FormOverlayContext st)
+        {
+            string cur = _formTextValues.TryGetValue(f.FieldKey, out var tv) ? tv : f.CurrentValue;
+            // Use the shorter canvas dimension as the font size reference so that
+            // rotated fields (where Cw and Ch are swapped vs. portrait) don't blow up.
+            double fieldShort = Math.Min(f.Cw, f.Ch);
+            double fontSize = f.IsMultiLine ? fieldShort * 0.18 : fieldShort * 0.65;
+            fontSize = Math.Max(10, fontSize);
+            // #158: a comb field types one character per printed cell. WPF has no comb
+            // TextBox, so the overlay approximates the cell walk: a monospace face (Consolas'
+            // advance is ~0.55em) sized so one advance is at most one cell wide, capped at
+            // MaxLen characters, and left-padded by half a cell minus half a glyph so the
+            // first character lands in the middle of cell 0 rather than against its left
+            // wall. It is an approximation on screen only — the SAVED appearance stream
+            // below places each glyph exactly at its cell centre. IsComb guarantees
+            // MaxLen > 0 (see FormFieldInfo), so the division is safe.
+            double combCellW = f.IsComb ? f.Cw / f.MaxLen : 0;
+            if (f.IsComb) fontSize = Math.Max(9, Math.Min(fontSize, combCellW / 0.55));
+            var tb = new TextBox
+            {
+                Tag             = FormOverlayTag,
+                Width           = f.Cw,
+                Height          = f.Ch,
+                Text            = cur,
+                MaxLength       = f.IsComb ? f.MaxLen : 0,   // 0 = unlimited (WPF default)
+                IsReadOnly      = f.IsReadOnly,
+                AcceptsReturn   = f.IsMultiLine,
+                TextWrapping    = f.IsMultiLine ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                VerticalScrollBarVisibility = f.IsMultiLine ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden,
+                Background      = st.FieldBg,
+                Foreground      = Brushes.Black,
+                CaretBrush      = Brushes.Black,
+                BorderBrush     = st.Green,
+                BorderThickness = new Thickness(1),
+                FontSize        = fontSize,
+                Padding         = f.IsComb
+                    ? new Thickness(Math.Max(0, combCellW / 2 - fontSize * 0.275), 0, 0, 0)
+                    : new Thickness(3, 0, 3, 0),
+                VerticalContentAlignment = f.IsMultiLine ? VerticalAlignment.Top : VerticalAlignment.Center,
+                ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+            };
+            if (f.IsComb) tb.FontFamily = new FontFamily("Consolas");
+            tb.GotFocus  += (_, _) => tb.BorderBrush = st.Focus;
+            tb.LostFocus += (_, _) => tb.BorderBrush = st.Green;
+            int capturedKey = f.FieldKey;
+            string capturedSib = SibKey(f), capturedGroup = f.GroupId;
+            AddSibling(st.TextSiblings, capturedSib, tb);
+            // Escape restores what the box held when it got focus (see FormTextBox_PreviewKeyDown).
+            tb.GotFocus += (_, _) => _formFocusValues.AddOrUpdate(tb, tb.Text);
+            tb.PreviewKeyDown += FormTextBox_PreviewKeyDown;
+            tb.TextChanged += (_, _) =>
+            {
+                if (st.Syncing) return;
+                _formTextValues[capturedKey] = tb.Text;
+                SpreadPendingByName(_formTextValues, capturedGroup, capturedKey, tb.Text, FormFieldSiblings.FitToComb);
+                MarkDirty();
+                if (!st.TextSiblings.TryGetValue(capturedSib, out var sibs) || sibs.Count < 2) return;
+                st.Syncing = true;
+                try
+                {
+                    foreach (var other in sibs)
+                    {
+                        if (ReferenceEquals(other, tb)) continue;
+                        string shown = FormFieldSiblings.FitToComb(tb.Text, other.MaxLength);
+                        if (other.Text != shown) other.Text = shown;
+                    }
+                }
+                finally { st.Syncing = false; }
+            };
+            return tb;
+        }
+
+        /// <summary>The overlay for a dropdown or list choice field.</summary>
+        private UIElement BuildChoiceFieldOverlay(FormFieldInfo f, FormOverlayContext st)
+        {
+            string cur = _formTextValues.TryGetValue(f.FieldKey, out var tv) ? tv : f.CurrentValue;
+            var combo = new ComboBox
+            {
+                Tag        = FormOverlayTag,
+                Width      = f.Cw,
+                Height     = f.Ch,
+                IsEnabled  = !f.IsReadOnly,
+                Foreground = Brushes.Black,
+                FontSize   = Math.Max(10, Math.Min(f.Cw, f.Ch) * 0.65),
+                ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+            };
+            foreach (var opt in f.Options) combo.Items.Add(opt);
+
+            // The list shows display strings; /V carries export values. Select by INDEX so
+            // the two never have to be equal: match the stored/current value against the
+            // exports first, then fall back to the display text for files whose /V already
+            // holds the label (and for plain-string /Opt, where the two are the same).
+            var exports = f.OptionExports ?? f.Options;
+            int selIdx = exports.IndexOf(cur);
+            if (selIdx < 0) selIdx = f.Options.IndexOf(cur);
+            combo.SelectedIndex = selIdx;   // -1 when /V matches nothing: leave it unset
+
+            int capturedKey = f.FieldKey;
+            string capturedSib = SibKey(f), capturedGroup = f.GroupId;
+            AddSibling(st.ComboSiblings, capturedSib, (combo, exports, f.Options));
+            combo.SelectionChanged += (_, _) =>
+            {
+                if (st.Syncing) return;
+                int i = combo.SelectedIndex;
+                if (i < 0) return;
+                // Write the export value, which is what other viewers read back.
+                string value = i < exports.Count ? exports[i] : f.Options[i];
+                _formTextValues[capturedKey] = value;
+                SpreadPendingByName(_formTextValues, capturedGroup, capturedKey, value);
+                MarkDirty();
+                if (!st.ComboSiblings.TryGetValue(capturedSib, out var sibs) || sibs.Count < 2) return;
+                st.Syncing = true;
+                try
+                {
+                    foreach (var (other, oex, oopt) in sibs)
+                    {
+                        if (ReferenceEquals(other, combo)) continue;
+                        int j = oex.IndexOf(value);
+                        if (j < 0) j = oopt.IndexOf(value);
+                        if (j >= 0 && other.SelectedIndex != j) other.SelectedIndex = j;
+                    }
+                }
+                finally { st.Syncing = false; }
+            };
+            return combo;
+        }
+
+        /// <summary>The overlay for a check box, drawn by hand because WPF's own does not scale.</summary>
+        private UIElement BuildCheckBoxOverlay(FormFieldInfo f, FormOverlayContext st)
+        {
+            // The pending value is the FIELD's state name ("/Off" or an on-state), shared by
+            // every widget of the field; each widget is ticked when it names that widget's
+            // own on-state, so siblings with different export values behave correctly.
+            bool isChecked = _formCheckValues.TryGetValue(f.FieldKey, out var cv)
+                ? FormFieldSiblings.IsOn(cv, f.OnValue)
+                : FormFieldSiblings.InitiallyChecked(f.CurrentValue, f.OnValue, f.WidgetState);
+
+            // Custom border-based checkbox — WPF's built-in CheckBox indicator
+            // doesn't scale with Width/Height, so we draw it ourselves.
+            double checkFs = Math.Min(f.Cw, f.Ch) * 0.72;
+            var checkMark = new TextBlock
+            {
+                Text       = "✓",
+                FontSize   = checkFs,
+                FontWeight = FontWeights.Bold,
+                Foreground = st.Dark,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment   = VerticalAlignment.Center,
+                Visibility = isChecked ? Visibility.Visible : Visibility.Collapsed,
+            };
+            var box = new Border
+            {
+                Tag             = FormOverlayTag,
+                Width           = f.Cw,
+                Height          = f.Ch,
+                Background      = st.FieldBg,
+                BorderBrush     = st.Green,
+                BorderThickness = new Thickness(1.5),
+                CornerRadius    = new CornerRadius(2),
+                Cursor          = f.IsReadOnly ? Cursors.Arrow : Cursors.Hand,
+                Child           = checkMark,
+                ToolTip         = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+            };
+            AddSibling(st.CheckSiblings, SibKey(f), (checkMark, f.OnValue));
+            if (!f.IsReadOnly)
+            {
+                int capturedKey = f.FieldKey;
+                string capturedSib = SibKey(f), capturedGroup = f.GroupId;
+                string capturedOn = f.OnValue;
+                box.MouseLeftButtonDown += (_, e) =>
+                {
+                    string value = FormFieldSiblings.Toggle(checkMark.Visibility == Visibility.Visible, capturedOn);
+                    _formCheckValues[capturedKey] = value;
+                    SpreadPendingByName(_formCheckValues, capturedGroup, capturedKey, value);
+                    if (st.CheckSiblings.TryGetValue(capturedSib, out var sibs))
+                        foreach (var (mark, on) in sibs)
+                            mark.Visibility = FormFieldSiblings.IsOn(value, on) ? Visibility.Visible : Visibility.Collapsed;
+                    MarkDirty();
+                    e.Handled = true;
+                };
+            }
+            return box;
+        }
+
+        /// <summary>The overlay for one radio button of a group.</summary>
+        private UIElement BuildRadioOverlay(FormFieldInfo f, FormOverlayContext st)
+        {
+            string groupSelected = _formRadioValues.TryGetValue(f.FieldName, out var rv) ? rv
+                : f.CurrentValue; // CurrentValue = parent /V = currently selected on-value
+            bool isSelected = groupSelected == f.OnValue;
+
+            double size  = Math.Min(f.Cw, f.Ch) * 0.88;
+            double inner = size * 0.52;
+
+            var dot = new Ellipse
+            {
+                Width  = inner,
+                Height = inner,
+                Fill   = st.Dark,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment   = VerticalAlignment.Center,
+                Visibility = isSelected ? Visibility.Visible : Visibility.Collapsed,
+            };
+            var ring = new Ellipse
+            {
+                Width           = size,
+                Height          = size,
+                Stroke          = st.Green,
+                StrokeThickness = 1.5,
+                Fill            = st.FieldBg,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment   = VerticalAlignment.Center,
+            };
+            var grid = new Grid { Width = f.Cw, Height = f.Ch };
+            grid.Children.Add(ring);
+            grid.Children.Add(dot);
+
+            var radioBorder = new Border
+            {
+                Tag        = FormOverlayTag,
+                Width      = f.Cw,
+                Height     = f.Ch,
+                Background = Brushes.Transparent,
+                Cursor     = f.IsReadOnly ? Cursors.Arrow : Cursors.Hand,
+                Child      = grid,
+                ToolTip    = string.IsNullOrEmpty(f.FieldName) ? null : f.FieldName,
+            };
+
+            if (!st.RadioGroups.TryGetValue(f.FieldName, out var groupList))
+                st.RadioGroups[f.FieldName] = groupList = new();
+            groupList.Add((dot, f.OnValue));
+
+            if (!f.IsReadOnly)
+            {
+                string capturedGroup = f.FieldName;
+                string capturedOn    = f.OnValue;
+                radioBorder.MouseLeftButtonDown += (_, e) =>
+                {
+                    _formRadioValues[capturedGroup] = capturedOn;
+                    if (st.RadioGroups.TryGetValue(capturedGroup, out var gl))
+                        foreach (var (d, ov) in gl)
+                            d.Visibility = ov == capturedOn ? Visibility.Visible : Visibility.Collapsed;
+                    MarkDirty();
+                    e.Handled = true;
+                };
+            }
+            return radioBorder;
         }
 
         // Name index for the current document, rebuilt by every RenderFormFields.
