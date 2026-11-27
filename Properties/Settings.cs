@@ -328,6 +328,17 @@ namespace TDPdf.Properties
             set => this[nameof(SkipLinkConfirm)] = value;
         }
 
+        // When true, a paragraph edit that cannot be written in the document's own font covers the
+        // paragraph and draws the new text over it without asking first (#229). Set by the "Don't ask
+        // again" box on that question.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool SkipParagraphCoverPrompt
+        {
+            get => (bool)this[nameof(SkipParagraphCoverPrompt)];
+            set => this[nameof(SkipParagraphCoverPrompt)] = value;
+        }
+
         // --- Reopen documents on next launch (session restore) ---
 
         // Whether to reopen the last session's documents on the next launch. One of:

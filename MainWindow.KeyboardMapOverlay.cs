@@ -107,6 +107,7 @@ namespace TDPdf
                 ["I"] = ("View", "Invert colors"),
                 ["B"] = ("Text", "Bold (while editing a text box)"),
                 ["U"] = ("Text", "Underline (while editing a text box)"),
+                ["Enter"] = ("Text", "Save the paragraph being edited"),
             },
             [KbLayer.CtrlShift] = new()
             {

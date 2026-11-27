@@ -197,6 +197,7 @@ HostileInput.Run(Check, tmp);
 NameGroups.Run(Check, tmp);
 FontRuns.Run(Check);
 TextEdit.Run(Check, tmp);
+ParagraphTests.Run(Check, tmp);
 Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);

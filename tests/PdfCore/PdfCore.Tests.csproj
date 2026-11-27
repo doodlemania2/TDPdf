@@ -206,6 +206,14 @@
     <!-- A two-page DjVu book (one bitonal, one colour page, hidden text, outline) made with DjVuLibre
          from synthetic pixels, for the checks that run the real programs when they are installed. -->
     <None Include="fixtures\book.djvu" CopyToOutputDirectory="PreserveNewest" LinkBase="" />
+    <Compile Include="..\..\Services\ParagraphFinder.cs" />
+    <Compile Include="..\..\Services\ParagraphReflow.cs" />
+    <Compile Include="..\..\Services\ParagraphHighlights.cs" />
+    <Compile Include="..\..\Services\ParagraphEditPolicy.cs" />
+    <Compile Include="..\..\Services\PaperColor.cs" />
+    <Compile Include="..\..\Services\ParagraphPageReader.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.Paragraph.cs" />
+    <Compile Include="..\..\Services\PdfParagraphEdit.cs" />
   </ItemGroup>
 
 </Project>

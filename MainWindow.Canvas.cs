@@ -22,7 +22,7 @@ namespace TDPdf
             // Middle-mouse: modal pan in any tool. Start panning and swallow the event so
             // other handlers (Canvas_MouseLeftButtonDown, AnnotationCanvas children) don't run.
             if (_doc is null) return;
-            if (e.ChangedButton == MouseButton.Right) { SelectMarkForContextMenu(e); return; }
+            if (e.ChangedButton == MouseButton.Right) { _ctxClickPos = e.GetPosition(_annotationCanvas); SelectMarkForContextMenu(e); return; }
             if (e.ChangedButton != MouseButton.Middle) return;
             if (IsPointerOperationActive) return;
 

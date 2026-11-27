@@ -346,15 +346,36 @@ namespace TDPdf
         public byte ColorB { get; set; } = 0;
         public byte ColorA { get; set; } = 255;
 
+        /// <summary>
+        /// Colour of the rectangle that hides the original text. White, like every edit made before
+        /// this existed; an edit over a scan takes the colour of the paper instead (#229).
+        /// </summary>
+        public byte CoverR { get; set; } = 255;
+        public byte CoverG { get; set; } = 255;
+        public byte CoverB { get; set; } = 255;
+
+        /// <summary>
+        /// Distance in canvas pixels between baselines when <see cref="NewContent"/> holds several
+        /// lines (a paragraph edit, #229). 0 means the font's own line height, which is what a single
+        /// line edit has always used.
+        /// </summary>
+        public double LineHeight { get; set; }
+
+        /// <summary>How the lines sit in <see cref="OriginalBounds"/>: 0 left, 1 centred, 2 right.</summary>
+        public int Align { get; set; }
+
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
+        public Color GetCoverColor() => Color.FromArgb(255, CoverR, CoverG, CoverB);
+        public void SetCoverColor(byte r, byte g, byte b) { CoverR = r; CoverG = g; CoverB = b; }
 
         protected override PageAnnotation CloneCore() => new TextEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, Position = Position,
             NewContent = NewContent, OriginalContent = OriginalContent,
             FontSize = FontSize, FontName = FontName, Bold = Bold, Italic = Italic,
-            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
+            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA,
+            CoverR = CoverR, CoverG = CoverG, CoverB = CoverB, LineHeight = LineHeight, Align = Align
         };
     }
 
