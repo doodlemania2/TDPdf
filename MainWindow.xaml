@@ -1074,6 +1074,10 @@
                 <MenuItem Header="Export Pages as _Images…"                          Click="ExportImages_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE91B;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- #247: reflowable EPUB 3 book from the open PDF. -->
+                <MenuItem Header="Export as EPUB…"                                  Click="ExportEpub_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE736;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="_Merge…"                                          Click="Merge_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE710;"/></MenuItem.Icon>

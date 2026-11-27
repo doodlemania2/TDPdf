@@ -173,6 +173,12 @@
     <Compile Include="..\..\Services\PdfUaValidator.cs" />
     <Compile Include="..\..\Services\PdfUaFixes.cs" />
     <Compile Include="..\..\Services\PdfUaCli.cs" />
+    <Compile Include="..\..\Services\EpubExportModel.cs" />
+    <Compile Include="..\..\Services\EpubExportFonts.cs" />
+    <Compile Include="..\..\Services\EpubExportAnalyzer.cs" />
+    <Compile Include="..\..\Services\EpubExportPackage.cs" />
+    <Compile Include="..\..\Services\EpubExporter.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.EpubExport.cs" />
   </ItemGroup>
 
 </Project>

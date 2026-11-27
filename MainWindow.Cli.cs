@@ -42,7 +42,7 @@ namespace TDPdf
         // Options that consume the next argument as their value.
         private static readonly string[] CliValueOptions =
         [
-            "--log", "--dpi", "--format", "--pages", "--printer", "--lang", "--password", "--copies",
+            "--log", "--dpi", "--format", "--pages", "--printer", "--lang", "--password", "--copies", "--chapters",
         ];
 
         // Valueless switches. These need no entry above (and must not have one, or they
@@ -50,6 +50,7 @@ namespace TDPdf
         // an empty value, so the commands just probe them with options.ContainsKey.
         //   --quiet         (--batch-resave)
         //   --transparent   (--to-image, png only)
+        //   --overwrite, --no-pictures, --keep-headers, --no-fonts   (--export-epub)
 
         // Temp files a CLI run creates (decrypt copies, flatten sources); deleted in TryRunCli's finally.
         private static readonly List<string> _cliTemps = new();
@@ -73,7 +74,7 @@ namespace TDPdf
                 Eq(a, "--version") || Eq(a, "-v") ||
                 Eq(a, "--merge") || Eq(a, "--extract-pages") || Eq(a, "--split") ||
                 Eq(a, "--decrypt") || Eq(a, "--to-image") || Eq(a, "--flatten") ||
-                Eq(a, "--print") || Eq(a, "--ocr") || Eq(a, "--pdfua"));
+                Eq(a, "--print") || Eq(a, "--ocr") || Eq(a, "--pdfua") || Eq(a, "--export-epub"));
             if (command is null) return false;
 
             var con = OpenBatchConsole();
@@ -119,6 +120,9 @@ namespace TDPdf
                     case "--pdfua":
                         exitCode = CliPdfUa(positionals, options, con);
                         break;
+                    case "--export-epub":
+                        exitCode = CliExportEpub(positionals, options, con);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -154,6 +158,7 @@ namespace TDPdf
             "  --decrypt <in.pdf> <out.pdf> [--password <p>]",
             "                                           remove encryption (lossless when possible)",
             "  --to-image <in.pdf> <outDir> [--dpi <n>] [--format png|jpg] [--pages <range>] [--transparent]",
+            "  --export-epub <in.pdf> <out.epub> [--pages <range>] [--chapters bookmarks|headings|none] [--no-pictures] [--keep-headers] [--no-fonts] [--overwrite] [--password <p>]",
             "                                           render pages to images (default 150 dpi, png;",
             "                                           the page background composites to white unless",
             "                                           --transparent is given, which needs --format png)",
@@ -409,6 +414,61 @@ namespace TDPdf
             int written = PageImageExporter.Export(renderPath, outDir, baseName, selected, dpi, fmt,
                                                    transparent, report: null, CancellationToken.None);
             con.WriteLine($"Rendered {written} pages at {dpi:0} dpi ({fmt}{(transparent ? ", transparent" : "")}) into {outDir}");
+            return 0;
+        }
+
+        // ============================================================
+        // --export-epub <in.pdf> <out.epub> [--pages range] [--chapters bookmarks|headings|none]
+        //               [--no-pictures] [--keep-headers] [--no-fonts] [--overwrite] [--password p]
+        // ============================================================
+        // The headless twin of File > Export as EPUB (#247): the same EpubExporter, run on the file as
+        // it is on disk. It never replaces an existing book unless --overwrite is given, because
+        // there is nobody to ask.
+        private static int CliExportEpub(List<string> pos, Dictionary<string, string> options, TextWriter con)
+        {
+            if (pos.Count != 2)
+            {
+                con.WriteLine("Usage: TDPdf.exe --export-epub <in.pdf> <out.epub> [--pages <range>] [--chapters bookmarks|headings|none] [--no-pictures] [--keep-headers] [--no-fonts] [--overwrite]");
+                return 2;
+            }
+            string inPath = Path.GetFullPath(pos[0]), outPath = Path.GetFullPath(pos[1]);
+            if (!File.Exists(inPath)) { con.WriteLine($"Input not found: {inPath}"); return 2; }
+            if (File.Exists(outPath) && !options.ContainsKey("--overwrite"))
+            { con.WriteLine($"{outPath} already exists. Use --overwrite to replace it."); return 1; }
+
+            var opt = new EpubExportOptions
+            {
+                IncludePictures = !options.ContainsKey("--no-pictures"),
+                DropHeadersAndFooters = !options.ContainsKey("--keep-headers"),
+                EmbedFonts = !options.ContainsKey("--no-fonts"),
+            };
+            if (options.TryGetValue("--chapters", out var ch))
+            {
+                switch (ch.ToLowerInvariant())
+                {
+                    case "bookmarks": opt.Split = EpubChapterSplit.Bookmarks; break;
+                    case "headings":  opt.Split = EpubChapterSplit.Headings; break;
+                    case "none":      opt.Split = EpubChapterSplit.None; break;
+                    default: con.WriteLine("--chapters must be bookmarks, headings or none"); return 2;
+                }
+            }
+
+            options.TryGetValue("--password", out var password);
+            string source = CliPrepareRenderSource(inPath, password);
+            if (options.TryGetValue("--pages", out var rangeSpec))
+            {
+                if (!PageRangeSpec.TryParseForCli(rangeSpec, PageImageExporter.GetPageCount(source), out var parsedRange, out string err))
+                { con.WriteLine(err); return 2; }
+                opt.Pages = parsedRange;
+            }
+
+            CliEnsureParentDir(outPath);
+            var result = EpubExporter.Export(source, outPath, opt, progress: null, CancellationToken.None);
+            con.WriteLine($"Wrote {outPath}: {result.Pages} page(s), {result.Book.Chapters.Count} chapter(s), {result.PictureCount} picture(s).");
+            if (result.ScannedPages > 0)
+                con.WriteLine($"{result.ScannedPages} page(s) had no text and were added as pictures. Run --ocr first to get readable text.");
+            foreach (var f in result.SkippedFonts) con.WriteLine("Font note: " + f);
+            foreach (var n in result.Notes) con.WriteLine("Note: " + n);
             return 0;
         }
 

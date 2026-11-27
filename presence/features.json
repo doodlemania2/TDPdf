@@ -373,6 +373,15 @@
       "sources": ["MainWindow.ExportImages.cs", "Services/PageImageExporter.cs", "Services/PdfPageImageEncoder.cs"]
     },
     {
+      "id": "export-epub",
+      "name": "Export as EPUB",
+      "status": "ready",
+      "summary": "Turn a PDF into an EPUB book for phones and e-readers. Bookmarks become the table of contents, and headings, lists, tables and pictures are kept. Also available from the command line.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.ExportEpub.cs", "Services/EpubExport*.cs", "Services/EpubExporter.cs", "Services/PdfiumInterop.EpubExport.cs"]
+    },
+    {
       "id": "export-tables",
       "name": "Export tables",
       "status": "ready",

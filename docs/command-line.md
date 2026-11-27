@@ -18,6 +18,7 @@ TDPdf.exe <file.pdf>
 | `--split <in.pdf> <outDir>` | Write one PDF per page. |
 | `--decrypt <in.pdf> <out.pdf> [--password <p>]` | Remove the password protection, keeping the file's quality where possible. |
 | `--to-image <in.pdf> <outDir> [--dpi <n>] [--format png\|jpg] [--pages <range>] [--transparent]` | Save pages as pictures. The default is PNG at 150 dpi on a white background. `--transparent` keeps the background clear and needs `--format png`. |
+| `--export-epub <in.pdf> <out.epub> [--pages <range>] [--chapters bookmarks\|headings\|none] [--no-pictures] [--keep-headers] [--no-fonts] [--overwrite]` | Turn a PDF into an EPUB book for phones and e-readers. Bookmarks become the table of contents and the chapters, and pictures are kept. Pages with no text are added as pictures, so run `--ocr` first for readable text. Fonts from the PDF are included only when their licence allows it. It will not replace an existing book unless you add `--overwrite`. |
 | `--flatten <in.pdf> <out.pdf> [--dpi <n>]` | Turn every page into a picture so the file can't be edited. The default is 150 dpi. |
 | `--print <in.pdf> [--printer <name>] [--pages <range>] [--copies <n>]` | Print without showing a window. Uses the default printer unless you name one. |
 | `--ocr <in.pdf> <out.pdf> [--lang <code>]` | Add hidden, searchable text to scanned pages. English is the default; other languages download the first time you use them. |
