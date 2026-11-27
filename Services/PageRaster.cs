@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Docnet.Core;
+using Docnet.Core.Models;
 using Docnet.Core.Readers;
 
 namespace TDPdf.Services
@@ -66,6 +68,29 @@ namespace TDPdf.Services
             bitmap.WritePixels(new Int32Rect(0, 0, width, height), bgra!, width * 4, 0);
             bitmap.Freeze();
             return bitmap;
+        }
+
+        /// <summary>
+        /// Renders one page at exactly <paramref name="box"/> (a size chosen by <see cref="PrintRasterBox"/>
+        /// so it is within the render limits) and wraps it in a frozen bitmap at the box density. Used by the
+        /// print window, where the box follows the size the page will have on the sheet. Falls back to
+        /// Docnet's plain render (no annotations) at the same density only if the annotation render
+        /// returns nothing and the box is within the limits.
+        /// </summary>
+        public static BitmapSource? RenderBoxBitmap(string path, int pageIndex, PrintRasterBox box, bool forPrint)
+        {
+            byte[]? bgra = PdfiumInterop.RenderPageWithAnnotations(
+                path, pageIndex, box.Width, box.Height, forPrint: forPrint);
+            int w = box.Width, h = box.Height;
+            if (!IsUsable(bgra, w, h) && PrintRasterBox.WithinRenderLimit(w, h))
+            {
+                using var docReader = DocLib.Instance.GetDocReader(path, new PageDimensions(box.Dpi / 72.0));
+                using var pageReader = docReader.GetPageReader(pageIndex);
+                w = pageReader.GetPageWidth();
+                h = pageReader.GetPageHeight();
+                bgra = pageReader.GetImage();
+            }
+            return ToFrozenBitmap(bgra, w, h, box.Dpi, box.Dpi);
         }
     }
 }

@@ -103,7 +103,7 @@
       "summary": "Type into a PDF form's fields, tick its boxes and pick from its lists, then save it.",
       "audiences": ["user"],
       "screens": ["form-fill"],
-      "sources": ["MainWindow.Forms.cs", "Services/PdfFormText.cs", "Services/FormFieldSiblings.cs"]
+      "sources": ["MainWindow.Forms.cs", "Services/PdfFormText.cs", "Services/FormFieldSiblings.cs", "Services/PdfFieldChrome.cs", "Services/PdfFormMerge.cs"]
     },
     {
       "id": "form-building",
@@ -129,7 +129,7 @@
         "Services/AnnotationRotate.cs",
         "Services/InkDot.cs",
         "ColorPicker.cs"
-      ]
+      , "Services/AnnotationFrame.cs", "Services/CropMargins.cs", "Services/HighlightMultiply.cs", "MainWindow.HighlightComposite.cs"]
     },
     {
       "id": "saved-signatures",
@@ -154,7 +154,7 @@
         "Services/PdfPageDuplicate.cs",
         "Services/PageIndexRemap.cs",
         "Services/PageBlockMove.cs"
-      ]
+      , "Services/PageRangeSpec.cs", "TdpDialog.PageRange.cs", "MainWindow.ThumbOverlay.cs", "Models/PageThumbItem.cs", "Services/LruCache.cs", "Services/PaperSizeNames.cs"]
     },
     {
       "id": "crop-transform",
@@ -214,7 +214,7 @@
         "Services/PageRaster.cs",
         "Services/PdfPageRasterizer.cs",
         "Services/PdfiumInterop.cs"
-      ]
+      , "MainWindow.Placement.cs", "Services/WindowPlacementMath.cs"]
     },
     {
       "id": "print-flatten",
@@ -228,7 +228,7 @@
         "Services/PrintSheetPlan.cs",
         "Services/PrintTicketDuplex.cs",
         "Services/FlattenResolution.cs"
-      ]
+      , "Services/PrintRaster.cs", "Services/ShellVerbCommands.cs"]
     },
     {
       "id": "locked-pdfs",

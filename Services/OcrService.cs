@@ -13,6 +13,9 @@ namespace TDPdf.Services
         public int Top { get; set; }
         public int Right { get; set; }
         public int Bottom { get; set; }
+        /// <summary>Top and bottom of the text line the word sits on (same pixel space); the word's own when the engine gave no line box.</summary>
+        public int LineTop { get; set; }
+        public int LineBottom { get; set; }
     }
 
     /// <summary>
@@ -124,6 +127,12 @@ namespace TDPdf.Services
                     string w = iter.GetText(PageIteratorLevel.Word) ?? "";
                     if (!string.IsNullOrWhiteSpace(w))
                     {
+                        int lineTop = r.Y1, lineBottom = r.Y2;
+                        if (iter.TryGetBoundingBox(PageIteratorLevel.TextLine, out var lr))
+                        {
+                            lineTop = lr.Y1;
+                            lineBottom = lr.Y2;
+                        }
                         res.Words.Add(new OcrWord
                         {
                             Text = w,
@@ -132,6 +141,8 @@ namespace TDPdf.Services
                             Top = r.Y1,
                             Right = r.X2,
                             Bottom = r.Y2,
+                            LineTop = lineTop,
+                            LineBottom = lineBottom,
                         });
                     }
                 }

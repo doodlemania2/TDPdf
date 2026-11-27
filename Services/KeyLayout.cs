@@ -20,10 +20,10 @@ namespace TDPdf.Services
     // ============================================================
     internal static class KeyLayout
     {
-        [DllImport("user32.dll")] private static extern IntPtr GetKeyboardLayout(uint idThread);
-        [DllImport("user32.dll")] private static extern uint MapVirtualKeyEx(uint uCode, uint uMapType, IntPtr dwhkl);
-        [DllImport("user32.dll")] private static extern short VkKeyScanEx(char ch, IntPtr dwhkl);
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern IntPtr GetKeyboardLayout(uint idThread);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern uint MapVirtualKeyEx(uint uCode, uint uMapType, IntPtr dwhkl);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern short VkKeyScanEx(char ch, IntPtr dwhkl);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern int ToUnicodeEx(uint wVirtKey, uint wScanCode, byte[] lpKeyState,
             [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pwszBuff, int cchBuff, uint wFlags, IntPtr dwhkl);
 

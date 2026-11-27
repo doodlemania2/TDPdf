@@ -13,10 +13,13 @@ namespace TDPdf.Services
     /// Same rule as the rest of the pipeline: fail closed. A structure tree or outline too deep to
     /// walk with a bounded stack is refused with a message rather than half cleaned.
     ///
-    /// What is deliberately NOT touched: named destinations (they name a place, not text),
-    /// document-level JavaScript and embedded files (whole-document features the user did not
-    /// mark; they are outside what a positional mark can address), and the ParentTree / IDTree
-    /// (object references and ids only, no text).
+    /// What is deliberately NOT altered: named destinations (they name a place, not text),
+    /// document-level JavaScript, link addresses and embedded files (whole-document features the
+    /// user did not mark; they are outside what a positional mark can address), and the ParentTree /
+    /// IDTree (object references and ids only, no text). Link addresses, JavaScript and, when the
+    /// user chose to keep the metadata, the Info dictionary and XMP packet are not rewritten either,
+    /// but they are CHECKED: if a redacted word survives in one, the save is refused and the message
+    /// says where, so the user can remove it themselves (see <see cref="FindResidue"/>).
     /// </remarks>
     internal static partial class PdfRedaction
     {
@@ -332,7 +335,7 @@ namespace TDPdf.Services
         /// <remarks>Anything it cannot walk throws, which <see cref="Apply"/> turns into a refusal.</remarks>
         internal static IReadOnlyList<string> FindResidue(
             string path, IReadOnlyDictionary<int, IReadOnlyList<PdfiumInterop.PdfRect>> rectsByPage,
-            IReadOnlyList<string>? removedTerms)
+            IReadOnlyList<string>? removedTerms, bool metadataScrubbed = true)
         {
             var found = new List<string>();
             using var doc = PdfReader.Open(path, PdfDocumentOpenMode.Import);
@@ -366,7 +369,138 @@ namespace TDPdf.Services
                 var title = StringOf(item.Elements["/Title"]);
                 if (title is not null && matcher.IsMatch(title)) found.Add("a bookmark title containing redacted text");
             }
+
+            FindTextCopies(doc, matcher, metadataScrubbed, found);
             return found;
+        }
+
+        // ── Link addresses, JavaScript and metadata ────────────────────────────────────
+
+        /// <summary>
+        /// Looks for a redacted word in the places a positional mark cannot reach: link addresses
+        /// anywhere in the document, document and page JavaScript, and, unless the user asked for
+        /// the metadata to be scrubbed, the Info dictionary and the XMP packet. Adds one entry per
+        /// place, worded for the person who has to go and fix it.
+        /// </summary>
+        private static void FindTextCopies(PdfDocument doc, TermMatcher matcher, bool metadataScrubbed, List<string> found)
+        {
+            var cat = doc.Internals.Catalog;
+            int budget = MaxResidueNodes;
+
+            bool Hit(string? text) => !string.IsNullOrEmpty(text) && matcher.IsMatch(text);
+            bool HitUri(string? text)
+            {
+                if (!Hit(text)) { return !string.IsNullOrEmpty(text) && Hit(SafeUnescape(text!)); }
+                return true;
+            }
+
+            // An action and everything chained after it (/Next).
+            void Action(PdfItem? item, string where)
+            {
+                var seen = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
+                var queue = new Queue<PdfItem?>();
+                queue.Enqueue(item);
+                while (queue.Count > 0)
+                {
+                    if (--budget < 0) throw new InvalidOperationException("the document has too many actions to check for redacted text");
+                    if (Resolve(queue.Dequeue()) is not PdfDictionary act || !seen.Add(act)) continue;
+                    if (HitUri(StringOf(act.Elements["/URI"])))
+                        found.Add($"a link address on {where} contains redacted text");
+                    if (Hit(JavaScriptOf(act.Elements["/JS"])))
+                        found.Add($"JavaScript in {where} contains redacted text");
+                    var next = Resolve(act.Elements["/Next"]);
+                    if (next is PdfArray arr) foreach (var n in arr.Elements) queue.Enqueue(n);
+                    else queue.Enqueue(next);
+                }
+            }
+
+            void ActionDictionary(PdfItem? aa, string where)
+            {
+                if (Resolve(aa) is not PdfDictionary d) return;
+                foreach (var key in d.Elements.Keys.ToList()) Action(d.Elements[key], where);
+            }
+
+            for (int i = 0; i < doc.PageCount; i++)
+            {
+                var page = doc.Pages[i];
+                string where = $"page {i + 1}";
+                ActionDictionary(page.Elements["/AA"], where);
+                if (Resolve(page.Elements["/Annots"]) is PdfArray annots)
+                {
+                    foreach (var a in annots.Elements)
+                    {
+                        if (--budget < 0) throw new InvalidOperationException("the document has too many annotations to check for redacted text");
+                        if (Resolve(a) is not PdfDictionary annot) continue;
+                        Action(annot.Elements["/A"], where);
+                        ActionDictionary(annot.Elements["/AA"], where);
+                    }
+                }
+            }
+
+            Action(cat.Elements["/OpenAction"], "the document's open action");
+            ActionDictionary(cat.Elements["/AA"], "the document's own actions");
+            if (HitUri(StringOf(Resolve(cat.Elements["/URI"]) is PdfDictionary uriDict ? uriDict.Elements["/Base"] : null)))
+                found.Add("the document's base link address contains redacted text");
+
+            // Document-level JavaScript: /Names /JavaScript, a name tree of (name, action) pairs.
+            if (Resolve(cat.Elements["/Names"]) is PdfDictionary names &&
+                Resolve(names.Elements["/JavaScript"]) is PdfDictionary jsRoot)
+            {
+                var seen = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
+                var stack = new Stack<(PdfDictionary Node, int Depth)>();
+                stack.Push((jsRoot, 1));
+                while (stack.Count > 0)
+                {
+                    var (node, depth) = stack.Pop();
+                    if (--budget < 0 || depth > MaxResidueDepth)
+                        throw new InvalidOperationException(
+                            "the document's JavaScript name tree is too large to check for redacted text");
+                    if (!seen.Add(node)) continue;
+                    if (Resolve(node.Elements["/Names"]) is PdfArray pairs)
+                        for (int k = 1; k < pairs.Elements.Count; k += 2)
+                            Action(pairs.Elements[k], "the document's script list");
+                    if (Resolve(node.Elements["/Kids"]) is PdfArray kids)
+                        foreach (var kid in kids.Elements)
+                            if (Resolve(kid) is PdfDictionary kd) stack.Push((kd, depth + 1));
+                }
+            }
+
+            if (metadataScrubbed) return;
+
+            // The user kept the metadata, so a redacted word still in it is a second copy.
+            var info = doc.Info;
+            foreach (var key in info.Elements.Keys.ToList())
+            {
+                if (Hit(StringOf(info.Elements[key])))
+                    found.Add($"the document information ({key.TrimStart('/')}) contains redacted text; turn on \"Scrub document metadata\"");
+            }
+            if (Resolve(cat.Elements["/Metadata"]) is PdfDictionary xmp && xmp.Stream is { } xs)
+            {
+                byte[] bytes = xs.UnfilteredValue;
+                if (Hit(System.Text.Encoding.UTF8.GetString(bytes)) || Hit(System.Text.Encoding.Latin1.GetString(bytes)))
+                    found.Add("the document's XMP metadata contains redacted text; turn on \"Scrub document metadata\"");
+            }
+        }
+
+        private static string SafeUnescape(string s)
+        {
+            try { return Uri.UnescapeDataString(s); } catch { return s; }
+        }
+
+        /// <summary>The text of a /JS entry, which is either a string or a (possibly filtered) stream.</summary>
+        private static string? JavaScriptOf(PdfItem? item)
+        {
+            var r = Resolve(item);
+            if (r is PdfString str) return str.Value;
+            if (r is PdfDictionary { Stream: { } stm })
+            {
+                byte[] bytes = stm.UnfilteredValue;
+                // A UTF-16 script starts with a byte-order mark.
+                if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) return System.Text.Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+                if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) return System.Text.Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+                return System.Text.Encoding.UTF8.GetString(bytes) + "\n" + System.Text.Encoding.Latin1.GetString(bytes);
+            }
+            return null;
         }
     }
 }

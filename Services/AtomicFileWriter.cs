@@ -100,7 +100,7 @@ namespace TDPdf.Services
                 string name = Path.GetFileNameWithoutExtension(full);
                 string ext = Path.GetExtension(full);
                 if (string.IsNullOrEmpty(ext)) ext = ".pdf";
-                string stamp = DateTime.Now.ToString("yyyy-MM-dd HHmmss");
+                string stamp = DateTime.Now.ToString("yyyy-MM-dd HHmmss", System.Globalization.CultureInfo.InvariantCulture);
                 string target = Path.Combine(dir, $"{name} (TDPdf recovered {stamp}){ext}");
                 for (int n = 2; File.Exists(target); n++)
                     target = Path.Combine(dir, $"{name} (TDPdf recovered {stamp} {n}){ext}");

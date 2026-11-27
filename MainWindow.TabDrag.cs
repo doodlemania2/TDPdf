@@ -153,6 +153,8 @@ namespace TDPdf
                 var psi = new ProcessStartInfo(exePath) { UseShellExecute = false };
                 psi.ArgumentList.Add("--new-window");
                 psi.ArgumentList.Add(path!);
+                // Opens beside this window, not on top of it and not maximized.
+                if (TearOffBoundsArg() is { } boundsArg) psi.ArgumentList.Add(boundsArg);
                 Process.Start(psi);
                 SetStatus($"Opened \"{displayName}\" in a new window.");
                 RemoveTabSilently(ctx, keepFile: path);
@@ -319,7 +321,7 @@ namespace TDPdf
             Topmost = false;
             Focus();
             if (!string.IsNullOrWhiteSpace(path) && System.IO.File.Exists(path))
-                _ = OpenInTabAsync(path);
+                _ = OpenRequestedPathAsync(path);
         }
 
         /// <summary>Replays whatever arrived during startup. A no-op in the normal case.</summary>

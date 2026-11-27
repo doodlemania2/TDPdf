@@ -893,15 +893,15 @@ namespace TDPdf
         // alpha 0 keeps it from showing or printing. Runs entirely off the UI thread.
         private static (int pages, int words) BuildSearchablePdf(string src, string outPath, Action<int, int> report, CancellationToken ct, string language)
         {
-            // Cache one XFont per integer point size so a page of words doesn't allocate thousands of fonts.
+            // Cache one XFont per tenth of a point so a page of words doesn't allocate thousands of fonts.
             var fontCache = new Dictionary<int, XFont>();
-            XFont FontFor(double heightPt)
+            XFont FontFor(double sizePt)
             {
-                int key = Math.Max(4, (int)Math.Round(heightPt));
+                int key = Math.Max(10, (int)Math.Round(sizePt * 10));
                 if (!fontCache.TryGetValue(key, out var f))
                 {
-                    try { f = new XFont("Arial", key, XFontStyle.Regular); }
-                    catch { f = new XFont("Segoe UI", key, XFontStyle.Regular); }
+                    try { f = new XFont("Arial", key / 10.0, XFontStyle.Regular); }
+                    catch { f = new XFont("Segoe UI", key / 10.0, XFontStyle.Regular); }
                     fontCache[key] = f;
                 }
                 return f;
@@ -961,13 +961,30 @@ namespace TDPdf
                 gfx.SetPdfTextRenderMode(3);
                 foreach (var word in result.Words)
                 {
-                    double bx = word.Left * sx;
-                    double by = word.Top * sy;
-                    double bh = Math.Max(1, (word.Bottom - word.Top) * sy);
+                    // Size and baseline come from the word's LINE box, so every word on a line shares one
+                    // size and one baseline (a lone "a" or "." no longer shrinks and drifts, which split the
+                    // line in selection); the width is then stretched to the word's own box.
+                    var (boxTop, boxBottom) = OcrTextFit.BoxFor(word.Top, word.Bottom, word.LineTop, word.LineBottom);
+                    double topPt = boxTop * sy, bottomPt = boxBottom * sy;
+                    double left = word.Left * sx, right = word.Right * sx;
                     try
                     {
-                        // (bx, by) is the top-left of the text by default (Near/Near alignment).
-                        gfx.DrawString(word.Text, FontFor(bh), invisible, bx, by);
+                        var probe = FontFor(10);
+                        double ascent = probe.Metrics.Ascent * 1000.0 / Math.Max(1, probe.Metrics.UnitsPerEm);
+                        double descent = probe.Metrics.Descent * 1000.0 / Math.Max(1, probe.Metrics.UnitsPerEm);
+                        double size = OcrTextFit.FontSizeFor(Math.Max(1, bottomPt - topPt), ascent, descent);
+                        var font = FontFor(size);
+                        double baseline = OcrTextFit.BaselineY(bottomPt, font.Size, descent);
+                        double hScale = OcrTextFit.HScale(right - left, gfx.MeasureString(word.Text, font).Width);
+
+                        // Origin on the baseline at the word's left, stretched horizontally only. The
+                        // inner save keeps the scale from leaking into the next word; render mode 3 was set
+                        // before it, so it persists through this q/Q pair.
+                        var wordState = gfx.Save();
+                        gfx.TranslateTransform(left, baseline);
+                        gfx.ScaleTransform(hScale, 1);
+                        gfx.DrawString(word.Text, font, invisible, 0, 0, XStringFormats.BaseLineLeft);
+                        gfx.Restore(wordState);
                         totalWords++;
                     }
                     catch { /* a single word that won't lay out should not abort the page */ }

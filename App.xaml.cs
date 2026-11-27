@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Windows.Threading;
@@ -113,7 +114,7 @@ namespace TDPdf
         // Shell interop
         // ============================================================
 
-        [DllImport("shell32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("shell32.dll")]
         private static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
         private const uint SHCNE_ASSOCCHANGED = 0x08000000;
         private const uint SHCNF_IDLIST       = 0x0000;
@@ -527,9 +528,9 @@ namespace TDPdf
         // Named from the user SID plus the session id (InstanceIdentity): the pipe namespace is
         // machine-wide, so a user-name key let a second RDP session of the same account forward
         // its files to the first session's window, and let another account pre-create the pipe
-        // and receive our paths. CurrentUserOnly on both ends closes the second hole. A running
-        // TDPdf older than this uses the old names, so a new launch will not find it and opens
-        // its own window instead.
+        // and receive our paths. The pipe is locked to this user on both ends (see CreateServerPipe
+        // and PipeOwnedByCurrentUser) to close the second hole. A running TDPdf older than this
+        // uses the old names, so a new launch will not find it and opens its own window instead.
         private static readonly string SingleInstanceMutexName =
             "Local\\TDPdf.SingleInstance.Mutex." + InstanceIdentity.Suffix;
         private static readonly string SingleInstancePipeName =
@@ -542,9 +543,15 @@ namespace TDPdf
         {
             try
             {
-                using var client = new NamedPipeClientStream(".", SingleInstancePipeName, PipeDirection.Out,
-                    PipeOptions.CurrentUserOnly);
+                // Not PipeOptions.CurrentUserOnly: .NET compares the pipe's owner with the token's
+                // Owner, which is the Administrators group in an elevated token, while the server
+                // below is owned by the user SID. Every forward from an elevated process failed and
+                // opened a second window. We check the owner ourselves, before sending anything.
+                using var client = new NamedPipeClientStream(".", SingleInstancePipeName,
+                    PipeAccessRights.Write | PipeAccessRights.ReadPermissions, PipeOptions.None,
+                    TokenImpersonationLevel.Identification, HandleInheritability.None);
                 client.Connect(3000);
+                if (!PipeOwnedByCurrentUser(client)) return false;
                 using var writer = new StreamWriter(client) { AutoFlush = true };
                 writer.WriteLine(payload);
                 return true;
@@ -553,6 +560,45 @@ namespace TDPdf
             {
                 return false;
             }
+        }
+
+        // Threat model: the pipe name is machine-wide, so another account on the machine could create
+        // a pipe with our name first and collect the paths we forward, or connect to ours and make us
+        // open files. Only this user's own processes may talk to the pipe. The server grants access to
+        // this user's SID alone and is owned by that SID; the client refuses to send unless the pipe
+        // it reached is owned by that same SID. The user SID is the same in an elevated and a
+        // non-elevated token (the token's Owner is not), so an elevated window and a normal launch
+        // of the same account can still find each other.
+        private static SecurityIdentifier? CurrentUserSid()
+        {
+            using var id = WindowsIdentity.GetCurrent();
+            return id.User;
+        }
+
+        private static bool PipeOwnedByCurrentUser(NamedPipeClientStream client)
+        {
+            try
+            {
+                var me = CurrentUserSid();
+                if (me == null) return false;
+                var owner = client.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+                return owner != null && owner.Equals(me);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static NamedPipeServerStream CreateServerPipe()
+        {
+            var me = CurrentUserSid() ?? throw new InvalidOperationException("No user SID.");
+            var security = new PipeSecurity();
+            security.SetOwner(me);
+            security.AddAccessRule(new PipeAccessRule(me,
+                PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+            return NamedPipeServerStreamAcl.Create(SingleInstancePipeName, PipeDirection.In, 1,
+                PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
         }
 
         /// <summary>
@@ -581,12 +627,7 @@ namespace TDPdf
             {
                 try
                 {
-                    using var server = new NamedPipeServerStream(
-                        SingleInstancePipeName,
-                        PipeDirection.In,
-                        1,
-                        PipeTransmissionMode.Byte,
-                        PipeOptions.CurrentUserOnly);
+                    using var server = CreateServerPipe();
                     server.WaitForConnection();
                     using var reader = new StreamReader(server);
                     string? line = reader.ReadLine();
@@ -1120,7 +1161,7 @@ namespace TDPdf
                 // renders it as the "Size" column. InstallDate is yyyyMMdd, which is the only
                 // format the Settings app parses.
                 key.SetValue("EstimatedSize",        (int)Math.Max(1, fi.Length / 1024), RegistryValueKind.DWord);
-                key.SetValue("InstallDate",          DateTime.Now.ToString("yyyyMMdd"));
+                key.SetValue("InstallDate",          DateTime.Now.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture));
                 key.SetValue("URLInfoAbout",         "https://github.com/doodlemania2/TDPdf");
                 key.SetValue("HelpLink",             "https://github.com/doodlemania2/TDPdf/issues");
             }
@@ -1180,12 +1221,24 @@ namespace TDPdf
 
             using (var k = hive.CreateSubKey(
                 @"Software\Classes\TDPdf.pdf\shell\open\command"))
-                k.SetValue("", $"\"{installExe}\" \"%1\"");
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.Open(installExe));
+
+            // Print and Print to: Explorer's Print menu item and a file dropped on a printer. Both run
+            // the headless --print command (MainWindow.Cli.cs), which sends the file to the queue and
+            // exits without showing a window: 0 sent, 1 failed, 2 bad arguments or no such printer.
+            using (var k = hive.CreateSubKey(
+                @"Software\Classes\TDPdf.pdf\shell\print\command"))
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.Print(installExe));
+            using (var k = hive.CreateSubKey(
+                @"Software\Classes\TDPdf.pdf\shell\printto\command"))
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.PrintTo(installExe));
 
             // Associate .pdf extension — adds TDPdf to the "Open with" list
             using (var k = hive.CreateSubKey(
                 @"Software\Classes\.pdf\OpenWithProgids"))
                 k.SetValue("TDPdf.pdf", new byte[0], RegistryValueKind.None);
+
+            RegisterImageOpenWith(hive, installExe);
 
             // RegisteredApplications capability (used by Default Programs UI)
             using (var k = hive.CreateSubKey(
@@ -1203,6 +1256,48 @@ namespace TDPdf
 
             // Tell the shell file associations have changed
             SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        // Picture types TDPdf can turn into a PDF (the same list as dropping them on the window).
+        private static readonly string[] ImageOpenWithExtensions =
+            { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff" };
+
+        // ProgID listed under each picture type's OpenWithProgids only. That puts TDPdf in Explorer's
+        // "Open with" list for pictures without ever becoming the default: the default is whatever the
+        // type's own (default) value or the user's UserChoice names, and neither is touched. It is
+        // deliberately NOT added to Capabilities\FileAssociations either, which is what would offer
+        // TDPdf in Default Programs for these types.
+        private const string ImageProgId = "TDPdf.image";
+
+        private static void RegisterImageOpenWith(RegistryKey hive, string installExe)
+        {
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId))
+                k.SetValue("", "Picture (open as a PDF in TDPdf)");
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId + @"\DefaultIcon"))
+                k.SetValue("", $"{installExe},0");
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId + @"\shell\open"))
+                k.SetValue("FriendlyAppName", AppName);
+            using (var k = hive.CreateSubKey(@"Software\Classes\" + ImageProgId + @"\shell\open\command"))
+                k.SetValue("", $"\"{installExe}\" \"%1\"");
+            foreach (var ext in ImageOpenWithExtensions)
+            {
+                using var k = hive.CreateSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids");
+                k.SetValue(ImageProgId, new byte[0], RegistryValueKind.None);
+            }
+        }
+
+        private static void UnregisterImageOpenWith(RegistryKey root)
+        {
+            try { root.DeleteSubKeyTree(@"Software\Classes\" + ImageProgId, throwOnMissingSubKey: false); } catch { }
+            foreach (var ext in ImageOpenWithExtensions)
+            {
+                try
+                {
+                    using var k = root.OpenSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids", writable: true);
+                    k?.DeleteValue(ImageProgId, throwOnMissingValue: false);
+                }
+                catch { }
+            }
         }
 
         // Full path to the stock PDF file-type icon for a given install scope.
@@ -1271,13 +1366,13 @@ namespace TDPdf
         // Running-instance check for uninstall
         // ============================================================
 
-        [DllImport("kernel32.dll", SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
 
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder exeName, ref int size);
 
-        [DllImport("kernel32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("kernel32.dll")]
         private static extern bool CloseHandle(IntPtr handle);
 
         private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -1408,6 +1503,7 @@ namespace TDPdf
                 try { root.DeleteSubKeyTree(
                     @"Software\Microsoft\Windows\CurrentVersion\Uninstall\TDPdf"); } catch { }
                 try { root.DeleteSubKeyTree(@"Software\Classes\TDPdf.pdf"); } catch { }
+                UnregisterImageOpenWith(root);
 
                 try
                 {

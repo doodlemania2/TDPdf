@@ -137,6 +137,27 @@ namespace TDPdf
         private Color _textFillColor = Colors.White;
         private Border? _textSettingsBar;
 
+        // Re-editing an existing text box or PDF text run seeds the text defaults above so the bar and
+        // the editor show that run's style. Those seeds are for the edit only: the defaults for the next
+        // new box are put back when the edit ends.
+        private (string Family, double Size, Color Color, bool Whiteout, bool Bold, bool Italic,
+            bool Underline, double Spacing, Color Fill)? _textDefaultsBeforeEdit;
+
+        private void RememberTextDefaultsForEdit() =>
+            _textDefaultsBeforeEdit ??= (_textFontFamily, _textFontSize, _textColor, _textWhiteout,
+                _textBold, _textItalic, _textUnderline, _textLetterSpacing, _textFillColor);
+
+        private void RestoreTextDefaultsAfterEdit()
+        {
+            if (_textDefaultsBeforeEdit is not { } d) return;
+            _textDefaultsBeforeEdit = null;
+            _textFontFamily = d.Family; _textFontSize = d.Size; _textColor = d.Color;
+            _textWhiteout = d.Whiteout; _textBold = d.Bold; _textItalic = d.Italic;
+            _textUnderline = d.Underline; _textLetterSpacing = d.Spacing; _textFillColor = d.Fill;
+            // A bar showing the tool defaults must show the restored ones.
+            if (_textSettingsBar is not null && _styleTarget is null) ShowTextSettings();
+        }
+
         // When a settings bar is opened bound to a selected annotation (restyle-in-place),
         // this points at that annotation; null means the bar edits the tool defaults only.
         private PageAnnotation? _styleTarget;
@@ -146,6 +167,7 @@ namespace TDPdf
         private Point _resizeSigStart;
         private double _resizeSigStartScale;
         private PlacedAnnotation? _resizeSigAnnot;
+        private Point _resizeSigVisualTopLeft;   // fixed corner of the turned box while resizing
         private Rectangle? _resizeHandle;
 
         // Placed annotation drag-to-move
@@ -505,6 +527,7 @@ namespace TDPdf
         {
             ApplyInitialWindowChromeSettings();
             InitializeComponent();
+            ApplyStartupPlacement();
             _tabs.Add(_ctx);
             // Always on, regardless of the SingleInstanceTabs setting: that one only governs
             // whether a second LAUNCH folds into this window, but once two windows exist (via a
@@ -679,7 +702,7 @@ namespace TDPdf
                 bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
                 if (ownsSession) ClaimSavedSession();
                 if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
-                    await OpenInTabAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
+                    await OpenRequestedPathAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
                 else if (ownsSession)
                     await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 
@@ -908,7 +931,7 @@ namespace TDPdf
         // 1.8.92 (WorkAreaFit); best-effort, a window size is never worth failing startup over.
         private void FitToStartupMonitor()
         {
-            if (WindowState != WindowState.Normal) return;
+            if (WindowState != WindowState.Normal || _placementApplied) return;
             try
             {
                 double sx = _currentDpiScale > 0 ? _currentDpiScale : 1.0;
@@ -955,10 +978,10 @@ namespace TDPdf
 
         private const int MDT_EFFECTIVE_DPI = 0;
 
-        [DllImport("shcore.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("shcore.dll")]
         private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern uint GetDpiForWindow(IntPtr hwnd);
 
         private const int WM_GETMINMAXINFO = 0x0024;
@@ -1302,41 +1325,41 @@ namespace TDPdf
                 DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref useDark, sizeof(int));
         }
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr MonitorFromWindow(IntPtr handle, uint flags);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetCursorPos(out POINT pt);
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr GetModuleHandle(string? moduleName);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr LoadImage(IntPtr hInst, IntPtr name, uint type, int cx, int cy, uint flags);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
-        [DllImport("user32.dll", SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
-        [DllImport("dwmapi.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
-        [DllImport("dwmapi.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("dwmapi.dll")]
         private static extern int DwmSetIconicThumbnail(IntPtr hwnd, IntPtr hbitmap, uint flags);
 
-        [DllImport("dwmapi.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("dwmapi.dll")]
         private static extern int DwmSetIconicLivePreviewBitmap(IntPtr hwnd, IntPtr hbitmap, ref POINT ptClient, uint flags);
 
-        [DllImport("gdi32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("gdi32.dll")]
         private static extern bool DeleteObject(IntPtr hObject);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
 
         private const int WM_NCLBUTTONDOWN = 0x00A1;
@@ -1614,7 +1637,7 @@ namespace TDPdf
             public TDPdf.Services.PdfTextSearch.Index? SearchIndex;
 
             // View state restored when this tab is re-activated.
-            public IReadOnlyList<BitmapSource?>? Thumbnails;
+            public readonly PageThumbStore Thumbs = new();
             public int SelectedPageIndex = -1;
 
             // ── Per-tab scroll + zoom (#399, adapted from upstream KillerPDF) ──────────────────
@@ -1777,22 +1800,22 @@ namespace TDPdf
         private const uint TPM_RIGHTBUTTON = 0x0002;
         private const uint TPM_RETURNCMD = 0x0100;
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern int EnableMenuItem(IntPtr hMenu, uint uIDEnableItem, uint uEnable);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool SetMenuDefaultItem(IntPtr hMenu, uint uItem, uint fByPos);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 
         // Maximize shows a single box, restore two overlapping ones; the name and ToolTip match
@@ -2029,10 +2052,10 @@ namespace TDPdf
             ThirdPartyLicensesWindow.Show(this);
 
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern bool ShutdownBlockReasonCreate(IntPtr hWnd, string pwszReason);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
 
         /// <summary>
@@ -2112,6 +2135,7 @@ namespace TDPdf
             // Closing is now committed (any dirty prompt was accepted). Decide whether to remember the
             // open documents for next launch, then persist or clear the saved session accordingly.
             HandleSessionOnClose();
+            SaveWindowPlacement();
             ThemeManager.ThemeChanged -= ThemeManager_ThemeChanged;
             _hwndSource?.RemoveHook(WndProc);
             _windowTransferServer?.Dispose();
@@ -2429,6 +2453,25 @@ namespace TDPdf
             singleInstance.Unchecked += SingleInstanceSettingChanged;
             panel.Children.Add(singleInstance);
 
+            var enterNewLine = new CheckBox
+            {
+                Content = "Enter adds a new line in text boxes (Ctrl+Enter saves)",
+                IsChecked = TDPdf.Properties.Settings.Default.EnterAddsNewLine,
+                Foreground = BrushResource("TextPrimary"),
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            void EnterNewLineChanged(object? s, RoutedEventArgs e)
+            {
+                TDPdf.Properties.Settings.Default.EnterAddsNewLine = enterNewLine.IsChecked == true;
+                try { TDPdf.Properties.Settings.Default.Save(); } catch { /* the choice still holds for this session */ }
+                SetStatus(enterNewLine.IsChecked == true
+                    ? "Text boxes: Enter adds a new line, Ctrl+Enter saves"
+                    : "Text boxes: Enter saves, Shift+Enter adds a new line");
+            }
+            enterNewLine.Checked += EnterNewLineChanged;
+            enterNewLine.Unchecked += EnterNewLineChanged;
+            panel.Children.Add(enterNewLine);
+
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
             panel.Children.Add(new TextBlock
@@ -2735,6 +2778,7 @@ namespace TDPdf
             // so the pair reads as a matched set instead of two unrelated icons.
             menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
+            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
                 "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", "\uE90F"));
             menu.Items.Add(new Separator());
@@ -2779,7 +2823,7 @@ namespace TDPdf
                     // the primary canvas the user drew on.
                     var dims = AnnotationCanvasSize(doc.Pages[idx]);
                     if (_annotations.TryGetValue(idx, out var anns))
-                        TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h);
+                        TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h, MeasureTextForRotate);
                     RemapAnnotationSnapshots(_undoStack, idx, delta, dims.w, dims.h);
                     RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
                 }
@@ -2810,6 +2854,7 @@ namespace TDPdf
             var menu = new ContextMenu();
             menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
+            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
                 "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", ""));
             menu.PlacementTarget = (UIElement)sender;
@@ -3026,6 +3071,9 @@ namespace TDPdf
             // Continuous collapses the page panel, so without this the live editor simply went
             // invisible while still being the active one.
             CommitActiveTextBox();
+            // Zoom to carry across the switch: the fit the user is in, or their manual zoom. Leaving
+            // the thumbnail Grid goes back to what it was before Grid was entered.
+            var (keepFit, keepZoom) = CaptureZoomForViewSwitch(_viewMode, mode);
             _viewMode = mode;
             // #399: an offset still owed to a tab switch was measured in the mode we are leaving
             // — Continuous's strip and Grid's wrap panel are different scroll surfaces entirely —
@@ -3074,7 +3122,7 @@ namespace TDPdf
             if (mode == ViewMode.Continuous)
             {
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                    () => SetupContinuousView(idx));
+                    () => { SetupContinuousView(idx); ReapplyZoomAfterViewSwitch(keepFit, keepZoom); });
                 return;
             }
 
@@ -3086,10 +3134,50 @@ namespace TDPdf
             RenderPage(mode == ViewMode.Grid ? 0 : idx);
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
             {
-                if (mode == ViewMode.Single || mode == ViewMode.TwoPage) FitToPage();
+                if (mode == ViewMode.Single || mode == ViewMode.TwoPage) ReapplyZoomAfterViewSwitch(keepFit, keepZoom);
                 // Grid keeps its existing column-fit default (applied via RefreshPageView).
                 RefreshPageView(mode == ViewMode.Grid ? 0 : idx);
             });
+        }
+
+        // Zoom/fit in force just before the thumbnail Grid was entered, for the tab it was entered on.
+        private ZoomFitMode _preGridFit = ZoomFitMode.None;
+        private double _preGridZoom;
+        private DocumentContext? _preGridCtx;
+
+        /// <summary>
+        /// The zoom a view-mode switch should land on. Zoom.ZoomLevel is true zoom, so a manual zoom
+        /// means the same thing in every mode; a fit is replayed against the new mode instead.
+        /// Leaving Grid returns to what was on screen before Grid was entered.
+        /// </summary>
+        private (ZoomFitMode Fit, double Zoom) CaptureZoomForViewSwitch(ViewMode from, ViewMode to)
+        {
+            var result = (_zoomFitMode, Zoom.ZoomLevel);
+            if (from == ViewMode.Grid && _preGridCtx is not null && ReferenceEquals(_preGridCtx, _ctx))
+                result = (_preGridFit, _preGridZoom);
+            if (to == ViewMode.Grid && from != ViewMode.Grid)
+            {
+                _preGridFit = _zoomFitMode;
+                _preGridZoom = Zoom.ZoomLevel;
+                _preGridCtx = _ctx;
+            }
+            if (from == ViewMode.Grid) _preGridCtx = null;
+            return result;
+        }
+
+        private void ReapplyZoomAfterViewSwitch(ZoomFitMode fit, double zoom)
+        {
+            if (fit == ZoomFitMode.Width) FitToWidth();
+            else if (fit == ZoomFitMode.Page) FitToPage();
+            else if (zoom >= ZoomViewModel.MinZoomLevel && zoom <= ZoomViewModel.MaxZoomLevel)
+            {
+                // Not a new decision, so the remembered manual-zoom preference is left alone.
+                _zoomFitMode = ZoomFitMode.None;
+                Zoom.SetZoomLevel(zoom);
+                SyncLayoutZoom();   // the layout scale differs per mode even at an equal true zoom
+            }
+            else if (_viewMode == ViewMode.Continuous) FitToWidth();
+            else FitToPage();
         }
 
         // ── Two-Page book layout (upstream KillerPDF #193) ─────────────────────────────────────
@@ -3239,12 +3327,20 @@ namespace TDPdf
 
         // True only for an absolute URI in an allowed scheme. Rejects scheme-less / relative URIs (a bare
         // "www.example.com" is normalised first, below), plus file:, javascript:, and custom protocols.
-        private static bool IsAllowedLinkUri(string url) =>
-            Uri.TryCreate(url, UriKind.Absolute, out var uri) && AllowedLinkSchemes.Contains(uri.Scheme);
+        private static bool TryGetAllowedLinkUri(string url, out Uri uri)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var parsed) && AllowedLinkSchemes.Contains(parsed.Scheme))
+            {
+                uri = parsed;
+                return true;
+            }
+            uri = null!;
+            return false;
+        }
 
         // A PDF can store a scheme-less link like "www.example.com" or "example.com/page". Treat a domain-
         // shaped target as https so it still opens; anything with an explicit scheme, a backslash (UNC/path),
-        // or whitespace is left untouched (and thus refused by IsAllowedLinkUri unless it's http/https/mailto).
+        // or whitespace is left untouched (and thus refused by TryGetAllowedLinkUri unless it's http/https/mailto).
         private static string NormalizeLinkUri(string raw)
         {
             raw = raw.Trim();
@@ -3302,17 +3398,20 @@ namespace TDPdf
 
             // Scheme-less but domain-shaped targets (e.g. "www.example.com") become https:// here.
             string url = NormalizeLinkUri(raw);
-            if (!IsAllowedLinkUri(url))
+            if (!TryGetAllowedLinkUri(url, out var linkUri))
             {
                 SetStatus($"Blocked an unsafe link: {raw}");
                 return;
             }
 
-            if (!ConfirmOpenLink(url)) return;
+            // Open exactly the address that was validated (the parsed, normalised form), not the raw string
+            // the PDF supplied, so what the checks saw and what the shell launches cannot differ.
+            string openUrl = linkUri.AbsoluteUri;
+            if (!ConfirmOpenLink(openUrl)) return;
 
             try
             {
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                Process.Start(new ProcessStartInfo(openUrl) { UseShellExecute = true });
             }
             catch (Exception ex)
             {
@@ -3676,6 +3775,11 @@ namespace TDPdf
             Telemetry.TrackEvent("Tool.Selected", new Dictionary<string, string> { ["Tool"] = tool.ToString() });
             var previousTool = _currentTool;
             CommitActiveTextBox();
+            // Text already selected when a marking tool is picked gets that mark (one undo step);
+            // CommitFlowingMarkup clears the selection itself.
+            if (tool is EditTool.Highlight or EditTool.Underline or EditTool.Strikethrough
+                && _txtSelHasRange && !_txtSelActive && _currentFile is not null)
+                CommitFlowingMarkup(tool);
             ClearTextSelection();
             CancelActivePointerOperation(removePreview: true);
             _currentTool = tool;
@@ -5046,6 +5150,7 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
+            string? supersededFile = _currentFile;
             _doc?.Close();
             _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
             _currentFile = redactedPath;
@@ -5064,7 +5169,7 @@ namespace TDPdf
             HideRedactSettings();
             MarkDirty();
 
-            RefreshPageList();
+            RefreshPageList(ThumbRefresh.Stale);
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
             else if (PageList.Items.Count > 0)
@@ -5076,6 +5181,9 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
+
+            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes.
+            RetireWorkingCopy(supersededFile);
         }
 
         /// <summary>
@@ -5153,8 +5261,7 @@ namespace TDPdf
                     return bounds.Contains(pos);
 
                 case TextAnnotation ta:
-                    var taSize = MeasureTextAnnotation(ta);
-                    bounds = new Rect(ta.Position.X, ta.Position.Y, taSize.Width, taSize.Height);
+                    bounds = TextVisualRect(ta);
                     return bounds.Contains(pos);
 
                 case InkAnnotation ia when ia.Points.Count > 0:
@@ -5193,15 +5300,11 @@ namespace TDPdf
                     return bounds.Contains(pos);
 
                 case SignatureAnnotation sa:
-                    double sigW = sa.SourceWidth * sa.Scale;
-                    double sigH = sa.SourceHeight * sa.Scale;
-                    bounds = new Rect(sa.Position.X, sa.Position.Y, sigW, sigH);
+                    bounds = PlacedVisualRect(sa);
                     return bounds.Contains(pos);
 
                 case ImageAnnotation ia:
-                    double iaW = ia.SourceWidth * ia.Scale;
-                    double iaH = ia.SourceHeight * ia.Scale;
-                    bounds = new Rect(ia.Position.X, ia.Position.Y, iaW, iaH);
+                    bounds = PlacedVisualRect(ia);
                     return bounds.Contains(pos);
 
                 case ShapeAnnotation shp:
@@ -5340,8 +5443,19 @@ namespace TDPdf
 
             // Restyle-in-place: reopen the matching settings bar bound to this annotation.
             _styleTarget = annot;
+            _restylePre = annot.Clone();
+            _restyleStepOpen = false;
             ShowStyleBarForSelection(annot);
         }
+
+        // Undo for restyling a selected mark (colour, size, opacity, width, font...). One user
+        // action is one undo step: the first change pushes the page as it was before the change, and
+        // further changes to the same mark join that step until it is deselected, another mark is
+        // selected, or RestyleStepIdle passes with no change (a slider drag changes continuously).
+        private static readonly TimeSpan RestyleStepIdle = TimeSpan.FromSeconds(1);
+        private PageAnnotation? _restylePre;      // the bound mark as it was before its latest change
+        private bool _restyleStepOpen;
+        private DateTime _restyleLastChange;
 
         /// <summary>
         /// Shows the settings bar matching the selected annotation, bound to it (restyle-in-place).
@@ -5380,6 +5494,19 @@ namespace TDPdf
         /// </summary>
         private void RestyleLive(PageAnnotation annot)
         {
+            var now = DateTime.UtcNow;
+            if (_restylePre is not null && ReferenceEquals(annot, _styleTarget) &&
+                _annotations.TryGetValue(annot.PageIndex, out var pageList))
+            {
+                if (!_restyleStepOpen || now - _restyleLastChange > RestyleStepIdle)
+                {
+                    var before = pageList.Select(a => ReferenceEquals(a, annot) ? _restylePre.Clone() : a.Clone()).ToList();
+                    PushUndo(new UndoEntry(UndoKind.PageSnapshot, annot.PageIndex, PageAnnotations: before));
+                    _restyleStepOpen = true;
+                }
+                _restyleLastChange = now;
+                _restylePre = annot.Clone();
+            }
             MarkDirty();
             RenderAllAnnotations(annot.PageIndex);
             if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
@@ -5446,7 +5573,7 @@ namespace TDPdf
         /// HitTest case will accept as a hit — used after move/resize to refresh the
         /// stored bounds without re-hit-testing the original cursor position.
         /// </summary>
-        private static Point GetAnyPointInside(PageAnnotation annot) => annot switch
+        private Point GetAnyPointInside(PageAnnotation annot) => annot switch
         {
             // Polygon: a vertex is always ON the outline, so it satisfies the edge test whether or
             // not the shape is filled (the box centre would miss a concave outline polygon).
@@ -5460,10 +5587,13 @@ namespace TDPdf
                 => new Point(m.LineRects[0].X + 1, m.LineRects[0].Y + 1),
             HighlightAnnotation h => new Point(h.Bounds.X + 1, h.Bounds.Y + 1),
             InkAnnotation i when i.Points.Count > 0 => i.Points[0],
-            TextAnnotation t => new Point(t.Position.X + 1, t.Position.Y + 1),
+            TextAnnotation t => t.Rotation == 0 ? new Point(t.Position.X + 1, t.Position.Y + 1)
+                                                : TopLeftInside(TextVisualRect(t)),
             TextEditAnnotation tea => new Point(tea.OriginalBounds.X + 1, tea.OriginalBounds.Y + 1),
-            SignatureAnnotation sg => new Point(sg.Position.X + 1, sg.Position.Y + 1),
-            ImageAnnotation ig => new Point(ig.Position.X + 1, ig.Position.Y + 1),
+            SignatureAnnotation sg => sg.Rotation == 0 ? new Point(sg.Position.X + 1, sg.Position.Y + 1)
+                                                       : TopLeftInside(PlacedVisualRect(sg)),
+            ImageAnnotation ig => ig.Rotation == 0 ? new Point(ig.Position.X + 1, ig.Position.Y + 1)
+                                                   : TopLeftInside(PlacedVisualRect(ig)),
             _ => new Point(0, 0)
         };
 
@@ -5489,8 +5619,36 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// A redraw or re-selection can land while a resize drag is still live. The geometry the drag
+        /// already applied stays, the document is marked dirty if it changed, and the undo step pushed
+        /// when the drag began is kept (the mouse-up that would have finished it no longer finds a
+        /// resize in progress).
+        /// </summary>
+        private void FinishResizeInProgress()
+        {
+            if (!(_isResizingSig || _isResizingImage || _isResizingAnnot)) return;
+            bool changed = false;
+            if (_isResizingSig && _resizeSigAnnot is not null && _resizeSigAnnot.Scale != _resizeSigStartScale)
+                changed = true;
+            if (_isResizingImage && _resizingImageEdit is not null &&
+                _resizingImageEdit.TargetBounds != _imageResizeOriginalBounds)
+                changed = true;
+            if (_isResizingAnnot && _resizingAnnot is not null && !GeometryUnchanged(_resizingAnnot, _resizeOriginalGeom))
+                changed = true;
+            _isResizingSig = false;
+            _isResizingImage = false;
+            _isResizingAnnot = false;
+            _resizingImageEdit = null;
+            if (_annotationCanvas.IsMouseCaptured) _annotationCanvas.ReleaseMouseCapture();
+            if (changed) MarkDirty();
+        }
+
         private void ClearSelection()
         {
+            FinishResizeInProgress();
+            _restyleStepOpen = false;
+            _restylePre = null;
             if (_selectionBorder is not null)
             {
                 _annotationCanvas.Children.Remove(_selectionBorder);
@@ -5525,12 +5683,43 @@ namespace TDPdf
 
             // Tear down any restyle-in-place binding. In Select mode the bound bar exists only for the
             // selection, so hide it; in other tools the visible bar belongs to the active tool — leave it.
+            bool wasBound = _styleTarget is not null;
             _styleTarget = null;
             if (_currentTool == EditTool.Select)
             {
                 HideTextSettings();
                 HideShapeSettings();
                 HideDrawSettings();
+            }
+            else if (wasBound)
+            {
+                // The bar was built for the mark that was just deselected; left alone it would keep
+                // editing that mark. Rebuild it for the active tool, showing the tool's own defaults.
+                RebindStyleBarToTool(_currentTool);
+            }
+        }
+
+        /// <summary>Rebuilds the style bar for <paramref name="tool"/>'s own defaults (nothing bound).</summary>
+        private void RebindStyleBarToTool(EditTool tool)
+        {
+            switch (tool)
+            {
+                case EditTool.Text:
+                case EditTool.EditText:
+                    HideShapeSettings(); HideDrawSettings(); ShowTextSettings();
+                    break;
+                case EditTool.Shape:
+                    HideTextSettings(); HideDrawSettings(); ShowShapeSettings();
+                    break;
+                case EditTool.Draw:
+                case EditTool.Highlight:
+                case EditTool.Underline:
+                case EditTool.Strikethrough:
+                    HideTextSettings(); HideShapeSettings(); ShowDrawSettings(tool);
+                    break;
+                default:
+                    HideTextSettings(); HideShapeSettings(); HideDrawSettings();
+                    break;
             }
         }
 
@@ -5785,6 +5974,11 @@ namespace TDPdf
             {
                 Canvas.SetLeft(spaced, ta.Position.X);
                 Canvas.SetTop(spaced, ta.Position.Y);
+                if (ta.Rotation != 0)
+                {
+                    var spacedBox = MeasureTextAnnotation(ta);
+                    ApplyAnnotationRotation(spaced, ta.Rotation, spacedBox.Width / 2, spacedBox.Height / 2);
+                }
                 _annotationCanvas.Children.Add(spaced);
                 return;
             }
@@ -5816,6 +6010,11 @@ namespace TDPdf
                 tb.Background = TdpDialog.FrozenSolidColorBrush(ta.GetFillColor());
             Canvas.SetLeft(tb, ta.Position.X);
             Canvas.SetTop(tb, ta.Position.Y);
+            if (ta.Rotation != 0)
+            {
+                var tbBox = MeasureTextAnnotation(ta);
+                ApplyAnnotationRotation(tb, ta.Rotation, tbBox.Width / 2, tbBox.Height / 2);
+            }
             _annotationCanvas.Children.Add(tb);
         }
 
@@ -5996,6 +6195,38 @@ namespace TDPdf
                 if (annots[i] is not (TextEditAnnotation or ImageEditAnnotation)) yield return annots[i];
         }
 
+        private (double W, double H) MeasureTextForRotate(TextAnnotation ta)
+        {
+            var sz = MeasureTextAnnotation(ta);
+            return (sz.Width, sz.Height);
+        }
+
+        /// <summary>The box a text annotation occupies on the canvas once its rotation is applied.</summary>
+        private Rect TextVisualRect(TextAnnotation ta)
+        {
+            var sz = MeasureTextAnnotation(ta);
+            var (x, y, w, h) = AnnotationFrame.VisualRect(ta.Position.X, ta.Position.Y, sz.Width, sz.Height, ta.Rotation);
+            return new Rect(x, y, w, h);
+        }
+
+        private static Point TopLeftInside(Rect r) => new Point(r.X + 1, r.Y + 1);
+
+        /// <summary>The box a signature or picture occupies on the canvas once its rotation is applied.</summary>
+        private static Rect PlacedVisualRect(PlacedAnnotation pa)
+        {
+            var (x, y, w, h) = AnnotationFrame.VisualRect(pa.Position.X, pa.Position.Y,
+                pa.SourceWidth * pa.Scale, pa.SourceHeight * pa.Scale, pa.Rotation);
+            return new Rect(x, y, w, h);
+        }
+
+        /// <summary>Turns a drawn element about the centre of its unrotated box (a no-op at 0).</summary>
+        private static void ApplyAnnotationRotation(UIElement element, int rotation, double boxCenterX, double boxCenterY)
+        {
+            int rot = AnnotationFrame.Normalize(rotation);
+            if (rot == 0) return;
+            element.RenderTransform = new RotateTransform(rot, boxCenterX, boxCenterY);
+        }
+
         private Size MeasureTextAnnotation(TextAnnotation ta)
         {
             double dpi = VisualTreeHelper.GetDpi(_annotationCanvas).PixelsPerDip;
@@ -6145,7 +6376,13 @@ namespace TDPdf
 
         private void RenderAllAnnotations(int pageIndex)
         {
+            // True when the page's highlights are multiplied into the page image (see
+            // MainWindow.HighlightComposite.cs), so the canvas must not paint them a second time.
+            bool highlightsBlended = SyncHighlightComposite(pageIndex);
             _annotationCanvas.Children.Clear();
+            // Every annotation change on a page ends up here, so this is also where the sidebar's
+            // thumbnail of that page learns its unsaved markup changed (debounced there).
+            QueueThumbOverlayRefresh(pageIndex);
             // Clearing the canvas also drops form-field overlays — restore them so they
             // survive every annotation re-render (edits, undo, selection, …).
             if (!_annotations.ContainsKey(pageIndex))
@@ -6170,6 +6407,7 @@ namespace TDPdf
                     // it is a subclass, and plain highlights must keep their single-rect render.
                     case MarkupAnnotation mk:
                     {
+                        if (highlightsBlended && IsMultiplied(mk)) break;
                         var mkBrush = TdpDialog.FrozenSolidColorBrush(mk.GetColor());
                         foreach (var pr in mk.PaintRects())
                         {
@@ -6179,7 +6417,8 @@ namespace TDPdf
                                 Fill = mkBrush,
                                 Width = pr.Width,
                                 Height = pr.Height,
-                                IsHitTestVisible = false
+                                IsHitTestVisible = false,
+                                Tag = IsMultiplied(mk) ? HighlightFallbackTag : null
                             };
                             Canvas.SetLeft(band, pr.X);
                             Canvas.SetTop(band, pr.Y);
@@ -6188,13 +6427,15 @@ namespace TDPdf
                         break;
                     }
                     case HighlightAnnotation ha:
+                        if (highlightsBlended) break;
                         if (!IsFinitePositive(ha.Bounds.Width) || !IsFinitePositive(ha.Bounds.Height)) continue;
                         var rect = new Rectangle
                         {
                             Fill = TdpDialog.FrozenSolidColorBrush(ha.GetColor()),
                             Width = ha.Bounds.Width,
                             Height = ha.Bounds.Height,
-                            IsHitTestVisible = false
+                            IsHitTestVisible = false,
+                            Tag = HighlightFallbackTag
                         };
                         Canvas.SetLeft(rect, ha.Bounds.X);
                         Canvas.SetTop(rect, ha.Bounds.Y);
@@ -6316,6 +6557,7 @@ namespace TDPdf
                                 };
                                 Canvas.SetLeft(imgCtrl, sa.Position.X);
                                 Canvas.SetTop(imgCtrl, sa.Position.Y);
+                                ApplyAnnotationRotation(imgCtrl, sa.Rotation, sigW / 2, sigH / 2);
                                 _annotationCanvas.Children.Add(imgCtrl);
                             }
                             catch { /* skip broken image */ }
@@ -6338,6 +6580,9 @@ namespace TDPdf
                                     sigPoly.Points.Add(new Point(
                                         sa.Position.X + pt.X * sa.Scale,
                                         sa.Position.Y + pt.Y * sa.Scale));
+                                // The points are absolute canvas coordinates, so the turn's centre is too.
+                                ApplyAnnotationRotation(sigPoly, sa.Rotation,
+                                    sa.Position.X + sigW / 2, sa.Position.Y + sigH / 2);
                                 _annotationCanvas.Children.Add(sigPoly);
                             }
                         }
@@ -6363,6 +6608,7 @@ namespace TDPdf
                             };
                             Canvas.SetLeft(iaCtrl, ia.Position.X);
                             Canvas.SetTop(iaCtrl, ia.Position.Y);
+                            ApplyAnnotationRotation(iaCtrl, ia.Rotation, iaW / 2, iaH / 2);
                             _annotationCanvas.Children.Add(iaCtrl);
                         }
                         catch { /* skip broken image */ }
@@ -6736,6 +6982,7 @@ namespace TDPdf
                 _annotations[pageIdx].Clear();
                 MarkDirty();
             }
+            QueueThumbOverlayRefresh(pageIdx);
             ClearSelection();
             _annotationCanvas.Children.Clear();
             SetStatus("Cleared annotations on this page");
@@ -6818,6 +7065,7 @@ namespace TDPdf
             var reopened = OpenWorkingCopy(ref tempPath);
 
             // The new document is open: from here on nothing can leave the tab without one.
+            string? supersededFile = _currentFile;
             try { doc.Close(); } catch { /* the old instance is discarded either way */ }
             _doc = reopened;
             _currentFile = tempPath;
@@ -6860,6 +7108,30 @@ namespace TDPdf
             ClearSelection();
             MarkDirty();
             ShowReloadedDocument(selectedIdx);
+            RetireWorkingCopy(supersededFile);
+        }
+
+        // Page operations hold their pre-edit working file as a rollback point until they finish;
+        // RetireWorkingCopy must not delete one of those. Case-insensitive like TempFileSet.
+        private readonly HashSet<string> _heldWorkingFiles = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Deletes a working copy this tab has just stopped using (the file the document was
+        /// reloaded from, a decrypted copy, the pre-redaction copy). It used to stay in %TEMP% until
+        /// the tab closed, holding every earlier revision's content, including text since redacted
+        /// or pages since deleted. Undo keeps its own bytes in memory, so nothing needs the file.
+        /// Only files <see cref="TDPdf.Services.TempFileSet"/> owns are touched: the user's own file
+        /// is never owned, so it can never be deleted here. A file that cannot be deleted yet (still
+        /// open) stays owned and is removed when the tab closes.
+        /// </summary>
+        private void RetireWorkingCopy(string? superseded)
+        {
+            if (string.IsNullOrEmpty(superseded)) return;
+            if (string.Equals(superseded, _currentFile, StringComparison.OrdinalIgnoreCase)) return;
+            if (_heldWorkingFiles.Contains(superseded)) return;
+            if (!TDPdf.Services.TempFilePolicy.IsOurs(superseded) || !_ctx.TempFiles.Contains(superseded)) return;
+            if (TDPdf.Services.TempFilePolicy.TryDelete(superseded) || !System.IO.File.Exists(superseded))
+                _ctx.TempFiles.Release(superseded);
         }
 
         /// <summary>
@@ -6904,7 +7176,7 @@ namespace TDPdf
             // Same reasoning for the link-target page map (#438): keyed on the document instance,
             // which the reload replaced, but dropped here explicitly all the same.
             InvalidateLinkPageMap();
-            RefreshPageList();
+            RefreshPageList(ThumbRefresh.Stale);
             if (PageList.Items.Count > 0)
                 PageList.SelectedIndex = Math.Clamp(selectedIdx, 0, PageList.Items.Count - 1);
 
@@ -6987,6 +7259,7 @@ namespace TDPdf
                 try { _doc.Save(docPath); }
                 catch { TDPdf.Services.TempFilePolicy.TryDelete(docPath); _ctx.TempFiles.Release(docPath); docPath = null; }
             }
+            if (_currentFile is not null) _heldWorkingFiles.Add(_currentFile);
             return new PageOperationSnapshot(
                 docPath,
                 _currentFile,
@@ -6997,9 +7270,14 @@ namespace TDPdf
         }
 
         /// <summary>The edit succeeded (or changed nothing): drop the rollback copy.</summary>
-        private static void EndPageOperation(PageOperationSnapshot snapshot)
+        private void EndPageOperation(PageOperationSnapshot snapshot)
         {
             if (snapshot.DocumentPath is not null) TDPdf.Services.TempFilePolicy.TryDelete(snapshot.DocumentPath);
+            if (snapshot.WorkingFile is not null)
+            {
+                _heldWorkingFiles.Remove(snapshot.WorkingFile);
+                RetireWorkingCopy(snapshot.WorkingFile);   // the edit replaced it; no rollback is needed now
+            }
         }
 
         /// <summary>
@@ -7008,6 +7286,7 @@ namespace TDPdf
         /// </summary>
         private void RollBackPageOperation(PageOperationSnapshot snapshot, string failureTitle, Exception ex)
         {
+            if (snapshot.WorkingFile is not null) _heldWorkingFiles.Remove(snapshot.WorkingFile);
             Telemetry.TrackEvent("Page.OperationFailed", new Dictionary<string, string>
             {
                 ["Operation"]     = failureTitle,
@@ -7247,12 +7526,37 @@ namespace TDPdf
             _manualZoomIntent = true;
         }
 
+        /// <summary>The viewport centre's document point (PageContentGrid coordinates) a toolbar / keyboard / dropdown zoom holds still.</summary>
+        private Point? _centreZoomAnchor;
+        private Point _centreZoomTarget;
+
+        /// <summary>
+        /// <see cref="BeginManualZoom"/> for the zoom sources that have no pointer (toolbar, keyboard,
+        /// dropdown): also remembers the document point at the centre of the viewport, so ApplyZoom
+        /// can scroll it back to the centre once the new scale has laid out. Ctrl+wheel and pinch
+        /// keep their own pointer anchor (ContinueZoomGesture).
+        /// </summary>
+        private void BeginAnchoredZoom()
+        {
+            BeginManualZoom();
+            _centreZoomAnchor = null;
+            if (_doc is null || _applyingGestureZoom) return;
+            double vw = PagePreviewPanel.ViewportWidth, vh = PagePreviewPanel.ViewportHeight;
+            if (!(vw > 0) || !(vh > 0)) return;
+            _centreZoomTarget = new Point(vw / 2, vh / 2);
+            try { _centreZoomAnchor = PagePreviewPanel.TranslatePoint(_centreZoomTarget, _pageContentGrid); }
+            catch (InvalidOperationException) { _centreZoomAnchor = null; }   // not in a common visual tree yet
+            // ApplyZoom runs synchronously inside the zoom write; whatever it did not consume
+            // (an equal zoom raises no change) must not leak into a later, unrelated zoom.
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal, (Action)(() => _centreZoomAnchor = null));
+        }
+
         private void ChangeZoomByCommand(ZoomChange change)
         {
             // An explicit zoom stops the view tracking the window size, exactly as the equivalent
             // toolbar buttons do. Without this, Ctrl+0 landed on 100% and then the next window
             // resize snapped straight back to the fit it was on.
-            BeginManualZoom();
+            BeginAnchoredZoom();
             switch (change)
             {
                 case ZoomChange.In:
@@ -7269,11 +7573,11 @@ namespace TDPdf
             }
         }
 
-        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomIn(); }
+        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.ZoomIn(); }
 
-        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomOut(); }
+        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.ZoomOut(); }
 
-        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.Reset(); }
+        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.Reset(); }
 
         // ============================================================
         // True zoom vs. layout scale        (#154, upstream "true 100%")
@@ -7464,11 +7768,16 @@ namespace TDPdf
             // Continuous view is scaled entirely by the shared ScaleTransform above; it must not
             // re-render the (hidden) primary page. Re-anchor the scroll to the current page so the
             // view doesn't jump when zooming.
+            Point? centreAnchor = _centreZoomAnchor;
+            _centreZoomAnchor = null;
             if (_viewMode == ViewMode.Continuous)
             {
                 // ...except after a zoom gesture, which has already scrolled so the point under the
-                // pointer stayed put; snapping to the page top now would undo exactly that.
-                if (!_settlingZoomGesture)
+                // pointer stayed put; snapping to the page top now would undo exactly that. A
+                // toolbar / keyboard / dropdown zoom holds the viewport centre still instead.
+                if (centreAnchor is Point ca)
+                    ScheduleZoomAnchorCorrection(ca, _centreZoomTarget);
+                else if (!_settlingZoomGesture)
                 {
                     int curIdx = PageList.SelectedIndex;
                     Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
@@ -7489,6 +7798,8 @@ namespace TDPdf
                 RenderPage(applyIdx);
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     () => RefreshPageView(applyIdx));
+                if (centreAnchor is Point ca)
+                    ScheduleZoomAnchorCorrection(ca, _centreZoomTarget);
             }
         }
 
@@ -7555,7 +7866,7 @@ namespace TDPdf
             if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             if (option.ZoomLevel is not double zoom) return;
             // User picked an explicit zoom level — stop tracking the window size.
-            BeginManualZoom();
+            BeginAnchoredZoom();
             Zoom.SetZoomLevel(zoom);
         }
 
@@ -7808,8 +8119,12 @@ namespace TDPdf
         /// </summary>
         private void ScheduleZoomAnchorCorrection()
         {
-            if (_zoomGestureAnchor is not Point anchor) return;
-            Point target = _zoomGestureTarget;
+            if (_zoomGestureAnchor is not Point gestureAnchor) return;
+            ScheduleZoomAnchorCorrection(gestureAnchor, _zoomGestureTarget);
+        }
+
+        private void ScheduleZoomAnchorCorrection(Point anchor, Point target)
+        {
             long revision = ++_zoomAnchorRevision;
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)(() =>
             {
@@ -7871,11 +8186,13 @@ namespace TDPdf
 
         private void PageList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
-            // The ListBox's internal ScrollViewer is disabled, so wheel events don't
-            // scroll anything. Forward them to the outer SidebarScrollViewer manually,
-            // at the same boosted speed as the document viewport (WheelScrollFactor).
-            SidebarScrollViewer.ScrollToVerticalOffset(
-                SidebarScrollViewer.VerticalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
+            // The ListBox's own ScrollViewer would take the wheel at the stock speed; scroll it
+            // ourselves at the same boosted speed as the document viewport (WheelScrollFactor).
+            // The list uses pixel scrolling, so the offset is in DIPs.
+            _pageListScroll ??= FindDescendant<ScrollViewer>(PageList);
+            if (_pageListScroll is null) return;
+            _pageListScroll.ScrollToVerticalOffset(
+                _pageListScroll.VerticalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
             e.Handled = true;
         }
 
@@ -7892,6 +8209,9 @@ namespace TDPdf
                 // carrying one across would be a number about a page nobody is looking at.
                 ClearMeasurement();
                 _pageJumpBox.Text = (PageList.SelectedIndex + 1).ToString();
+                // The list virtualises, so the current page may have no container yet (a jump from
+                // the page box, an outline link): bring it into view.
+                if (PageList.SelectedItems.Count == 1) PageList.ScrollIntoView(PageList.SelectedItem);
                 UpdatePageSizeReadout();   // pages can differ in size, so the chip follows the page
 
                 // Continuous view: the whole document is one scroll, so a sidebar selection

@@ -1467,20 +1467,20 @@ namespace PdfSharpCore.Pdf.IO
                     char o = 'Z';
                     if (length >= 10)
                     {
-                        year = int.Parse(date.Substring(2, 4));
-                        month = int.Parse(date.Substring(6, 2));
-                        day = int.Parse(date.Substring(8, 2));
+                        year = int.Parse(date.Substring(2, 4), CultureInfo.InvariantCulture);
+                        month = int.Parse(date.Substring(6, 2), CultureInfo.InvariantCulture);
+                        day = int.Parse(date.Substring(8, 2), CultureInfo.InvariantCulture);
                         if (length >= 16)
                         {
-                            hour = int.Parse(date.Substring(10, 2));
-                            minute = int.Parse(date.Substring(12, 2));
-                            second = int.Parse(date.Substring(14, 2));
+                            hour = int.Parse(date.Substring(10, 2), CultureInfo.InvariantCulture);
+                            minute = int.Parse(date.Substring(12, 2), CultureInfo.InvariantCulture);
+                            second = int.Parse(date.Substring(14, 2), CultureInfo.InvariantCulture);
                             if (length >= 23)
                             {
                                 if ((o = date[16]) != 'Z')
                                 {
-                                    hh = int.Parse(date.Substring(17, 2));
-                                    mm = int.Parse(date.Substring(20, 2));
+                                    hh = int.Parse(date.Substring(17, 2), CultureInfo.InvariantCulture);
+                                    mm = int.Parse(date.Substring(20, 2), CultureInfo.InvariantCulture);
                                 }
                             }
                         }

@@ -454,6 +454,28 @@ namespace PdfSharpCore.Pdf
         }
 
         /// <summary>
+        /// Imports an indirect object (and everything it references) from a document opened in Import
+        /// mode. It shares the imported-object table AddPage uses for that document, so an object a
+        /// page already brought across (a font, say) is reused rather than copied twice.
+        /// TDPdf addition: lets a merge carry the source /AcroForm /DR fonts along with the pages.
+        /// </summary>
+        /// <returns>The clone's indirect reference in this document.</returns>
+        public PdfReference ImportExternalObject(PdfObject externalObject)
+        {
+            if (externalObject == null)
+                throw new ArgumentNullException(nameof(externalObject));
+            if (externalObject.Owner == null || ReferenceEquals(externalObject.Owner, _document))
+                throw new InvalidOperationException("The object must belong to another document.");
+            if (externalObject.Owner._openMode != PdfDocumentOpenMode.Import)
+                throw new InvalidOperationException("A PDF document must be opened with PdfDocumentOpenMode.Import to import objects from it.");
+            if (externalObject.Reference == null)
+                throw new InvalidOperationException("Only indirect objects can be imported.");
+
+            PdfImportedObjectTable table = Owner.FormTable.GetImportedObjectTable(externalObject.Owner);
+            return ImportClosure(table, _document, externalObject).Reference;
+        }
+
+        /// <summary>
         /// Helper function for ImportExternalPage.
         /// </summary>
         void CloneElement(PdfPage page, PdfPage importPage, string key, bool deepcopy)

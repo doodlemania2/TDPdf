@@ -131,8 +131,8 @@ namespace TDPdf
             bool assignedDocument = false;
             try
             {
-                int pageCount = result.Document.PageCount;
-                var thumbnails = await _pdfDocumentService.RenderThumbnailsAsync(result.WorkingPath, pageCount, cancellationToken);
+                // No thumbnails are rendered here: the sidebar renders the ones on screen on demand
+                // (RefreshPageList), so the document is up as soon as it is open however long it is.
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (_doc is not null) { _doc.Close(); _doc = null; }
@@ -168,9 +168,8 @@ namespace TDPdf
                 _searchPageCursor = -1;
                 ClearSecondaryPages();
                 ClearSelection();
-                RefreshPageList(thumbnails);
+                RefreshPageList(ThumbRefresh.Reset);
                 LoadOutlines();
-                _ctx.Thumbnails = thumbnails;
                 // #399: a different document in this tab — or the same one reloaded at a new
                 // geometry, as the crop path does — has no resume point. ApplyViewModeOnOpen
                 // below places it from the app-global standing preference, exactly as always.
@@ -255,61 +254,6 @@ namespace TDPdf
         // panel; TdpDialog gives it the same borderless wordmark chrome as every other TDPdf dialog.
         // Enter/Esc and the Open/Cancel semantics (null == cancelled) are unchanged.
         private string? PromptForPassword(string filename) => TdpDialog.PromptPassword(this, filename);
-
-        private void RefreshPageList(IReadOnlyList<BitmapSource?>? thumbnails = null)
-        {
-            PageList.Items.Clear();
-            if (_doc is null) return;
-
-            for (int i = 0; i < _doc.PageCount; i++)
-            {
-                BitmapSource? thumb = thumbnails is not null && i < thumbnails.Count ? thumbnails[i] : null;
-                var img = new Image
-                {
-                    Source = thumb,
-                    Width = 140,
-                    Height = thumb is not null ? 140.0 * thumb.PixelHeight / thumb.PixelWidth : 100,
-                    Stretch = Stretch.Uniform,
-                    Margin = new Thickness(0, 0, 0, 2)
-                };
-
-                var label = new TextBlock
-                {
-                    Text = $"Page {i + 1}",
-                    Foreground = (SolidColorBrush)FindResource("TextSecondary"),
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 10,
-                    HorizontalAlignment = HorizontalAlignment.Center
-                };
-
-                var panel = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
-                if (thumb is not null)
-                {
-                    var border = new Border
-                    {
-                        Background = Brushes.White,
-                        BorderBrush = BrushResource("BorderDim"),
-                        BorderThickness = new Thickness(1),
-                        Child = img
-                    };
-                    panel.Children.Add(border);
-                }
-                else
-                {
-                    panel.Children.Add(new TextBlock
-                    {
-                        Text = $"Page {i + 1}",
-                        Foreground = (SolidColorBrush)FindResource("TextPrimary"),
-                        FontFamily = new FontFamily("Consolas"),
-                        FontSize = 13,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        Margin = new Thickness(0, 20, 0, 20)
-                    });
-                }
-                panel.Children.Add(label);
-                PageList.Items.Add(panel);
-            }
-        }
 
         private void UpdateCurrentDpiScale()
         {
@@ -467,6 +411,14 @@ namespace TDPdf
                 cancellationToken.ThrowIfCancellationRequested();
                 if (_doc is null) return;
 
+                // Highlights are multiplied into the page image (MainWindow.HighlightComposite.cs), from
+                // the true-colour raster and before the display-only invert. Built here, ahead of every
+                // write below, so the page identity, the cached bitmap and the image all change together.
+                var (highlighted, highlightSig) = await HighlightedPageAsync(
+                    pageIndex, renderedPage.Bitmap, renderedPage.DisplayWidth, renderedPage.DisplayHeight, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_doc is null) return;
+
                 _renderDims[pageIndex] = ((int)Math.Round(renderedPage.DisplayWidth), (int)Math.Round(renderedPage.DisplayHeight));
                 PageImage.Tag = pageIndex;   // page identity for Grid scroll tracking (nearest-tile counter)
                 // #135: DisplayBitmap returns the cached bitmap untouched unless the display-only
@@ -474,7 +426,7 @@ namespace TDPdf
                 // _primaryPageBitmap, which the image-edit tool bakes into the saved PDF) keep the
                 // document's true colors.
                 _primaryPageBitmap = renderedPage.Bitmap;
-                PageImage.Source = DisplayBitmap(renderedPage.Bitmap, keepRects);
+                ShowPrimaryBitmap(pageIndex, renderedPage.Bitmap, highlighted, highlightSig, keepRects);
                 PageImage.Width = renderedPage.DisplayWidth;
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
@@ -940,13 +892,18 @@ namespace TDPdf
         /// PdfDocumentService.RenderBoxDip, so one unchanged page would flicker between three
         /// numbers and every one of them would describe this machine rather than the document.
         /// </remarks>
-        private static string FormatPageSize(double wPt, double hPt, PageSizeUnit unit) => unit switch
+        private static string FormatPageSize(double wPt, double hPt, PageSizeUnit unit)
         {
-            PageSizeUnit.Pixels      => $"{wPt * 96.0 / 72.0:0} × {hPt * 96.0 / 72.0:0} px",
-            PageSizeUnit.Inches      => $"{wPt / 72.0:0.##} × {hPt / 72.0:0.##} in",
-            PageSizeUnit.Millimetres => $"{wPt / 72.0 * 25.4:0} × {hPt / 72.0 * 25.4:0} mm",
-            _                        => $"{wPt:0} × {hPt:0} pt"
-        };
+            string size = unit switch
+            {
+                PageSizeUnit.Pixels      => $"{wPt * 96.0 / 72.0:0} × {hPt * 96.0 / 72.0:0} px",
+                PageSizeUnit.Inches      => $"{wPt / 72.0:0.##} × {hPt / 72.0:0.##} in",
+                PageSizeUnit.Millimetres => $"{wPt / 72.0 * 25.4:0} × {hPt / 72.0 * 25.4:0} mm",
+                _                        => $"{wPt:0} × {hPt:0} pt"
+            };
+            // A standard paper size is named after the numbers, in whichever unit is showing.
+            return TDPdf.Services.PaperSizeNames.Name(wPt, hPt) is { } paper ? $"{size} ({paper})" : size;
+        }
 
         private void SetBusy(bool isBusy, string? status = null)
         {
@@ -1050,15 +1007,20 @@ namespace TDPdf
             RunPageOperation("Merge", () =>
             {
                 var doc = _doc!;
+                _mergeFormRenames = 0;
                 foreach (var file in dlg.FileNames)
                     AppendPdfFileToDoc(doc, file);
                 // Merge only ever APPENDS, so every existing page keeps its number and its geometry:
                 // the unsaved annotations are still exactly right and need no remapping. The default
                 // clear used to throw them all away for pages the merge never touched.
                 SaveTempAndReload(keepAnnotations: true);
-                SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages");
+                SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages"
+                    + (_mergeFormRenames > 0 ? $"; {_mergeFormRenames} form field name(s) already in use were renamed" : ""));
             });
         }
+
+        /// <summary>Form fields the merge in progress renamed because their name was already taken.</summary>
+        private int _mergeFormRenames;
 
         /// <summary>
         /// Appends every page of <paramref name="file"/> to <paramref name="doc"/>, carrying its
@@ -1078,73 +1040,120 @@ namespace TDPdf
             for (int i = 0; i < src.PageCount; i++)
                 doc.AddPage(src.Pages[i]);
 
+            // The widgets came across with their pages; register their fields (and the /DR fonts
+            // their appearances name) in this document's /AcroForm too.
+            var form = PdfFormMerge.AdoptImportedWidgets(doc, pageOffset, src);
+            _mergeFormRenames += form.FieldsRenamed;
+
             // Rewrite named-destination links in the newly added pages so they
             // resolve correctly after the catalog is not imported.
             if (namedDestMap.Count > 0)
                 PdfNamedDestinations.RewriteLinks(doc, pageOffset, namedDestMap);
         }
 
-        private void Split_Click(object sender, RoutedEventArgs e)
+        private async void Split_Click(object sender, RoutedEventArgs e)
         {
             Telemetry.TrackEvent("File.Split");
             if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             var currentFile = _currentFile;
-            var selected = PageList.SelectedItems;
-            if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to extract."); return; }
-            var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save extracted pages as" };
-            while (true)
+            int pageCount = _doc.PageCount;
+
+            // The picked thumbnails pre-fill the page list, which can be edited or typed from scratch.
+            var picked = new List<int>();
+            foreach (var item in PageList.SelectedItems) picked.Add(PageList.Items.IndexOf(item));
+            string? sourcePath = _ctx.OriginalPath;
+            string startFolder = !string.IsNullOrEmpty(sourcePath) && System.IO.Directory.Exists(System.IO.Path.GetDirectoryName(sourcePath))
+                ? System.IO.Path.GetDirectoryName(sourcePath)!
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+
+            var choice = TdpDialog.ShowExtractPages(this, pageCount,
+                TDPdf.Services.PageRangeSpec.Describe(picked.Where(i => i >= 0).ToList()), startFolder);
+            if (choice is null) return;
+
+            string baseName = !string.IsNullOrEmpty(sourcePath)
+                ? System.IO.Path.GetFileNameWithoutExtension(sourcePath)
+                : System.IO.Path.GetFileNameWithoutExtension(_ctx.DisplayName);
+            var plan = TDPdf.Services.PageRangeSpec.Plan(choice.Pages, choice.Mode, choice.EveryN, baseName);
+            var paths = plan.Select(p => System.IO.Path.Combine(choice.Folder, p.FileName)).ToList();
+
+            // Nothing is written until every name is known to be free. A file the user already has is
+            // never replaced, and never half-replaced by a run that would have stopped on it.
+            var taken = TDPdf.Services.PageRangeSpec.Taken(paths, System.IO.File.Exists).Select(System.IO.Path.GetFileName).ToList();
+            if (taken.Count > 0)
             {
-                if (!ShowPdfSaveDialog(dlg)) return;
-                // Writing the extract over the open document (or its working copy) would replace the
-                // user's file with just the selected pages. Ask for another name instead.
-                if (!TDPdf.Services.FilePathPolicy.SamePath(dlg.FileName, _ctx.OriginalPath)
-                    && !TDPdf.Services.FilePathPolicy.SamePath(dlg.FileName, currentFile))
-                    break;
+                string shown = string.Join("\n", taken.Take(8)) + (taken.Count > 8 ? $"\n...and {taken.Count - 8} more" : "");
                 TdpDialog.Show(this,
-                    "Extracted pages cannot be saved over the document they come from.\n\nChoose a different file name.",
+                    $"{(taken.Count == 1 ? "This file already exists" : "These files already exist")} in the folder:\n\n{shown}\n\nNothing was written. Choose another folder, or move or rename {(taken.Count == 1 ? "it" : "them")}.",
                     "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
             }
+
+            var written = new List<string>();
             try
             {
-                var indices = new List<int>();
-                foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
-                // Pages come from the working file on disk. Every page-structure edit goes through
-                // SaveTempAndReload, which repoints _currentFile at the result, so the thumbnail
-                // indices always match it.
-                using var importDoc = PdfReader.Open(currentFile, PdfDocumentOpenMode.Import);
-                var newDoc = new PdfDocument();
-                foreach (var idx in indices.OrderBy(i => i))
-                    newDoc.AddPage(importDoc.Pages[idx]);
-                // Atomic, like every other save: a failure part-way must not truncate a file the
-                // user just agreed to replace.
-                TDPdf.Services.AtomicFileWriter.Write(newDoc.Save, dlg.FileName, CancellationToken.None);
-                SetStatus($"Extracted {indices.Count} page(s) to {System.IO.Path.GetFileName(dlg.FileName)}");
+                CommitActiveTextBox();
+                bool finished = await TdpDialog.RunCancellable(this, "Extracting pages", (progress, ct) =>
+                {
+                    // Pages come from the working file on disk. Every page-structure edit goes through
+                    // SaveTempAndReload, which repoints _currentFile at the result, so the page numbers
+                    // always match it.
+                    using var importDoc = PdfReader.Open(currentFile, PdfDocumentOpenMode.Import);
+                    for (int i = 0; i < plan.Count; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        progress.Report(plan.Count == 1
+                            ? $"Writing {plan[i].FileName}"
+                            : $"Writing part {i + 1} of {plan.Count}");
+                        using var part = new PdfDocument();
+                        foreach (var idx in plan[i].Pages)
+                            part.AddPage(importDoc.Pages[idx]);
+                        // Atomic, like every other save: a failure part-way must not leave a torn file.
+                        TDPdf.Services.AtomicFileWriter.Write(part.Save, paths[i], ct);
+                        written.Add(paths[i]);
+                    }
+                    return Task.CompletedTask;
+                });
+                if (!finished)
+                {
+                    RemoveWritten(written);
+                    SetStatus(written.Count == 0 ? "Extract cancelled"
+                        : "Extract cancelled. The files already written were removed");
+                    return;
+                }
+                SetStatus(plan.Count == 1
+                    ? $"Extracted {choice.Pages.Count} page(s) to {plan[0].FileName}"
+                    : $"Extracted {choice.Pages.Count} page(s) into {plan.Count} files in {choice.Folder}");
             }
             catch (Exception ex)
             {
-                TdpDialog.Show(this, $"Split failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                RemoveWritten(written);   // a failed run leaves the folder as it found it
+                TdpDialog.Show(this, $"Extract failed:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        /// <summary>Deletes the files an extraction wrote before it was cancelled or failed.</summary>
+        private static void RemoveWritten(List<string> files)
+        {
+            foreach (var f in files)
+            {
+                try { System.IO.File.Delete(f); }
+                catch { /* a file we cannot remove is left for the user; the rest still go */ }
+            }
+            files.Clear();
         }
 
         private void Delete_Click(object sender, RoutedEventArgs e)
         {
             if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             var doc = _doc;
-            var selected = PageList.SelectedItems;
-            if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to delete."); return; }
-            // A PDF cannot have zero pages, and Ctrl+A followed by Delete now makes that a single
-            // gesture. Refuse rather than write a document nothing can reopen.
-            if (selected.Count >= doc.PageCount)
-            {
-                TdpDialog.Show(this, "A PDF must keep at least one page.\n\nTo discard the whole document, close it instead.",
-                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            var result = TdpDialog.Show(this, $"Delete {selected.Count} {(selected.Count == 1 ? "page" : "pages")}?", "TDPdf",
-                MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (result != MessageBoxResult.Yes) return;
-            var indices = new List<int>();
-            foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+            // The picked thumbnails pre-fill the page list; it can be edited or typed from scratch.
+            // The dialog's button states what it will do ("Delete 3 pages") and refuses a list that
+            // would remove every page, so there is no second Yes/No question afterwards.
+            var picked = new List<int>();
+            foreach (var item in PageList.SelectedItems) picked.Add(PageList.Items.IndexOf(item));
+            var indices = TdpDialog.ShowDeletePages(this, doc.PageCount,
+                TDPdf.Services.PageRangeSpec.Describe(picked.Where(i => i >= 0).ToList()));
+            if (indices is null || indices.Count == 0 || indices.Count >= doc.PageCount) return;
             RunPageOperation("Delete", () =>
             {
                 doc = _doc!;
@@ -2651,6 +2660,20 @@ namespace TDPdf
                 await OpenSeparatelyAsync(found, tempDirs);   // keep temp for the session; opened docs may reference extracted files
             else
                 CleanupDirs(tempDirs);                        // cancelled
+        }
+
+        /// <summary>
+        /// Opens a file handed to us from outside the window: the command line, an Explorer "Open with",
+        /// or a second launch forwarded over the single-instance pipe. A PDF opens as it always has; a
+        /// picture (jpg, png, bmp, gif, tif) goes through the same images-to-PDF import as a drop, into a
+        /// new unsaved tab.
+        /// </summary>
+        private async Task OpenRequestedPathAsync(string path)
+        {
+            if (IsImagePath(path))
+                await OpenImagesAsImportedTabAsync(new[] { path }, System.IO.Path.GetFileName(path));
+            else
+                await OpenInTabAsync(path);
         }
 
         private async Task OpenDroppedAsync(string path)

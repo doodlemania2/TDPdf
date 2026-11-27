@@ -52,13 +52,13 @@ namespace TDPdf.Services
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT { public int X; public int Y; }
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr WindowFromPoint(POINT p);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
 
         private const uint GA_ROOT = 2;
@@ -280,8 +280,8 @@ namespace TDPdf.Services
             Top = screenTopLeft.Y;
         }
 
-        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_TRANSPARENT = 0x20;
         private const int WS_EX_NOACTIVATE = 0x08000000;

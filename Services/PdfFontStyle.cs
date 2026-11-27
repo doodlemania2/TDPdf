@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using PdfSharpCore.Pdf;
 
 namespace TDPdf.Services
 {
@@ -7,6 +8,19 @@ namespace TDPdf.Services
     /// tokens removed, plus the bold / italic flags those tokens encoded.
     /// </summary>
     internal readonly record struct DetectedPdfFontStyle(string Family, bool Bold, bool Italic);
+
+    /// <summary>
+    /// What a PDF font dictionary says about its own face, read from /BaseFont, /FontDescriptor and
+    /// the descendant font of a Type0. Used when the font's NAME says nothing ("CIDFont+F2", "TT1").
+    /// </summary>
+    internal sealed record PdfFontDictInfo(
+        string? BaseFont, string? DescriptorName, string? Family, double Weight, int Flags, double ItalicAngle)
+    {
+        internal const int FlagItalic = 1 << 6;
+        internal const int FlagForceBold = 1 << 18;
+        internal bool IsBold => Weight >= 600 || (Flags & FlagForceBold) != 0;
+        internal bool IsItalic => ItalicAngle != 0 || (Flags & FlagItalic) != 0;
+    }
 
     /// <summary>
     /// PDF font resources commonly carry face styling in their PostScript names rather than in
@@ -45,6 +59,103 @@ namespace TDPdf.Services
             ["symbol"]            = "Symbol",
             ["zapfdingbats"]      = "Wingdings",
             ["segoeui"]           = "Segoe UI",
+        };
+
+        /// <summary>
+        /// True for a name that carries no family or face information: a resource-style name such as
+        /// "F2", "/F1", "TT1", "C2_0" or "CIDFont+F2" (what Word and many exporters write). The
+        /// subset prefix does not count towards the name.
+        /// </summary>
+        internal static bool IsGenericName(string? rawName)
+        {
+            string name = rawName?.Trim().TrimStart('/') ?? string.Empty;
+            int subset = name.IndexOf('+');
+            if (subset >= 0 && subset + 1 < name.Length) name = name[(subset + 1)..];
+            return name.Length == 0
+                || Regex.IsMatch(name, @"(?i)^(?:F|TT|T|C|R|G|Fnt|Font|CIDFont)[-_]?\d{1,3}(?:_\d+)?$");
+        }
+
+        /// <summary>
+        /// The face for a letter whose font is named <paramref name="rawName"/>. A descriptive name
+        /// is read as before; a generic one (see <see cref="IsGenericName"/>) falls back to the font
+        /// dictionary <paramref name="info"/>: a real name in /FontDescriptor or /BaseFont, then
+        /// /FontFamily, with weight, ForceBold, Italic and /ItalicAngle OR-ed into the flags.
+        /// </summary>
+        internal static DetectedPdfFontStyle FromPdfName(string? rawName, PdfFontDictInfo? info)
+        {
+            if (info is null || !IsGenericName(rawName)) return FromPdfName(rawName);
+
+            DetectedPdfFontStyle? named = null;
+            foreach (var candidate in new[] { info.DescriptorName, info.BaseFont })
+                if (!string.IsNullOrWhiteSpace(candidate) && !IsGenericName(candidate))
+                {
+                    named = FromPdfName(candidate);
+                    break;
+                }
+            if (named is null && !string.IsNullOrWhiteSpace(info.Family))
+                named = FromPdfName(info.Family);
+
+            var basis = named ?? new DetectedPdfFontStyle(DefaultFamily, false, false);
+            return new DetectedPdfFontStyle(basis.Family, basis.Bold || info.IsBold, basis.Italic || info.IsItalic);
+        }
+
+        /// <summary>Reads one font dictionary; a Type0 contributes its descendant's descriptor.</summary>
+        internal static PdfFontDictInfo? ReadFontDict(PdfDictionary? font)
+        {
+            if (font is null) return null;
+            string? baseFont = font.Elements.GetName("/BaseFont");
+            baseFont = baseFont?.TrimStart('/');
+
+            var descriptorOwner = font;
+            if (font.Elements.GetName("/Subtype") == "/Type0"
+                && font.Elements.GetArray("/DescendantFonts") is { Elements.Count: > 0 } kids
+                && PdfItems.DerefDict(kids.Elements[0]) is { } desc)
+            {
+                descriptorOwner = desc;
+                baseFont ??= desc.Elements.GetName("/BaseFont")?.TrimStart('/');
+            }
+
+            var fd = PdfItems.DerefDict(descriptorOwner.Elements["/FontDescriptor"]);
+            string? descName = fd?.Elements.GetName("/FontName")?.TrimStart('/');
+            string? family = fd is not null && PdfItems.Deref(fd.Elements["/FontFamily"]) is PdfString fs ? fs.Value : null;
+            double weight = fd is not null ? Num(fd.Elements["/FontWeight"]) : 0;
+            int flags = fd is not null ? (int)Num(fd.Elements["/Flags"]) : 0;
+            double angle = fd is not null ? Num(fd.Elements["/ItalicAngle"]) : 0;
+            return new PdfFontDictInfo(baseFont, descName, family, weight, flags, angle);
+        }
+
+        /// <summary>
+        /// Every font in the page's /Resources /Font (inherited from the page tree), keyed by the
+        /// resource name ("/F1"), by /BaseFont, and by /BaseFont without its subset prefix.
+        /// </summary>
+        internal static Dictionary<string, PdfFontDictInfo> ReadPageFonts(PdfDictionary page)
+        {
+            var map = new Dictionary<string, PdfFontDictInfo>(StringComparer.Ordinal);
+            foreach (var node in PdfItems.Ancestors(page))
+            {
+                var fonts = PdfItems.DerefDict(node.Elements["/Resources"])?.Elements.GetDictionary("/Font");
+                if (fonts is null) continue;
+                foreach (var key in fonts.Elements.Keys)
+                {
+                    if (ReadFontDict(PdfItems.DerefDict(fonts.Elements[key])) is not { } info) continue;
+                    map.TryAdd(key, info);
+                    if (!string.IsNullOrEmpty(info.BaseFont))
+                    {
+                        map.TryAdd(info.BaseFont, info);
+                        int plus = info.BaseFont.IndexOf('+');
+                        if (plus >= 0 && plus + 1 < info.BaseFont.Length) map.TryAdd(info.BaseFont[(plus + 1)..], info);
+                    }
+                }
+                break;   // nearest /Resources wins, as in the content stream
+            }
+            return map;
+        }
+
+        private static double Num(PdfItem? item) => PdfItems.Deref(item) switch
+        {
+            PdfInteger i => i.Value,
+            PdfReal r => r.Value,
+            _ => 0,
         };
 
         internal static DetectedPdfFontStyle FromPdfName(string? rawName)

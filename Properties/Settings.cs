@@ -64,6 +64,57 @@ namespace TDPdf.Properties
             set => this[nameof(LastManualZoom)] = value;
         }
 
+        // Where the main window was when it last closed (DIPs, the NORMAL bounds even if it closed
+        // maximized) and whether it was maximized. WindowPlacementSaved stays False until a first
+        // close, so a fresh profile opens centred as before. See MainWindow.Placement.cs.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool WindowPlacementSaved
+        {
+            get => (bool)this[nameof(WindowPlacementSaved)];
+            set => this[nameof(WindowPlacementSaved)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public double WindowLeft
+        {
+            get => (double)this[nameof(WindowLeft)];
+            set => this[nameof(WindowLeft)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public double WindowTop
+        {
+            get => (double)this[nameof(WindowTop)];
+            set => this[nameof(WindowTop)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public double WindowWidth
+        {
+            get => (double)this[nameof(WindowWidth)];
+            set => this[nameof(WindowWidth)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public double WindowHeight
+        {
+            get => (double)this[nameof(WindowHeight)];
+            set => this[nameof(WindowHeight)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool WindowMaximized
+        {
+            get => (bool)this[nameof(WindowMaximized)];
+            set => this[nameof(WindowMaximized)] = value;
+        }
+
         // "Book layout" for Two-Page view (upstream KillerPDF #193). False (default) pairs facing
         // pages (0,1), (2,3)…; True displays the COVER ALONE so the pairs run like a physical book —
         // page 1 on its own, then 2-3, 4-5. Like ViewMode this is an app-wide reading preference
@@ -85,6 +136,16 @@ namespace TDPdf.Properties
         {
             get => (bool)this[nameof(SingleInstanceTabs)];
             set => this[nameof(SingleInstanceTabs)] = value;
+        }
+
+        // Text boxes: false (default) means Enter saves the box and Shift+Enter adds a line; true means
+        // Enter adds a line and only Ctrl+Enter saves.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool EnterAddsNewLine
+        {
+            get => (bool)this[nameof(EnterAddsNewLine)];
+            set => this[nameof(EnterAddsNewLine)] = value;
         }
 
         // Persisted page view mode (app-wide). One of the ViewMode enum names:

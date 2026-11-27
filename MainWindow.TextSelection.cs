@@ -119,6 +119,9 @@ namespace TDPdf
         ///     build at <see cref="DispatcherPriority.Background"/>, so it lands in an idle moment
         ///     rather than stalling the gesture. The cursor corrects itself on the next move.
         /// </summary>
+        private static bool IsTextMarkupTool(EditTool t) =>
+            t is EditTool.Highlight or EditTool.Underline or EditTool.Strikethrough;
+
         private void UpdateSelectHoverCursor(Point pos, bool overLink)
         {
             if (_annotationCanvas is null) return;
@@ -156,7 +159,8 @@ namespace TDPdf
             {
                 SelectHoverCursor.Hand  => Cursors.Hand,
                 SelectHoverCursor.IBeam => Cursors.IBeam,
-                SelectHoverCursor.Arrow => Cursors.Arrow,
+                // A marking tool's empty page keeps its crosshair; only text gets the I-beam.
+                SelectHoverCursor.Arrow => IsTextMarkupTool(_currentTool) ? Cursors.Cross : Cursors.Arrow,
                 _ => null                                  // Unchanged — leave what the tool set
             };
             // Reference-compare before assigning: WPF re-evaluates the cursor on every set, and this

@@ -16,14 +16,20 @@ namespace TDPdf.Services
         /// (clockwise positive, matching the render path), where <paramref name="oldW"/> and
         /// <paramref name="oldH"/> are the page's render dims BEFORE the turn. Region-shaped
         /// annotations (highlights, markup line rects, ink, shapes, crop, edit bounds) turn with the
-        /// content they mark; upright items — text boxes, placed signatures/images, replacement edit
-        /// text — keep their own size and orientation and follow their centre to the same page spot,
+        /// content they mark, and so do text boxes and placed signatures/images: their centre follows
+        /// the page and their Rotation grows by the same turn (see <see cref="AnnotationFrame"/>),
         /// clamped inside the rotated page so nothing lands off-sheet where the user can't reach it.
+        /// Replacement edit text stays upright and follows its centre.
         ///
         /// Every applicable TDPdf annotation type is handled; unmatched types are left untouched but
         /// remain in the caller's list, so a rotation never silently drops an annotation.
         /// </summary>
-        public static void Remap(IEnumerable<PageAnnotation> annots, int delta, double oldW, double oldH)
+        /// <param name="measureText">
+        /// Size of a text box on the canvas, for a legacy auto-sized box whose Width/Height are 0.
+        /// Without it such a box is treated as a point.
+        /// </param>
+        public static void Remap(IEnumerable<PageAnnotation> annots, int delta, double oldW, double oldH,
+            Func<TextAnnotation, (double W, double H)>? measureText = null)
         {
             int d = ((delta % 360) + 360) % 360;
             if (d == 0) return;
@@ -100,14 +106,31 @@ namespace TDPdf.Services
                         break;
 
                     case TextAnnotation ta:
-                        ta.Position = MapAnchor(ta.Position.X, ta.Position.Y, ta.Width, ta.Height);
+                    {
+                        double tw = ta.Width, th = ta.Height;
+                        if ((tw <= 0 || th <= 0) && measureText is not null)
+                        {
+                            var (mw, mh) = measureText(ta);
+                            if (tw <= 0) tw = mw;
+                            if (th <= 0) th = mh;
+                        }
+                        var (tx, ty, trot) = AnnotationFrame.TurnWithPage(
+                            ta.Position.X, ta.Position.Y, tw, th, ta.Rotation, d, oldW, oldH);
+                        ta.Position = new Point(tx, ty);
+                        ta.Rotation = trot;
                         break;
+                    }
 
-                    // Signature / image share PlacedAnnotation; both stay upright and follow centre.
+                    // Signature / image share PlacedAnnotation; both turn with the page.
                     case PlacedAnnotation pa:
-                        pa.Position = MapAnchor(pa.Position.X, pa.Position.Y,
-                                                pa.SourceWidth * pa.Scale, pa.SourceHeight * pa.Scale);
+                    {
+                        var (px, py, prot) = AnnotationFrame.TurnWithPage(
+                            pa.Position.X, pa.Position.Y, pa.SourceWidth * pa.Scale, pa.SourceHeight * pa.Scale,
+                            pa.Rotation, d, oldW, oldH);
+                        pa.Position = new Point(px, py);
+                        pa.Rotation = prot;
                         break;
+                    }
 
                     // Existing-text edit: the white-out covers the (rotated) original glyphs, so it
                     // turns with the content; the replacement text renders upright, so its anchor

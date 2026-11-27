@@ -3,6 +3,7 @@ using System.Windows;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
 using PdfSharpCore.Pdf.IO;
+using TDPdf.Services;
 
 namespace TDPdf
 {
@@ -24,8 +25,23 @@ namespace TDPdf
 
             if (applyToAllPages)
             {
+                // The page the crop was drawn on gets exactly what was drawn. Every other page gets
+                // the same margins from the edges of ITS OWN visible box, as displayed (see
+                // CropMargins), so pages of another size, box origin or /Rotate are not cropped in
+                // the wrong place.
+                var src = doc.Pages[pageIndex];
+                var sb = PdfPageGeometry.VisibleBox(src);
+                var margins = CropMargins.FromRect(sb.X, sb.Y, sb.Width, sb.Height, PdfPageGeometry.Rotation(src),
+                    new CropMargins.UserRect(cropRectInPdfCoords.X, cropRectInPdfCoords.Y,
+                        cropRectInPdfCoords.X + cropRectInPdfCoords.Width, cropRectInPdfCoords.Y + cropRectInPdfCoords.Height));
                 for (int i = 0; i < doc.PageCount; i++)
-                    SetCropBox(doc.Pages[i], cropRectInPdfCoords);
+                {
+                    if (i == pageIndex) { SetCropBox(doc.Pages[i], cropRectInPdfCoords); continue; }
+                    var page = doc.Pages[i];
+                    var box = PdfPageGeometry.VisibleBox(page);
+                    var r = CropMargins.ToRect(box.X, box.Y, box.Width, box.Height, PdfPageGeometry.Rotation(page), margins);
+                    SetCropBox(page, new Rect(r.Left, r.Bottom, r.Right - r.Left, r.Top - r.Bottom));
+                }
             }
             else
             {

@@ -6,8 +6,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [2.3.0.0] - 2026-11-26
+
+A curated sync with upstream KillerPDF 1.9.3 to 1.9.7. As before, upstream's changes were read as a list of problems to look for in TDPdf's own code, every applicable item was approved individually, and nothing was copied from upstream's new engine. Several fixes below are defects of TDPdf's own that the comparison turned up, including thumbnails that turned into placeholders after an edit.
+
+### Security
+
+- Links in a PDF open exactly the address TDPdf checked, not the raw text the PDF stored (upstream 1.9.7).
+- Windows system libraries are loaded only from the Windows system folder, so a library planted next to TDPdf in Downloads is never picked up (upstream 1.9.7).
+- The working copy a page edit, redaction or undo replaces is deleted at once, instead of staying in the temp folder until the tab closes (upstream 1.9.5).
+- Redaction refuses to save when a redacted word survives in a link address, a script in the file, or document details you chose to keep, and says where (upstream 1.9.5).
+- Each password-protected save gets a new document ID, so saved versions no longer share encryption keys (upstream 1.9.5).
+- When TDPdf runs as administrator, a file opened from Explorer goes to the open window instead of a second one, still only from your own account (upstream 1.9.6).
+
+### Added
+
+- **Rotate 180°** in the rotate menus, on Ctrl+Shift+U (upstream 1.9.6).
+- **Extract Pages** takes a typed page list such as `1-3,7`, and writes one PDF, one PDF per page, or one PDF every few pages. Existing files are never replaced, and Esc cancels and removes the parts already written (upstream 1.9.3).
+- **Delete Pages** takes a typed range in one step; the button says how many pages go (upstream 1.9.3).
+- **Pictures opened from File Explorer** (JPEG, PNG, BMP, GIF, TIFF) become a new PDF, one page per picture, and TDPdf is offered under Open with for pictures without becoming the default (upstream 1.9.3).
+- **Print from Windows:** right-click Print, and printing to a named printer from other apps, use TDPdf's own printing (upstream 1.9.3).
+- The footer names the paper size: Letter, Legal, Tabloid, A3 to A5, B4, B5 and the architectural sizes ARCH A to E (upstream 1.9.3).
+- TDPdf reopens where you last closed it, and a tab moved to a new window opens beside the window it came from (upstream 1.9.3).
+- An option for Enter to add a new line in a text box, with Ctrl+Enter to save (upstream 1.9.3).
+- Signature information says when a document certified as allowing no changes was changed afterwards (upstream 1.9.5).
+
+### Changed
+
+- Highlights look the same on screen as in saved and printed copies: the colour tints the paper and the text under it stays dark, at any opacity (upstream 1.9.3).
+- Large PDFs open at once: page thumbnails are drawn as you scroll, and only the ones near the screen are kept in memory (upstream 1.9.3).
+- Page thumbnails show annotations you have not saved yet (upstream 1.9.4).
+- Switching between Single, Two-page and Continuous keeps your zoom, and leaving the page grid returns to the zoom you had (upstream 1.9.6).
+- Zooming with the toolbar, the zoom box or the keyboard keeps your place on the page (upstream 1.9.7).
+- Rotating a page also turns text boxes, signatures and pictures on it, so they stay on the content they were placed on (upstream 1.9.4).
+- Choosing Highlight, Underline or Strikethrough with text already selected marks that text, and those tools show an I-beam over text (upstream 1.9.4).
+
 ### Fixed
 
+- Page thumbnails no longer turn into "Page N" placeholders after a text edit, undo or redaction.
+- Very large pages, such as posters and drawings, print instead of coming out blank or stopping the print job (upstream 1.9.3).
+- With Fit to page, a landscape page on portrait paper (or the other way round) turns to fill the sheet, in the preview too (upstream 1.9.3).
+- No thin white line at the page edge when a page exactly fills the paper at Actual size or a custom scale (upstream 1.9.3).
+- In searchable PDFs made with OCR, each word's hidden text matches the scanned word's size and position, so selecting text no longer splits lines (upstream 1.9.3).
+- Filled form fields keep their border, background colour and text alignment when saved (upstream 1.9.3).
+- Editing text in a PDF from Word keeps its real font, bold and italic, even when the PDF names its fonts generically (upstream 1.9.6).
+- Merging PDFs keeps their form fields and the fonts they use, and renames a field whose name clashes with one already in the document (upstream 1.9.3).
+- PDF dates are always written with the Gregorian year, also on Thai, Arabic and Persian Windows (upstream 1.9.3).
+- Changing a selected mark's colour, size, opacity or font from the tool bar can be undone in one step (upstream 1.9.3).
+- After you deselect a mark, the tool bar goes back to the tool's own settings instead of still editing that mark, and re-editing a text box no longer changes the next new box's style (upstream 1.9.3).
+- A resize interrupted by a redraw is kept and marks the document as changed (upstream 1.9.3).
+- Crop with Apply to all pages keeps the same margins on every page, instead of the first page's box, on pages of a different size or position (upstream 1.9.3).
+- Back and Forward include jumps made by clicking a page thumbnail (upstream 1.9.5).
+- Right-click menus taller than the screen scroll instead of cutting off (upstream 1.9.3).
+- Two TDPdf windows no longer overwrite each other's saved signatures (upstream 1.9.5).
 - Form fields line up with the boxes printed on the page. At most zoom levels they were drawn too large and offset down and to the right (about 14% at the default fit-width zoom), so clicking a box could miss its field. Links inside the page had the same offset.
 - Edit Existing Image keeps the right part of the page. At most zoom levels it copied a region offset from the image you picked.
 - The Form tool's field buttons (Text, Paragraph, Check, Radio, Dropdown, Signature) and the buttons for a selected field show their whole label. They were cut to the width of an icon button, so "Paragraph" read "Par".
@@ -1406,7 +1457,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.2.1.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.3.0.0...HEAD
+[2.3.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.2.1.0...v2.3.0.0
 [2.2.1.0]: https://github.com/doodlemania2/TDPdf/compare/v2.2.0.0...v2.2.1.0
 [2.2.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.1.1.1...v2.2.0.0
 [2.1.1.1]: https://github.com/doodlemania2/TDPdf/compare/v2.1.0.0...v2.1.1.1

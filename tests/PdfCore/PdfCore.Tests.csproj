@@ -64,6 +64,12 @@
     <Compile Include="..\..\Services\PageBlockMove.cs" />
     <Compile Include="..\..\Services\PageIndexRemap.cs" />
     <Compile Include="..\..\Services\CanvasPixels.cs" />
+    <Compile Include="..\..\Services\HighlightMultiply.cs" />
+    <Compile Include="..\..\Services\LruCache.cs" />
+    <Compile Include="..\..\Services\CropMargins.cs" />
+    <Compile Include="..\..\Services\AnnotationFrame.cs" />
+    <Compile Include="..\..\Services\PageRangeSpec.cs" />
+    <Compile Include="..\..\Services\ShellVerbCommands.cs" />
     <Compile Include="..\..\Services\PdfPageDuplicate.cs" />
     <Compile Include="..\..\Services\TextLetterSpacing.cs" />
     <Compile Include="..\..\Services\RtlTextLayout.cs" />
@@ -73,6 +79,8 @@
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
     <Compile Include="..\..\Services\PrintTicketDuplex.cs" />
     <Compile Include="..\..\Services\PrintSheetPlan.cs" />
+    <Compile Include="..\..\Services\PrintRaster.cs" />
+    <Compile Include="..\..\Services\OcrTextFit.cs" />
     <Compile Include="..\..\Services\AtomicFileWriter.cs" />
     <Compile Include="..\..\Services\SignatureStoreFile.cs" />
     <Compile Include="..\..\Services\PdfEncryptionScan.cs" />
@@ -81,6 +89,8 @@
     <Compile Include="..\..\Services\FileFingerprint.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
     <Compile Include="..\..\Services\WindowFitMath.cs" />
+    <Compile Include="..\..\Services\WindowPlacementMath.cs" />
+    <Compile Include="..\..\Services\PaperSizeNames.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />
     <Compile Include="..\..\Services\InkDot.cs" />
     <Compile Include="..\..\Services\FlattenResolution.cs" />
@@ -101,6 +111,8 @@
     <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
     <Compile Include="..\..\Services\PdfSaveNormalizer.cs" />
     <Compile Include="..\..\Services\PdfFormText.cs" />
+    <Compile Include="..\..\Services\PdfFormMerge.cs" />
+    <Compile Include="..\..\Services\PdfFieldChrome.cs" />
     <Compile Include="..\..\Services\FormOcrPolicy.cs" />
     <Compile Include="..\..\Services\WheelPageFlipGate.cs" />
     <Compile Include="..\..\Services\PdfFontStyle.cs" />

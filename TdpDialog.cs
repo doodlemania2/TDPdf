@@ -13,7 +13,7 @@ namespace TDPdf
     // ============================================================
     // Themed dialog — replaces MessageBox for dark-UI consistency
     // ============================================================
-    internal static class TdpDialog
+    internal static partial class TdpDialog
     {
         private static SolidColorBrush Brush(string key)
         {

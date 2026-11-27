@@ -99,7 +99,7 @@ namespace TDPdf
             }
         }
 
-        private static void RemapAnnotationSnapshots(
+        private void RemapAnnotationSnapshots(
             LinkedList<UndoEntry> history,
             int pageIndex,
             int delta,
@@ -112,7 +112,7 @@ namespace TDPdf
                     && node.Value.PageIdx == pageIndex
                     && node.Value.PageAnnotations is { } annotations)
                 {
-                    TDPdf.Services.AnnotationRotate.Remap(annotations, delta, oldW, oldH);
+                    TDPdf.Services.AnnotationRotate.Remap(annotations, delta, oldW, oldH, MeasureTextForRotate);
                 }
             }
         }
@@ -193,9 +193,11 @@ namespace TDPdf
                 int selectedIdx = PageList.SelectedIndex;
                 var tempPath = NewTempPath("undo");
                 System.IO.File.WriteAllBytes(tempPath, entry.DocBytes);
+                string? supersededFile = _currentFile;
                 _doc?.Close();
                 _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
                 _currentFile = tempPath;
+                RetireWorkingCopy(supersededFile);
                 // Document edits are a history barrier: page snapshots from before/after refer
                 // to a different page layout. Drop them on both stacks (except the just-captured
                 // inverse Document entry on `target`).
@@ -208,7 +210,7 @@ namespace TDPdf
                 _renderDims.Clear();
                 ClearSelection();
                 MarkDirty();
-                RefreshPageList();
+                RefreshPageList(ThumbRefresh.Stale);
                 LoadOutlines();   // the reopened _doc has its own outline tree; rebuild the panel (#133)
                 if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                     PageList.SelectedIndex = selectedIdx;
