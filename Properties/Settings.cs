@@ -277,8 +277,9 @@ namespace TDPdf.Properties
         // --- Reopen documents on next launch (session restore) ---
 
         // Whether to reopen the last session's documents on the next launch. One of:
-        // "Ask" (default) prompts on quit when documents are open; "Yes" always reopens
-        // silently; "No" never reopens and never persists the file list (privacy).
+        // "Ask" (default) remembers the open tabs on exit and offers to restore them in a bar at the
+        // next launch; "Yes" restores them silently ("Always restore last session"); "No" never
+        // reopens and never persists the file list (privacy).
         [UserScopedSetting]
         [DefaultSettingValue("Ask")]
         public string ReopenSession
@@ -305,6 +306,17 @@ namespace TDPdf.Properties
         {
             get => (string)this[nameof(SessionActiveFile)];
             set => this[nameof(SessionActiveFile)] = value;
+        }
+
+        // Where each of those documents was (page, zoom or fit, view mode), as a small JSON list
+        // written by Services/SessionState. Only paths and view positions: never a password, never
+        // document content. Merged across windows the same way SessionFiles is.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string SessionViewStates
+        {
+            get => (string)this[nameof(SessionViewStates)];
+            set => this[nameof(SessionViewStates)] = value;
         }
 
         // Which face of the keyboard-shortcuts overlay to show: "list" (the static two-column

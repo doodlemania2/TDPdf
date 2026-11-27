@@ -241,6 +241,14 @@ namespace TDPdf
                 return;
             }
 
+            // Ctrl+Shift+T: reopen the most recently closed tab (the browser convention).
+            if (e.Key == Key.T && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            {
+                e.Handled = true;
+                _ = ReopenClosedTabAsync();
+                return;
+            }
+
             if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
             {
                 ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr()));

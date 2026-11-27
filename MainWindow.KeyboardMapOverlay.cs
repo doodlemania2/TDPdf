@@ -112,6 +112,7 @@ namespace TDPdf
             {
                 ["S"] = ("File", "Save as"),
                 ["G"] = ("Edit", "Ungroup marks"),
+                ["T"] = ("File", "Reopen closed tab"),
                 ["Z"] = ("Edit", "Redo"),
                 ["R"] = ("Edit", "Rotate pages CCW"),
                 ["U"] = ("Edit", "Rotate pages 180°"),

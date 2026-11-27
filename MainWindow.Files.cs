@@ -27,6 +27,17 @@ namespace TDPdf
         // File operations
         // ============================================================
 
+        // While a multi-file open is running, a file that will not open is recorded here instead of
+        // getting a dialog of its own, so the whole batch is reported once at the end (Open_Click).
+        private List<(string Name, string Reason)>? _openFailureSink;
+
+        private bool TryRecordOpenFailure(string path, Exception ex)
+        {
+            if (_openFailureSink is null) return false;
+            _openFailureSink.Add((System.IO.Path.GetFileName(path), ex.Message));
+            return true;
+        }
+
         private async Task OpenFileAsync(string path)
         {
             _openCancellationTokenSource?.Cancel();
@@ -87,7 +98,8 @@ namespace TDPdf
                         ["Stage"]         = "AfterPassword",
                     });
                     SetFileOperationBusy(false);
-                    TdpDialog.Show(this, $"Failed to open PDF:\n{ex2.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                    if (!TryRecordOpenFailure(path, ex2))
+                        TdpDialog.Show(this, $"Failed to open PDF:\n{ex2.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
             catch (Exception ex)
@@ -99,7 +111,8 @@ namespace TDPdf
                     ["Stage"]         = "Initial",
                 });
                 SetFileOperationBusy(false);
-                TdpDialog.Show(this, $"Failed to open PDF:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+                if (!TryRecordOpenFailure(path, ex))
+                    TdpDialog.Show(this, $"Failed to open PDF:\n{ex.Message}", "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
             {
@@ -972,29 +985,50 @@ namespace TDPdf
             var dlg = new OpenFileDialog { Filter = "PDF files|*.pdf", Title = "Open PDF", Multiselect = true };
             if (dlg.ShowDialog(this) != true) return;
 
-            // OpenFileAsync (inside OpenInTabAsync) already handles the common failure cases itself
-            // (bad file, wrong password) with its own dialog and keeps going. But OpenInTabAsync's
-            // OWN bookkeeping around it — EnsureActiveTabRegistered / ActivateContext /
-            // RebuildTabStrip — has no try/catch of its own, so an exception from any of those for
-            // file N used to silently abort the whole batch: a multi-select Open of five files could
-            // open one and never attempt the other four, with nothing telling the user why.
-            int failed = 0;
-            foreach (var file in dlg.FileNames)
+            await OpenManyAsync(dlg.FileNames);
+        }
+
+        /// <summary>
+        /// Opens every chosen file as a tab, in the order given, so the last one ends up active.
+        /// A file that will not open never stops the ones after it: failures are collected and
+        /// reported together in one message at the end, not one dialog per file. (A password
+        /// prompt is still shown per protected file, since it needs an answer.)
+        /// </summary>
+        private async Task OpenManyAsync(IReadOnlyList<string> files)
+        {
+            // OpenInTabAsync's OWN bookkeeping around OpenFileAsync — EnsureActiveTabRegistered /
+            // ActivateContext / RebuildTabStrip — has no try/catch of its own, so an exception from
+            // any of those for file N used to silently abort the whole batch.
+            var failures = new List<(string Name, string Reason)>();
+            _openFailureSink = failures;
+            int opened = 0;
+            try
             {
-                try
+                foreach (var file in files)
                 {
-                    await OpenInTabAsync(file);
-                }
-                catch (Exception ex)
-                {
-                    failed++;
-                    Telemetry.TrackCrash(ex, "Open.MultiSelect", recoverable: true);
+                    int before = failures.Count;
+                    try
+                    {
+                        await OpenInTabAsync(file);
+                        bool ok = failures.Count == before && _ctx.Doc is not null
+                                  && TDPdf.Services.FilePathPolicy.SamePath(_ctx.OriginalPath, file);
+                        if (ok) opened++;
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add((System.IO.Path.GetFileName(file), ex.Message));
+                        Telemetry.TrackCrash(ex, "Open.MultiSelect", recoverable: true);
+                    }
                 }
             }
-            if (failed > 0)
-                SetStatus(dlg.FileNames.Length == 1
-                    ? "That file could not be opened."
-                    : $"Opened {dlg.FileNames.Length - failed} of {dlg.FileNames.Length} selected file(s); {failed} failed.");
+            finally { _openFailureSink = null; }
+
+            string? report = TDPdf.Services.OpenBatchReport.Summarize(files.Count, failures);
+            if (report is null) return;
+            SetStatus(files.Count == 1
+                ? "That file could not be opened."
+                : $"Opened {opened} of {files.Count} selected file(s); {failures.Count} failed.");
+            TdpDialog.Show(this, report, "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         private void Merge_Click(object sender, RoutedEventArgs e)
@@ -2048,6 +2082,7 @@ namespace TDPdf
         private void FileMenu_SubmenuOpened(object sender, RoutedEventArgs e)
         {
             _removePasswordMenuItem.IsEnabled = _doc is not null && _ctx.WasProtected;
+            _reopenClosedTabMenuItem.IsEnabled = _closedTabs.Count > 0;
             UpdateESignatureMenu();   // MainWindow.ESignature.cs
         }
 
