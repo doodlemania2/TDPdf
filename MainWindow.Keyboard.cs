@@ -266,6 +266,15 @@ namespace TDPdf
                 ShortcutOverlay.Visibility = Visibility.Collapsed;
                 e.Handled = true;
             }
+            // Esc first lets go of a mark selection (one mark or many), before anything steps down.
+            else if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None && HasMarkSelection)
+            {
+                int selPage = _markSelection[0].PageIndex;
+                ClearSelection();
+                RenderAllAnnotations(selPage);
+                SetStatus("Selection cleared");
+                e.Handled = true;
+            }
             // Esc steps DOWN rather than straight out (upstream v1.6.6, adapted): the in-progress
             // polygon, full screen, the find bar and the shortcuts overlay each get first refusal
             // above; with nothing left to cancel, the last step drops back to the Select tool,
@@ -295,9 +304,22 @@ namespace TDPdf
             {
                 e.Handled = true;
             }
-            else if (e.Key == Key.Delete && _selectedAnnotation is not null)
+            else if (e.Key == Key.Delete && HasMarkSelection)
             {
                 DeleteSelected();
+                e.Handled = true;
+            }
+            // Arrow keys nudge the selected marks (1 canvas px, 10 with Shift). They only page the
+            // document while no mark is selected, so Esc (which deselects) hands them back.
+            else if (HasMarkSelection && _doc is not null && _currentTool == EditTool.Select
+                     && Keyboard.FocusedElement is not (ComboBox or ComboBoxItem or Slider or System.Windows.Controls.Primitives.TextBoxBase)
+                     && (Keyboard.Modifiers == ModifierKeys.None || Keyboard.Modifiers == ModifierKeys.Shift)
+                     && (e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Up || e.Key == Key.Down))
+            {
+                double step = Keyboard.Modifiers == ModifierKeys.Shift ? 10 : 1;
+                NudgeSelection(
+                    e.Key == Key.Left ? -step : e.Key == Key.Right ? step : 0,
+                    e.Key == Key.Up ? -step : e.Key == Key.Down ? step : 0);
                 e.Handled = true;
             }
             // Home / End jump to the first / last page (the Acrobat / Sumatra convention). Recorded on

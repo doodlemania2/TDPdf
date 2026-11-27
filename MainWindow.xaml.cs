@@ -3955,7 +3955,7 @@ namespace TDPdf
 
         private bool IsPointerOperationActive =>
             _isDrawing || _isSelecting || _isDraggingAnnot || _isResizingSig ||
-            _isResizingImage || _isMovingAnnot || _isResizingAnnot || _isPanning ||
+            _isResizingImage || _isMovingAnnot || _isMovingMulti || _isResizingAnnot || _isPanning ||
             _txtSelActive || _isMeasuring;
 
         // Sidebar toggle strip button and the View menu's "Toggle Sidebar" both land here.
@@ -5343,6 +5343,7 @@ namespace TDPdf
         {
             ClearSelection();
             _selectedAnnotation = annot;
+            _markSelection.Add(annot);
             // #181: the selection chrome is sized from these bounds and WPF rejects NaN/infinity on
             // Width/Height, so a caller that passed geometry derived from a malformed annotation — or
             // Rect.Empty, which WPF itself defines as (+∞, +∞, -∞, -∞) — used to crash here rather
@@ -5495,21 +5496,34 @@ namespace TDPdf
         private void RestyleLive(PageAnnotation annot)
         {
             var now = DateTime.UtcNow;
+            // With several marks selected the bar is bound to ONE of them (_styleTarget); whatever the
+            // user just changed on it is carried to the others below, inside the same undo step.
+            bool multi = IsMultiSelection && ReferenceEquals(annot, _styleTarget);
             if (_restylePre is not null && ReferenceEquals(annot, _styleTarget) &&
                 _annotations.TryGetValue(annot.PageIndex, out var pageList))
             {
                 if (!_restyleStepOpen || now - _restyleLastChange > RestyleStepIdle)
                 {
-                    var before = pageList.Select(a => ReferenceEquals(a, annot) ? _restylePre.Clone() : a.Clone()).ToList();
+                    var before = pageList.Select(a =>
+                        ReferenceEquals(a, annot) ? _restylePre.Clone()
+                        : multi && _restylePreMulti.TryGetValue(a, out var pre) ? pre.Clone()
+                        : a.Clone()).ToList();
                     PushUndo(new UndoEntry(UndoKind.PageSnapshot, annot.PageIndex, PageAnnotations: before));
                     _restyleStepOpen = true;
                 }
                 _restyleLastChange = now;
+                if (multi)
+                {
+                    var delta = StyleDelta.Between(_restylePre, annot);
+                    foreach (var other in _markSelection)
+                        if (!ReferenceEquals(other, annot)) delta.ApplyTo(other);
+                    foreach (var m in _markSelection) _restylePreMulti[m] = m.Clone();
+                }
                 _restylePre = annot.Clone();
             }
             MarkDirty();
             RenderAllAnnotations(annot.PageIndex);
-            if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
+            if (!IsMultiSelection && HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
                 RefreshSelectionVisuals(b);
         }
 
@@ -5680,6 +5694,9 @@ namespace TDPdf
             _resizingAnnot = null;
             _resizeOriginalGeom = null;
             _selectedAnnotation = null;
+            _markSelection.Clear();
+            _restylePreMulti.Clear();
+            ClearMultiChrome();
 
             // Tear down any restyle-in-place binding. In Select mode the bound bar exists only for the
             // selection, so hide it; in other tools the visible bar belongs to the active tool — leave it.
@@ -5721,21 +5738,6 @@ namespace TDPdf
                     HideTextSettings(); HideShapeSettings(); HideDrawSettings();
                     break;
             }
-        }
-
-        private void DeleteSelected()
-        {
-            if (_selectedAnnotation is null) return;
-            int pageIdx = _selectedAnnotation.PageIndex;
-            if (_annotations.ContainsKey(pageIdx))
-            {
-                PushPageSnapshot(pageIdx);
-                _annotations[pageIdx].Remove(_selectedAnnotation);
-            }
-            ClearSelection();
-            RenderAllAnnotations(pageIdx);
-            MarkDirty();
-            SetStatus("Deleted selected annotation");
         }
 
         /// <summary>
@@ -6629,6 +6631,8 @@ namespace TDPdf
             // Flowing text-selection quads live on this canvas too and were wiped by the clear;
             // repaint them last so they sit on top and survive every re-render.
             ApplyTextSelectionQuads(pageIndex);
+            // A selection of several marks has no single border to re-add: rebuild its outlines.
+            RestoreMultiSelectionChrome(pageIndex);
         }
 
         /// <summary>
@@ -6955,6 +6959,7 @@ namespace TDPdf
             _isResizingSig = false;
             _isResizingImage = false;
             _isMovingAnnot = false;
+            _isMovingMulti = false;
             _isResizingAnnot = false;
             _movingAnnot = null;
             _moveOriginalGeom = null;
