@@ -137,6 +137,8 @@ function Shot([string]$name, $proc) {
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.Clear([System.Drawing.Color]::Transparent)
     $methods = @()
+    # Windows() lists them topmost first; draw the bottom one first so dialogs and menus land on top.
+    [array]::Reverse($wins)
     foreach ($w in $wins) {
         $r = $w.Rect
         $dest = New-Object System.Drawing.Rectangle ($r.X - $u.X), ($r.Y - $u.Y), $r.Width, $r.Height
@@ -598,7 +600,8 @@ Attempt 'form-build' {
 # them (MainWindow.MultiSelect.cs: a box that touches marks selects them). The page then shows an
 # outline per mark and one group box.
 Attempt 'multi-select' {
-    Session $agreement
+    # The same session as the markup shot, where these tool buttons are known to resolve.
+    Session $incident, $agreement
     InvokeEl (FindId $app.Root 'ToolHighlightBtn'); Start-Sleep -Milliseconds 400
     PageDrag 0.117 0.220 0.600 0.220
     InvokeEl (FindId $app.Root 'ToolShapeBtn'); Start-Sleep -Milliseconds 400
