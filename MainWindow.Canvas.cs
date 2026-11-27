@@ -1015,7 +1015,10 @@ namespace TDPdf
             // Several marks dragged together
             if (_isMovingMulti)
             {
-                MultiMoveTo(pos);
+                // Capture can be lost without a MouseUp ever arriving: settle the drag instead of
+                // letting the marks keep following a button that is not held.
+                if (e.LeftButton != MouseButtonState.Pressed) FinishMultiMove();
+                else MultiMoveTo(pos);
                 return;
             }
 
