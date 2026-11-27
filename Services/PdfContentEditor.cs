@@ -73,8 +73,7 @@ namespace TDPdf
                 }
                 if (pageFonts.TryGetValue(name, out var hit)) return hit;
                 string bare = name.TrimStart('/');
-                int plus = bare.IndexOf('+');
-                if (plus >= 0 && plus + 1 < bare.Length) bare = bare[(plus + 1)..];
+                bare = PdfFontStyle.StripSubsetPrefix(bare);
                 return pageFonts.TryGetValue(name.StartsWith('/') ? name : "/" + name, out hit) ? hit
                      : pageFonts.TryGetValue(bare, out hit) ? hit
                      : pageFonts.TryGetValue("/" + bare, out hit) ? hit : null;

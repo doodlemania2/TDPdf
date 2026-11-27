@@ -1381,6 +1381,10 @@ namespace TDPdf
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int left, top, right, bottom; }
 
+        /// <summary>A monitor rectangle in device pixels as device-independent units, dividing by the given DPI scales.</summary>
+        private static Rect RectToDip(RECT r, double scaleX, double scaleY)
+            => new(r.left / scaleX, r.top / scaleY, (r.right - r.left) / scaleX, (r.bottom - r.top) / scaleY);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct MINMAXINFO
         {
@@ -1510,10 +1514,8 @@ namespace TDPdf
             IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
             GetMonitorInfo(mon, ref info);
-            var r = info.rcMonitor;
             var dpi = VisualTreeHelper.GetDpi(this);
-            return new Rect(r.left / dpi.DpiScaleX, r.top / dpi.DpiScaleY,
-                            (r.right - r.left) / dpi.DpiScaleX, (r.bottom - r.top) / dpi.DpiScaleY);
+            return RectToDip(info.rcMonitor, dpi.DpiScaleX, dpi.DpiScaleY);
         }
 
         // All state belonging to one open PDF (one tab). The shared UI controls
@@ -2921,7 +2923,7 @@ namespace TDPdf
                     RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
                 }
                 foreach (var idx in indices)
-                    doc.Pages[idx].Rotate = ((doc.Pages[idx].Rotate + delta) % 360 + 360) % 360;
+                    doc.Pages[idx].Rotate = TDPdf.Services.Angles.Mod360(doc.Pages[idx].Rotate + delta);
                 int restoreIdx = PageList.SelectedIndex;
                 SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = Math.Min(restoreIdx, PageList.Items.Count - 1);
@@ -7034,7 +7036,7 @@ namespace TDPdf
                 bmp.CacheOption = BitmapCacheOption.OnLoad;
                 bmp.EndInit();
                 bmp.Freeze();
-                int rotation = ((edit.Rotation % 360) + 360) % 360;
+                int rotation = TDPdf.Services.Angles.Mod360(edit.Rotation);
                 if (rotation == 0) return bmp;
                 var rotated = new TransformedBitmap(bmp, new RotateTransform(rotation));
                 rotated.Freeze();

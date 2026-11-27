@@ -100,7 +100,7 @@ namespace TDPdf.Services
                 }
             }
 
-            int rot = mk?.Elements["/R"] is PdfInteger ri ? ((ri.Value % 360) + 360) % 360 : 0;
+            int rot = mk?.Elements["/R"] is PdfInteger ri ? Angles.Mod360(ri.Value) : 0;
             if (rot % 90 != 0) rot = 0;
 
             return new FieldChrome

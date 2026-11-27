@@ -337,7 +337,7 @@ namespace TDPdf.Services
         /// <summary>/Rotate, normalised to 0, 90, 180 or 270.</summary>
         internal static int Rotation(PdfPage page)
         {
-            int r = ((InheritedInt(page, "/Rotate") % 360) + 360) % 360;
+            int r = Angles.Mod360(InheritedInt(page, "/Rotate"));
             // A file is entitled to write 45; PDF readers round to the nearest quarter turn rather
             // than refuse the page, and so does the renderer we are matching.
             return (int)(Math.Round(r / 90.0) * 90) % 360;

@@ -62,6 +62,16 @@ namespace TDPdf.Services
         };
 
         /// <summary>
+        /// "ABCDEF+Helvetica" becomes "Helvetica": drops everything up to the first '+', the PDF
+        /// font-subset tag. A name with no '+', or one that ends in it, is returned unchanged.
+        /// </summary>
+        internal static string StripSubsetPrefix(string name)
+        {
+            int plus = name.IndexOf('+');
+            return plus >= 0 && plus + 1 < name.Length ? name[(plus + 1)..] : name;
+        }
+
+        /// <summary>
         /// True for a name that carries no family or face information: a resource-style name such as
         /// "F2", "/F1", "TT1", "C2_0" or "CIDFont+F2" (what Word and many exporters write). The
         /// subset prefix does not count towards the name.
@@ -69,8 +79,7 @@ namespace TDPdf.Services
         internal static bool IsGenericName(string? rawName)
         {
             string name = rawName?.Trim().TrimStart('/') ?? string.Empty;
-            int subset = name.IndexOf('+');
-            if (subset >= 0 && subset + 1 < name.Length) name = name[(subset + 1)..];
+            name = StripSubsetPrefix(name);
             return name.Length == 0
                 || Regex.IsMatch(name, @"(?i)^(?:F|TT|T|C|R|G|Fnt|Font|CIDFont)[-_]?\d{1,3}(?:_\d+)?$");
         }
@@ -142,8 +151,7 @@ namespace TDPdf.Services
                     if (!string.IsNullOrEmpty(info.BaseFont))
                     {
                         map.TryAdd(info.BaseFont, info);
-                        int plus = info.BaseFont.IndexOf('+');
-                        if (plus >= 0 && plus + 1 < info.BaseFont.Length) map.TryAdd(info.BaseFont[(plus + 1)..], info);
+                        map.TryAdd(StripSubsetPrefix(info.BaseFont), info);
                     }
                 }
                 break;   // nearest /Resources wins, as in the content stream
@@ -163,8 +171,7 @@ namespace TDPdf.Services
             string name = rawName?.Trim() ?? string.Empty;
 
             // Strip the PDF subset prefix: "ABCDEF+Helvetica" -> "Helvetica".
-            int subset = name.IndexOf('+');
-            if (subset >= 0 && subset + 1 < name.Length) name = name[(subset + 1)..];
+            name = StripSubsetPrefix(name);
 
             bool bold = Regex.IsMatch(name, @"(?i)(bold|semibold|demibold|black|heavy|[-_,]bd(?:mt)?$)");
             bool italic = Regex.IsMatch(name, @"(?i)(italic|oblique|[-_,](?:it|obl)(?:mt)?$)");

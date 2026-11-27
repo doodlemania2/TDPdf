@@ -71,6 +71,7 @@
     <Compile Include="..\..\Services\HighlightMultiply.cs" />
     <Compile Include="..\..\Services\LruCache.cs" />
     <Compile Include="..\..\Services\CropMargins.cs" />
+    <Compile Include="..\..\Services\Angles.cs" />
     <Compile Include="..\..\Services\AnnotationFrame.cs" />
     <Compile Include="..\..\Services\PageRangeSpec.cs" />
     <Compile Include="..\..\Services\ShellVerbCommands.cs" />

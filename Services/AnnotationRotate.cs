@@ -31,7 +31,7 @@ namespace TDPdf.Services
         public static void Remap(IEnumerable<PageAnnotation> annots, int delta, double oldW, double oldH,
             Func<TextAnnotation, (double W, double H)>? measureText = null)
         {
-            int d = ((delta % 360) + 360) % 360;
+            int d = Angles.Mod360(delta);
             if (d == 0) return;
             double newW = d == 90 || d == 270 ? oldH : oldW;
             double newH = d == 90 || d == 270 ? oldW : oldH;
@@ -83,7 +83,7 @@ namespace TDPdf.Services
                                 ma.LineRects[i] = MapRect(ma.LineRects[i]);
                             ma.SyncBounds();
                         }
-                        ma.Rotation = ((ma.Rotation + d) % 360 + 360) % 360;
+                        ma.Rotation = Angles.Mod360(ma.Rotation + d);
                         break;
 
                     case HighlightAnnotation ha:
@@ -146,7 +146,7 @@ namespace TDPdf.Services
                     case ImageEditAnnotation ie:
                         ie.OriginalBounds = MapRect(ie.OriginalBounds);
                         ie.TargetBounds = MapRect(ie.TargetBounds);
-                        ie.Rotation = ((ie.Rotation + d) % 360 + 360) % 360;
+                        ie.Rotation = Angles.Mod360(ie.Rotation + d);
                         break;
 
                     // Transient crop overlay — normally consumed by the apply-crop reload rather than
