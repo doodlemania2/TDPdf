@@ -5360,8 +5360,19 @@ namespace TDPdf
 
             // Restyle-in-place: reopen the matching settings bar bound to this annotation.
             _styleTarget = annot;
+            _restylePre = annot.Clone();
+            _restyleStepOpen = false;
             ShowStyleBarForSelection(annot);
         }
+
+        // Undo for restyling a selected mark (colour, size, opacity, width, font...). One user
+        // action is one undo step: the first change pushes the page as it was before the change, and
+        // further changes to the same mark join that step until it is deselected, another mark is
+        // selected, or RestyleStepIdle passes with no change (a slider drag changes continuously).
+        private static readonly TimeSpan RestyleStepIdle = TimeSpan.FromSeconds(1);
+        private PageAnnotation? _restylePre;      // the bound mark as it was before its latest change
+        private bool _restyleStepOpen;
+        private DateTime _restyleLastChange;
 
         /// <summary>
         /// Shows the settings bar matching the selected annotation, bound to it (restyle-in-place).
@@ -5400,6 +5411,19 @@ namespace TDPdf
         /// </summary>
         private void RestyleLive(PageAnnotation annot)
         {
+            var now = DateTime.UtcNow;
+            if (_restylePre is not null && ReferenceEquals(annot, _styleTarget) &&
+                _annotations.TryGetValue(annot.PageIndex, out var pageList))
+            {
+                if (!_restyleStepOpen || now - _restyleLastChange > RestyleStepIdle)
+                {
+                    var before = pageList.Select(a => ReferenceEquals(a, annot) ? _restylePre.Clone() : a.Clone()).ToList();
+                    PushUndo(new UndoEntry(UndoKind.PageSnapshot, annot.PageIndex, PageAnnotations: before));
+                    _restyleStepOpen = true;
+                }
+                _restyleLastChange = now;
+                _restylePre = annot.Clone();
+            }
             MarkDirty();
             RenderAllAnnotations(annot.PageIndex);
             if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
@@ -5537,6 +5561,8 @@ namespace TDPdf
         private void ClearSelection()
         {
             FinishResizeInProgress();
+            _restyleStepOpen = false;
+            _restylePre = null;
             if (_selectionBorder is not null)
             {
                 _annotationCanvas.Children.Remove(_selectionBorder);
