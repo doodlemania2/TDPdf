@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using PdfSharpCore.Pdf;
 
 namespace TDPdf
@@ -228,7 +229,8 @@ namespace TDPdf
             if (_ctx.Doc is null)
             {
                 // Empty tab → drop-zone state.
-                PageList.Items.Clear();
+                _ctx.Thumbs.Clear();
+                PageList.ItemsSource = null;
                 if (FindName("PageImage") is System.Windows.Controls.Image img)
                 {
                     img.Source = null;
@@ -266,7 +268,7 @@ namespace TDPdf
                 _pageJumpBox.IsEnabled = true;
                 _pageTotalLabel.Text = $"/ {_ctx.Doc.PageCount}";
                 UpdatePageControlsForDoc(true);
-                RefreshPageList(_ctx.Thumbnails);
+                RefreshPageList(ThumbRefresh.Keep);   // same files: the tab's cached thumbnails still apply
                 LoadOutlines();   // rebuild the bookmark tree from this tab's live document
 
                 int idx = _ctx.SelectedPageIndex;
@@ -674,7 +676,7 @@ namespace TDPdf
             ctx.SearchResultPages.Clear();
             CancelSearch(ctx);
             ctx.SearchIndex = null;
-            ctx.Thumbnails = null;
+            ctx.Thumbs.Clear();
             ctx.ViewCaptured = false;   // #399: nothing left to resume into
             _tabs.Remove(ctx);
 
@@ -697,6 +699,154 @@ namespace TDPdf
                 ActivateContext(_tabs[next]);
             }
             RebuildTabStrip();
+        }
+
+        // ============================================================
+        // Page thumbnails: built on demand, cached with a bound
+        // ============================================================
+        //
+        // The sidebar's ListBox holds one cheap PageThumbItem per page and virtualises, so only the
+        // entries on screen (plus a page of margin either side) have containers. A container being
+        // realised is the request for its thumbnail: it is served from the tab's LRU cache when
+        // there, else queued, and rendered off the UI thread in small batches (one PDFium document
+        // open per batch; PDFium itself is serialised by Docnet's lock, the same one the viewer's
+        // renders take). An entry that scrolls away drops its bitmap, so memory follows what is
+        // visible, and the cache only bounds what scrolling back costs. A render that fails leaves
+        // the "Page N" placeholder and is simply asked for again the next time the entry is shown.
+
+        /// <summary>How <see cref="RefreshPageList"/> treats the tab's cached thumbnails.</summary>
+        private enum ThumbRefresh
+        {
+            /// <summary>The same document, unchanged (switching back to a tab): cache stays valid.</summary>
+            Keep,
+            /// <summary>The pages were edited: cached bitmaps still show but every entry is
+            /// re-rendered when shown, so a page never flips back to a text placeholder.</summary>
+            Stale,
+            /// <summary>A different document: forget everything.</summary>
+            Reset,
+        }
+
+        private const int ThumbBatchSize = 6;
+        private ScrollViewer? _pageListScroll;
+
+        private void RefreshPageList(ThumbRefresh mode = ThumbRefresh.Reset)
+        {
+            var ctx = _ctx;
+            var store = ctx.Thumbs;
+            store.CancelSession();
+            PageList.ItemsSource = null;
+            if (_doc is null) { store.Clear(); return; }
+
+            int count = _doc.PageCount;
+            // A different page count means the cached entries no longer line up with the pages.
+            if (mode == ThumbRefresh.Reset || (mode == ThumbRefresh.Stale && store.PageCount != count))
+            {
+                store.Cache.Clear();
+                store.Generation++;
+            }
+            else if (mode == ThumbRefresh.Stale)
+            {
+                store.Generation++;
+            }
+            store.PageCount = count;
+
+            var session = new PageThumbSession(ctx, store.Generation);
+            store.Session = session;
+            var items = new List<PageThumbItem>(count);
+            for (int i = 0; i < count; i++) items.Add(new PageThumbItem(i, session));
+            PageList.ItemsSource = items;
+        }
+
+        private void PageThumb_Loaded(object sender, RoutedEventArgs e)
+            => ShowThumbItem((sender as FrameworkElement)?.DataContext as PageThumbItem);
+
+        private void PageThumb_Unloaded(object sender, RoutedEventArgs e)
+            => HideThumbItem((sender as FrameworkElement)?.DataContext as PageThumbItem);
+
+        // Recycling hands a container a different entry without unloading it.
+        private void PageThumb_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            HideThumbItem(e.OldValue as PageThumbItem);
+            if (sender is FrameworkElement { IsLoaded: true })
+                ShowThumbItem(e.NewValue as PageThumbItem);
+        }
+
+        private void HideThumbItem(PageThumbItem? item)
+        {
+            if (item is null) return;
+            item.Realised = false;
+            item.Thumb = null;   // the cache keeps it for a while; the entry must not pin it
+        }
+
+        private void ShowThumbItem(PageThumbItem? item)
+        {
+            if (item is null || item.Session.Cancelled) return;
+            item.Realised = true;
+            var store = ((DocumentContext)item.Session.Owner).Thumbs;
+            if (store.Cache.TryGet(item.Index, out var cached))
+            {
+                item.Thumb = cached.Bitmap;
+                if (cached.Generation == item.Session.Generation) return;   // current: nothing to render
+            }
+            if (item.Queued) return;
+            item.Queued = true;
+            item.Session.Pending.Add(item);
+            _ = PumpThumbnailsAsync(item.Session);
+        }
+
+        private async Task PumpThumbnailsAsync(PageThumbSession session)
+        {
+            if (session.Running) return;
+            session.Running = true;
+            var ctx = (DocumentContext)session.Owner;
+            var token = session.Cts.Token;
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    // Newest requests first: what the user has just scrolled to matters most.
+                    var batch = new List<PageThumbItem>(ThumbBatchSize);
+                    while (session.Pending.Count > 0 && batch.Count < ThumbBatchSize)
+                    {
+                        var it = session.Pending[^1];
+                        session.Pending.RemoveAt(session.Pending.Count - 1);
+                        if (it.Realised) batch.Add(it); else it.Queued = false;   // scrolled away meanwhile
+                    }
+                    if (batch.Count == 0) break;
+
+                    string? path = ctx.CurrentFile;
+                    BitmapSource?[] bitmaps;
+                    if (path is null) bitmaps = new BitmapSource?[batch.Count];
+                    else
+                    {
+                        try { bitmaps = await _pdfDocumentService.RenderThumbnailsAsync(path, batch.Select(b => b.Index).ToArray(), token); }
+                        catch (OperationCanceledException) { break; }
+                        catch { bitmaps = new BitmapSource?[batch.Count]; }   // unreadable now: placeholders, retried on re-show
+                    }
+                    if (token.IsCancellationRequested) break;
+
+                    for (int i = 0; i < batch.Count; i++)
+                    {
+                        var it = batch[i];
+                        it.Queued = false;
+                        if (bitmaps[i] is not { } bmp) continue;
+                        ctx.Thumbs.Cache.Set(it.Index, (bmp, session.Generation));
+                        if (it.Realised) it.Thumb = bmp;
+                    }
+                }
+            }
+            finally { session.Running = false; }
+        }
+
+        private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+        {
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is T hit) return hit;
+                if (FindDescendant<T>(child) is { } deeper) return deeper;
+            }
+            return null;
         }
 
         // ============================================================
@@ -822,15 +972,30 @@ namespace TDPdf
         /// </remarks>
         private int DropTargetIndex(Point pos)
         {
+            // The list virtualises, so only some entries have containers. Ask the entry under the
+            // pointer first (cheap, and right for the common case of hovering over a page)...
+            if (PageList.InputHitTest(pos) is DependencyObject hit
+                && ContainerUnderMouse(hit) is ListBoxItem under
+                && PageList.ItemContainerGenerator.IndexFromContainer(under) is int at and >= 0)
+            {
+                var mid = under.TranslatePoint(new Point(0, under.ActualHeight / 2), PageList);
+                return pos.Y < mid.Y ? at : at + 1;
+            }
+
+            // ...else the pointer is in a gap or past the last entry: walk the realised ones.
+            int lastRealised = -1;
             for (int i = 0; i < PageList.Items.Count; i++)
             {
                 if (PageList.ItemContainerGenerator.ContainerFromIndex(i) is ListBoxItem item)
                 {
+                    lastRealised = i;
                     var mid = item.TranslatePoint(new Point(0, item.ActualHeight / 2), PageList);
                     if (pos.Y < mid.Y) return i;
                 }
             }
-            return PageList.Items.Count;
+            return lastRealised >= 0 && PageList.Items.Count > lastRealised + 1 && pos.Y < PageList.ActualHeight
+                ? lastRealised + 1
+                : PageList.Items.Count;
         }
 
         private void ShowPageDropLine(int beforeIndex)
@@ -843,7 +1008,7 @@ namespace TDPdf
             {
                 y = at.TranslatePoint(new Point(0, 0), _sidebarListHost).Y;
             }
-            else if (PageList.ItemContainerGenerator.ContainerFromIndex(PageList.Items.Count - 1)
+            else if (PageList.ItemContainerGenerator.ContainerFromIndex(Math.Min(beforeIndex, PageList.Items.Count) - 1)
                      is ListBoxItem last)
             {
                 y = last.TranslatePoint(new Point(0, last.ActualHeight), _sidebarListHost).Y;

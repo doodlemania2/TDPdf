@@ -551,14 +551,14 @@ namespace TDPdf
             // Fires during XAML load before manual refs are assigned — guard.
             if (_outlineScrollViewer is null) return;
             _outlineScrollViewer.Visibility = Visibility.Collapsed;
-            SidebarScrollViewer.Visibility = Visibility.Visible;
+            PageList.Visibility = Visibility.Visible;
             _pageControlsRow.Visibility = Visibility.Visible;
         }
 
         private void SidebarOutlinesTab_Checked(object sender, RoutedEventArgs e)
         {
             if (_outlineScrollViewer is null) return;
-            SidebarScrollViewer.Visibility = Visibility.Collapsed;
+            PageList.Visibility = Visibility.Collapsed;
             _outlineScrollViewer.Visibility = Visibility.Visible;
             _pageControlsRow.Visibility = Visibility.Collapsed;
         }

@@ -131,8 +131,8 @@ namespace TDPdf
             bool assignedDocument = false;
             try
             {
-                int pageCount = result.Document.PageCount;
-                var thumbnails = await _pdfDocumentService.RenderThumbnailsAsync(result.WorkingPath, pageCount, cancellationToken);
+                // No thumbnails are rendered here: the sidebar renders the ones on screen on demand
+                // (RefreshPageList), so the document is up as soon as it is open however long it is.
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (_doc is not null) { _doc.Close(); _doc = null; }
@@ -168,9 +168,8 @@ namespace TDPdf
                 _searchPageCursor = -1;
                 ClearSecondaryPages();
                 ClearSelection();
-                RefreshPageList(thumbnails);
+                RefreshPageList(ThumbRefresh.Reset);
                 LoadOutlines();
-                _ctx.Thumbnails = thumbnails;
                 // #399: a different document in this tab — or the same one reloaded at a new
                 // geometry, as the crop path does — has no resume point. ApplyViewModeOnOpen
                 // below places it from the app-global standing preference, exactly as always.
@@ -255,105 +254,6 @@ namespace TDPdf
         // panel; TdpDialog gives it the same borderless wordmark chrome as every other TDPdf dialog.
         // Enter/Esc and the Open/Cancel semantics (null == cancelled) are unchanged.
         private string? PromptForPassword(string filename) => TdpDialog.PromptPassword(this, filename);
-
-        private void RefreshPageList(IReadOnlyList<BitmapSource?>? thumbnails = null)
-        {
-            PageList.Items.Clear();
-            if (_doc is null) return;
-
-            for (int i = 0; i < _doc.PageCount; i++)
-            {
-                BitmapSource? thumb = thumbnails is not null && i < thumbnails.Count ? thumbnails[i] : null;
-                var panel = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
-                FillPageThumbPanel(panel, i, thumb);
-                PageList.Items.Add(panel);
-            }
-        }
-
-        /// <summary>
-        /// Rebuilds the sidebar after the document's PAGES changed underneath it (a text edit, an
-        /// undo/redo of a document change, a redaction, a reload). The previous thumbnails stay on
-        /// screen where the page count is unchanged — so the sidebar never collapses into "Page N"
-        /// text — while every page is re-rendered from the new file in the background and swapped in
-        /// place, which keeps the selection.
-        /// </summary>
-        private void RefreshPageListAfterEdit()
-        {
-            if (_doc is null) { RefreshPageList(); return; }
-            var ctx = _ctx;
-            int count = _doc.PageCount;
-            var stale = ctx.Thumbnails is { } prev && prev.Count == count ? prev : null;
-            RefreshPageList(stale);
-            _ = ReRenderThumbnailsAsync(ctx, _currentFile, count);
-        }
-
-        private int _thumbRefreshGeneration;
-
-        private async Task ReRenderThumbnailsAsync(DocumentContext ctx, string? path, int count)
-        {
-            if (path is null) return;
-            int gen = ++_thumbRefreshGeneration;
-            IReadOnlyList<BitmapSource?> fresh;
-            try { fresh = await _pdfDocumentService.RenderThumbnailsAsync(path, count, CancellationToken.None); }
-            catch { return; }   // the placeholders / stale thumbnails simply stay
-
-            // A newer refresh, another tab or a different page count means these belong to a
-            // document state nobody is looking at any more.
-            if (gen != _thumbRefreshGeneration || !ReferenceEquals(ctx, _ctx) || _doc is null
-                || PageList.Items.Count != count || fresh.Count != count)
-                return;
-
-            ctx.Thumbnails = fresh;
-            for (int i = 0; i < count; i++)
-                if (PageList.Items[i] is StackPanel panel)
-                    FillPageThumbPanel(panel, i, fresh[i]);
-        }
-
-        /// <summary>(Re)populates one sidebar entry: the thumbnail (or a "Page N" placeholder when
-        /// there is none) above its label. Mutates the panel in place so a refresh keeps the item,
-        /// and therefore the selection.</summary>
-        private void FillPageThumbPanel(StackPanel panel, int i, BitmapSource? thumb)
-        {
-            panel.Children.Clear();
-            if (thumb is not null)
-            {
-                var img = new Image
-                {
-                    Source = thumb,
-                    Width = 140,
-                    Height = 140.0 * thumb.PixelHeight / thumb.PixelWidth,
-                    Stretch = Stretch.Uniform,
-                    Margin = new Thickness(0, 0, 0, 2)
-                };
-                panel.Children.Add(new Border
-                {
-                    Background = Brushes.White,
-                    BorderBrush = BrushResource("BorderDim"),
-                    BorderThickness = new Thickness(1),
-                    Child = img
-                });
-            }
-            else
-            {
-                panel.Children.Add(new TextBlock
-                {
-                    Text = $"Page {i + 1}",
-                    Foreground = (SolidColorBrush)FindResource("TextPrimary"),
-                    FontFamily = new FontFamily("Consolas"),
-                    FontSize = 13,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    Margin = new Thickness(0, 20, 0, 20)
-                });
-            }
-            panel.Children.Add(new TextBlock
-            {
-                Text = $"Page {i + 1}",
-                Foreground = (SolidColorBrush)FindResource("TextSecondary"),
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 10,
-                HorizontalAlignment = HorizontalAlignment.Center
-            });
-        }
 
         private void UpdateCurrentDpiScale()
         {

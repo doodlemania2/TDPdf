@@ -1614,7 +1614,7 @@ namespace TDPdf
             public TDPdf.Services.PdfTextSearch.Index? SearchIndex;
 
             // View state restored when this tab is re-activated.
-            public IReadOnlyList<BitmapSource?>? Thumbnails;
+            public readonly PageThumbStore Thumbs = new();
             public int SelectedPageIndex = -1;
 
             // ── Per-tab scroll + zoom (#399, adapted from upstream KillerPDF) ──────────────────
@@ -5076,7 +5076,7 @@ namespace TDPdf
             HideRedactSettings();
             MarkDirty();
 
-            RefreshPageListAfterEdit();
+            RefreshPageList(ThumbRefresh.Stale);
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
             else if (PageList.Items.Count > 0)
@@ -6944,7 +6944,7 @@ namespace TDPdf
             // Same reasoning for the link-target page map (#438): keyed on the document instance,
             // which the reload replaced, but dropped here explicitly all the same.
             InvalidateLinkPageMap();
-            RefreshPageListAfterEdit();
+            RefreshPageList(ThumbRefresh.Stale);
             if (PageList.Items.Count > 0)
                 PageList.SelectedIndex = Math.Clamp(selectedIdx, 0, PageList.Items.Count - 1);
 
@@ -7918,11 +7918,13 @@ namespace TDPdf
 
         private void PageList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
-            // The ListBox's internal ScrollViewer is disabled, so wheel events don't
-            // scroll anything. Forward them to the outer SidebarScrollViewer manually,
-            // at the same boosted speed as the document viewport (WheelScrollFactor).
-            SidebarScrollViewer.ScrollToVerticalOffset(
-                SidebarScrollViewer.VerticalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
+            // The ListBox's own ScrollViewer would take the wheel at the stock speed; scroll it
+            // ourselves at the same boosted speed as the document viewport (WheelScrollFactor).
+            // The list uses pixel scrolling, so the offset is in DIPs.
+            _pageListScroll ??= FindDescendant<ScrollViewer>(PageList);
+            if (_pageListScroll is null) return;
+            _pageListScroll.ScrollToVerticalOffset(
+                _pageListScroll.VerticalOffset - e.Delta * (48.0 / 120.0) * WheelScrollFactor);
             e.Handled = true;
         }
 
@@ -7939,6 +7941,9 @@ namespace TDPdf
                 // carrying one across would be a number about a page nobody is looking at.
                 ClearMeasurement();
                 _pageJumpBox.Text = (PageList.SelectedIndex + 1).ToString();
+                // The list virtualises, so the current page may have no container yet (a jump from
+                // the page box, an outline link): bring it into view.
+                if (PageList.SelectedItems.Count == 1) PageList.ScrollIntoView(PageList.SelectedItem);
                 UpdatePageSizeReadout();   // pages can differ in size, so the chip follows the page
 
                 // Continuous view: the whole document is one scroll, so a sidebar selection
