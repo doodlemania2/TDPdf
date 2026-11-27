@@ -940,13 +940,18 @@ namespace TDPdf
         /// PdfDocumentService.RenderBoxDip, so one unchanged page would flicker between three
         /// numbers and every one of them would describe this machine rather than the document.
         /// </remarks>
-        private static string FormatPageSize(double wPt, double hPt, PageSizeUnit unit) => unit switch
+        private static string FormatPageSize(double wPt, double hPt, PageSizeUnit unit)
         {
-            PageSizeUnit.Pixels      => $"{wPt * 96.0 / 72.0:0} × {hPt * 96.0 / 72.0:0} px",
-            PageSizeUnit.Inches      => $"{wPt / 72.0:0.##} × {hPt / 72.0:0.##} in",
-            PageSizeUnit.Millimetres => $"{wPt / 72.0 * 25.4:0} × {hPt / 72.0 * 25.4:0} mm",
-            _                        => $"{wPt:0} × {hPt:0} pt"
-        };
+            string size = unit switch
+            {
+                PageSizeUnit.Pixels      => $"{wPt * 96.0 / 72.0:0} × {hPt * 96.0 / 72.0:0} px",
+                PageSizeUnit.Inches      => $"{wPt / 72.0:0.##} × {hPt / 72.0:0.##} in",
+                PageSizeUnit.Millimetres => $"{wPt / 72.0 * 25.4:0} × {hPt / 72.0 * 25.4:0} mm",
+                _                        => $"{wPt:0} × {hPt:0} pt"
+            };
+            // A standard paper size is named after the numbers, in whichever unit is showing.
+            return TDPdf.Services.PaperSizeNames.Name(wPt, hPt) is { } paper ? $"{size} ({paper})" : size;
+        }
 
         private void SetBusy(bool isBusy, string? status = null)
         {

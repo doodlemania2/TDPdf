@@ -318,7 +318,7 @@ namespace TDPdf
             // stays the existing 100% reset. (Upstream v1.6.4)
             else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
-                BeginManualZoom();
+                BeginAnchoredZoom();
                 // Actual size — a true 100% in every view mode, because Zoom.ZoomLevel is true
                 // zoom and MainWindow converts to the tile's layout scale (DisplayZoomFactor).
                 Zoom.SetZoomLevel(1.0);
@@ -347,6 +347,14 @@ namespace TDPdf
                          || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
             {
                 RotatePages_Click(Keyboard.Modifiers == ModifierKeys.Control ? 90 : -90);
+                e.Handled = true;
+            }
+            // Ctrl+Shift+U turns the selected pages half way round. Ctrl+U is underline inside a text
+            // box only (that handler never reaches here), and Ctrl+Shift+U was unclaimed.
+            else if (e.Key == Key.U && _doc is not null
+                     && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            {
+                RotatePages_Click(180);
                 e.Handled = true;
             }
             // Jump history: Alt+Left / Alt+Right retrace bookmark / link / jump-box / Home-End hops,

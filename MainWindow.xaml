@@ -304,7 +304,13 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="4" Padding="4">
-                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                            <!-- A menu taller than the screen scrolls instead of running off it. -->
+                            <ScrollViewer Style="{x:Null}"
+                                          MaxHeight="{x:Static local:MainWindow.MenuMaxHeight}"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                            </ScrollViewer>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
@@ -347,6 +353,7 @@
                             <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.4"/>
                         </Border.Effect>
                         <ScrollViewer Style="{x:Null}"
+                                      MaxHeight="{x:Static local:MainWindow.MenuMaxHeight}"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled">
                             <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
@@ -536,7 +543,12 @@
                                             <Border.Effect>
                                                 <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.4"/>
                                             </Border.Effect>
-                                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                            <ScrollViewer Style="{x:Null}"
+                                                          MaxHeight="{x:Static local:MainWindow.MenuMaxHeight}"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                            </ScrollViewer>
                                         </Border>
                                     </Popup>
                                 </Grid>
@@ -1891,6 +1903,7 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Delete"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Delete selected annotation"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Enter / Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Confirm / cancel text or crop"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+R / Ctrl+Shift+R"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Rotate selected pages CW / CCW"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+U"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Rotate selected pages 180°"/></Grid>
 
                             <TextBlock Text="SEARCH &amp; SELECT" Foreground="{DynamicResource AccentGreen}"
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,12,0,4"/>

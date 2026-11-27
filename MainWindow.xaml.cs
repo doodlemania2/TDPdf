@@ -505,6 +505,7 @@ namespace TDPdf
         {
             ApplyInitialWindowChromeSettings();
             InitializeComponent();
+            ApplyStartupPlacement();
             _tabs.Add(_ctx);
             // Always on, regardless of the SingleInstanceTabs setting: that one only governs
             // whether a second LAUNCH folds into this window, but once two windows exist (via a
@@ -908,7 +909,7 @@ namespace TDPdf
         // 1.8.92 (WorkAreaFit); best-effort, a window size is never worth failing startup over.
         private void FitToStartupMonitor()
         {
-            if (WindowState != WindowState.Normal) return;
+            if (WindowState != WindowState.Normal || _placementApplied) return;
             try
             {
                 double sx = _currentDpiScale > 0 ? _currentDpiScale : 1.0;
@@ -2112,6 +2113,7 @@ namespace TDPdf
             // Closing is now committed (any dirty prompt was accepted). Decide whether to remember the
             // open documents for next launch, then persist or clear the saved session accordingly.
             HandleSessionOnClose();
+            SaveWindowPlacement();
             ThemeManager.ThemeChanged -= ThemeManager_ThemeChanged;
             _hwndSource?.RemoveHook(WndProc);
             _windowTransferServer?.Dispose();
@@ -2735,6 +2737,7 @@ namespace TDPdf
             // so the pair reads as a matched set instead of two unrelated icons.
             menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
+            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
                 "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", "\uE90F"));
             menu.Items.Add(new Separator());
@@ -2810,6 +2813,7 @@ namespace TDPdf
             var menu = new ContextMenu();
             menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
+            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
             menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
                 "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", ""));
             menu.PlacementTarget = (UIElement)sender;
@@ -3026,6 +3030,9 @@ namespace TDPdf
             // Continuous collapses the page panel, so without this the live editor simply went
             // invisible while still being the active one.
             CommitActiveTextBox();
+            // Zoom to carry across the switch: the fit the user is in, or their manual zoom. Leaving
+            // the thumbnail Grid goes back to what it was before Grid was entered.
+            var (keepFit, keepZoom) = CaptureZoomForViewSwitch(_viewMode, mode);
             _viewMode = mode;
             // #399: an offset still owed to a tab switch was measured in the mode we are leaving
             // — Continuous's strip and Grid's wrap panel are different scroll surfaces entirely —
@@ -3074,7 +3081,7 @@ namespace TDPdf
             if (mode == ViewMode.Continuous)
             {
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                    () => SetupContinuousView(idx));
+                    () => { SetupContinuousView(idx); ReapplyZoomAfterViewSwitch(keepFit, keepZoom); });
                 return;
             }
 
@@ -3086,10 +3093,50 @@ namespace TDPdf
             RenderPage(mode == ViewMode.Grid ? 0 : idx);
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
             {
-                if (mode == ViewMode.Single || mode == ViewMode.TwoPage) FitToPage();
+                if (mode == ViewMode.Single || mode == ViewMode.TwoPage) ReapplyZoomAfterViewSwitch(keepFit, keepZoom);
                 // Grid keeps its existing column-fit default (applied via RefreshPageView).
                 RefreshPageView(mode == ViewMode.Grid ? 0 : idx);
             });
+        }
+
+        // Zoom/fit in force just before the thumbnail Grid was entered, for the tab it was entered on.
+        private ZoomFitMode _preGridFit = ZoomFitMode.None;
+        private double _preGridZoom;
+        private DocumentContext? _preGridCtx;
+
+        /// <summary>
+        /// The zoom a view-mode switch should land on. Zoom.ZoomLevel is true zoom, so a manual zoom
+        /// means the same thing in every mode; a fit is replayed against the new mode instead.
+        /// Leaving Grid returns to what was on screen before Grid was entered.
+        /// </summary>
+        private (ZoomFitMode Fit, double Zoom) CaptureZoomForViewSwitch(ViewMode from, ViewMode to)
+        {
+            var result = (_zoomFitMode, Zoom.ZoomLevel);
+            if (from == ViewMode.Grid && _preGridCtx is not null && ReferenceEquals(_preGridCtx, _ctx))
+                result = (_preGridFit, _preGridZoom);
+            if (to == ViewMode.Grid && from != ViewMode.Grid)
+            {
+                _preGridFit = _zoomFitMode;
+                _preGridZoom = Zoom.ZoomLevel;
+                _preGridCtx = _ctx;
+            }
+            if (from == ViewMode.Grid) _preGridCtx = null;
+            return result;
+        }
+
+        private void ReapplyZoomAfterViewSwitch(ZoomFitMode fit, double zoom)
+        {
+            if (fit == ZoomFitMode.Width) FitToWidth();
+            else if (fit == ZoomFitMode.Page) FitToPage();
+            else if (zoom >= ZoomViewModel.MinZoomLevel && zoom <= ZoomViewModel.MaxZoomLevel)
+            {
+                // Not a new decision, so the remembered manual-zoom preference is left alone.
+                _zoomFitMode = ZoomFitMode.None;
+                Zoom.SetZoomLevel(zoom);
+                SyncLayoutZoom();   // the layout scale differs per mode even at an equal true zoom
+            }
+            else if (_viewMode == ViewMode.Continuous) FitToWidth();
+            else FitToPage();
         }
 
         // ── Two-Page book layout (upstream KillerPDF #193) ─────────────────────────────────────
@@ -7294,12 +7341,37 @@ namespace TDPdf
             _manualZoomIntent = true;
         }
 
+        /// <summary>The viewport centre's document point (PageContentGrid coordinates) a toolbar / keyboard / dropdown zoom holds still.</summary>
+        private Point? _centreZoomAnchor;
+        private Point _centreZoomTarget;
+
+        /// <summary>
+        /// <see cref="BeginManualZoom"/> for the zoom sources that have no pointer (toolbar, keyboard,
+        /// dropdown): also remembers the document point at the centre of the viewport, so ApplyZoom
+        /// can scroll it back to the centre once the new scale has laid out. Ctrl+wheel and pinch
+        /// keep their own pointer anchor (ContinueZoomGesture).
+        /// </summary>
+        private void BeginAnchoredZoom()
+        {
+            BeginManualZoom();
+            _centreZoomAnchor = null;
+            if (_doc is null || _applyingGestureZoom) return;
+            double vw = PagePreviewPanel.ViewportWidth, vh = PagePreviewPanel.ViewportHeight;
+            if (!(vw > 0) || !(vh > 0)) return;
+            _centreZoomTarget = new Point(vw / 2, vh / 2);
+            try { _centreZoomAnchor = PagePreviewPanel.TranslatePoint(_centreZoomTarget, _pageContentGrid); }
+            catch (InvalidOperationException) { _centreZoomAnchor = null; }   // not in a common visual tree yet
+            // ApplyZoom runs synchronously inside the zoom write; whatever it did not consume
+            // (an equal zoom raises no change) must not leak into a later, unrelated zoom.
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal, (Action)(() => _centreZoomAnchor = null));
+        }
+
         private void ChangeZoomByCommand(ZoomChange change)
         {
             // An explicit zoom stops the view tracking the window size, exactly as the equivalent
             // toolbar buttons do. Without this, Ctrl+0 landed on 100% and then the next window
             // resize snapped straight back to the fit it was on.
-            BeginManualZoom();
+            BeginAnchoredZoom();
             switch (change)
             {
                 case ZoomChange.In:
@@ -7316,11 +7388,11 @@ namespace TDPdf
             }
         }
 
-        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomIn(); }
+        private void ZoomIn_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.ZoomIn(); }
 
-        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.ZoomOut(); }
+        private void ZoomOut_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.ZoomOut(); }
 
-        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginManualZoom(); Zoom.Reset(); }
+        private void ResetZoom_Click(object sender, RoutedEventArgs e) { BeginAnchoredZoom(); Zoom.Reset(); }
 
         // ============================================================
         // True zoom vs. layout scale        (#154, upstream "true 100%")
@@ -7511,11 +7583,16 @@ namespace TDPdf
             // Continuous view is scaled entirely by the shared ScaleTransform above; it must not
             // re-render the (hidden) primary page. Re-anchor the scroll to the current page so the
             // view doesn't jump when zooming.
+            Point? centreAnchor = _centreZoomAnchor;
+            _centreZoomAnchor = null;
             if (_viewMode == ViewMode.Continuous)
             {
                 // ...except after a zoom gesture, which has already scrolled so the point under the
-                // pointer stayed put; snapping to the page top now would undo exactly that.
-                if (!_settlingZoomGesture)
+                // pointer stayed put; snapping to the page top now would undo exactly that. A
+                // toolbar / keyboard / dropdown zoom holds the viewport centre still instead.
+                if (centreAnchor is Point ca)
+                    ScheduleZoomAnchorCorrection(ca, _centreZoomTarget);
+                else if (!_settlingZoomGesture)
                 {
                     int curIdx = PageList.SelectedIndex;
                     Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
@@ -7536,6 +7613,8 @@ namespace TDPdf
                 RenderPage(applyIdx);
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     () => RefreshPageView(applyIdx));
+                if (centreAnchor is Point ca)
+                    ScheduleZoomAnchorCorrection(ca, _centreZoomTarget);
             }
         }
 
@@ -7602,7 +7681,7 @@ namespace TDPdf
             if (option.IsFitPage) { SaveDefaultFitMode(ZoomFitMode.Page); FitToPage(); return; }
             if (option.ZoomLevel is not double zoom) return;
             // User picked an explicit zoom level — stop tracking the window size.
-            BeginManualZoom();
+            BeginAnchoredZoom();
             Zoom.SetZoomLevel(zoom);
         }
 
@@ -7855,8 +7934,12 @@ namespace TDPdf
         /// </summary>
         private void ScheduleZoomAnchorCorrection()
         {
-            if (_zoomGestureAnchor is not Point anchor) return;
-            Point target = _zoomGestureTarget;
+            if (_zoomGestureAnchor is not Point gestureAnchor) return;
+            ScheduleZoomAnchorCorrection(gestureAnchor, _zoomGestureTarget);
+        }
+
+        private void ScheduleZoomAnchorCorrection(Point anchor, Point target)
+        {
             long revision = ++_zoomAnchorRevision;
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)(() =>
             {

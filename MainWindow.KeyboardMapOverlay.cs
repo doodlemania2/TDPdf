@@ -111,6 +111,7 @@ namespace TDPdf
                 ["S"] = ("File", "Save as"),
                 ["Z"] = ("Edit", "Redo"),
                 ["R"] = ("Edit", "Rotate pages CCW"),
+                ["U"] = ("Edit", "Rotate pages 180°"),
                 ["O"] = ("Ocr", "OCR page to clipboard"),
                 ["Equals"] = ("View", "App size larger"),
                 ["Minus"] = ("View", "App size smaller"),
