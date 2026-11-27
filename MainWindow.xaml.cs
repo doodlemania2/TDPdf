@@ -167,6 +167,7 @@ namespace TDPdf
         private Point _resizeSigStart;
         private double _resizeSigStartScale;
         private PlacedAnnotation? _resizeSigAnnot;
+        private Point _resizeSigVisualTopLeft;   // fixed corner of the turned box while resizing
         private Rectangle? _resizeHandle;
 
         // Placed annotation drag-to-move
@@ -2800,7 +2801,7 @@ namespace TDPdf
                     // the primary canvas the user drew on.
                     var dims = AnnotationCanvasSize(doc.Pages[idx]);
                     if (_annotations.TryGetValue(idx, out var anns))
-                        TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h);
+                        TDPdf.Services.AnnotationRotate.Remap(anns, delta, dims.w, dims.h, MeasureTextForRotate);
                     RemapAnnotationSnapshots(_undoStack, idx, delta, dims.w, dims.h);
                     RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
                 }
@@ -5194,8 +5195,7 @@ namespace TDPdf
                     return bounds.Contains(pos);
 
                 case TextAnnotation ta:
-                    var taSize = MeasureTextAnnotation(ta);
-                    bounds = new Rect(ta.Position.X, ta.Position.Y, taSize.Width, taSize.Height);
+                    bounds = TextVisualRect(ta);
                     return bounds.Contains(pos);
 
                 case InkAnnotation ia when ia.Points.Count > 0:
@@ -5234,15 +5234,11 @@ namespace TDPdf
                     return bounds.Contains(pos);
 
                 case SignatureAnnotation sa:
-                    double sigW = sa.SourceWidth * sa.Scale;
-                    double sigH = sa.SourceHeight * sa.Scale;
-                    bounds = new Rect(sa.Position.X, sa.Position.Y, sigW, sigH);
+                    bounds = PlacedVisualRect(sa);
                     return bounds.Contains(pos);
 
                 case ImageAnnotation ia:
-                    double iaW = ia.SourceWidth * ia.Scale;
-                    double iaH = ia.SourceHeight * ia.Scale;
-                    bounds = new Rect(ia.Position.X, ia.Position.Y, iaW, iaH);
+                    bounds = PlacedVisualRect(ia);
                     return bounds.Contains(pos);
 
                 case ShapeAnnotation shp:
@@ -5511,7 +5507,7 @@ namespace TDPdf
         /// HitTest case will accept as a hit — used after move/resize to refresh the
         /// stored bounds without re-hit-testing the original cursor position.
         /// </summary>
-        private static Point GetAnyPointInside(PageAnnotation annot) => annot switch
+        private Point GetAnyPointInside(PageAnnotation annot) => annot switch
         {
             // Polygon: a vertex is always ON the outline, so it satisfies the edge test whether or
             // not the shape is filled (the box centre would miss a concave outline polygon).
@@ -5525,10 +5521,13 @@ namespace TDPdf
                 => new Point(m.LineRects[0].X + 1, m.LineRects[0].Y + 1),
             HighlightAnnotation h => new Point(h.Bounds.X + 1, h.Bounds.Y + 1),
             InkAnnotation i when i.Points.Count > 0 => i.Points[0],
-            TextAnnotation t => new Point(t.Position.X + 1, t.Position.Y + 1),
+            TextAnnotation t => t.Rotation == 0 ? new Point(t.Position.X + 1, t.Position.Y + 1)
+                                                : TopLeftInside(TextVisualRect(t)),
             TextEditAnnotation tea => new Point(tea.OriginalBounds.X + 1, tea.OriginalBounds.Y + 1),
-            SignatureAnnotation sg => new Point(sg.Position.X + 1, sg.Position.Y + 1),
-            ImageAnnotation ig => new Point(ig.Position.X + 1, ig.Position.Y + 1),
+            SignatureAnnotation sg => sg.Rotation == 0 ? new Point(sg.Position.X + 1, sg.Position.Y + 1)
+                                                       : TopLeftInside(PlacedVisualRect(sg)),
+            ImageAnnotation ig => ig.Rotation == 0 ? new Point(ig.Position.X + 1, ig.Position.Y + 1)
+                                                   : TopLeftInside(PlacedVisualRect(ig)),
             _ => new Point(0, 0)
         };
 
@@ -5909,6 +5908,11 @@ namespace TDPdf
             {
                 Canvas.SetLeft(spaced, ta.Position.X);
                 Canvas.SetTop(spaced, ta.Position.Y);
+                if (ta.Rotation != 0)
+                {
+                    var spacedBox = MeasureTextAnnotation(ta);
+                    ApplyAnnotationRotation(spaced, ta.Rotation, spacedBox.Width / 2, spacedBox.Height / 2);
+                }
                 _annotationCanvas.Children.Add(spaced);
                 return;
             }
@@ -5940,6 +5944,11 @@ namespace TDPdf
                 tb.Background = TdpDialog.FrozenSolidColorBrush(ta.GetFillColor());
             Canvas.SetLeft(tb, ta.Position.X);
             Canvas.SetTop(tb, ta.Position.Y);
+            if (ta.Rotation != 0)
+            {
+                var tbBox = MeasureTextAnnotation(ta);
+                ApplyAnnotationRotation(tb, ta.Rotation, tbBox.Width / 2, tbBox.Height / 2);
+            }
             _annotationCanvas.Children.Add(tb);
         }
 
@@ -6118,6 +6127,38 @@ namespace TDPdf
                 if (annots[i] is TextEditAnnotation or ImageEditAnnotation) yield return annots[i];
             for (int i = 0; i < annots.Count; i++)
                 if (annots[i] is not (TextEditAnnotation or ImageEditAnnotation)) yield return annots[i];
+        }
+
+        private (double W, double H) MeasureTextForRotate(TextAnnotation ta)
+        {
+            var sz = MeasureTextAnnotation(ta);
+            return (sz.Width, sz.Height);
+        }
+
+        /// <summary>The box a text annotation occupies on the canvas once its rotation is applied.</summary>
+        private Rect TextVisualRect(TextAnnotation ta)
+        {
+            var sz = MeasureTextAnnotation(ta);
+            var (x, y, w, h) = AnnotationFrame.VisualRect(ta.Position.X, ta.Position.Y, sz.Width, sz.Height, ta.Rotation);
+            return new Rect(x, y, w, h);
+        }
+
+        private static Point TopLeftInside(Rect r) => new Point(r.X + 1, r.Y + 1);
+
+        /// <summary>The box a signature or picture occupies on the canvas once its rotation is applied.</summary>
+        private static Rect PlacedVisualRect(PlacedAnnotation pa)
+        {
+            var (x, y, w, h) = AnnotationFrame.VisualRect(pa.Position.X, pa.Position.Y,
+                pa.SourceWidth * pa.Scale, pa.SourceHeight * pa.Scale, pa.Rotation);
+            return new Rect(x, y, w, h);
+        }
+
+        /// <summary>Turns a drawn element about the centre of its unrotated box (a no-op at 0).</summary>
+        private static void ApplyAnnotationRotation(UIElement element, int rotation, double boxCenterX, double boxCenterY)
+        {
+            int rot = AnnotationFrame.Normalize(rotation);
+            if (rot == 0) return;
+            element.RenderTransform = new RotateTransform(rot, boxCenterX, boxCenterY);
         }
 
         private Size MeasureTextAnnotation(TextAnnotation ta)
@@ -6440,6 +6481,7 @@ namespace TDPdf
                                 };
                                 Canvas.SetLeft(imgCtrl, sa.Position.X);
                                 Canvas.SetTop(imgCtrl, sa.Position.Y);
+                                ApplyAnnotationRotation(imgCtrl, sa.Rotation, sigW / 2, sigH / 2);
                                 _annotationCanvas.Children.Add(imgCtrl);
                             }
                             catch { /* skip broken image */ }
@@ -6462,6 +6504,9 @@ namespace TDPdf
                                     sigPoly.Points.Add(new Point(
                                         sa.Position.X + pt.X * sa.Scale,
                                         sa.Position.Y + pt.Y * sa.Scale));
+                                // The points are absolute canvas coordinates, so the turn's centre is too.
+                                ApplyAnnotationRotation(sigPoly, sa.Rotation,
+                                    sa.Position.X + sigW / 2, sa.Position.Y + sigH / 2);
                                 _annotationCanvas.Children.Add(sigPoly);
                             }
                         }
@@ -6487,6 +6532,7 @@ namespace TDPdf
                             };
                             Canvas.SetLeft(iaCtrl, ia.Position.X);
                             Canvas.SetTop(iaCtrl, ia.Position.Y);
+                            ApplyAnnotationRotation(iaCtrl, ia.Rotation, iaW / 2, iaH / 2);
                             _annotationCanvas.Children.Add(iaCtrl);
                         }
                         catch { /* skip broken image */ }

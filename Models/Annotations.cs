@@ -52,6 +52,13 @@ namespace TDPdf
         public double Scale { get; set; } = 0.5;
         public double SourceWidth { get; set; } = 400;
         public double SourceHeight { get; set; } = 150;
+
+        /// <summary>
+        /// Clockwise quarter turns, in degrees (0, 90, 180, 270): the item is drawn rotated about the
+        /// centre of its box. <see cref="Position"/> and the source size stay the UNROTATED box; the
+        /// page rotation commands turn this along with the page. 0 for anything saved before this existed.
+        /// </summary>
+        public int Rotation { get; set; }
     }
 
     public class TextAnnotation : PageAnnotation
@@ -100,6 +107,13 @@ namespace TDPdf
         /// </remarks>
         public double LetterSpacing { get; set; }
 
+        /// <summary>
+        /// Clockwise quarter turns, in degrees (0, 90, 180, 270), about the centre of the box.
+        /// <see cref="Position"/>, <see cref="Width"/> and <see cref="Height"/> describe the
+        /// UNROTATED box. Turned along with the page; 0 for anything made before this existed.
+        /// </summary>
+        public int Rotation { get; set; }
+
         public byte ColorR { get; set; } = 0;
         public byte ColorG { get; set; } = 0;
         public byte ColorB { get; set; } = 0;
@@ -133,7 +147,7 @@ namespace TDPdf
         {
             PageIndex = PageIndex, Position = Position, Content = Content, FontSize = FontSize,
             FontName = FontName, Bold = Bold, Italic = Italic, Underline = Underline,
-            LetterSpacing = LetterSpacing,
+            LetterSpacing = LetterSpacing, Rotation = Rotation,
             ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA,
             Width = Width, Height = Height,
             HasFill = HasFill, FillR = FillR, FillG = FillG, FillB = FillB, FillA = FillA
@@ -359,7 +373,8 @@ namespace TDPdf
             var copy = new SignatureAnnotation
             {
                 PageIndex = PageIndex, Position = Position, Scale = Scale,
-                SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData
+                SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData,
+                Rotation = Rotation
             };
             foreach (var stroke in Strokes) copy.Strokes.Add(new List<Point>(stroke));
             return copy;
@@ -461,7 +476,8 @@ namespace TDPdf
         public override PageAnnotation Clone() => new ImageAnnotation
         {
             PageIndex = PageIndex, Position = Position, Scale = Scale,
-            SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData
+            SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData,
+            Rotation = Rotation
         };
     }
 

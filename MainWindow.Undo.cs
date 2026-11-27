@@ -99,7 +99,7 @@ namespace TDPdf
             }
         }
 
-        private static void RemapAnnotationSnapshots(
+        private void RemapAnnotationSnapshots(
             LinkedList<UndoEntry> history,
             int pageIndex,
             int delta,
@@ -112,7 +112,7 @@ namespace TDPdf
                     && node.Value.PageIdx == pageIndex
                     && node.Value.PageAnnotations is { } annotations)
                 {
-                    TDPdf.Services.AnnotationRotate.Remap(annotations, delta, oldW, oldH);
+                    TDPdf.Services.AnnotationRotate.Remap(annotations, delta, oldW, oldH, MeasureTextForRotate);
                 }
             }
         }

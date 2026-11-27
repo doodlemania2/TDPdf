@@ -1240,6 +1240,9 @@ namespace TDPdf
                     // letter spacing to read back (see the comment where it is built). This is the
                     // value the style bar has been showing all along, so it is what the user set.
                     LetterSpacing = _textLetterSpacing,
+                    // A re-edited box keeps its turn: the editor shows it upright at the same place,
+                    // and committing puts it back turned.
+                    Rotation = ctx?.Existing?.Rotation ?? 0,
                     Width = double.IsNaN(width) || width <= 0 ? 0 : width,
                     HasFill = _textWhiteout
                 };
@@ -1273,7 +1276,9 @@ namespace TDPdf
                 // with, after this nested call returns.
                 SetTool(EditTool.Select);
                 var placedSize = MeasureTextAnnotation(ta);
-                SelectAnnotation(ta, new Rect(ta.Position.X, ta.Position.Y, placedSize.Width, placedSize.Height));
+                SelectAnnotation(ta, ta.Rotation == 0
+                    ? new Rect(ta.Position.X, ta.Position.Y, placedSize.Width, placedSize.Height)
+                    : TextVisualRect(ta));
 
                 // #168: say it NOW, not after saving and reopening. The burn resolves the same
                 // family this checks (DrawAnnotationsOnDocument), so the two never disagree.
