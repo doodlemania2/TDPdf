@@ -84,8 +84,16 @@ namespace TDPdf.Services
                 IFileDialogCustomize? customize = null;
                 if (offerNewWindow)
                 {
-                    customize = (IFileDialogCustomize)dialog;
-                    customize.AddCheckButton(NewWindowControlId, NewWindowLabel, false);
+                    // Optional: if the dialog won't give us the customize interface, open it without the box.
+                    try
+                    {
+                        customize = (IFileDialogCustomize)dialog;
+                        customize.AddCheckButton(NewWindowControlId, NewWindowLabel, false);
+                    }
+                    catch (Exception ex) when (ex is InvalidCastException or COMException)
+                    {
+                        customize = null;
+                    }
                 }
 
                 IntPtr hwnd = new WindowInteropHelper(owner).Handle;
@@ -184,7 +192,7 @@ namespace TDPdf.Services
             void GetSelectedItems(out IShellItemArray items);
         }
 
-        [ComImport, Guid("8016b7b3-3d49-4504-a0aa-2a37494e606f"),
+        [ComImport, Guid("e6fdd21a-163f-4975-9c8c-a69f1ba37034"),   // IID_IFileDialogCustomize (shobjidl_core.h)
          InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         private interface IFileDialogCustomize
         {
