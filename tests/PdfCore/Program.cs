@@ -201,6 +201,7 @@ CanvasPixelsTests.Run(Check);
 CropMarginsTests.Run(Check);
 AnnotationFrameTests.Run(Check);
 PageRangeSpecTests.Run(Check);
+ShellVerbTests.Run(Check);
 DateCulture.Run(Check, tmp);
 ProtectedSaveId.Run(Check, tmp);
 SignatureScan.Run(Check);

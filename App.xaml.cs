@@ -1221,7 +1221,17 @@ namespace TDPdf
 
             using (var k = hive.CreateSubKey(
                 @"Software\Classes\TDPdf.pdf\shell\open\command"))
-                k.SetValue("", $"\"{installExe}\" \"%1\"");
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.Open(installExe));
+
+            // Print and Print to: Explorer's Print menu item and a file dropped on a printer. Both run
+            // the headless --print command (MainWindow.Cli.cs), which sends the file to the queue and
+            // exits without showing a window: 0 sent, 1 failed, 2 bad arguments or no such printer.
+            using (var k = hive.CreateSubKey(
+                @"Software\Classes\TDPdf.pdf\shell\print\command"))
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.Print(installExe));
+            using (var k = hive.CreateSubKey(
+                @"Software\Classes\TDPdf.pdf\shell\printto\command"))
+                k.SetValue("", TDPdf.Services.ShellVerbCommands.PrintTo(installExe));
 
             // Associate .pdf extension — adds TDPdf to the "Open with" list
             using (var k = hive.CreateSubKey(
