@@ -646,16 +646,7 @@ namespace TDPdf
 
                     // The "on" value for this widget (radio/checkbox selected state) is the
                     // /AP /N key that is not /Off.
-                    string onValue = "/Yes";
-                    try
-                    {
-                        var apDict = ann.Elements.GetDictionary("/AP");
-                        var nDict  = apDict?.Elements.GetDictionary("/N");
-                        if (nDict is not null)
-                            foreach (var k in nDict.Elements.Keys)
-                                if (k != "/Off") { onValue = k; break; }
-                    }
-                    catch { }
+                    string onValue = WidgetOnValue(ann);
 
                     // #242: the field's format action, walked up the parent chain like /Ff and
                     // /MaxLen because /AA is inherited the same way. Read only as a signal — the
