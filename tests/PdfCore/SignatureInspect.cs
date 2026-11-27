@@ -144,6 +144,36 @@ internal static class SignatureInspect
         Check("PDF date, Z and partial", PdfSignatureInspector.ParsePdfDate("D:2026101014Z")
               == new DateTimeOffset(2026, 10, 10, 14, 0, 0, TimeSpan.Zero), "");
         Check("not a PDF date", PdfSignatureInspector.ParsePdfDate("yesterday") is null && PdfSignatureInspector.ParsePdfDate("D:20261340") is null, "");
+        // Hour-only time zones (some writers emit D:...+01 or D:...+01' with no minutes).
+        Check("PDF date, hour-only zone +01", PdfSignatureInspector.ParsePdfDate("D:20240101120000+01")
+              == new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.FromHours(1)), "");
+        Check("PDF date, hour-only zone +01'", PdfSignatureInspector.ParsePdfDate("D:20240101120000+01'")
+              == new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.FromHours(1)), "");
+        Check("PDF date, hour-only zone -05", PdfSignatureInspector.ParsePdfDate("D:20240101120000-05")
+              == new DateTimeOffset(2024, 1, 1, 12, 0, 0, TimeSpan.FromHours(-5)), "");
+        foreach (string zone in new[] { "+01", "+01'" })
+        {
+            // A document whose /CreationDate carries an hour-only zone still loads, and the date is read
+            // (the library ignores a zone that has no minutes; what matters is that it neither throws nor
+            // loses the document).
+            string detail = "";
+            bool ok = false;
+            try
+            {
+                using var made = new PdfDocument();
+                made.AddPage();
+                made.Info.Elements["/CreationDate"] = new PdfString("D:20240101120000" + zone);
+                using var ms = new MemoryStream();
+                made.Save(ms, false);
+                ms.Position = 0;
+                using var reopened = PdfReader.Open(ms, PdfDocumentOpenMode.ReadOnly);
+                var created = reopened.Info.CreationDate;
+                ok = reopened.PageCount == 1 && created.Year == 2024 && created.Month == 1;
+                detail = created.ToString("o");
+            }
+            catch (Exception ex) { detail = ex.Message; }
+            Check($"document with /CreationDate zone {zone} loads and reads the date", ok, detail);
+        }
         Check("DER length, short form", PdfSignatureInspector.DerLength(new byte[] { 0x30, 0x03, 1, 2, 3, 0, 0 }) == 5, "");
         Check("DER length, long form", PdfSignatureInspector.DerLength(new byte[] { 0x30, 0x81, 0x02, 9, 9, 0 }) == 5, "");
         Check("DER length beyond the data", PdfSignatureInspector.DerLength(new byte[] { 0x30, 0x10, 1 }) == -1, "");
