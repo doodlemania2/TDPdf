@@ -138,6 +138,10 @@
     <Compile Include="..\..\Services\DllSearchPaths.cs" />
     <Compile Include="..\..\Services\SystemTool.cs" />
     <Compile Include="..\..\Services\TempFiles.cs" />
+    <Compile Include="..\..\Models\Annotations.cs" />
+    <Compile Include="..\..\Services\AnnotationBaker.cs" />
+    <Compile Include="..\..\Services\PdfFonts.cs" />
+    <Compile Include="..\..\Services\FontCoverage.cs" />
   </ItemGroup>
 
 </Project>
