@@ -782,8 +782,14 @@ namespace TDPdf
                         if (_formTextValues.TryGetValue(fieldKey, out var textVal) && fieldDict is not null)
                         {
                             FormFieldSiblings.SetValue(ann, new PdfString(textVal));
+                            // /Q is inheritable and falls back to the /AcroForm default.
+                            int? quadFound = null;
+                            foreach (var node in PdfItems.Ancestors(ann))
+                                if (node.Elements["/Q"] is PdfInteger qi) { quadFound = qi.Value; break; }
+                            int quad = quadFound
+                                ?? (_doc.Internals.Catalog.Elements.GetDictionary("/AcroForm")?.Elements["/Q"] is PdfInteger aq ? aq.Value : 0);
                             GenerateTextFieldAppearance(ann, textVal, daStr, fieldW, fieldH, isMultiLine,
-                                isComb ? combLen : 0);
+                                isComb ? combLen : 0, quad);
                         }
                         else if (_formCheckValues.TryGetValue(fieldKey, out var checkVal) && fieldDict is not null)
                         {
@@ -891,11 +897,16 @@ namespace TDPdf
         /// single-line / multiline path below completely untouched.
         /// </param>
         private void GenerateTextFieldAppearance(PdfDictionary widgetAnn, string text, string? da, double fieldW, double fieldH, bool isMultiLine,
-            int combLen = 0)
+            int combLen = 0, int quadding = 0)
         {
             try
             {
-                const double pad = 2;   // left/right inset, matching the Td origin below
+                // The widget's own /MK background and border are redrawn into the appearance (this
+                // stream replaces the whole /AP, so leaving them out erased the field's frame and
+                // fill on save), and the text starts inside the border: width + 2, as viewers do.
+                var chrome = FieldChrome.Read(widgetAnn);
+                string chromeOps = chrome.ToContent(fieldW, fieldH);
+                double pad = chrome.TextInset;
 
                 // #140: the shared path below writes the value as a WinAnsi literal against the
                 // field's /DA base font, which is NOT embedded — so anything WinAnsi cannot express
@@ -906,7 +917,7 @@ namespace TDPdf
                 // it has always produced, so comb (#158) and multiline (#180) are untouched.
                 if (NeedsEmbeddedFont(text)
                     && TryGenerateUnicodeFieldAppearance(widgetAnn, text, da, fieldW, fieldH,
-                                                        isMultiLine, combLen, pad))
+                                                        isMultiLine, combLen, pad, chrome, quadding))
                     return;
 
                 var (fontName, fontSize) = PdfFormText.ParseDaString(da);
@@ -941,6 +952,7 @@ namespace TDPdf
                     // de-DE and most European locales is not a valid PDF number token — the whole
                     // appearance stream then fails to execute in a strict viewer (upstream v1.7.4).
                     var csb = new System.Text.StringBuilder();
+                    csb.Append(chromeOps);
                     csb.Append(FormattableString.Invariant($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n"));
                     csb.Append(FormattableString.Invariant($"BT\n{fontName} {fontSize:F2} Tf\n0 g\n"));
                     for (int i = 0; i < oneLine.Length; i++)
@@ -977,9 +989,14 @@ namespace TDPdf
 
                 // Invariant: a comma decimal from the OS culture is not a valid PDF number token.
                 var sb = new System.Text.StringBuilder();
+                sb.Append(chromeOps);
                 sb.Append(FormattableString.Invariant($"/Tx BMC\nq\n0 0 {fieldW:F2} {fieldH:F2} re W n\n"));
+                // /Q alignment applies to a single line; a multiline value keeps its left edge.
+                double textX = pad;
+                if (!isMultiLine && quadding is 1 or 2 && lines.Count == 1)
+                    textX = FieldChrome.AlignedX(quadding, fieldW, MeasureFieldText(lines[0], fontSize), pad);
                 sb.Append(FormattableString.Invariant(
-                    $"BT\n{fontName} {fontSize:F2} Tf\n0 g\n{leading:F2} TL\n{pad:F2} {textY:F2} Td\n"));
+                    $"BT\n{fontName} {fontSize:F2} Tf\n0 g\n{leading:F2} TL\n{textX:F2} {textY:F2} Td\n"));
                 for (int i = 0; i < lines.Count; i++)
                 {
                     if (i > 0) sb.Append("T*\n");   // down one leading, back to the left inset
@@ -996,6 +1013,28 @@ namespace TDPdf
             catch (Exception ex) { NoteFormWriteFailure(widgetAnn, ex); }
         }
 
+        /// <summary>Width of a run in the Helvetica-metric face the generated appearance asks for.</summary>
+        private static double MeasureFieldText(string s, double fontSize) => new FormattedText(
+            s, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("Arial"), fontSize, Brushes.Black, 1.0).Width;
+
+        /// <summary>Paints the widget's /MK background and border onto an XGraphics field appearance.</summary>
+        private static void DrawChrome(XGraphics gfx, FieldChrome c, double w, double h)
+        {
+            static XColor Rgb(FieldColor f)
+            {
+                var (r, g, b) = f.ToRgb();
+                return XColor.FromArgb(255, (int)Math.Round(r * 255), (int)Math.Round(g * 255), (int)Math.Round(b * 255));
+            }
+            if (c.Background is { } bg) gfx.DrawRectangle(new XSolidBrush(Rgb(bg)), 0, 0, w, h);
+            if (c.BorderColor is not { } bc || c.BorderWidth <= 0) return;
+            var pen = new XPen(Rgb(bc), c.BorderWidth);
+            if (c.Style == FieldBorderStyle.Dashed) pen.DashStyle = XDashStyle.Dash;
+            double half = c.BorderWidth / 2;
+            if (c.Style == FieldBorderStyle.Underline) gfx.DrawLine(pen, 0, h - half, w, h - half);
+            else gfx.DrawRectangle(pen, half, half, Math.Max(0, w - c.BorderWidth), Math.Max(0, h - c.BorderWidth));
+        }
+
         /// <summary>
         /// Splits a multiline field's value into the lines its appearance should draw: the value's
         /// own line breaks first, then greedy word-wrap to the field's inner width.
@@ -1006,10 +1045,7 @@ namespace TDPdf
         /// </remarks>
         private static List<string> WrapFieldText(string text, double innerWidth, double fontSize)
         {
-            var typeface = new Typeface("Arial");
-            double Width(string s) => new FormattedText(
-                s, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                typeface, fontSize, Brushes.Black, 1.0).Width;
+            double Width(string s) => MeasureFieldText(s, fontSize);
 
             var lines = new List<string>();
             foreach (var para in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
@@ -1100,7 +1136,8 @@ namespace TDPdf
         /// legacy path — a '?' appearance is poor, but it beats a field with no appearance at all.
         /// </returns>
         private bool TryGenerateUnicodeFieldAppearance(PdfDictionary widgetAnn, string text, string? da,
-            double fieldW, double fieldH, bool isMultiLine, int combLen, double pad)
+            double fieldW, double fieldH, bool isMultiLine, int combLen, double pad,
+            FieldChrome? chrome = null, int quadding = 0)
         {
             if (_doc is null || fieldW <= 0 || fieldH <= 0) return false;
             try
@@ -1138,6 +1175,7 @@ namespace TDPdf
                     // The clip matches the legacy path's "re W n": an over-full value is cut off at
                     // the field edge exactly as a viewer would cut it.
                     gfx.IntersectClip(new XRect(0, 0, fieldW, fieldH));
+                    if (chrome is not null) DrawChrome(gfx, chrome, fieldW, fieldH);
 
                     if (combLen > 0)
                     {
@@ -1178,7 +1216,9 @@ namespace TDPdf
                         gfx.DrawString(text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' '),
                             font, XBrushes.Black,
                             new XRect(pad, 0, Math.Max(1, fieldW - pad * 2), fieldH),
-                            XStringFormats.CenterLeft);
+                            quadding == 1 ? XStringFormats.Center
+                            : quadding == 2 ? new XStringFormat { Alignment = XStringAlignment.Far, LineAlignment = XLineAlignment.Center }
+                            : XStringFormats.CenterLeft);
                     }
                 }
 

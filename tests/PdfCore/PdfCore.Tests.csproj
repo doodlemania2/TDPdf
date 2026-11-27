@@ -101,6 +101,7 @@
     <Compile Include="..\..\Diagnostics\Sanitizer.cs" />
     <Compile Include="..\..\Services\PdfSaveNormalizer.cs" />
     <Compile Include="..\..\Services\PdfFormText.cs" />
+    <Compile Include="..\..\Services\PdfFieldChrome.cs" />
     <Compile Include="..\..\Services\FormOcrPolicy.cs" />
     <Compile Include="..\..\Services\WheelPageFlipGate.cs" />
     <Compile Include="..\..\Services\PdfFontStyle.cs" />
