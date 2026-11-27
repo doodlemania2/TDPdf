@@ -319,7 +319,7 @@ namespace TDPdf
             Topmost = false;
             Focus();
             if (!string.IsNullOrWhiteSpace(path) && System.IO.File.Exists(path))
-                _ = OpenInTabAsync(path);
+                _ = OpenRequestedPathAsync(path);
         }
 
         /// <summary>Replays whatever arrived during startup. A no-op in the normal case.</summary>

@@ -701,7 +701,7 @@ namespace TDPdf
                 bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
                 if (ownsSession) ClaimSavedSession();
                 if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
-                    await OpenInTabAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
+                    await OpenRequestedPathAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
                 else if (ownsSession)
                     await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
 

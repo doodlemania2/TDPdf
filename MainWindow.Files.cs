@@ -2705,6 +2705,20 @@ namespace TDPdf
                 CleanupDirs(tempDirs);                        // cancelled
         }
 
+        /// <summary>
+        /// Opens a file handed to us from outside the window: the command line, an Explorer "Open with",
+        /// or a second launch forwarded over the single-instance pipe. A PDF opens as it always has; a
+        /// picture (jpg, png, bmp, gif, tif) goes through the same images-to-PDF import as a drop, into a
+        /// new unsaved tab.
+        /// </summary>
+        private async Task OpenRequestedPathAsync(string path)
+        {
+            if (IsImagePath(path))
+                await OpenImagesAsImportedTabAsync(new[] { path }, System.IO.Path.GetFileName(path));
+            else
+                await OpenInTabAsync(path);
+        }
+
         private async Task OpenDroppedAsync(string path)
         {
             if (IsPdfPath(path)) await OpenInTabAsync(path);
