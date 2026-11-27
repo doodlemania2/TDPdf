@@ -541,9 +541,9 @@ namespace TDPdf
         }
 
         [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X; public int Y; }
-        [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT p);
-        [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hwnd);
-        [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
-        [DllImport("gdi32.dll")] private static extern uint GetPixel(IntPtr hdc, int x, int y);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT p);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hwnd);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("gdi32.dll")] private static extern uint GetPixel(IntPtr hdc, int x, int y);
     }
 }

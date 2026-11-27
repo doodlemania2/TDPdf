@@ -50,6 +50,12 @@ namespace TDPdf.Services
         public int UpdatesAfter { get; init; }
         /// <summary>Whether the signature's CMS container could be read at all.</summary>
         public bool CmsReadable { get; init; }
+        /// <summary>
+        /// When this is the certifying signature (the catalog's <c>/Perms /DocMDP</c> names it and it
+        /// carries a DocMDP transform): the changes it says are allowed — 1 none, 2 form filling and
+        /// signing, 3 also annotations. Null for any other signature.
+        /// </summary>
+        public int? CertifiedLevel { get; init; }
     }
 
     /// <summary>What a document's signatures state, taken together.</summary>
@@ -65,6 +71,13 @@ namespace TDPdf.Services
     {
         public static readonly SignatureObservations None = new(Array.Empty<ObservedSignature>(), 0, 0, false);
         public bool Any => Signatures.Count > 0;
+        /// <summary>
+        /// The certifying signature allows no changes at all (DocMDP /P 1) and bytes were added to the
+        /// file after the range it covers. A fact about the file's structure, not a verdict: whether
+        /// those bytes change anything is for a reader that checks signatures to say.
+        /// </summary>
+        public bool CertifiedNoChangesButExtended =>
+            Signatures.Any(s => s.CertifiedLevel == 1 && s.CoversWholeFile == false);
     }
 
     /// <summary>
@@ -101,10 +114,11 @@ namespace TDPdf.Services
             var fields = PdfSignatureScan.SignedFields(document);
             if (fields.Count == 0) return SignatureObservations.None with { FileLength = file.LongLength };
 
+            var certifying = CertifyingSignature(document);
             var list = new List<ObservedSignature>(fields.Count);
             foreach (var field in fields)
             {
-                try { list.Add(Observe(field, file)); }
+                try { list.Add(Observe(field, file, certifying)); }
                 catch { /* one unreadable signature must not hide the others */ }
             }
 
@@ -114,7 +128,32 @@ namespace TDPdf.Services
             return new SignatureObservations(list, file.LongLength, after, dss);
         }
 
-        private static ObservedSignature Observe(PdfDictionary field, byte[] file)
+        /// <summary>
+        /// The signature dictionary the catalog's <c>/Perms /DocMDP</c> points at and the level its
+        /// DocMDP transform states (default 2 when <c>/P</c> is absent, as the PDF spec says), or null
+        /// when the document is not certified.
+        /// </summary>
+        internal static (PdfDictionary Sig, int Level)? CertifyingSignature(PdfDocument document)
+        {
+            var perms = PdfItems.DerefDict(document.Internals.Catalog.Elements["/Perms"]);
+            var sig = perms is null ? null : PdfItems.DerefDict(perms.Elements["/DocMDP"]);
+            if (sig is null || PdfItems.Deref(sig.Elements["/Reference"]) is not PdfArray refs) return null;
+            foreach (var item in refs.Elements)
+            {
+                if (PdfItems.DerefDict(item) is not { } r || r.Elements.GetName("/TransformMethod") != "/DocMDP") continue;
+                int level = 2;
+                if (PdfItems.DerefDict(r.Elements["/TransformParams"]) is { } p && p.Elements.ContainsKey("/P"))
+                    level = p.Elements.GetInteger("/P");
+                return (sig, level);
+            }
+            return null;
+        }
+
+        private static bool SameObject(PdfDictionary? a, PdfDictionary b) =>
+            a is not null && (ReferenceEquals(a, b) ||
+                (a.Reference is not null && b.Reference is not null && a.Reference.ObjectID == b.Reference.ObjectID));
+
+        private static ObservedSignature Observe(PdfDictionary field, byte[] file, (PdfDictionary Sig, int Level)? certifying)
         {
             var sig = PdfItems.Deref(field.Elements["/V"]) as PdfDictionary;
             string name = Str(field, "/T") ?? "";
@@ -139,6 +178,7 @@ namespace TDPdf.Services
                 CoversWholeFile = covers,
                 UpdatesAfter = updatesAfter,
                 SignerName = Str(sig, "/Name"),
+                CertifiedLevel = certifying is { } c && SameObject(c.Sig, sig) ? c.Level : null,
             };
 
             byte[]? der = br is null ? null : ContentsFromGap(file, br);
@@ -477,17 +517,24 @@ namespace TDPdf.Services
             _ => "Its byte range does not describe this file, so what it covers cannot be told.",
         };
 
+        internal const string CertifiedChanged =
+            "Certified with no changes allowed, but the file was changed after certification.";
+
         /// <summary>The one line about the document as a whole: was anything added after the last signature?</summary>
         internal static string Summary(SignatureObservations r)
         {
             if (!r.Any) return "This document carries no digital signature.";
-            if (r.BytesAfterLastSignature <= 0) return "Nothing was added to the file after the last signature.";
+            string certified = r.CertifiedNoChangesButExtended
+                ? " " + CertifiedChanged
+                : "";
+            if (r.BytesAfterLastSignature <= 0 && certified.Length == 0) return "Nothing was added to the file after the last signature.";
+            if (r.BytesAfterLastSignature <= 0) return CertifiedChanged;
             string size = r.BytesAfterLastSignature < 1024 ? $"{r.BytesAfterLastSignature} bytes" : $"{r.BytesAfterLastSignature / 1024.0:0.#} KB";
             return r.AppendedIncludesDss
                 ? $"{size} were added after the last signature, in an update nobody signed. It includes long-term validation data " +
-                  "(/DSS), which signing services add this way; TDPdf cannot tell what else it contains."
+                  "(/DSS), which signing services add this way; TDPdf cannot tell what else it contains." + certified
                 : $"{size} were added after the last signature, in an update nobody signed. A PDF reader that checks signatures " +
-                  "can show what changed.";
+                  "can show what changed." + certified;
         }
 
         internal static string TypeLabel(string subFilter) => subFilter switch

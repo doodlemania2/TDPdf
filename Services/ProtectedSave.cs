@@ -37,6 +37,11 @@ namespace TDPdf.Services
                 doc.Save(path);
                 return;
             }
+            // The RC4 file key is derived from the first /ID, and the per-object keys from that key. A
+            // document keeps its first /ID across edits, so every revision saved under the same
+            // password would reuse the same keys for different content. Give each protected save a
+            // fresh random first /ID before the security handler computes the keys at save time.
+            doc.Internals.FirstDocumentID = NewDocumentId();
             try
             {
                 doc.Save(path);
@@ -53,6 +58,13 @@ namespace TDPdf.Services
             if (check.PageCount != expected)
                 throw new InvalidOperationException(
                     $"The protected copy has {check.PageCount} page(s) where {expected} were written.");
+        }
+
+        /// <summary>16 random bytes as the raw string PdfSharpCore stores document IDs in.</summary>
+        internal static string NewDocumentId()
+        {
+            byte[] id = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+            return System.Text.Encoding.Latin1.GetString(id);
         }
 
         /// <summary>What an in-place save would do to the protection the file has on disk.</summary>

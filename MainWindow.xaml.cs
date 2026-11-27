@@ -955,10 +955,10 @@ namespace TDPdf
 
         private const int MDT_EFFECTIVE_DPI = 0;
 
-        [DllImport("shcore.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("shcore.dll")]
         private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern uint GetDpiForWindow(IntPtr hwnd);
 
         private const int WM_GETMINMAXINFO = 0x0024;
@@ -1302,41 +1302,41 @@ namespace TDPdf
                 DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref useDark, sizeof(int));
         }
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr MonitorFromWindow(IntPtr handle, uint flags);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetCursorPos(out POINT pt);
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr GetModuleHandle(string? moduleName);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr LoadImage(IntPtr hInst, IntPtr name, uint type, int cx, int cy, uint flags);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
-        [DllImport("user32.dll", SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
-        [DllImport("dwmapi.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
-        [DllImport("dwmapi.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("dwmapi.dll")]
         private static extern int DwmSetIconicThumbnail(IntPtr hwnd, IntPtr hbitmap, uint flags);
 
-        [DllImport("dwmapi.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("dwmapi.dll")]
         private static extern int DwmSetIconicLivePreviewBitmap(IntPtr hwnd, IntPtr hbitmap, ref POINT ptClient, uint flags);
 
-        [DllImport("gdi32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("gdi32.dll")]
         private static extern bool DeleteObject(IntPtr hObject);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
 
         private const int WM_NCLBUTTONDOWN = 0x00A1;
@@ -1777,22 +1777,22 @@ namespace TDPdf
         private const uint TPM_RIGHTBUTTON = 0x0002;
         private const uint TPM_RETURNCMD = 0x0100;
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern IntPtr GetSystemMenu(IntPtr hWnd, bool bRevert);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern int EnableMenuItem(IntPtr hMenu, uint uIDEnableItem, uint uEnable);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool SetMenuDefaultItem(IntPtr hMenu, uint uItem, uint fByPos);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 
         // Maximize shows a single box, restore two overlapping ones; the name and ToolTip match
@@ -2029,10 +2029,10 @@ namespace TDPdf
             ThirdPartyLicensesWindow.Show(this);
 
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern bool ShutdownBlockReasonCreate(IntPtr hWnd, string pwszReason);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
 
         /// <summary>
@@ -3239,12 +3239,20 @@ namespace TDPdf
 
         // True only for an absolute URI in an allowed scheme. Rejects scheme-less / relative URIs (a bare
         // "www.example.com" is normalised first, below), plus file:, javascript:, and custom protocols.
-        private static bool IsAllowedLinkUri(string url) =>
-            Uri.TryCreate(url, UriKind.Absolute, out var uri) && AllowedLinkSchemes.Contains(uri.Scheme);
+        private static bool TryGetAllowedLinkUri(string url, out Uri uri)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var parsed) && AllowedLinkSchemes.Contains(parsed.Scheme))
+            {
+                uri = parsed;
+                return true;
+            }
+            uri = null!;
+            return false;
+        }
 
         // A PDF can store a scheme-less link like "www.example.com" or "example.com/page". Treat a domain-
         // shaped target as https so it still opens; anything with an explicit scheme, a backslash (UNC/path),
-        // or whitespace is left untouched (and thus refused by IsAllowedLinkUri unless it's http/https/mailto).
+        // or whitespace is left untouched (and thus refused by TryGetAllowedLinkUri unless it's http/https/mailto).
         private static string NormalizeLinkUri(string raw)
         {
             raw = raw.Trim();
@@ -3302,17 +3310,20 @@ namespace TDPdf
 
             // Scheme-less but domain-shaped targets (e.g. "www.example.com") become https:// here.
             string url = NormalizeLinkUri(raw);
-            if (!IsAllowedLinkUri(url))
+            if (!TryGetAllowedLinkUri(url, out var linkUri))
             {
                 SetStatus($"Blocked an unsafe link: {raw}");
                 return;
             }
 
-            if (!ConfirmOpenLink(url)) return;
+            // Open exactly the address that was validated (the parsed, normalised form), not the raw string
+            // the PDF supplied, so what the checks saw and what the shell launches cannot differ.
+            string openUrl = linkUri.AbsoluteUri;
+            if (!ConfirmOpenLink(openUrl)) return;
 
             try
             {
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                Process.Start(new ProcessStartInfo(openUrl) { UseShellExecute = true });
             }
             catch (Exception ex)
             {
@@ -5046,6 +5057,7 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
+            string? supersededFile = _currentFile;
             _doc?.Close();
             _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
             _currentFile = redactedPath;
@@ -5076,6 +5088,9 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
+
+            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes.
+            RetireWorkingCopy(supersededFile);
         }
 
         /// <summary>
@@ -6818,6 +6833,7 @@ namespace TDPdf
             var reopened = OpenWorkingCopy(ref tempPath);
 
             // The new document is open: from here on nothing can leave the tab without one.
+            string? supersededFile = _currentFile;
             try { doc.Close(); } catch { /* the old instance is discarded either way */ }
             _doc = reopened;
             _currentFile = tempPath;
@@ -6860,6 +6876,30 @@ namespace TDPdf
             ClearSelection();
             MarkDirty();
             ShowReloadedDocument(selectedIdx);
+            RetireWorkingCopy(supersededFile);
+        }
+
+        // Page operations hold their pre-edit working file as a rollback point until they finish;
+        // RetireWorkingCopy must not delete one of those. Case-insensitive like TempFileSet.
+        private readonly HashSet<string> _heldWorkingFiles = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Deletes a working copy this tab has just stopped using (the file the document was
+        /// reloaded from, a decrypted copy, the pre-redaction copy). It used to stay in %TEMP% until
+        /// the tab closed, holding every earlier revision's content, including text since redacted
+        /// or pages since deleted. Undo keeps its own bytes in memory, so nothing needs the file.
+        /// Only files <see cref="TDPdf.Services.TempFileSet"/> owns are touched: the user's own file
+        /// is never owned, so it can never be deleted here. A file that cannot be deleted yet (still
+        /// open) stays owned and is removed when the tab closes.
+        /// </summary>
+        private void RetireWorkingCopy(string? superseded)
+        {
+            if (string.IsNullOrEmpty(superseded)) return;
+            if (string.Equals(superseded, _currentFile, StringComparison.OrdinalIgnoreCase)) return;
+            if (_heldWorkingFiles.Contains(superseded)) return;
+            if (!TDPdf.Services.TempFilePolicy.IsOurs(superseded) || !_ctx.TempFiles.Contains(superseded)) return;
+            if (TDPdf.Services.TempFilePolicy.TryDelete(superseded) || !System.IO.File.Exists(superseded))
+                _ctx.TempFiles.Release(superseded);
         }
 
         /// <summary>
@@ -6987,6 +7027,7 @@ namespace TDPdf
                 try { _doc.Save(docPath); }
                 catch { TDPdf.Services.TempFilePolicy.TryDelete(docPath); _ctx.TempFiles.Release(docPath); docPath = null; }
             }
+            if (_currentFile is not null) _heldWorkingFiles.Add(_currentFile);
             return new PageOperationSnapshot(
                 docPath,
                 _currentFile,
@@ -6997,9 +7038,14 @@ namespace TDPdf
         }
 
         /// <summary>The edit succeeded (or changed nothing): drop the rollback copy.</summary>
-        private static void EndPageOperation(PageOperationSnapshot snapshot)
+        private void EndPageOperation(PageOperationSnapshot snapshot)
         {
             if (snapshot.DocumentPath is not null) TDPdf.Services.TempFilePolicy.TryDelete(snapshot.DocumentPath);
+            if (snapshot.WorkingFile is not null)
+            {
+                _heldWorkingFiles.Remove(snapshot.WorkingFile);
+                RetireWorkingCopy(snapshot.WorkingFile);   // the edit replaced it; no rollback is needed now
+            }
         }
 
         /// <summary>
@@ -7008,6 +7054,7 @@ namespace TDPdf
         /// </summary>
         private void RollBackPageOperation(PageOperationSnapshot snapshot, string failureTitle, Exception ex)
         {
+            if (snapshot.WorkingFile is not null) _heldWorkingFiles.Remove(snapshot.WorkingFile);
             Telemetry.TrackEvent("Page.OperationFailed", new Dictionary<string, string>
             {
                 ["Operation"]     = failureTitle,

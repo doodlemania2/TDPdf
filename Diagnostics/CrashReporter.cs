@@ -61,7 +61,7 @@ namespace TDPdf.Diagnostics
                 details = BuildDetails(exception, source, recoverable);
 
                 Directory.CreateDirectory(LogDirectory);
-                logPath = Path.Combine(LogDirectory, $"crash-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
+                logPath = Path.Combine(LogDirectory, $"crash-{DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture)}.log");
                 File.WriteAllText(logPath, details, Encoding.UTF8);
                 TrimLogDirectory();
             }

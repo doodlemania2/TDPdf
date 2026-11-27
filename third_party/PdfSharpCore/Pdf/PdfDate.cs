@@ -69,8 +69,12 @@ namespace PdfSharpCore.Pdf
         /// </summary>
         public override string ToString()
         {
-            var delta = _value.ToString("zzz").Replace(':', '\'');
-            return $"D:{_value:yyyyMMddHHmmss}{delta}'";
+            // PDF dates are always Gregorian with ASCII digits. The current culture must not choose
+            // the calendar: under th-TH "yyyy" is the Buddhist year (2569), which writes a date
+            // 543 years in the future into the file.
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            var delta = _value.ToString("zzz", ci).Replace(':', '\'');
+            return "D:" + _value.ToString("yyyyMMddHHmmss", ci) + delta + "'";
         }
 
         /// <summary>

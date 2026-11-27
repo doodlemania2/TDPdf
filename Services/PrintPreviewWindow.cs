@@ -969,19 +969,19 @@ namespace TDPdf.Services
         // button opens, via the classic winspool DocumentProperties round-trip: query the
         // devmode buffer size, allocate it, then prompt with DM_IN_PROMPT | DM_OUT_BUFFER.
 
-        [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
 
-        [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern bool ClosePrinter(IntPtr hPrinter);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool EnableWindow(IntPtr hWnd, bool bEnable);
 
-        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
 
-        [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern int DocumentProperties(
             IntPtr hwnd, IntPtr hPrinter, string pDeviceName,
             IntPtr pDevModeOutput, IntPtr pDevModeInput, int fMode);
