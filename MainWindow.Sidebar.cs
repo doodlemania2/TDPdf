@@ -231,6 +231,7 @@ namespace TDPdf
                 // Empty tab → drop-zone state.
                 _ctx.Thumbs.Clear();
                 PageList.ItemsSource = null;
+                _thumbItems = null;
                 if (FindName("PageImage") is System.Windows.Controls.Image img)
                 {
                     img.Source = null;
@@ -735,6 +736,8 @@ namespace TDPdf
             var store = ctx.Thumbs;
             store.CancelSession();
             PageList.ItemsSource = null;
+            _thumbItems = null;
+            _thumbOverlayDirty.Clear();
             if (_doc is null) { store.Clear(); return; }
 
             int count = _doc.PageCount;
@@ -754,6 +757,7 @@ namespace TDPdf
             store.Session = session;
             var items = new List<PageThumbItem>(count);
             for (int i = 0; i < count; i++) items.Add(new PageThumbItem(i, session));
+            _thumbItems = items;
             PageList.ItemsSource = items;
         }
 
@@ -776,12 +780,14 @@ namespace TDPdf
             if (item is null) return;
             item.Realised = false;
             item.Thumb = null;   // the cache keeps it for a while; the entry must not pin it
+            item.Overlay = null;
         }
 
         private void ShowThumbItem(PageThumbItem? item)
         {
             if (item is null || item.Session.Cancelled) return;
             item.Realised = true;
+            item.Overlay = BuildThumbOverlay(item.Index);   // unsaved annotations, if the page has any
             var store = ((DocumentContext)item.Session.Owner).Thumbs;
             if (store.Cache.TryGet(item.Index, out var cached))
             {

@@ -45,6 +45,19 @@ namespace TDPdf
             }
         }
 
+        private ImageSource? _overlay;
+        /// <summary>The page's not-yet-saved annotations, drawn over the thumbnail (null when there are none).</summary>
+        public ImageSource? Overlay
+        {
+            get => _overlay;
+            set
+            {
+                if (ReferenceEquals(_overlay, value)) return;
+                _overlay = value;
+                Raise(nameof(Overlay));
+            }
+        }
+
         public double ThumbHeight => _thumb is { PixelWidth: > 0 } t ? 140.0 * t.PixelHeight / t.PixelWidth : 100;
         public Visibility ThumbVisibility => _thumb is null ? Visibility.Collapsed : Visibility.Visible;
         public Visibility PlaceholderVisibility => _thumb is null ? Visibility.Visible : Visibility.Collapsed;

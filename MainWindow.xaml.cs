@@ -6161,6 +6161,9 @@ namespace TDPdf
         private void RenderAllAnnotations(int pageIndex)
         {
             _annotationCanvas.Children.Clear();
+            // Every annotation change on a page ends up here, so this is also where the sidebar's
+            // thumbnail of that page learns its unsaved markup changed (debounced there).
+            QueueThumbOverlayRefresh(pageIndex);
             // Clearing the canvas also drops form-field overlays — restore them so they
             // survive every annotation re-render (edits, undo, selection, …).
             if (!_annotations.ContainsKey(pageIndex))
@@ -6751,6 +6754,7 @@ namespace TDPdf
                 _annotations[pageIdx].Clear();
                 MarkDirty();
             }
+            QueueThumbOverlayRefresh(pageIdx);
             ClearSelection();
             _annotationCanvas.Children.Clear();
             SetStatus("Cleared annotations on this page");
