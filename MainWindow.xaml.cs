@@ -1983,8 +1983,10 @@ namespace TDPdf
                     _portableBadge.Visibility = Visibility.Visible;
                 }
             }
-            else if (choice == MessageBoxResult.No)
+            else if (choice == MessageBoxResult.No && PortableInstallPolicy.CanUninstall(offer))
             {
+                // The prompt only ever reaches here for an install this user owns, which is exactly
+                // what CanUninstall decides (tests/PdfCore/PortableInstall.cs).
                 App.UninstallFromPortable(this);
                 RefreshPortableBadge();
             }
