@@ -138,6 +138,29 @@ internal static class SignatureInspect
             Check("the disclaimer says TDPdf does not check", SignatureObservationText.Disclaimer.Contains("does not check"), "");
         }
 
+        // ── DocMDP: a certified document that was changed afterwards ────────────────────────
+        {
+            const string Fact = "Certified with no changes allowed, but the file was changed after certification.";
+            foreach (var (level, extend, want) in new[] { (1, true, true), (1, false, false), (2, true, false), (0, true, false) })
+            {
+                byte[] f = MakeSigned(cert, docTimestamp: false, docMdp: level);
+                if (extend) f = AppendIncrementalUpdate(f);
+                using var d = PdfReader.Open(new MemoryStream(f), PdfDocumentOpenMode.ReadOnly);
+                var o = PdfSignatureInspector.Inspect(d, f);
+                string summary = SignatureObservationText.Summary(o);
+                Check($"DocMDP P={level}, {(extend ? "extended" : "untouched")}: certification level read as {(level == 0 ? "none" : level.ToString())}",
+                      o.Signatures[0].CertifiedLevel == (level == 0 ? null : level), $"{o.Signatures[0].CertifiedLevel}");
+                Check($"DocMDP P={level}, {(extend ? "extended" : "untouched")}: the 'changed after certification' line is {(want ? "shown" : "absent")}",
+                      summary.Contains(Fact) == want && o.CertifiedNoChangesButExtended == want, summary);
+            }
+            // Facts only: the new line does not claim validity either.
+            byte[] g = AppendIncrementalUpdate(MakeSigned(cert, docTimestamp: false, docMdp: 1));
+            using var gd = PdfReader.Open(new MemoryStream(g), PdfDocumentOpenMode.ReadOnly);
+            string line = SignatureObservationText.Summary(PdfSignatureInspector.Inspect(gd, g));
+            Check("the DocMDP line claims nothing about validity",
+                  !Regex.IsMatch(line, @"\b(valid|verified|trusted|authentic|genuine)\b", RegexOptions.IgnoreCase), line);
+        }
+
         // ── Primitives ─────────────────────────────────────────────────────────────────────
         Check("PDF date with offset", PdfSignatureInspector.ParsePdfDate("D:20261010143000-05'00'")
               == new DateTimeOffset(2026, 10, 10, 14, 30, 0, TimeSpan.FromHours(-5)), "");
@@ -158,7 +181,7 @@ internal static class SignatureInspect
     /// A one-page PDF signed the way @libpdf/core signs: placeholders written, the file saved, the
     /// ByteRange patched in place, the covered bytes signed, the CMS hex patched into the gap.
     /// </summary>
-    private static byte[] MakeSigned(X509Certificate2 cert, bool docTimestamp)
+    private static byte[] MakeSigned(X509Certificate2 cert, bool docTimestamp, int docMdp = 0)
     {
         var doc = new PdfDocument();
         var page = doc.AddPage();
@@ -177,7 +200,26 @@ internal static class SignatureInspect
             sig.Elements["/Reason"] = new PdfString("Signed by Documenso");
             sig.Elements["/Location"] = new PdfString("https://sign.tdpdf.com");
         }
+        if (docMdp > 0)
+        {
+            // A certification signature: /Reference with a DocMDP transform, and the catalog's /Perms.
+            var parms = new PdfDictionary(doc);
+            parms.Elements["/Type"] = new PdfName("/TransformParams");
+            parms.Elements["/P"] = new PdfInteger(docMdp);
+            parms.Elements["/V"] = new PdfName("/1.2");
+            var reference = new PdfDictionary(doc);
+            reference.Elements["/Type"] = new PdfName("/SigRef");
+            reference.Elements["/TransformMethod"] = new PdfName("/DocMDP");
+            reference.Elements["/TransformParams"] = parms;
+            sig.Elements["/Reference"] = new PdfArray(doc, reference);
+        }
         doc.Internals.AddObject(sig);
+        if (docMdp > 0)
+        {
+            var perms = new PdfDictionary(doc);
+            perms.Elements["/DocMDP"] = sig.Reference!;
+            doc.Internals.Catalog.Elements["/Perms"] = perms;
+        }
 
         var field = new PdfDictionary(doc);
         field.Elements["/FT"] = new PdfName("/Sig");
