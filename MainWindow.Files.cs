@@ -2859,7 +2859,7 @@ namespace TDPdf
             try
             {
                 Directory.CreateDirectory(dir);
-                System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, dir);
+                ZipLimits.ExtractToDirectory(zipPath, dir);
                 return dir;
             }
             catch { try { Directory.Delete(dir, true); } catch { } return null; }
