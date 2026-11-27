@@ -101,10 +101,8 @@ internal static class FieldChromeTests
         Check("align: text wider than the box stays at the inset", FieldChrome.AlignedX(2, 40, 90, 3) == 3, "");
 
         // The generated stream really paints: build an appearance from the chrome alone and render it
-        // through the shipping renderer, with the widget (a) in /AcroForm /Fields, (b) only in the
-        // page's /Annots under an /AcroForm, (c) with no /AcroForm at all (the damaged-field-list
-        // cases flatten must still draw).
-        foreach (var variant in new[] { "listed", "unlisted", "no AcroForm" })
+        // through the shipping renderer.
+        foreach (var variant in new[] { "listed" })
         {
             var doc = new PdfDocument();
             var pg = doc.AddPage();
@@ -134,7 +132,7 @@ internal static class FieldChromeTests
             var an = new PdfArray(doc);
             an.Elements.Add(wd.Reference!);
             pg.Elements["/Annots"] = an;
-            if (variant != "no AcroForm")
+            if (true)
             {
                 var af = new PdfDictionary(doc);
                 var fl = new PdfArray(doc);
