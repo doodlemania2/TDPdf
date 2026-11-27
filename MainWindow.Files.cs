@@ -1189,21 +1189,14 @@ namespace TDPdf
         {
             if (_doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
             var doc = _doc;
-            var selected = PageList.SelectedItems;
-            if (selected.Count == 0) { TdpDialog.Show(this, "Select pages to delete."); return; }
-            // A PDF cannot have zero pages, and Ctrl+A followed by Delete now makes that a single
-            // gesture. Refuse rather than write a document nothing can reopen.
-            if (selected.Count >= doc.PageCount)
-            {
-                TdpDialog.Show(this, "A PDF must keep at least one page.\n\nTo discard the whole document, close it instead.",
-                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            var result = TdpDialog.Show(this, $"Delete {selected.Count} {(selected.Count == 1 ? "page" : "pages")}?", "TDPdf",
-                MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (result != MessageBoxResult.Yes) return;
-            var indices = new List<int>();
-            foreach (var item in selected) indices.Add(PageList.Items.IndexOf(item));
+            // The picked thumbnails pre-fill the page list; it can be edited or typed from scratch.
+            // The dialog's button states what it will do ("Delete 3 pages") and refuses a list that
+            // would remove every page, so there is no second Yes/No question afterwards.
+            var picked = new List<int>();
+            foreach (var item in PageList.SelectedItems) picked.Add(PageList.Items.IndexOf(item));
+            var indices = TdpDialog.ShowDeletePages(this, doc.PageCount,
+                TDPdf.Services.PageRangeSpec.Describe(picked.Where(i => i >= 0).ToList()));
+            if (indices is null || indices.Count == 0 || indices.Count >= doc.PageCount) return;
             RunPageOperation("Delete", () =>
             {
                 doc = _doc!;

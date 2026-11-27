@@ -200,7 +200,7 @@ namespace TDPdf
                 okBtn.IsEnabled = valid;
                 okBtn.Content = valid ? $"Delete {pages.Count} {(pages.Count == 1 ? "page" : "pages")}" : "Delete pages";
                 bool empty = string.IsNullOrWhiteSpace(pagesBox.Text);
-                hint.Text = valid ? "The pages can be brought back with Undo."
+                hint.Text = valid ? $"Pages {PageRangeSpec.Describe(pages)} will be removed from this document."
                           : empty ? "For example 1-3,7" : err;
                 hint.Foreground = Brush(valid || empty ? "TextSecondary" : "DangerRed");
             }
