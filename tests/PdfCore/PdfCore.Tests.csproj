@@ -199,12 +199,14 @@
     <Compile Include="..\..\Services\BookLayoutOptions.cs" />
     <Compile Include="..\..\Services\BookConversion.cs" />
     <Compile Include="..\..\Services\DjvuModel.cs" />
-    <Compile Include="..\..\Services\DjvuProcess.cs" />
+    <Compile Include="..\..\Services\DjvuWorkerProtocol.cs" />
+    <Compile Include="..\..\Services\DjvuWorkerClient.cs" />
     <Compile Include="..\..\Services\DjvuLibreDecoder.cs" />
     <Compile Include="..\..\Services\DjvuNativeBootstrap.cs" />
     <Compile Include="..\..\Services\DjvuToPdf.cs" />
     <!-- A two-page DjVu book (one bitonal, one colour page, hidden text, outline) made with DjVuLibre
-         from synthetic pixels, for the checks that run the real programs when they are installed. -->
+         from synthetic pixels, for a real-decode check on Windows (the library is Windows-only, so no
+         check on macOS or Linux opens it). -->
     <None Include="fixtures\book.djvu" CopyToOutputDirectory="PreserveNewest" LinkBase="" />
     <Compile Include="..\..\Services\ParagraphFinder.cs" />
     <Compile Include="..\..\Services\ParagraphReflow.cs" />

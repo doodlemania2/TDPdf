@@ -60,7 +60,7 @@ namespace TDPdf.Services
                 DjvuRaster? raster = null;
                 try { raster = decoder.Render(i, options.MaxPagePixels, ct); }
                 catch (OperationCanceledException) { throw; }
-                catch (Exception ex) when (ex is InvalidDataException or IOException or TimeoutException or BookConversionException)
+                catch (Exception ex) when (ex is InvalidDataException or IOException or TimeoutException)
                 {
                     failed.Add(i + 1);
                 }

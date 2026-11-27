@@ -23,7 +23,7 @@ TDPdf.exe <file.pdf>
 | `--print <in.pdf> [--printer <name>] [--pages <range>] [--copies <n>]` | Print without showing a window. Uses the default printer unless you name one. |
 | `--ocr <in.pdf> <out.pdf> [--lang <code>]` | Add hidden, searchable text to scanned pages. English is the default; other languages download the first time you use them. |
 | `--pdfua <file.pdf\|folder> [more ...] [--json]` | Check accessibility (PDF/UA) and list what is wrong. A folder is checked file by file. `--json` names the standard each file was checked against, PDF/UA-1 or PDF/UA-2. A pass means TDPdf's machine checks found nothing, not that the file meets the standard. |
-| `--convert-book <book.epub\|book.djvu\|book.djv> <out.pdf> [--paper Letter\|A4\|A5\|Book\|Pocket] [--margin <mm>] [--font <pt>]` | Turn an EPUB or DjVu book into a PDF. `--paper`, `--margin` and `--font` set the page size, margin (5 to 40 mm) and text size (7 to 24 pt) of an EPUB; DjVu pages keep their own size. DjVu books need DjVuLibre. |
+| `--convert-book <book.epub\|book.djvu\|book.djv> <out.pdf> [--paper Letter\|A4\|A5\|Book\|Pocket] [--margin <mm>] [--font <pt>]` | Turn an EPUB or DjVu book into a PDF. `--paper`, `--margin` and `--font` set the page size, margin (5 to 40 mm) and text size (7 to 24 pt) of an EPUB; DjVu pages keep their own size. |
 | `--batch-resave <in> <out> [--log <f.csv>] [--quiet]` | Open and save a file, or every PDF in a folder, through TDPdf's normal open and save steps. Useful for checking a batch of files. |
 | `--version`, `-v` | Show the version. |
 | `--help`, `-h`, `/?` | Show this list. |

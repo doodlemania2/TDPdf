@@ -174,24 +174,28 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <!-- DjVuLibre (#235): Services/DjvuNativeBootstrap.cs runs ddjvu.exe and djvused.exe as separate
-       programs to read DjVu books. They are GPL-2.0-or-later, so a build that carries them must also
-       offer their corresponding source (THIRD-PARTY-NOTICES.md names the exact version and where it
-       is). When third_party\djvulibre\win-x64\ holds ddjvu.exe and djvused.exe, that whole folder's
-       .exe and .dll files are embedded as TDPdf.DjvuNative.<file> and extracted on first use, the OCR
-       way. Nothing is fetched at build time and nothing is embedded unpinned: every file in the folder
-       must be listed in third_party\djvulibre\SHA256SUMS ("<sha256>  <file name>", the output of
-       sha256sum) or the build stops. With the folder absent the build carries no DjVuLibre and the app
-       falls back to one installed under Program Files\DjVuLibre (DjVu books then need that install). -->
+  <!-- DjVuLibre (#235): the DjVuLibre LIBRARY, not its command-line tools. TDPdf.exe in its worker mode
+       (Services/DjvuWorker.cs) loads libdjvulibre-21.dll in a process of its own and calls it through
+       its C API, so a book that crashes DjVuLibre ends that process and not your tabs. DjVuLibre is
+       GPL-2.0-or-later, so a build that carries it must also offer its corresponding source:
+       third_party\djvulibre\SOURCES.md names every package, its exact version, its MSYS2 recipe and
+       its upstream source, and THIRD-PARTY-NOTICES.md says where to get them. The five DLLs (the
+       library and the runtime pieces it imports, and nothing else) come from MSYS2's UCRT64
+       packages. They are embedded as TDPdf.DjvuNative.<file> and extracted on first use, the OCR
+       way. Nothing is fetched at build time and nothing is embedded unpinned: every file in the
+       folder must be listed in third_party\djvulibre\SHA256SUMS ("<sha256>  <file name>", the output
+       of sha256sum) and no program (.exe) may be in it, or the build stops. -->
   <PropertyGroup>
     <DjvuNativeDir>$(MSBuildThisFileDirectory)third_party\djvulibre\win-x64\</DjvuNativeDir>
     <DjvuPinFile>$(MSBuildThisFileDirectory)third_party\djvulibre\SHA256SUMS</DjvuPinFile>
   </PropertyGroup>
-  <ItemGroup Condition="Exists('$(DjvuNativeDir)ddjvu.exe') And Exists('$(DjvuNativeDir)djvused.exe')">
-    <DjvuNativeFile Include="$(DjvuNativeDir)*.exe;$(DjvuNativeDir)*.dll" />
+  <ItemGroup Condition="Exists('$(DjvuNativeDir)libdjvulibre-21.dll')">
+    <DjvuNativeFile Include="$(DjvuNativeDir)*.dll" />
+    <DjvuForbiddenFile Include="$(DjvuNativeDir)*.exe" />
     <EmbeddedResource Include="@(DjvuNativeFile)" LogicalName="TDPdf.DjvuNative.%(Filename)%(Extension)" />
   </ItemGroup>
   <Target Name="VerifyDjvuNativePins" BeforeTargets="BeforeBuild;CoreCompile" Condition="'@(DjvuNativeFile)' != ''">
+    <Error Condition="'@(DjvuForbiddenFile)' != ''" Text="third_party\djvulibre\win-x64 must hold the DjVuLibre library DLLs only; remove @(DjvuForbiddenFile->'%(Filename)%(Extension)', ', ')." />
     <Error Condition="!Exists('$(DjvuPinFile)')" Text="third_party\djvulibre\SHA256SUMS is missing: the DjVuLibre binaries in third_party\djvulibre\win-x64 must be pinned by SHA-256." />
     <ReadLinesFromFile File="$(DjvuPinFile)" Condition="Exists('$(DjvuPinFile)')">
       <Output TaskParameter="Lines" ItemName="DjvuPinLine" />

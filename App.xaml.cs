@@ -144,6 +144,13 @@ namespace TDPdf
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // The DjVu worker (Services/DjvuWorker.cs): TDPdf.exe started by TDPdf to run DjVuLibre in a
+            // process of its own. Handled before anything else (no window, no settings, no font resolver,
+            // no single-instance check) and not listed in any help. It refuses to run unless its stdin is a
+            // pipe from the parent; a launch that is not exactly "--djvu-worker 1" is the normal app.
+            if (DjvuWorkerProtocol.IsWorkerLaunch(e.Args))
+                Environment.Exit(DjvuWorker.Run());
+
             base.OnStartup(e);
 
             // #168: install the font resolver before ANYTHING can create an XFont — PdfSharpCore

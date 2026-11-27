@@ -3,6 +3,9 @@ using PdfSharpCore.Drawing;
 using PdfSharpCore.Fonts;
 using TDPdf.Services;
 
+// The DjVu tests start this very program as a stand-in for `TDPdf.exe --djvu-worker` (DjvuTests.cs).
+if (args.Length >= 2 && args[0] == "--fake-djvu-worker") return DjvuFakeWorker.Run(args[1]);
+
 // Pin the culture before anything creates a PdfPage. PdfSharpCore sizes a new page from the
 // machine's region (A4 when metric, Letter otherwise), and the fixtures assume US Letter, so a
 // metric runner (the Linux release runner) would otherwise fail ~35 geometry checks.

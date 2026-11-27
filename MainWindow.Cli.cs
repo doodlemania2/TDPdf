@@ -177,7 +177,7 @@ namespace TDPdf
             "                                           A pass means TDPdf's machine checks found nothing.",
             "  --convert-book <book.epub|book.djvu|book.djv> <out.pdf> [--paper Letter|A4|A5|Book|Pocket] [--margin <mm>] [--font <pt>]",
             "                                           turn an EPUB or DjVu book into a PDF (the layout options",
-            "                                           are for EPUB; DjVu needs DjVuLibre installed)",
+            "                                           are for EPUB)",
             "  --batch-resave <in> <out> [--log <f.csv>] [--quiet]",
             "                                           resave a file or tree through the standard",
             "                                           open/save pipeline (validation harness)",
