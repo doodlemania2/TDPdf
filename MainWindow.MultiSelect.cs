@@ -195,22 +195,6 @@ namespace TDPdf
             SelectMarks(members);
         }
 
-        private MenuItem? _ctxCut, _ctxCopy, _ctxPaste, _ctxGroup, _ctxUngroup;
-
-        /// <summary>Greys the mark commands in the right-click menu that have nothing to act on.</summary>
-        private void UpdateMarkMenuState()
-        {
-            UpdateRasterizeRegionMenuState();
-            if (_ctxCut is not null) _ctxCut.IsEnabled = HasMarkSelection || HasPictureSelection;
-            UpdatePictureMenuState();
-            if (_ctxPaste is not null) _ctxPaste.IsEnabled = CanPasteNow();
-            if (_ctxGroup is not null) _ctxGroup.IsEnabled = IsMultiSelection;
-            if (_ctxUngroup is not null) _ctxUngroup.IsEnabled = SelectionIsGrouped;
-            if (_ctxArrange is not null) _ctxArrange.IsEnabled = IsMultiSelection;
-            if (_ctxDistH is not null) _ctxDistH.IsEnabled = _markSelection.Count >= 3;
-            if (_ctxDistV is not null) _ctxDistV.IsEnabled = _markSelection.Count >= 3;
-        }
-
         /// <summary>The selection a Shift/Ctrl box drag adds to; null for a plain box drag.</summary>
         private List<PageAnnotation>? _marqueeBase;
 

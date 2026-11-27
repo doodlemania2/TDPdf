@@ -549,6 +549,15 @@
       "audiences": ["user"],
       "screens": [],
       "sources": ["MainWindow.MonitorColor.cs", "Services/Color*.cs", "Services/Lcms*.cs", "Services/PrintTicketColor.cs", "Services/PrintPreviewWindow.cs"]
+    },
+    {
+      "id": "right-click-menus",
+      "name": "Right-click menus",
+      "status": "ready",
+      "summary": "Right-click a mark, a picture, a page, a thumbnail or a tab and the menu is about that. A row of buttons and colour, opacity and width controls sit at the top of a mark menu, and you can drag the items of any menu into your own order or hide the ones you never use.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.ContextMenus.cs", "TdpDialog.EditMenu.cs", "Services/ContextMenuModel.cs", "Services/MenuLayouts.cs"]
     }
   ],
   "scenarios": [

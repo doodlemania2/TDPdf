@@ -729,32 +729,5 @@ namespace TDPdf
             SetStatus("Image extracted as a picture mark. Drag it where you want it");
         }
 
-        // ============================================================
-        // Right-click menu
-        // ============================================================
-
-        private MenuItem? _ctxSavePicture, _ctxReplacePicture, _ctxExtractPicture;
-
-        /// <summary>The picture commands for the right-click menu. They show only while a picture is selected.</summary>
-        private void AddPictureMenuItems(ContextMenu menu)
-        {
-            _ctxSavePicture = MakeMenuItem("Save _Picture As...", (s, e) => SavePictureAs(), null,
-                "Save the selected picture: the original JPEG, or a PNG at its own resolution", "");
-            _ctxReplacePicture = MakeMenuItem("Rep_lace Picture...", (s, e) => ReplacePicture(), null,
-                "Put another picture in this one's place, at the same width", "");
-            _ctxExtractPicture = MakeMenuItem("E_xtract Image...", (s, e) => ExtractPictureImage(), null,
-                "Cut a box, or one colour area, out of the picture as a transparent picture mark", "");
-            menu.Items.Add(_ctxSavePicture);
-            menu.Items.Add(_ctxReplacePicture);
-            menu.Items.Add(_ctxExtractPicture);
-        }
-
-        private void UpdatePictureMenuState()
-        {
-            var v = HasPictureSelection ? Visibility.Visible : Visibility.Collapsed;
-            if (_ctxSavePicture is not null) _ctxSavePicture.Visibility = v;
-            if (_ctxReplacePicture is not null) _ctxReplacePicture.Visibility = v;
-            if (_ctxExtractPicture is not null) _ctxExtractPicture.Visibility = v;
-        }
     }
 }

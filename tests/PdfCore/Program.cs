@@ -208,6 +208,7 @@ CanvasPixelsTests.Run(Check);
 FileDialogTests.Run(Check);
 FaultSinkTests.Run(Check);
 MarkArrangeTests.Run(Check);
+ContextMenuTests.Run(Check);
 AnglesTests.Run(Check);
 UntestedPureCodeTests.Run(Check, tmp);
 ClosedTabTests.Run(Check);

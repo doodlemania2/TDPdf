@@ -18,7 +18,6 @@ namespace TDPdf
         /// <summary>The box last dragged with the Select tool while it is still on screen, for the right-click command.</summary>
         private (int PageIndex, Rect Canvas)? _boxSelection;
 
-        private MenuItem? _ctxRasterRegion;
 
         private void RasterizeRegion_Click(object sender, RoutedEventArgs e) => BeginRasterizeRegion();
 
@@ -155,20 +154,5 @@ namespace TDPdf
             }
         }
 
-        /// <summary>The right-click row. Enabled whenever there is a document; with a box on the page it uses that box.</summary>
-        private MenuItem BuildRasterizeRegionMenuItem()
-        {
-            _ctxRasterRegion = MakeMenuItem("Rasterize Re_gion…", (s, e) => BeginRasterizeRegion(), null,
-                "Turn a boxed area into a picture and take its text and graphics off the page (not redaction)", "");
-            return _ctxRasterRegion;
-        }
-
-        private void UpdateRasterizeRegionMenuState()
-        {
-            if (_ctxRasterRegion is null) return;
-            _ctxRasterRegion.IsEnabled = _doc is not null;
-            _ctxRasterRegion.Header = _boxSelection is not null && _selectRect is not null
-                ? "Rasterize Selected Re_gion…" : "Rasterize Re_gion…";
-        }
     }
 }

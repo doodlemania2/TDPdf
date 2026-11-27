@@ -319,9 +319,9 @@ namespace TDPdf
                 Margin = new Thickness(6, 2, 6, 2)
             });
 
-        private MenuItem BuildArrangeSubmenu()
+        private MenuItem BuildArrangeSubmenu(int markCount)
         {
-            var arrange = MakeMenuItem("Arran_ge", (s, e) => { }, null, "Align, space evenly or match the size of the selected marks");
+            var arrange = MakeMenuItem("Arra_nge", (s, e) => { }, null, "Align, space evenly or match the size of the selected marks");
             arrange.Items.Add(MakeMenuItem("Align _Left", (s, e) => AlignSelected(MarkArrange.AlignEdge.Left)));
             arrange.Items.Add(MakeMenuItem("Align _Centres", (s, e) => AlignSelected(MarkArrange.AlignEdge.Center)));
             arrange.Items.Add(MakeMenuItem("Align _Right", (s, e) => AlignSelected(MarkArrange.AlignEdge.Right)));
@@ -330,16 +330,16 @@ namespace TDPdf
             arrange.Items.Add(MakeMenuItem("Align _Middles", (s, e) => AlignSelected(MarkArrange.AlignEdge.Middle)));
             arrange.Items.Add(MakeMenuItem("Align _Bottom", (s, e) => AlignSelected(MarkArrange.AlignEdge.Bottom)));
             arrange.Items.Add(new Separator());
-            _ctxDistH = MakeMenuItem("Space Evenly _Across", (s, e) => DistributeSelected(true));
-            _ctxDistV = MakeMenuItem("Space Evenly _Down", (s, e) => DistributeSelected(false));
-            arrange.Items.Add(_ctxDistH);
-            arrange.Items.Add(_ctxDistV);
+            var distH = MakeMenuItem("Space Evenly _Across", (s, e) => DistributeSelected(true));
+            var distV = MakeMenuItem("Space Evenly _Down", (s, e) => DistributeSelected(false));
+            distH.IsEnabled = distV.IsEnabled = markCount >= 3;
+            arrange.Items.Add(distH);
+            arrange.Items.Add(distV);
             arrange.Items.Add(new Separator());
             arrange.Items.Add(MakeMenuItem("Same _Width", (s, e) => MatchSizeSelected(true)));
             arrange.Items.Add(MakeMenuItem("Same _Height", (s, e) => MatchSizeSelected(false)));
             return arrange;
         }
 
-        private MenuItem? _ctxArrange, _ctxDistH, _ctxDistV;
     }
 }

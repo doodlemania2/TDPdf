@@ -589,18 +589,6 @@ namespace TDPdf
             return Convert.ToBase64String(ms.ToArray());
         }
 
-        private void ShowImageEditMenu(ImageEditAnnotation edit)
-        {
-            var menu = new ContextMenu();
-            menu.Items.Add(MakeMenuItem("Replace Image...", (s, e) => ReplaceImageEdit(edit), null, null, "\uE91B"));
-            menu.Items.Add(MakeMenuItem("Delete Image", (s, e) => DeleteImageEdit(edit), null, null, "\uE74D"));
-            menu.Items.Add(MakeMenuItem("Reset Size", (s, e) => ResetImageEditSize(edit), null, null, "\uE72C"));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(new MenuItem { Header = "Resize: drag the green handle" });
-            menu.PlacementTarget = _annotationCanvas;
-            menu.IsOpen = true;
-        }
-
         private void ReplaceImageEdit(ImageEditAnnotation edit)
         {
             var dlg = new OpenFileDialog
