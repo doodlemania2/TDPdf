@@ -653,6 +653,9 @@ namespace TDPdf
                 // TOOLS section in MainWindow.xaml — those two drifted apart once and it was
                 // reported as a bug, so a new key goes into all three or none.
                 case Key.M: SetTool(EditTool.Measure); return true;
+                // A for stamp ("Approved"): S, T and the other mnemonics were taken. Mirrored in the keyboard
+                // map and the shortcut list like the keys above.
+                case Key.A: SetTool(EditTool.Stamp); return true;
                 default: return false;
             }
         }

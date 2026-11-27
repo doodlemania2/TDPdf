@@ -348,6 +348,15 @@
       "summary": "Merge, split, flatten, decrypt, print, OCR or convert PDFs to images from a script, with no window.",
       "audiences": ["it-admin"],
       "sources": ["MainWindow.Cli.cs", "MainWindow.BatchMode.cs", "docs/command-line.md"]
+    },
+    {
+      "id": "stamps",
+      "name": "Stamps",
+      "status": "ready",
+      "summary": "Stamp a page Approved, Draft, Confidential or Final, or with your own words or a picture. Stamps are saved as real stamp annotations, so other PDF viewers show them too.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Stamps.cs", "Services/StampLibrary.cs", "Services/StampWriter.cs", "Services/AnnotationBaker.cs"]
     }
   ],
   "scenarios": [

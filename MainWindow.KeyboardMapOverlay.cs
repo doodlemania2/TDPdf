@@ -84,7 +84,7 @@ namespace TDPdf
                 ["D0"] = ("Tools", "Eraser"),           ["E"] = ("Tools", "Eraser"),
                 ["G"] = ("Tools", "Signature Picture"), ["C"] = ("Tools", "Crop"),
                 ["R"] = ("Tools", "Redact"),      ["F"] = ("Tools", "Form fields"),
-                ["M"] = ("Tools", "Measure"),
+                ["M"] = ("Tools", "Measure"),     ["A"] = ("Tools", "Stamp"),
             },
             [KbLayer.Ctrl] = new()
             {

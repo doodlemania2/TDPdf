@@ -219,6 +219,7 @@ namespace TDPdf
         // SetTool(Select), which clears the measurement, and a ruler the user has to re-drag after
         // switching documents is exactly what a ruler should do.
         private readonly Button _toolMeasureBtn = null!;
+        private readonly Button _toolStampBtn = null!;
 
         /// <summary>True only between mouse-down and mouse-up on the Measure tool.</summary>
         private bool _isMeasuring;
@@ -555,6 +556,7 @@ namespace TDPdf
             _toolRedactBtn = (Button)FindName("ToolRedactBtn")!;
             _toolFormBtn = (Button)FindName("ToolFormBtn")!;
             _toolMeasureBtn = (Button)FindName("ToolMeasureBtn")!;
+            _toolStampBtn = (Button)FindName("ToolStampBtn")!;
             _toolPanBtn = (Button)FindName("ToolPanBtn")!;
             _toolEraseBtn = (Button)FindName("ToolEraseBtn")!;
             _toolShapeBtn = (Button)FindName("ToolShapeBtn")!;
@@ -3870,7 +3872,8 @@ namespace TDPdf
                 (_toolMeasureBtn, EditTool.Measure),
                 (_toolPanBtn, EditTool.Pan),
                 (_toolEraseBtn, EditTool.Erase),
-                (_toolShapeBtn, EditTool.Shape)
+                (_toolShapeBtn, EditTool.Shape),
+                (_toolStampBtn, EditTool.Stamp)
             };
             var green = (SolidColorBrush)FindResource("AccentGreen");
             var greenDim = (SolidColorBrush)FindResource("AccentGreenDim");
@@ -3900,6 +3903,7 @@ namespace TDPdf
                 EditTool.Pan => Cursors.Hand,
                 EditTool.Erase => Cursors.Cross,
                 EditTool.Shape => Cursors.Cross,
+                EditTool.Stamp => Cursors.Hand,
                 _ => Cursors.Arrow
             };
 
@@ -3922,6 +3926,12 @@ namespace TDPdf
                 ShowShapeSettings();
             else
                 HideShapeSettings();
+
+            // The stamp bar: which stamp, its size and opacity.
+            if (tool == EditTool.Stamp)
+                ShowStampSettings();
+            else
+                HideStampSettings();
 
             // The redaction bar is the only place the pending marks can be applied or cleared, so
             // it stays up for as long as any mark exists — switching tools must not strand marks
@@ -4216,6 +4226,7 @@ namespace TDPdf
         private void ToolPan_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Pan);
         private void ToolErase_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Erase);
         private void ToolShape_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Shape);
+        private void ToolStamp_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Stamp);
         private void ToolRedact_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Redact);
         private void ToolForm_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Form);
         private void ToolMeasure_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Measure);
@@ -5378,6 +5389,10 @@ namespace TDPdf
                     bounds = PlacedVisualRect(sa);
                     return bounds.Contains(pos);
 
+                case StampAnnotation st:
+                    bounds = PlacedVisualRect(st);
+                    return bounds.Contains(pos);
+
                 case ImageAnnotation ia:
                     bounds = PlacedVisualRect(ia);
                     return bounds.Contains(pos);
@@ -5473,7 +5488,7 @@ namespace TDPdf
                 Canvas.SetLeft(_resizeHandle, bounds.X + bounds.Width - 4 - hSize / 2);
                 Canvas.SetTop(_resizeHandle, bounds.Y + bounds.Height - 4 - hSize / 2);
                 _annotationCanvas.Children.Add(_resizeHandle);
-                string label = annot is SignatureAnnotation ? "Signature picture" : "Image";
+                string label = annot is SignatureAnnotation ? "Signature picture" : annot is StampAnnotation ? "Stamp" : "Image";
                 SetStatus($"{label} selected. Drag the corner handle to resize, Delete to remove");
             }
             else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation or TextEditAnnotation)
@@ -5683,6 +5698,8 @@ namespace TDPdf
             TextEditAnnotation tea => new Point(tea.OriginalBounds.X + 1, tea.OriginalBounds.Y + 1),
             SignatureAnnotation sg => sg.Rotation == 0 ? new Point(sg.Position.X + 1, sg.Position.Y + 1)
                                                        : TopLeftInside(PlacedVisualRect(sg)),
+            StampAnnotation sp => sp.Rotation == 0 ? new Point(sp.Position.X + 1, sp.Position.Y + 1)
+                                                   : TopLeftInside(PlacedVisualRect(sp)),
             ImageAnnotation ig => ig.Rotation == 0 ? new Point(ig.Position.X + 1, ig.Position.Y + 1)
                                                    : TopLeftInside(PlacedVisualRect(ig)),
             _ => new Point(0, 0)
@@ -6662,6 +6679,11 @@ namespace TDPdf
                                 _annotationCanvas.Children.Add(sigPoly);
                             }
                         }
+                        break;
+
+                    case StampAnnotation stamp:
+                        if (!TryGetPlacedSize(stamp, out _, out _)) continue;
+                        _annotationCanvas.Children.Add(MakeStampElement(stamp));
                         break;
 
                     case ImageAnnotation ia:
