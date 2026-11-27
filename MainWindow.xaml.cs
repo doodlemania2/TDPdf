@@ -3239,12 +3239,20 @@ namespace TDPdf
 
         // True only for an absolute URI in an allowed scheme. Rejects scheme-less / relative URIs (a bare
         // "www.example.com" is normalised first, below), plus file:, javascript:, and custom protocols.
-        private static bool IsAllowedLinkUri(string url) =>
-            Uri.TryCreate(url, UriKind.Absolute, out var uri) && AllowedLinkSchemes.Contains(uri.Scheme);
+        private static bool TryGetAllowedLinkUri(string url, out Uri uri)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var parsed) && AllowedLinkSchemes.Contains(parsed.Scheme))
+            {
+                uri = parsed;
+                return true;
+            }
+            uri = null!;
+            return false;
+        }
 
         // A PDF can store a scheme-less link like "www.example.com" or "example.com/page". Treat a domain-
         // shaped target as https so it still opens; anything with an explicit scheme, a backslash (UNC/path),
-        // or whitespace is left untouched (and thus refused by IsAllowedLinkUri unless it's http/https/mailto).
+        // or whitespace is left untouched (and thus refused by TryGetAllowedLinkUri unless it's http/https/mailto).
         private static string NormalizeLinkUri(string raw)
         {
             raw = raw.Trim();
@@ -3302,17 +3310,20 @@ namespace TDPdf
 
             // Scheme-less but domain-shaped targets (e.g. "www.example.com") become https:// here.
             string url = NormalizeLinkUri(raw);
-            if (!IsAllowedLinkUri(url))
+            if (!TryGetAllowedLinkUri(url, out var linkUri))
             {
                 SetStatus($"Blocked an unsafe link: {raw}");
                 return;
             }
 
-            if (!ConfirmOpenLink(url)) return;
+            // Open exactly the address that was validated (the parsed, normalised form), not the raw string
+            // the PDF supplied, so what the checks saw and what the shell launches cannot differ.
+            string openUrl = linkUri.AbsoluteUri;
+            if (!ConfirmOpenLink(openUrl)) return;
 
             try
             {
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                Process.Start(new ProcessStartInfo(openUrl) { UseShellExecute = true });
             }
             catch (Exception ex)
             {
