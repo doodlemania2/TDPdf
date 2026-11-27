@@ -402,15 +402,48 @@ namespace TDPdf.Services
                             return;
                     }
                 };
+                // Frames get the same allow-list as the page itself. An embedded frame is never sent to
+                // the system browser on its own; anything that is not the service's own is dropped.
+                core.FrameNavigationStarting += (_, e) =>
+                {
+                    if (DocumensoWebNavigation.Decide(inputs.BaseUrl, e.Uri) != DocumensoNavigationDecision.Allow)
+                        e.Cancel = true;
+                };
+                // The signing page has no use for the camera, microphone, location, clipboard, MIDI,
+                // notifications and the rest; refuse every request instead of asking the user.
+                core.PermissionRequested += (_, e) => e.State = CoreWebView2PermissionState.Deny;
+                // Files leave through TDPdf's own Download button (which checks what it saves), not
+                // through a download the page starts.
+                core.DownloadStarting += (_, e) =>
+                {
+                    e.Cancel = true;
+                    e.Handled = true;
+                    Say(completed is not null && inputs.DownloadSignedAsync is not null
+                        ? "Use the Download button above to save the signed copy."
+                        : "Downloads from the signing page are turned off in TDPdf.", "WarningOrange");
+                };
                 core.NewWindowRequested += (_, e) =>
                 {
                     // Never a second browser window: the service's own links load here, anything
-                    // else goes to the default browser.
+                    // else is offered to the default browser, and only when the user clicked it.
                     e.Handled = true;
-                    switch (DocumensoWebNavigation.Decide(inputs.BaseUrl, e.Uri))
+                    string uri = e.Uri;
+                    switch (DocumensoWebNavigation.Decide(inputs.BaseUrl, uri))
                     {
-                        case DocumensoNavigationDecision.Allow: core.Navigate(e.Uri); break;
-                        case DocumensoNavigationDecision.OpenExternally: if (!OpenInBrowser(e.Uri)) OpenMail(e.Uri); break;
+                        case DocumensoNavigationDecision.Allow: core.Navigate(uri); break;
+                        case DocumensoNavigationDecision.OpenExternally:
+                            if (!e.IsUserInitiated) break;   // a script-opened pop-up is dropped, not offered
+                            // After the handler returns: a modal dialog must not run inside a WebView2 event.
+                            win.Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (closed) return;
+                                string shown = uri.Length > 120 ? uri[..120] + "..." : uri;
+                                var answer = TdpDialog.ShowYesNo(win,
+                                    $"This link leads off the signing service:\n\n{shown}\n\nOpen it in your browser?",
+                                    "Open in browser", "Cancel", "TDPdf", MessageBoxImage.Question);
+                                if (answer == MessageBoxResult.Yes && !OpenInBrowser(uri)) OpenMail(uri);
+                            }));
+                            break;
                     }
                 };
                 core.SourceChanged += (_, _) => OnPage(core.Source);
