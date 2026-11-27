@@ -402,7 +402,8 @@ namespace TDPdf.Services
                 FontCoverage.PickFamily(tea.FontName, tea.NewContent),
                 tea.FontSize * sy, ToXFontStyle(tea.Bold, tea.Italic));
             if (editFont is null) return;
-            var whiteRect = new XSolidBrush(XColors.White);
+            // White unless the edit was made over a scan, where the cover takes the paper's colour (#229).
+            var whiteRect = new XSolidBrush(XColor.FromArgb(tea.CoverR, tea.CoverG, tea.CoverB));
             gfx.DrawRectangle(whiteRect,
                 (tea.OriginalBounds.X - 1) * sx, (tea.OriginalBounds.Y - 1) * sy,
                 (tea.OriginalBounds.Width + 2) * sx, (tea.OriginalBounds.Height + 2) * sy);
@@ -412,8 +413,29 @@ namespace TDPdf.Services
             // #435: a Hebrew edit would save backwards through DrawString,
             // which does no bidi. One line only — the edit is drawn as a single
             // string, so a line break here is not a layout this can reorder.
-            if (tea.NewContent.IndexOfAny(new[] { '\r', '\n' }) < 0
-                && RtlTextLayout.IsHebrewRightToLeftLine(tea.NewContent))
+            if (tea.NewContent.IndexOfAny(new[] { '\r', '\n' }) >= 0)
+            {
+                // A paragraph edit (#229): one DrawString per line, at the line height the page had,
+                // because DrawString does not break lines. Centred and right-aligned paragraphs are
+                // placed inside the box they replaced.
+                var paragraphLines = tea.NewContent.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+                double lineStep = (tea.LineHeight > 0 ? tea.LineHeight : tea.FontSize * 1.2) * sy;
+                double boxLeft = tea.OriginalBounds.X * sx, boxWidth = tea.OriginalBounds.Width * sx;
+                for (int li = 0; li < paragraphLines.Length; li++)
+                {
+                    string text = paragraphLines[li];
+                    if (text.Length == 0) continue;
+                    double lineWidth = gfx.MeasureString(text, editFont).Width;
+                    double lineX = tea.Align switch
+                    {
+                        1 => boxLeft + Math.Max(0, (boxWidth - lineWidth) / 2),
+                        2 => boxLeft + Math.Max(0, boxWidth - lineWidth),
+                        _ => tea.Position.X * sx,
+                    };
+                    gfx.DrawString(text, editFont, teaBrush, lineX, ety + li * lineStep);
+                }
+            }
+            else if (RtlTextLayout.IsHebrewRightToLeftLine(tea.NewContent))
                 DrawRightToLeft(gfx, tea.NewContent, 0, tea.NewContent.Length, editFont, teaBrush,
                                 tea.Position.X * sx, ety, 0);
             else

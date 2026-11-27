@@ -2852,6 +2852,8 @@ namespace TDPdf
             menu.Items.Add(_ctxCut);
             menu.Items.Add(_ctxCopy);
             menu.Items.Add(_ctxPaste);
+            menu.Items.Add(MakeMenuItem("Edit Paragraph", (s, e) => EditParagraphFromMenu(), "Ctrl+click",
+                "Edit the whole paragraph under the pointer and reflow it in its own font", "\uE104"));
             menu.Opened += (_, _) => UpdateMarkMenuState();
             menu.Items.Add(MakeMenuItem(
                 PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
@@ -6647,7 +6649,9 @@ namespace TDPdf
                         // ApplyResizeTo) so a still-too-generous default can be shrunk by hand.
                         var wo = new Rectangle
                         {
-                            Fill = Brushes.White,
+                            Fill = tea.CoverR == 255 && tea.CoverG == 255 && tea.CoverB == 255
+                                ? Brushes.White
+                                : TdpDialog.FrozenSolidColorBrush(tea.GetCoverColor()),
                             Width = tea.OriginalBounds.Width + 2,
                             Height = tea.OriginalBounds.Height + 2,
                             IsHitTestVisible = false
@@ -6667,7 +6671,19 @@ namespace TDPdf
                             Padding = new Thickness(0),
                             IsHitTestVisible = false
                         };
-                        Canvas.SetLeft(etb, tea.Position.X);
+                        // A paragraph edit (#229) has a fixed line pitch and may be centred or right-aligned
+                        // inside the box it replaced; a one-line edit keeps the TextBlock's natural size.
+                        if (tea.LineHeight > 0)
+                        {
+                            etb.LineHeight = tea.LineHeight;
+                            etb.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+                        }
+                        if (tea.Align != 0)
+                        {
+                            etb.Width = Math.Max(tea.OriginalBounds.Width, 1);
+                            etb.TextAlignment = tea.Align == 1 ? TextAlignment.Center : TextAlignment.Right;
+                        }
+                        Canvas.SetLeft(etb, tea.Align != 0 ? tea.OriginalBounds.X : tea.Position.X);
                         Canvas.SetTop(etb, tea.Position.Y);
                         _annotationCanvas.Children.Add(etb);
                         break;

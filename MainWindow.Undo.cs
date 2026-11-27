@@ -190,8 +190,14 @@ namespace TDPdf
                     _doc.Save(ms);
                     currentBytes = ms.ToArray();
                 }
+                // A document change that also moved marks on one page (a paragraph rewrite carries the
+                // highlights onto its new lines) holds that page's marks too, and gives them back.
                 if (currentBytes is not null)
-                    target.AddLast(new UndoEntry(UndoKind.Document, DocBytes: currentBytes, KeepMarks: entry.KeepMarks));
+                    target.AddLast(new UndoEntry(UndoKind.Document, entry.PageAnnotations is not null ? entry.PageIdx : -1,
+                        DocBytes: currentBytes, KeepMarks: entry.KeepMarks,
+                        PageAnnotations: entry.PageAnnotations is not null
+                            ? CloneList(_annotations.TryGetValue(entry.PageIdx, out var pageNow) ? pageNow : null)
+                            : null));
 
                 int selectedIdx = PageList.SelectedIndex;
                 var tempPath = NewTempPath("undo");
@@ -204,6 +210,12 @@ namespace TDPdf
                     ClearPageSnapshotsOnly(source);
                     ClearPageSnapshotsExceptLast(target);
                     if (!entry.KeepMarks) _annotations.Clear();
+                    else if (entry.PageAnnotations is not null && entry.PageIdx >= 0)
+                    {
+                        var back = CloneList(entry.PageAnnotations);
+                        foreach (var a in back) a.PageIndex = entry.PageIdx;
+                        _annotations[entry.PageIdx] = back;
+                    }
                     if (!entry.KeepMarks) ESignDropFieldsForLayoutChange(_ctx);
                     ClearFormState();
                     ClearMeasurement();

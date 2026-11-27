@@ -27,8 +27,12 @@ namespace TDPdf
                 ClearSelection();
                 ClearTextSelection();
                 // Prefer re-editing a placed text box under the cursor; otherwise fall through to
-                // the existing-PDF-text white-out editor.
-                if (!TryReeditPlacedText(pos, pageIdx))
+                // the existing-PDF-text editor. With Ctrl held the whole paragraph opens instead of
+                // the line (#229): the same Ctrl-plus-the-line-gesture the Edit Text tool uses.
+                if (TryReeditPlacedText(pos, pageIdx)) { }
+                else if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+                    EditParagraphAtPosition(pos, pageIdx);
+                else
                     EditTextAtPosition(pos, pageIdx);
                 e.Handled = true;
             }
@@ -209,7 +213,13 @@ namespace TDPdf
             // this position". Check TDPdf's own overlay first; only fall back to real PDF
             // content when the click isn't on one of TDPdf's own placed boxes.
             if (!TryReeditPlacedText(pos, pageIdx))
-                EditTextAtPosition(pos, pageIdx);
+            {
+                // Ctrl+click edits the whole paragraph (#229); a plain click still edits the line.
+                if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+                    EditParagraphAtPosition(pos, pageIdx);
+                else
+                    EditTextAtPosition(pos, pageIdx);
+            }
             e.Handled = true;
         }
 

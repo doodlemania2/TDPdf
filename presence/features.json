@@ -122,6 +122,21 @@
       ]
     },
     {
+      "id": "edit-paragraph",
+      "name": "Edit a whole paragraph",
+      "status": "ready",
+      "summary": "Hold Ctrl when you click a line with Edit Text, or double-click it with Select, or right-click and choose Edit Paragraph. The whole block opens as one box. When you save, the words flow across lines again in the document's own font, size and line spacing, and highlights follow them. It works on recognised text over a scan too.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.Paragraphs.cs",
+        "Services/Paragraph*.cs",
+        "Services/PdfParagraphEdit.cs",
+        "Services/PdfiumInterop.Paragraph.cs",
+        "Services/PaperColor.cs"
+      ]
+    },
+    {
       "id": "form-filling",
       "name": "Fill in forms",
       "status": "ready",

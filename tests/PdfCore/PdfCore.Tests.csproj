@@ -173,6 +173,14 @@
     <Compile Include="..\..\Services\PdfUaValidator.cs" />
     <Compile Include="..\..\Services\PdfUaFixes.cs" />
     <Compile Include="..\..\Services\PdfUaCli.cs" />
+    <Compile Include="..\..\Services\ParagraphFinder.cs" />
+    <Compile Include="..\..\Services\ParagraphReflow.cs" />
+    <Compile Include="..\..\Services\ParagraphHighlights.cs" />
+    <Compile Include="..\..\Services\ParagraphEditPolicy.cs" />
+    <Compile Include="..\..\Services\PaperColor.cs" />
+    <Compile Include="..\..\Services\ParagraphPageReader.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.Paragraph.cs" />
+    <Compile Include="..\..\Services\PdfParagraphEdit.cs" />
   </ItemGroup>
 
 </Project>
