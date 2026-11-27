@@ -65,6 +65,15 @@ namespace TDPdf
             return "User-" + (sid ?? Environment.UserName);
         }
 
+        /// <summary>
+        /// True when this process runs from the per-user or the machine-wide install folder, which only
+        /// the user (or an administrator) can write to. A portable copy runs from wherever it was
+        /// downloaded, so files beside it are not trusted.
+        /// </summary>
+        internal static bool RunsFromInstallFolder =>
+            UninstallPolicy.IsInside(AppContext.BaseDirectory, PerUserInstallDir) ||
+            UninstallPolicy.IsInside(AppContext.BaseDirectory, PerMachineInstallDir);
+
         private static bool IsElevatedOrSystem()
         {
             try

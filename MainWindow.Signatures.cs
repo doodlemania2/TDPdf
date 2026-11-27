@@ -38,8 +38,11 @@ namespace TDPdf
         {
             try
             {
-                // One-shot migration from the legacy beside-EXE location.
-                if (!File.Exists(SignatureFile) && File.Exists(LegacySignatureFile))
+                // One-shot migration from the legacy beside-EXE location, only when the exe sits in
+                // TDPdf's own install folder. A portable copy's folder (Downloads, a share) is not
+                // trusted: a signatures.json planted beside it would otherwise be copied into the
+                // profile and offered as one of the user's signatures.
+                if (!File.Exists(SignatureFile) && File.Exists(LegacySignatureFile) && App.RunsFromInstallFolder)
                 {
                     try
                     {
