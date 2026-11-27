@@ -621,6 +621,14 @@ namespace TDPdf
             security.SetOwner(me);
             security.AddAccessRule(new PipeAccessRule(me,
                 PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+            // An elevated window must not take file paths from a normal-integrity process in the same
+            // session: that would let an unelevated program make the elevated TDPdf open (and then
+            // save over) files of its choosing. A High mandatory label with NO_WRITE_UP makes the
+            // pipe unwritable by anything running below High. The unelevated launch that cannot
+            // reach it just opens its own window, which is what it already does when the forward
+            // fails. Not applied to a normal window, where the same-user DACL above is the boundary.
+            if (IsElevatedOrSystem())
+                security.SetSecurityDescriptorSddlForm("S:(ML;;NW;;;HI)", AccessControlSections.Audit);
             return NamedPipeServerStreamAcl.Create(SingleInstancePipeName, PipeDirection.In, 1,
                 PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
         }
