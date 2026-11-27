@@ -55,6 +55,30 @@ namespace TDPdf
             }
 
             var page = pigDoc.GetPage(pageIndex + 1);
+            // Word-style generic font names ("CIDFont+F2") say nothing about the face, so the font
+            // dictionary is consulted for those. Opened on first need only, once per parsed page.
+            Dictionary<string, PdfFontDictInfo>? pageFonts = null;
+            PdfFontDictInfo? LookupFontInfo(string? name)
+            {
+                if (name is null) return null;
+                if (pageFonts is null)
+                {
+                    pageFonts = new Dictionary<string, PdfFontDictInfo>();
+                    try
+                    {
+                        using var sharp = PdfSharpCore.Pdf.IO.PdfReader.Open(pdfPath, PdfSharpCore.Pdf.IO.PdfDocumentOpenMode.Import);
+                        if (pageIndex < sharp.PageCount) pageFonts = PdfFontStyle.ReadPageFonts(sharp.Pages[pageIndex]);
+                    }
+                    catch { /* an unreadable font table just means no extra styling */ }
+                }
+                if (pageFonts.TryGetValue(name, out var hit)) return hit;
+                string bare = name.TrimStart('/');
+                int plus = bare.IndexOf('+');
+                if (plus >= 0 && plus + 1 < bare.Length) bare = bare[(plus + 1)..];
+                return pageFonts.TryGetValue(name.StartsWith('/') ? name : "/" + name, out hit) ? hit
+                     : pageFonts.TryGetValue(bare, out hit) ? hit
+                     : pageFonts.TryGetValue("/" + bare, out hit) ? hit : null;
+            }
             double sx = renderWidth / page.Width;
             double sy = renderHeight / page.Height;
 
@@ -98,7 +122,8 @@ namespace TDPdf
                         if (pdfPoints > 0)
                             fontSize = Math.Max(pdfPoints * sy, 10);
 
-                        var detected = PdfFontStyle.FromPdfName(firstLetter.FontName);
+                        var detected = PdfFontStyle.FromPdfName(firstLetter.FontName,
+                            PdfFontStyle.IsGenericName(firstLetter.FontName) ? LookupFontInfo(firstLetter.FontName) : null);
                         fontName = detected.Family;
                         fontBold = detected.Bold;
                         fontItalic = detected.Italic;

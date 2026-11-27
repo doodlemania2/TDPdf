@@ -1050,15 +1050,20 @@ namespace TDPdf
             RunPageOperation("Merge", () =>
             {
                 var doc = _doc!;
+                _mergeFormRenames = 0;
                 foreach (var file in dlg.FileNames)
                     AppendPdfFileToDoc(doc, file);
                 // Merge only ever APPENDS, so every existing page keeps its number and its geometry:
                 // the unsaved annotations are still exactly right and need no remapping. The default
                 // clear used to throw them all away for pages the merge never touched.
                 SaveTempAndReload(keepAnnotations: true);
-                SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages");
+                SetStatus($"Merged {dlg.FileNames.Length} file(s), {_doc?.PageCount} total pages"
+                    + (_mergeFormRenames > 0 ? $"; {_mergeFormRenames} form field name(s) already in use were renamed" : ""));
             });
         }
+
+        /// <summary>Form fields the merge in progress renamed because their name was already taken.</summary>
+        private int _mergeFormRenames;
 
         /// <summary>
         /// Appends every page of <paramref name="file"/> to <paramref name="doc"/>, carrying its
@@ -1077,6 +1082,11 @@ namespace TDPdf
             using var src = PdfReader.Open(file, PdfDocumentOpenMode.Import);
             for (int i = 0; i < src.PageCount; i++)
                 doc.AddPage(src.Pages[i]);
+
+            // The widgets came across with their pages; register their fields (and the /DR fonts
+            // their appearances name) in this document's /AcroForm too.
+            var form = PdfFormMerge.AdoptImportedWidgets(doc, pageOffset, src);
+            _mergeFormRenames += form.FieldsRenamed;
 
             // Rewrite named-destination links in the newly added pages so they
             // resolve correctly after the catalog is not imported.
