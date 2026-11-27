@@ -77,14 +77,14 @@ namespace TDPdf
                 // signature, image, shape, ink stroke, or text box that happens to sit over
                 // text still moves it on the first press. Shift and an armed OCR region
                 // capture both force the classic marquee.
-                bool marqueeForced = _ocrRegionMode
+                bool marqueeForced = _ocrRegionMode || _rasterRegionMode
                     || (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
                 bool addToSelection = (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) != 0;
 
                 // Shift+click / Ctrl+click on a mark adds it to the selection or takes it out
                 // (#228). Decided before the text-selection check so a modified click on a
                 // highlight that covers text still toggles the highlight.
-                if (underPress is not null && addToSelection && !_ocrRegionMode)
+                if (underPress is not null && addToSelection && !_ocrRegionMode && !_rasterRegionMode)
                 {
                     ToggleMarkSelection(underPress);
                     e.Handled = true;
@@ -152,7 +152,7 @@ namespace TDPdf
                 {
                     // Shift / Ctrl keep the current selection under the box: what the box
                     // touches is added to it on release (see the marquee release below).
-                    _marqueeBase = addToSelection && !_ocrRegionMode
+                    _marqueeBase = addToSelection && !_ocrRegionMode && !_rasterRegionMode
                         ? new List<PageAnnotation>(_markSelection) : null;
                     ClearSelection();
                     ClearTextSelection();
@@ -692,6 +692,8 @@ namespace TDPdf
             // A pending "OCR Region" arm consumes this drag regardless of outcome.
             bool ocrRegion = _ocrRegionMode;
             _ocrRegionMode = false;
+            bool rasterRegion = _rasterRegionMode;
+            _rasterRegionMode = false;
 
             var marqueeBase = _marqueeBase;
             _marqueeBase = null;
@@ -728,6 +730,11 @@ namespace TDPdf
                     Math.Min(pos.X, _selectStart.X), Math.Min(pos.Y, _selectStart.Y),
                     dragW, dragH);
                 if (ocrRegion) ObserveOcr(OcrRegion(pageIdx, selectBounds));
+                else if (rasterRegion)
+                {
+                    ClearTextSelection();   // the box was only the way to point at the area
+                    _ = RasterizeRegionAsync(pageIdx, selectBounds);
+                }
                 else if (TrySelectMarksInBox(pageIdx, selectBounds, marqueeBase)) { }
                 else
                 {
@@ -737,6 +744,9 @@ namespace TDPdf
                         SelectMarks(marqueeBase);
                     }
                     ExtractTextFromRegion(pageIdx, selectBounds);
+                    // The box stays on screen after a copy; remember it so a right-click can
+                    // rasterize exactly that area.
+                    _boxSelection = _selectRect is not null ? (pageIdx, selectBounds) : null;
                 }
             }
         }

@@ -1078,6 +1078,10 @@
                 <MenuItem Header="_Merge…"                                          Click="Merge_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE710;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- #242: pick, order and trim several files and folders; the result opens as a new unsaved tab. -->
+                <MenuItem Header="Mer_ge Files…"                                    Click="MergeFiles_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B7;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="E_xtract Pages…"                                  Click="Split_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B1;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1260,11 +1264,11 @@
                               Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
                     </MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="Water_mark…"                                       Click="Watermark_Click"
+                <MenuItem Header="_Watermark…"                                       Click="Watermark_Click"
                           ToolTip="Add a text or picture watermark and page numbers to a range of pages">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8D2;"/></MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="Remove Watermar_k"                                 Click="RemoveWatermark_Click"
+                <MenuItem Header="Remo_ve Watermark"                                 Click="RemoveWatermark_Click"
                           ToolTip="Remove the watermarks and page numbers TDPdf added">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE74D;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1279,8 +1283,12 @@
                 <MenuItem Header="Comp_are PDFs…"  InputGestureText="Alt+Shift+V"  Click="ComparePdfs_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8AB;"/></MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="Check _Accessibility…"                            Click="CheckAccessibility_Click">
+                <MenuItem Header="Check Accessi_bility…"                            Click="CheckAccessibility_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE776;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- #233: a dragged box becomes a picture and its text and graphics leave the page. Not redaction. -->
+                <MenuItem Header="Rasteri_ze Region…"                               Click="RasterizeRegion_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE91B;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
                 <!-- OCR submenu is rebuilt on open (OcrMenu_SubmenuOpened); the placeholder keeps the

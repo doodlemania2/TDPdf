@@ -2826,6 +2826,7 @@ namespace TDPdf
                 PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
                 (s, e) => ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr())),
                 "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
+            menu.Items.Add(BuildRasterizeRegionMenuItem());
             menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
             _ctxGroup = MakeMenuItem("_Group", (s, e) => GroupSelected(), "Ctrl+G", "Group the selected marks so they move and delete together");
             _ctxUngroup = MakeMenuItem("U_ngroup", (s, e) => UngroupSelected(), "Ctrl+Shift+G", "Split the selected group back into separate marks");
@@ -5899,6 +5900,7 @@ namespace TDPdf
                 _selectRect = null;
             }
             _selectedText = null;
+            _boxSelection = null;
             // Flowing selection (upstream KillerPDF v1.6.5, #127) shares this teardown, so every
             // existing caller — tool switch, page change, tab switch, double-click, Escape — drops
             // the quads and the caret range too.

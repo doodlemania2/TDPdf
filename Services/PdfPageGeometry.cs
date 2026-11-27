@@ -73,9 +73,17 @@ namespace TDPdf.Services
         internal static PdfiumInterop.PdfRect CanvasRectToPdf(
             PdfPage page, double x, double y, double w, double h, double renderW, double renderH)
         {
-            var box = VisibleBox(page);
-            int rotate = Rotation(page);
+            return CanvasRectToPdf(VisibleBox(page), Rotation(page), x, y, w, h, renderW, renderH);
+        }
 
+        /// <summary>
+        /// <see cref="CanvasRectToPdf(PdfPage, double, double, double, double, double, double)"/> for a
+        /// caller that already holds the page's <see cref="VisibleBox"/> and normalised /Rotate (the
+        /// pure region planner, which has no PdfPage to hand).
+        /// </summary>
+        internal static PdfiumInterop.PdfRect CanvasRectToPdf(
+            PageBox box, int rotate, double x, double y, double w, double h, double renderW, double renderH)
+        {
             var a = VisualFractionToPdf(box, rotate, x / renderW, y / renderH);
             var b = VisualFractionToPdf(box, rotate, (x + w) / renderW, (y + h) / renderH);
 
