@@ -86,6 +86,17 @@ namespace TDPdf.Services
         }
 
         /// <summary>
+        /// True when a font family of that name is installed (a face for it was found in the font
+        /// folders). Used to tell the person when a name they chose will be drawn in a stand-in.
+        /// </summary>
+        internal static bool HasFamily(string family)
+        {
+            if (string.IsNullOrWhiteSpace(family)) return false;
+            EnsureIndexed();
+            lock (Gate) return Families.ContainsKey(family.Trim());
+        }
+
+        /// <summary>
         /// Best-effort <see cref="XFont"/>: the requested family, then the app default, then the
         /// stock Windows faces. Null when nothing can be resolved at all or the size is not a usable
         /// number - which lets a burn site skip ONE annotation instead of failing the whole save.

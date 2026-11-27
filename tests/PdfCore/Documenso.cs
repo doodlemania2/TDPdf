@@ -87,6 +87,18 @@ internal static class Documenso
         r = DocumensoConfig.Resolve(new(true, "https://dev.example", "https://org.example", true, "https://me.example"));
         Check("the environment variable outranks everything", r is { From: DocumensoConfig.Source.Environment, BaseUrl: "https://dev.example" }, Show(r));
 
+        r = DocumensoConfig.Resolve(new(true, "https://dev.example", "https://org.example", false, "https://me.example"));
+        Check("a pinned policy (AllowUserOverride=0) outranks the environment variable",
+              r is { From: DocumensoConfig.Source.Policy, BaseUrl: "https://org.example" }, Show(r));
+
+        r = DocumensoConfig.Resolve(new(true, "not a url", "https://org.example", false, null));
+        Check("a pinned policy ignores even a malformed environment variable",
+              r is { From: DocumensoConfig.Source.Policy }, Show(r));
+
+        r = DocumensoConfig.Resolve(new(true, "https://dev.example", null, false, null));
+        Check("with no policy URL the environment variable still applies (AllowUserOverride is moot)",
+              r is { From: DocumensoConfig.Source.Environment }, Show(r));
+
         r = DocumensoConfig.Resolve(new(true, null, "https://org.example", true, "https://me.example"));
         Check("a user URL wins over policy when the policy allows overriding",
               r is { From: DocumensoConfig.Source.User, BaseUrl: "https://me.example" }, Show(r));
@@ -203,44 +215,6 @@ internal static class Documenso
               payloadJson?.ToString() ?? "(no JSON part)");
         Check("create returns the envelope id", id == "envelope_new", id);
         Check("the caller's stream is left open", pdfStream.CanRead, "");
-
-        // Recipients.
-        h.Respond(HttpStatusCode.OK,
-            """{"data":[{"id":41,"envelopeId":"envelope_new","email":"a@example.com","name":"A","role":"SIGNER","readStatus":"NOT_OPENED","signingStatus":"NOT_SIGNED","sendStatus":"NOT_SENT","signingOrder":1,"token":"rtok"}]}""");
-        var recips = await client.CreateRecipientsAsync("envelope_new",
-            new[] { new DocumensoRecipientDraft("a@example.com", "A", DocumensoRecipientRole.Signer, 1),
-                    new DocumensoRecipientDraft("c@example.com", "C", DocumensoRecipientRole.Cc) }, CancellationToken.None);
-        var rb = JsonDocument.Parse(h.Last.Body).RootElement;
-        Check("recipients: POST /envelope/recipient/create-many", h.Last.Url == Base + "/api/v2/envelope/recipient/create-many", h.Last.Url);
-        Check("recipients body: envelopeId + data[], roles SIGNER and CC, unset signingOrder omitted",
-              rb.GetProperty("envelopeId").GetString() == "envelope_new"
-              && rb.GetProperty("data")[0].GetProperty("role").GetString() == "SIGNER"
-              && rb.GetProperty("data")[0].GetProperty("signingOrder").GetInt32() == 1
-              && rb.GetProperty("data")[1].GetProperty("role").GetString() == "CC"
-              && !rb.GetProperty("data")[1].TryGetProperty("signingOrder", out _),
-              Encoding.UTF8.GetString(h.Last.Body));
-        Check("recipients response: id and enums parsed",
-              recips.Count == 1 && recips[0].Id == 41 && recips[0].SigningStatus == DocumensoSigningStatus.NotSigned
-              && recips[0].Role == DocumensoRecipientRole.Signer, "");
-
-        // Fields.
-        h.Respond(HttpStatusCode.OK, """{"data":[{"id":9,"recipientId":41,"type":"SIGNATURE","page":1,"envelopeItemId":"item_1"}]}""");
-        await client.CreateFieldsAsync("envelope_new", new[]
-        {
-            DocumensoFieldDraft.Placed(41, DocumensoFieldType.Signature, 1, 10, 80, 30, 100.0004),
-            DocumensoFieldDraft.AtPlaceholder(41, DocumensoFieldType.Date, "{{date, r1}}"),
-        }, CancellationToken.None);
-        var fb = JsonDocument.Parse(h.Last.Body).RootElement.GetProperty("data");
-        Check("fields: POST /envelope/field/create-many", h.Last.Url == Base + "/api/v2/envelope/field/create-many", h.Last.Url);
-        Check("placed field uses positionX/positionY (not pageX/pageY), page, type SIGNATURE, recipientId",
-              fb[0].GetProperty("positionX").GetDouble() == 10 && fb[0].GetProperty("positionY").GetDouble() == 80
-              && fb[0].GetProperty("page").GetInt32() == 1 && fb[0].GetProperty("type").GetString() == "SIGNATURE"
-              && fb[0].GetProperty("recipientId").GetInt64() == 41 && !fb[0].TryGetProperty("pageX", out _),
-              fb[0].ToString());
-        Check("percentages are clamped to the API's 0–100", fb[0].GetProperty("height").GetDouble() == 100, fb[0].GetProperty("height").ToString());
-        Check("placeholder field sends placeholder and no geometry",
-              fb[1].GetProperty("placeholder").GetString() == "{{date, r1}}" && fb[1].GetProperty("type").GetString() == "DATE"
-              && !fb[1].TryGetProperty("page", out _) && !fb[1].TryGetProperty("positionX", out _), fb[1].ToString());
 
         // Distribute.
         h.Respond(HttpStatusCode.OK,

@@ -210,7 +210,7 @@ namespace TDPdf
             {
                 // Same pre-save pipeline as SaveInPlace for a document with no user edits.
                 TDPdf.Services.PdfSaveNormalizer.Normalize(doc);    // /Outlines, /CropBox, dead-signature scrubs
-                StripLinkAnnotationBorders(doc);  // link borders are stripped on every GUI save
+                TDPdf.Services.AnnotationBaker.StripLinkAnnotationBorders(doc);  // link borders are stripped on every GUI save
                 doc.Save(dst);
                 doc.Close();
                 return "OK";

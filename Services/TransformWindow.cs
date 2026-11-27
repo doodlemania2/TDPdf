@@ -180,23 +180,7 @@ namespace TDPdf.Services
 
         // ---- Theme helpers (mirror PrintPreviewWindow / TdpDialog so theming stays on our palette) ----
 
-        private static SolidColorBrush R(string key) =>
-            Application.Current?.TryFindResource(key) as SolidColorBrush ?? SystemBrush(key);
-
-        private static SolidColorBrush SystemBrush(string key) => key switch
-        {
-            "AccentGreen"    => SystemColors.HighlightBrush,
-            "AccentGreenDim" => SystemColors.HighlightBrush,
-            "DangerRed"      => SystemColors.HighlightBrush,
-            "BgDark"         => SystemColors.WindowBrush,
-            "BgPanel"        => SystemColors.WindowBrush,
-            "BgHover"        => SystemColors.ControlBrush,
-            "BgPressed"      => SystemColors.ControlDarkBrush,
-            "BorderDim"      => SystemColors.WindowTextBrush,
-            "TextPrimary"    => SystemColors.WindowTextBrush,
-            "TextSecondary"  => SystemColors.GrayTextBrush,
-            _                => SystemColors.WindowTextBrush
-        };
+        private static SolidColorBrush R(string key) => ThemeBrushes.Get(key);
 
         private Style? FindOwnerStyle(string key) => Owner?.TryFindResource(key) as Style;
 
@@ -372,6 +356,59 @@ namespace TDPdf.Services
 
             // Each section is built flat and then retro-wrapped by WrapSection into a collapsible body
             // under a chevron header, so the five sections fit the 288px column without scrolling.
+            AddRotateSection(panel);
+            AddScaleSection(panel);
+            AddFlipSection(panel);
+            AddStraightenSection(panel);
+            AddPerspectiveSection(panel);
+            AddLevelsSection(panel);
+
+            // ---- Buttons pinned below the scroller ----
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var reset = MakeButton("Reset all", false);
+            reset.Margin = new Thickness(0, 0, 8, 0);
+            reset.Click += (_, _2) =>
+            {
+                _quarter = 0; _rotSlider.Value = 0; _scaleSlider.Value = 100;
+                _expandRadio.IsChecked = true; _flipHCheck.IsChecked = false; _flipVCheck.IsChecked = false;
+                ResetPerspective();
+                ResetLevels();   // #174
+                UpdatePreview();
+            };
+            var cancel = MakeButton("Cancel", false);
+            cancel.Margin = new Thickness(0, 0, 8, 0);
+            cancel.Click += (_, _2) => { Applied = false; Close(); };
+            cancel.IsCancel = true;
+            var apply = MakeButton("Apply", true);
+            apply.Click += (_, _2) => CommitAndClose();
+            apply.IsDefault = true;
+            btnRow.Children.Add(reset);
+            btnRow.Children.Add(cancel);
+            btnRow.Children.Add(apply);
+
+            var optionsScroller = new ScrollViewer
+            {
+                Content                       = panel,
+                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            };
+            Grid.SetRow(optionsScroller, 0);
+
+            var btnHost = new Border { Child = btnRow, Padding = new Thickness(14, 8, 12, 12) };
+            Grid.SetRow(btnHost, 1);
+
+            var column = new Grid();
+            column.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            column.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            column.Children.Add(optionsScroller);
+            column.Children.Add(btnHost);
+            Grid.SetColumn(column, 1);
+            return column;
+        }
+
+        /// <summary>The Rotate section: quarter turns, the fine-angle slider and its numeric field.</summary>
+        private void AddRotateSection(StackPanel panel)
+        {
             // ---- Rotate ----
             int rotateStart = panel.Children.Count;
             var turnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 8) };
@@ -454,7 +491,11 @@ namespace TDPdf.Services
 
             WrapSection(panel, rotateStart, "ROTATE", expanded: true);
             panel.Children.Add(Divider());
+        }
 
+        /// <summary>The Scale section: the scale slider, the page-size mode and the size readout.</summary>
+        private void AddScaleSection(StackPanel panel)
+        {
             // ---- Scale ----
             int scaleStart = panel.Children.Count;
             _scaleSlider = new Slider
@@ -519,7 +560,11 @@ namespace TDPdf.Services
 
             WrapSection(panel, scaleStart, "SCALE", expanded: false);
             panel.Children.Add(Divider());
+        }
 
+        /// <summary>The Flip section.</summary>
+        private void AddFlipSection(StackPanel panel)
+        {
             // ---- Flip ----
             int flipStart = panel.Children.Count;
             _flipHCheck = MakeCheck("Flip horizontal");
@@ -533,7 +578,11 @@ namespace TDPdf.Services
 
             WrapSection(panel, flipStart, "FLIP", expanded: false);
             panel.Children.Add(Divider());
+        }
 
+        /// <summary>The Straighten section: the level line.</summary>
+        private void AddStraightenSection(StackPanel panel)
+        {
             // ---- Straighten ----
             int skewStart = panel.Children.Count;
             _deskewCheck = MakeCheck("Draw a level line");
@@ -567,7 +616,11 @@ namespace TDPdf.Services
 
             WrapSection(panel, skewStart, "STRAIGHTEN", expanded: false);
             panel.Children.Add(Divider());
+        }
 
+        /// <summary>The Perspective section (single page only).</summary>
+        private void AddPerspectiveSection(StackPanel panel)
+        {
             // ---- Perspective (trapezoidal distortion correction) ----
             // Single-page only: the quad is traced against THIS page's photographed outline, and every
             // other selected page was shot at its own angle, so re-using one quad would warp them by an
@@ -615,7 +668,11 @@ namespace TDPdf.Services
 
             WrapSection(panel, perspectiveStart, "PERSPECTIVE", expanded: false);
             panel.Children.Add(Divider());
+        }
 
+        /// <summary>The Levels section: black point, white point and gamma.</summary>
+        private void AddLevelsSection(StackPanel panel)
+        {
             // ---- Levels (upstream KillerPDF #174) ----
             // FineReader-style source levels for rescuing a pale, low-contrast scan: pull the black point
             // up to whatever the darkest ink actually is, the white point down to the paper, and bend the
@@ -671,48 +728,6 @@ namespace TDPdf.Services
             panel.Children.Add(levelsReset);
 
             WrapSection(panel, levelsStart, "LEVELS", expanded: false);
-
-            // ---- Buttons pinned below the scroller ----
-            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            var reset = MakeButton("Reset all", false);
-            reset.Margin = new Thickness(0, 0, 8, 0);
-            reset.Click += (_, _2) =>
-            {
-                _quarter = 0; _rotSlider.Value = 0; _scaleSlider.Value = 100;
-                _expandRadio.IsChecked = true; _flipHCheck.IsChecked = false; _flipVCheck.IsChecked = false;
-                ResetPerspective();
-                ResetLevels();   // #174
-                UpdatePreview();
-            };
-            var cancel = MakeButton("Cancel", false);
-            cancel.Margin = new Thickness(0, 0, 8, 0);
-            cancel.Click += (_, _2) => { Applied = false; Close(); };
-            cancel.IsCancel = true;
-            var apply = MakeButton("Apply", true);
-            apply.Click += (_, _2) => CommitAndClose();
-            apply.IsDefault = true;
-            btnRow.Children.Add(reset);
-            btnRow.Children.Add(cancel);
-            btnRow.Children.Add(apply);
-
-            var optionsScroller = new ScrollViewer
-            {
-                Content                       = panel,
-                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-            };
-            Grid.SetRow(optionsScroller, 0);
-
-            var btnHost = new Border { Child = btnRow, Padding = new Thickness(14, 8, 12, 12) };
-            Grid.SetRow(btnHost, 1);
-
-            var column = new Grid();
-            column.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            column.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            column.Children.Add(optionsScroller);
-            column.Children.Add(btnHost);
-            Grid.SetColumn(column, 1);
-            return column;
         }
 
         private void CommitAndClose()

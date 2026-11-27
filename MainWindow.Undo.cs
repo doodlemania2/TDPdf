@@ -63,7 +63,10 @@ namespace TDPdf
             UndoKind Kind,
             int PageIdx = -1,
             byte[]? DocBytes = null,
-            List<PageAnnotation>? PageAnnotations = null);
+            List<PageAnnotation>? PageAnnotations = null,
+            // A document change that moves nothing on the pages (a watermark): undoing or redoing it
+            // leaves the pending marks where they are instead of dropping them with the page layout.
+            bool KeepMarks = false);
         private const int MaxUndoEntries = 100;
         private LinkedList<UndoEntry> _undoStack => _ctx.UndoStack;
         private LinkedList<UndoEntry> _redoStack => _ctx.RedoStack;
@@ -187,36 +190,46 @@ namespace TDPdf
                     _doc.Save(ms);
                     currentBytes = ms.ToArray();
                 }
+                // A document change that also moved marks on one page (a paragraph rewrite carries the
+                // highlights onto its new lines) holds that page's marks too, and gives them back.
                 if (currentBytes is not null)
-                    target.AddLast(new UndoEntry(UndoKind.Document, DocBytes: currentBytes));
+                    target.AddLast(new UndoEntry(UndoKind.Document, entry.PageAnnotations is not null ? entry.PageIdx : -1,
+                        DocBytes: currentBytes, KeepMarks: entry.KeepMarks,
+                        PageAnnotations: entry.PageAnnotations is not null
+                            ? CloneList(_annotations.TryGetValue(entry.PageIdx, out var pageNow) ? pageNow : null)
+                            : null));
 
                 int selectedIdx = PageList.SelectedIndex;
                 var tempPath = NewTempPath("undo");
                 System.IO.File.WriteAllBytes(tempPath, entry.DocBytes);
-                string? supersededFile = _currentFile;
-                _doc?.Close();
-                _doc = PdfReader.Open(tempPath, PdfDocumentOpenMode.Modify);
-                _currentFile = tempPath;
-                RetireWorkingCopy(supersededFile);
-                // Document edits are a history barrier: page snapshots from before/after refer
-                // to a different page layout. Drop them on both stacks (except the just-captured
-                // inverse Document entry on `target`).
-                ClearPageSnapshotsOnly(source);
-                ClearPageSnapshotsExceptLast(target);
-                _annotations.Clear();
-                ESignDropFieldsForLayoutChange(_ctx);
-                ClearFormState();
-                ClearMeasurement();
-                _renderDims.Clear();
-                ClearSelection();
-                MarkDirty();
-                RefreshPageList(ThumbRefresh.Stale);
-                LoadOutlines();   // the reopened _doc has its own outline tree; rebuild the panel (#133)
-                if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
-                    PageList.SelectedIndex = selectedIdx;
-                else if (PageList.Items.Count > 0)
-                    PageList.SelectedIndex = 0;
-                SetStatus(label == "undo" ? "Undid document change" : "Redid document change");
+                AdoptWorkingFile(tempPath, null, () =>
+                {
+                    // Document edits are a history barrier: page snapshots from before/after refer
+                    // to a different page layout. Drop them on both stacks (except the just-captured
+                    // inverse Document entry on `target`).
+                    ClearPageSnapshotsOnly(source);
+                    ClearPageSnapshotsExceptLast(target);
+                    if (!entry.KeepMarks) _annotations.Clear();
+                    else if (entry.PageAnnotations is not null && entry.PageIdx >= 0)
+                    {
+                        var back = CloneList(entry.PageAnnotations);
+                        foreach (var a in back) a.PageIndex = entry.PageIdx;
+                        _annotations[entry.PageIdx] = back;
+                    }
+                    if (!entry.KeepMarks) ESignDropFieldsForLayoutChange(_ctx);
+                    ClearFormState();
+                    ClearMeasurement();
+                    _renderDims.Clear();
+                    ClearSelection();
+                    MarkDirty();
+                    RefreshPageList(ThumbRefresh.Stale);
+                    LoadOutlines();   // the reopened _doc has its own outline tree; rebuild the panel (#133)
+                    if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
+                        PageList.SelectedIndex = selectedIdx;
+                    else if (PageList.Items.Count > 0)
+                        PageList.SelectedIndex = 0;
+                    SetStatus(label == "undo" ? "Undid document change" : "Redid document change");
+                });
             }
         }
 

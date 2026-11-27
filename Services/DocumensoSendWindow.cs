@@ -82,79 +82,15 @@ namespace TDPdf.Services
                 "Signing happens there, in their browser; the signed copy is sealed by the signing service.",
                 "TextSecondary", 12, new Thickness(0, 0, 0, 12)));
 
-            // ── Title ──────────────────────────────────────────────────────────────────────
-            body.Children.Add(Heading("Document title", new Thickness(0, 0, 0, 4)));
-            var titleBox = MakeTextBox(s.Title, "Document title", DocumensoSendPlan.MaxTitle);
-            titleBox.Margin = new Thickness(0, 0, 0, 12);
-            body.Children.Add(titleBox);
+            var titleBox = BuildTitleSection(s, body);
 
-            // ── Recipients ─────────────────────────────────────────────────────────────────
-            body.Children.Add(Heading("Recipients", new Thickness(0, 0, 0, 4)));
-            var recipientsPanel = new StackPanel();
-            body.Children.Add(recipientsPanel);
+            var (recipientsPanel, addBtn, addMeBtn, addMeNote, orderCheck) = BuildRecipientsSection(owner, inputs, s, body);
 
-            var addRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 4) };
-            var addBtn = MakeButton(owner, "Add recipient", primary: false);
-            var addMeBtn = MakeButton(owner, "Add me", primary: false);
-            addMeBtn.Margin = new Thickness(8, 0, 0, 0);
-            addMeBtn.ToolTip = inputs.AccountEmail is { Length: > 0 } me
-                ? $"Add yourself ({me})"
-                : "Add yourself. Type your address; TDPdf remembers it after your first send";
-            addRow.Children.Add(addBtn);
-            addRow.Children.Add(addMeBtn);
-            body.Children.Add(addRow);
-            var addMeNote = Para("", "TextSecondary", 11, new Thickness(0, 0, 0, 4));
-            addMeNote.Visibility = Visibility.Collapsed;
-            body.Children.Add(addMeNote);
+            var (subjectBox, messageBox) = BuildMessageSection(s, body);
 
-            var orderCheck = MakeCheckBox("Signers sign in order (each is emailed when the one before has signed)", s.SequentialOrder);
-            orderCheck.Margin = new Thickness(0, 4, 0, 12);
-            body.Children.Add(orderCheck);
+            var (fieldsPanel, placeBtn, issuesPanel) = BuildFieldsSection(owner, body);
 
-            // ── Message ────────────────────────────────────────────────────────────────────
-            body.Children.Add(Heading("Email to recipients (optional)", new Thickness(0, 0, 0, 4)));
-            var subjectBox = MakeTextBox(s.Subject, "Email subject", DocumensoSendPlan.MaxSubject);
-            subjectBox.ToolTip = "Subject (leave empty for the signing service's default)";
-            subjectBox.Margin = new Thickness(0, 0, 0, 4);
-            body.Children.Add(subjectBox);
-            var messageBox = MakeTextBox(s.Message, "Email message", DocumensoSendPlan.MaxMessage);
-            messageBox.ToolTip = "Message (leave empty for the signing service's default)";
-            messageBox.AcceptsReturn = true;
-            messageBox.TextWrapping = TextWrapping.Wrap;
-            messageBox.Height = 64;
-            messageBox.VerticalContentAlignment = VerticalAlignment.Top;
-            messageBox.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-            messageBox.Margin = new Thickness(0, 0, 0, 12);
-            body.Children.Add(messageBox);
-
-            // ── Fields ─────────────────────────────────────────────────────────────────────
-            body.Children.Add(Heading("Fields", new Thickness(0, 0, 0, 4)));
-            var fieldsPanel = new StackPanel();
-            body.Children.Add(fieldsPanel);
-            var placeBtn = MakeButton(owner, "Place fields on the page", primary: false);
-            placeBtn.HorizontalAlignment = HorizontalAlignment.Left;
-            placeBtn.Margin = new Thickness(0, 6, 0, 10);
-            body.Children.Add(placeBtn);
-
-            var issuesPanel = new StackPanel { Margin = new Thickness(0, 0, 0, 4) };
-            body.Children.Add(issuesPanel);
-
-            // ── Footer ─────────────────────────────────────────────────────────────────────
-            var footer = new Grid { Margin = new Thickness(20, 6, 20, 16) };
-            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var status = Para("", "TextSecondary", 12, new Thickness(0, 0, 12, 0));
-            status.VerticalAlignment = VerticalAlignment.Center;
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal };
-            var sendBtn = MakeButton(owner, "Send", primary: true);
-            var cancelBtn = MakeButton(owner, "Cancel", primary: false);
-            cancelBtn.Margin = new Thickness(8, 0, 0, 0);
-            buttons.Children.Add(sendBtn);
-            buttons.Children.Add(cancelBtn);
-            Grid.SetColumn(buttons, 1);
-            footer.Children.Add(status);
-            footer.Children.Add(buttons);
-            root.Children.Add(footer);
+            var (status, sendBtn, cancelBtn) = BuildFooter(owner, root);
 
             void ShowStatus(string text, string brushKey)
             {
@@ -433,6 +369,111 @@ namespace TDPdf.Services
             win.ShowDialog();
             return (outcome, sent);
         }
+
+        /// <summary>The document title box.</summary>
+        private static TextBox BuildTitleSection(ESignSendSession s, StackPanel body)
+        {
+            // ── Title ──────────────────────────────────────────────────────────────────────
+            body.Children.Add(Heading("Document title", new Thickness(0, 0, 0, 4)));
+            var titleBox = MakeTextBox(s.Title, "Document title", DocumensoSendPlan.MaxTitle);
+            titleBox.Margin = new Thickness(0, 0, 0, 12);
+            body.Children.Add(titleBox);
+
+            return titleBox;
+        }
+
+        /// <summary>The recipients list (rebuilt on demand), Add recipient / Add me, and the signing-order switch.</summary>
+        private static (StackPanel RecipientsPanel, Button AddBtn, Button AddMeBtn, TextBlock AddMeNote, CheckBox OrderCheck) BuildRecipientsSection(Window? owner, Inputs inputs, ESignSendSession s, StackPanel body)
+        {
+            // ── Recipients ─────────────────────────────────────────────────────────────────
+            body.Children.Add(Heading("Recipients", new Thickness(0, 0, 0, 4)));
+            var recipientsPanel = new StackPanel();
+            body.Children.Add(recipientsPanel);
+
+            var addRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 4) };
+            var addBtn = MakeButton(owner, "Add recipient", primary: false);
+            var addMeBtn = MakeButton(owner, "Add me", primary: false);
+            addMeBtn.Margin = new Thickness(8, 0, 0, 0);
+            addMeBtn.ToolTip = inputs.AccountEmail is { Length: > 0 } me
+                ? $"Add yourself ({me})"
+                : "Add yourself. Type your address; TDPdf remembers it after your first send";
+            addRow.Children.Add(addBtn);
+            addRow.Children.Add(addMeBtn);
+            body.Children.Add(addRow);
+            var addMeNote = Para("", "TextSecondary", 11, new Thickness(0, 0, 0, 4));
+            addMeNote.Visibility = Visibility.Collapsed;
+            body.Children.Add(addMeNote);
+
+            var orderCheck = MakeCheckBox("Signers sign in order (each is emailed when the one before has signed)", s.SequentialOrder);
+            orderCheck.Margin = new Thickness(0, 4, 0, 12);
+            body.Children.Add(orderCheck);
+
+            return (recipientsPanel, addBtn, addMeBtn, addMeNote, orderCheck);
+        }
+
+        /// <summary>The optional email subject and message.</summary>
+        private static (TextBox SubjectBox, TextBox MessageBox) BuildMessageSection(ESignSendSession s, StackPanel body)
+        {
+            // ── Message ────────────────────────────────────────────────────────────────────
+            body.Children.Add(Heading("Email to recipients (optional)", new Thickness(0, 0, 0, 4)));
+            var subjectBox = MakeTextBox(s.Subject, "Email subject", DocumensoSendPlan.MaxSubject);
+            subjectBox.ToolTip = "Subject (leave empty for the signing service's default)";
+            subjectBox.Margin = new Thickness(0, 0, 0, 4);
+            body.Children.Add(subjectBox);
+            var messageBox = MakeTextBox(s.Message, "Email message", DocumensoSendPlan.MaxMessage);
+            messageBox.ToolTip = "Message (leave empty for the signing service's default)";
+            messageBox.AcceptsReturn = true;
+            messageBox.TextWrapping = TextWrapping.Wrap;
+            messageBox.Height = 64;
+            messageBox.VerticalContentAlignment = VerticalAlignment.Top;
+            messageBox.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            messageBox.Margin = new Thickness(0, 0, 0, 12);
+            body.Children.Add(messageBox);
+
+            return (subjectBox, messageBox);
+        }
+
+        /// <summary>The placed-fields list, the Place fields button, and the problems list.</summary>
+        private static (StackPanel FieldsPanel, Button PlaceBtn, StackPanel IssuesPanel) BuildFieldsSection(Window? owner, StackPanel body)
+        {
+            // ── Fields ─────────────────────────────────────────────────────────────────────
+            body.Children.Add(Heading("Fields", new Thickness(0, 0, 0, 4)));
+            var fieldsPanel = new StackPanel();
+            body.Children.Add(fieldsPanel);
+            var placeBtn = MakeButton(owner, "Place fields on the page", primary: false);
+            placeBtn.HorizontalAlignment = HorizontalAlignment.Left;
+            placeBtn.Margin = new Thickness(0, 6, 0, 10);
+            body.Children.Add(placeBtn);
+
+            var issuesPanel = new StackPanel { Margin = new Thickness(0, 0, 0, 4) };
+            body.Children.Add(issuesPanel);
+
+            return (fieldsPanel, placeBtn, issuesPanel);
+        }
+
+        /// <summary>The footer: status line, Send and Cancel.</summary>
+        private static (TextBlock Status, Button SendBtn, Button CancelBtn) BuildFooter(Window? owner, StackPanel root)
+        {
+            // ── Footer ─────────────────────────────────────────────────────────────────────
+            var footer = new Grid { Margin = new Thickness(20, 6, 20, 16) };
+            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var status = Para("", "TextSecondary", 12, new Thickness(0, 0, 12, 0));
+            status.VerticalAlignment = VerticalAlignment.Center;
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+            var sendBtn = MakeButton(owner, "Send", primary: true);
+            var cancelBtn = MakeButton(owner, "Cancel", primary: false);
+            cancelBtn.Margin = new Thickness(8, 0, 0, 0);
+            buttons.Children.Add(sendBtn);
+            buttons.Children.Add(cancelBtn);
+            Grid.SetColumn(buttons, 1);
+            footer.Children.Add(status);
+            footer.Children.Add(buttons);
+            root.Children.Add(footer);
+
+            return (status, sendBtn, cancelBtn);
+        }
+
 
         /// <summary>
         /// After a successful send: who it went to, and a Copy signing link per recipient.

@@ -57,8 +57,8 @@ internal static class HostileInput
             const int depth = 3000;
             for (int i = 0; i < depth; i++) objs.Add($"<< /Type /Pages /Kids [{i + 3} 0 R] /Count 1 >>");
             objs.Add("<< /Type /Page /MediaBox [0 0 200 300] >>");
-            try { using var d = Open(Build(objs.ToArray())); Check("page tree: a 3000-deep chain does not overflow the stack", d.PageCount >= 0, $"pages={d.PageCount}"); }
-            catch (Exception ex) { Check("page tree: a 3000-deep chain does not overflow the stack", true, "refused: " + ex.GetType().Name); }
+            try { using var d = Open(Build(objs.ToArray())); Check("page tree: a 3000-deep chain is opened or refused, never a crash (liveness check: reaching this line is the result)", d.PageCount >= 0, $"pages={d.PageCount}"); }
+            catch (Exception ex) { Check("page tree: a 3000-deep chain is opened or refused, never a crash (liveness check: reaching this line is the result)", true, "refused: " + ex.GetType().Name); }
         }
 
         // Outlines: /Next cycle, /First pointing at itself, /First pointing at the root.
@@ -196,7 +196,7 @@ internal static class HostileInput
                 cur.Elements["/Kids"] = k; cur = next;
             }
             PdfNamedDestinations.WalkNameTree(deepRoot, (_, _) => false);
-            Check("named dest: a 5000-deep name tree walk terminates", true);
+            Check("named dest: a 5000-deep name tree walk finishes, no hang or stack overflow (liveness check: reaching this line is the result)", true);
 
             // Link rewrite after a merge still works.
             var link = new PdfDictionary(doc); doc.Internals.AddObject(link);
@@ -224,7 +224,34 @@ internal static class HostileInput
             Check("zip: a real archive passes the default limits", ZipLimits.Refusal(zp) is null);
             Check("zip: a real archive over a tiny entry cap is refused", ZipLimits.Refusal(zp, maxEntries: 3) is not null);
             Check("zip: a real archive over a tiny byte cap is refused", ZipLimits.Refusal(zp, maxTotalBytes: 4000) is not null);
-            Check("zip: an unreadable archive is left to extraction to report", ZipLimits.Refusal(Path.Combine(tmp, "missing.zip")) is null);
+            // Extraction counts what it really writes, and keeps every entry inside the folder.
+            string zOut = Path.Combine(tmp, "zip-out-ok");
+            if (Directory.Exists(zOut)) Directory.Delete(zOut, true);
+            ZipLimits.ExtractToDirectory(zp, zOut);
+            Check("zip: extraction writes every entry", Directory.GetFiles(zOut).Length == 5 && new FileInfo(Path.Combine(zOut, "f4.txt")).Length == 1000);
+
+            string zCap = Path.Combine(tmp, "zip-out-cap");
+            if (Directory.Exists(zCap)) Directory.Delete(zCap, true);
+            bool capped = false;
+            try { ZipLimits.ExtractToDirectory(zp, zCap, maxTotalBytes: 2500); } catch (InvalidDataException) { capped = true; }
+            Check("zip: extraction stops once the bytes written pass the cap", capped &&
+                  Directory.GetFiles(zCap).Sum(f => new FileInfo(f).Length) <= 3000);
+
+            string zSlip = Path.Combine(tmp, "slip.zip");
+            if (File.Exists(zSlip)) File.Delete(zSlip);
+            using (var z = System.IO.Compression.ZipFile.Open(zSlip, System.IO.Compression.ZipArchiveMode.Create))
+                using (var w = new StreamWriter(z.CreateEntry("../zip-slip-escaped.txt").Open())) w.Write("x");
+            string zSlipOut = Path.Combine(tmp, "zip-out-slip");
+            if (Directory.Exists(zSlipOut)) Directory.Delete(zSlipOut, true);
+            bool slipped = false;
+            try { ZipLimits.ExtractToDirectory(zSlip, zSlipOut); } catch (IOException) { slipped = true; }
+            Check("zip: an entry that climbs out of the folder is refused and nothing escapes",
+                  slipped && !File.Exists(Path.Combine(tmp, "zip-slip-escaped.txt")));
+
+            bool tooMany = false;
+            try { ZipLimits.ExtractToDirectory(zp, Path.Combine(tmp, "zip-out-many"), maxEntries: 3); } catch (InvalidDataException) { tooMany = true; }
+            Check("zip: extraction refuses past the entry cap", tooMany);
+            Check("zip: an unreadable archive is refused, not waved through", ZipLimits.Refusal(Path.Combine(tmp, "missing.zip")) is { } rm && rm.Contains("could not be read"));
         }
     }
 }

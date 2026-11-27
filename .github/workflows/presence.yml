@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   presence:
-    uses: doodlemania2/fleet-presence-dispatch/.github/workflows/presence-dispatch.yml@main
+    uses: doodlemania2/fleet-presence-dispatch/.github/workflows/presence-dispatch.yml@70da9eaa082fd9d5f99ea0a7c89df5025528f961  # main 2026-11-27
     with:
       property: tdpdf
       targets: '["doodlemania2/tdpdf-site"]'

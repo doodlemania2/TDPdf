@@ -12,7 +12,8 @@ TDPdf is a Windows-only WPF PDF editor shipped as a single self-contained `TDPdf
 - Cross-compiling from macOS/Linux (where this repo often lives): add `-p:EnableWindowsTargeting=true`. The app itself only runs on Windows (WPF + native `pdfium.dll` P/Invoke).
 - Publish single-EXE: `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true` → `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`. Publish also runs the `BundleSource` MSBuild target (`build/bundle-source.ps1`) producing the GPLv3 corresponding-source zip; it uses `git ls-files`, so untracked files are silently excluded.
 - Local build: `./release.ps1` (Windows) is an **unsigned** local build only (no Certum, no signtool). Signed releases come only from pushing a tag, which runs `.github/workflows/release.yml`.
-- **Tests: `tests/PdfCore`** is a macOS/Linux/Windows-runnable console harness (~1,593 checks) covering the pure logic in `Services/` and the PDF round-trips. Run `dotnet run --project tests/PdfCore/PdfCore.Tests.csproj -c Release`; it must print **ALL PASS**. It gates `release.yml` (nothing is signed unless it passes). Add tests for any pure logic you add or move in `Services/`: compile the service file into the test project with a `<Compile Include>` in `tests/PdfCore/PdfCore.Tests.csproj` and register the suite in `tests/PdfCore/Program.cs`. There is no linter; `dotnet build` warnings are the lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
+- **Tests: `tests/PdfCore`** is a macOS/Linux/Windows-runnable console harness (about 3,600 checks) covering the pure logic in `Services/` and the PDF round-trips. Run `dotnet run --project tests/PdfCore/PdfCore.Tests.csproj -c Release`; it must print **ALL PASS**. It gates `release.yml` (nothing is signed unless it passes). Add tests for any pure logic you add or move in `Services/`: compile the service file into the test project with a `<Compile Include>` in `tests/PdfCore/PdfCore.Tests.csproj` and register the suite in `tests/PdfCore/Program.cs`. There is no linter; `dotnet build` warnings are the lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
+- **Bundled native libraries.** Besides PDFium and the OCR natives, the exe embeds DjVuLibre (`third_party/djvulibre/`, GPL-2.0-or-later, with its runtime DLLs) and Little CMS (`third_party/lcms2/`, MIT), all taken from MSYS2 UCRT64 packages whose signatures were checked, and each pinned by a `SHA256SUMS` file: the build fails on an unpinned or changed file, and DjVu refuses any `.exe`. `SOURCES.md` in each folder names the exact package, its recipe and its source. Replace them only from the same channel, update the pins and regenerate `THIRD-PARTY-NOTICES.md` in the same PR.
 - Single-file publish uses SDK properties in `TDPdf.csproj` (`IncludeNativeLibrariesForSelfExtract`, compression); do not reintroduce Costura/Fody bundling. `PublishTrimmed` and Native AOT are intentionally off — WPF and the PDF libraries are not trim-safe.
 - **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and can report a false clean that hides every `CS*` warning you just introduced. The baseline is **0 warnings, 0 errors** (it was 4 before 2.2.1.0 cleared the `MSB3243` and `CS8602` ones); keep it there.
 
@@ -54,7 +55,7 @@ Each stage is gated on its secret being present, so a missing or rotated secret 
 
 ## Architecture
 
-Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`. Most UI behavior lives on the `MainWindow` class, which is **split across one `partial class` per feature area** — `MainWindow.xaml.cs` (~8,000 lines) plus the files below. `MainWindow.xaml.cs` is still the largest by far and still holds everything that has not been extracted: window chrome, menus, settings, view modes, link overlays, tools (crop, redaction, shapes, form-field authoring), selection, annotation management and rendering, measure, dirty tracking, zoom, drag/drop, MRU, print, themes, install/uninstall. New UI features go in the partial that owns the area, or in `MainWindow.xaml.cs` when no partial fits.
+Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`. Most UI behavior lives on the `MainWindow` class, which is **split across one `partial class` per feature area** — `MainWindow.xaml.cs` (about 8,500 lines) plus the files below. `MainWindow.xaml.cs` is still the largest by far and still holds everything that has not been extracted: window chrome, menus, settings, view modes, link overlays, tools (crop, redaction, shapes, form-field authoring), selection, annotation management and rendering, measure, dirty tracking, zoom, drag/drop, MRU, print, themes, install/uninstall. New UI features go in the partial that owns the area, or in `MainWindow.xaml.cs` when no partial fits.
 
 | File | Holds |
 |---|---|
@@ -67,6 +68,15 @@ Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`.
 | `MainWindow.Sidebar.cs` | The page sidebar (PageList) / page viewer and multi-document tab switching |
 | `MainWindow.Bookmarks.cs` | Bookmark editing (#133): add / rename / child / reorder / retarget / delete |
 | `MainWindow.Undo.cs` | Snapshot-based undo helpers |
+| `MainWindow.Placement.cs` | Remembers the main window's position, size and maximized state; opens a torn-off tab's window beside its source (rules in `Services/WindowPlacementMath.cs`) |
+| `MainWindow.ThumbOverlay.cs` | Unsaved annotations drawn on the Pages sidebar's thumbnails |
+| `MainWindow.HighlightComposite.cs` | Highlights as a multiply blend on screen, matching how they are saved and printed |
+| `MainWindow.Session.cs` | Offering the last session back at launch (the save/merge side and `RestoreSessionAsync` live in `MainWindow.xaml.cs`) |
+| `MainWindow.WhatsNew.cs` | "What's new": the release notes of every version since the last one seen, shown once after an update |
+| `MainWindow.MultiSelect.cs` | The mark selection set (Shift/Ctrl click, drag box, move/nudge/delete together, restyle together) and grouping |
+| `MainWindow.MarkClipboard.cs` | Copy / cut / paste of marks, pictures and text (private clipboard format, JSON) |
+| `MainWindow.MarkArrange.cs` | Align, space evenly and match size of selected marks (geometry in `Services/MarkArrange.cs`) |
+| `MainWindow.ContextMenus.cs` | Every right-click menu, built for what is under the pointer from `Services/ContextMenuModel.cs` (quick-action row, colour/opacity/width rows, the user's order from `Services/MenuLayouts.cs`, "Edit Menu…" in `TdpDialog.EditMenu.cs`) |
 | `MainWindow.Search.cs` | Search bar (Ctrl+F) and match navigation |
 | `MainWindow.Keyboard.cs` | Keyboard shortcut dispatch |
 | `MainWindow.KeyboardMapOverlay.cs` | Visual keyboard for the F1 / Ctrl+? shortcuts overlay |
@@ -87,8 +97,26 @@ Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`.
 | `MainWindow.ESignatureSelfSign.cs` | Electronic Signature: Sign This Document |
 | `MainWindow.ESignatureVerify.cs` | Electronic Signature: Verify Signatures and Document Info digital signatures |
 | `MainWindow.ESignatureWeb.cs` | Electronic Signature: the signing service's pages inside TDPdf (WebView2) |
+| `MainWindow.CanvasTools.cs` | Per-tool mouse handlers that `Canvas_MouseLeftButtonDown/Up` dispatch to |
+| `MainWindow.Stamps.cs` | Stamp tool (standard, text and picture stamps, saved as real /Stamp annotations; `Services/StampWriter.cs`) |
+| `MainWindow.Watermark.cs` | Watermark and Remove Watermark (marked-content artifacts; `Services/WatermarkWriter.cs`) |
+| `MainWindow.PageImages.cs` | Pictures in the page content: select, move, resize, delete, copy, replace, save (PDFium page objects; `Services/PdfImageObjects.cs`) |
+| `MainWindow.PictureExtract.cs` | Extract Image: a box or colour area of a picture into a transparent picture mark |
+| `MainWindow.Paragraphs.cs` | Edit Paragraph: find, edit and reflow a whole paragraph (`Services/Paragraph*.cs`, `Services/PdfParagraphEdit.cs`) |
+| `MainWindow.RasterizeRegion.cs` | Rasterize Region: a box becomes a picture and the content under it leaves the page |
+| `MainWindow.MergeDialog.cs` | Merge Files dialog with page arrangement (`Services/MergePlan.cs`, `Services/PdfMerger.cs`) |
+| `MainWindow.Attachments.cs` | List and save file attachments (`Services/PdfAttachments.cs`, `Services/AttachmentNames.cs`) |
+| `MainWindow.FlattenOptions.cs` | Save Flattened resolution step |
+| `MainWindow.Compare.cs` | Compare PDFs entry point (`Services/CompareWindow.cs`, `Services/PdfCompare*.cs`) |
+| `MainWindow.Accessibility.cs` | Check Accessibility panel and fixes (`Services/PdfUa*.cs`) |
+| `MainWindow.ExportEpub.cs` | Export as EPUB (`Services/EpubExport*.cs`) |
+| `MainWindow.Books.cs` | Open EPUB and DjVu books by converting them to a temp PDF (`Services/Epub*.cs`, `Services/Djvu*.cs`; DjVu decodes in the `--djvu-worker` child process) |
+| `MainWindow.SignatureEditor.cs` | Signature editor: ink colour, pen width, threshold and feather for imported signatures, PNG export |
+| `MainWindow.MonitorColor.cs` | Monitor colour matching (`Services/Color*.cs`, `Services/LcmsNative.cs`) |
+| `MainWindow.SideBySide.cs` | Split view as two snapped windows, and the read-only second view (`Services/ReadOnlyGate.cs`) |
+| `MainWindow.PairedSidebar.cs` | Two-column thumbnail sidebar (`Controls/PairedThumbnailPanel.cs`) |
 
-`TdpDialog.cs` is **not** a `MainWindow` partial — it is the standalone themed `MessageBox` replacement, which used to sit at the bottom of `MainWindow.xaml.cs`.
+`TdpDialog` is **not** a `MainWindow` partial — it is the standalone themed `MessageBox` replacement, a `static partial class` split across `TdpDialog.cs` and `TdpDialog.PageRange.cs` (the page-range prompt). Alongside `Services/`, `ViewModels/` and `Diagnostics/`, `Models/` holds `Annotations.cs` and `PageThumbItem.cs`, and `Controls/` holds the small reusable WPF controls and layout helpers (`SafeCanvas`, `SafeWrapPanel`, `GridLengthAnimation`, `RadioGroupKeyboard`, `LayoutRace`).
 
 These files were produced by a pure move-only split; the banner comments (`// ====`) inside them are the original region markers, so a region's members are still in their original order. Private nested types (`DocumentContext`, `UndoEntry`, `RenderedPage`, `LinkInfo`, `FormFieldInfo`, …) may be declared in any partial — most remain in `MainWindow.xaml.cs`.
 
@@ -106,10 +134,10 @@ These files were produced by a pure move-only split; the banner comments (`// ==
 **Annotation flow:** `_annotations` is a `Dictionary<int pageIndex, List<PageAnnotation>>`. On-screen annotations live on a transient WPF `AnnotationCanvas` overlay; on save they're baked into the PDF via PdfSharpCore. "Save Flattened" instead rasterizes every page through PDFium so nothing remains editable.
 
 **Other load-bearing behaviors:**
-- Custom chrome: `WindowStyle=None` + `AllowsTransparency=True`. A `WM_GETMINMAXINFO` hook in `MainWindow_SourceInitialized` keeps maximize from covering the taskbar — preserve it if touching window sizing. All dialogs are custom dark-themed windows; never use `MessageBox.Show` or default file-dialog chrome for new UI.
+- Window frame: the native frame is the default (`UseNativeWindowFrame`, `Properties/Settings.cs`, applied at startup in `ApplyInitialWindowChromeSettings`, so changing it needs a restart). The custom chrome is the opt-out: `WindowStyle=None` + `AllowsTransparency=True`. The custom frame's `WM_GETMINMAXINFO` hook in `MainWindow_SourceInitialized` keeps maximize from covering the taskbar — preserve it if touching window sizing. All dialogs are custom dark-themed windows; never use `MessageBox.Show` or default file-dialog chrome for new UI.
 - Self-installer: launching from outside the install path runs portable with a status-bar "Install TDPdf..." button (`MainWindow.Install_Click`); if TDPdf is already installed per-user it shows the installed version and offers Upgrade / Reinstall / Uninstall into the DETECTED scope (decision in `Services/PortableInstallPolicy.cs`), and a machine-wide (Intune) install is only explained, never overwritten or removed. A fresh install installs per-user to `%LOCALAPPDATA%\Programs\TDPdf\` (no UAC), registers ProgID `TDPdf.pdf`, uninstalls via deferred batch file. `TDPdf.exe "file.pdf"` opens directly.
 - Password-protected PDFs: prompt for password, write a decrypted copy to a temp file, work against that for the session.
-- Signatures persist to `signatures.json` next to the EXE. Drawn (`Strokes`) and imported-image (`ImageData` base64 PNG) variants share `SavedSignature`; `ImageData != null` is the discriminator.
+- Signatures persist to `signatures.json` in `%LOCALAPPDATA%\TDPdf` (a copy left next to the EXE by older versions is migrated on first read, never overwriting). Drawn (`Strokes`) and imported-image (`ImageData` base64 PNG) variants share `SavedSignature`; `ImageData != null` is the discriminator.
 - **`PRIVACY.md` is the published privacy policy** (tdpdf.com/privacy, Help ▸ Privacy Policy). Any change to what `Diagnostics/` collects or what Electronic Signature sends updates it in the same PR. Keep it written for users: no maintainer notes or version history in it.
 - Telemetry (`Diagnostics/`) is opt-in and a no-op by default — gated on an OTLP collector provisioned by Intune policy under `HKLM\SOFTWARE\Policies\TDPdf\Telemetry` (`OtlpEndpoint` + `OtlpToken`), which exports to self-hosted SigNoz. Never expose a raw `TrackException`; crash reporting goes through `Sanitizer` to scrub paths. Application Insights, the build-time-embedded key and `%ProgramData%\TDPdf\telemetry.dat` were all removed in 1.24.0.0 — do not reintroduce a compiled-in destination.
 
@@ -117,7 +145,7 @@ These files were produced by a pure move-only split; the banner comments (`// ==
 
 - XAML-named controls the codegen can't resolve are re-fetched in the constructor via `FindName(...)!` into `_camelCase` fields (see the `// Manual element refs` block). Follow that pattern for new named XAML elements.
 - UI palette is centralized in `MainWindow.xaml` resources (`BgDark`, `BgPanel`, `AccentGreen`, `DangerRed`, …) and theme dictionaries under `Themes/` (Dark, Light, HighContrast). Use those brushes; don't hardcode hex colors. Toolbar glyphs are `Segoe MDL2 Assets`.
-- Set `_isDirty = true` on any change that mutates the document, and route open/close paths through the existing dirty-check prompts.
+- Call `MarkDirty()` on any change that mutates the document (it sets `_isDirty` and recolours the Save button), and route open/close paths through the existing dirty-check prompts.
 - **App icon.** `Resources/tdpdf-icon.ico` is generated by `build/generate-app-icon.py` (needs Pillow, build-time only — the checked-in `.ico` is what the build consumes). It lifts the gold mark out of `Resources/splash-logo.png` at generation time, so changing the brand logo and re-running keeps them in sync. Three artworks, not one scaled down: 48px and up carry ruled lines, 32px drops them, 24px and below give the mark most of the page — a thin-stroked glyph goes sub-pixel at 16px otherwise. The ICO container is hand-written for that reason; Pillow's writer rescales one source and cannot take per-size artwork.
 - **Third-party notices.** TDPdf ships as one self-contained exe, so MIT/BSD/Apache notices must travel inside the binary. `THIRD-PARTY-NOTICES.md` is generated by `build/generate-third-party-notices.ps1`, embedded via `EmbeddedResource`, shown under Help > Third-Party Licenses, and attached to each release. **Regenerate it whenever a `PackageReference` changes in `TDPdf.csproj` or `third_party/PdfSharpCore/PdfSharpCore.csproj`** — nothing fails if you forget, the notices just go stale. The native payloads (PDFium's 1,300-line aggregate, Leptonica, the Tesseract engine) are invisible to licence scanners and are curated by hand in that script.
 - **ImageSharp licence.** SixLabors.ImageSharp 4.x (via `third_party/PdfSharpCore`) fails a **Release** build without a Six Labors licence. `third_party/PdfSharpCore/sixlabors.lic` is TDPdf's free community licence, scoped to the assemblies `TDPdf`, `PdfSharpCore` and `PdfCore.Tests`, and expires **2028-01-14**: renew it at licensing.sixlabors.com before then (`release.yml` warns when a release is cut within 60 days of expiry). Six Labors allows committing it publicly. Don't delete it, and don't drop back to ImageSharp 2.x/3.x, which carry unfixed advisories.

@@ -11,7 +11,10 @@ namespace TDPdf
     // Measure is the odd one out and appended like the rest: it is the only member that never
     // produces a PageAnnotation and never touches the document at all. It is a ruler — it draws a
     // transient overlay, reports a distance, and leaves when the tool does.
-    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact, Form, Measure }
+    //
+    // Stamp (3.0) is appended for the same reason: it places a StampAnnotation, a mark that is saved
+    // as a real /Stamp annotation rather than burned into the page.
+    public enum EditTool { Select, Text, Highlight, Draw, Signature, Image, EditText, EditImage, Crop, Pan, Erase, Shape, Strikethrough, Underline, Redact, Form, Measure, Stamp }
 
     /// <summary>
     /// Which kind of form field the Form tool places. Not the same enum as
@@ -36,10 +39,27 @@ namespace TDPdf
         public int PageIndex { get; set; }
 
         /// <summary>
-        /// Deep-copies this annotation. Used by the snapshot-undo subsystem so that subsequent
-        /// in-place mutations (move, resize, content edits) don't leak into the captured state.
+        /// Marks that share a non-null id are one group: the Select tool picks them up together (#227).
+        /// A group lives with the document session, like the marks themselves: saving burns every mark
+        /// into the page, so a reopened file holds ordinary page content and no groups. Null for a mark
+        /// that is not grouped, which is also what anything made before grouping existed deserializes to.
         /// </summary>
-        public abstract PageAnnotation Clone();
+        public string? GroupId { get; set; }
+
+        /// <summary>
+        /// Deep-copies this annotation, group membership included. Used by the snapshot-undo subsystem
+        /// so that subsequent in-place mutations (move, resize, content edits) don't leak into the
+        /// captured state.
+        /// </summary>
+        public PageAnnotation Clone()
+        {
+            var copy = CloneCore();
+            copy.GroupId = GroupId;
+            return copy;
+        }
+
+        /// <summary>Copies the subclass's own fields; <see cref="Clone"/> adds the group id.</summary>
+        protected abstract PageAnnotation CloneCore();
     }
 
     /// <summary>
@@ -143,7 +163,7 @@ namespace TDPdf
         public Color GetFillColor() => Color.FromArgb(FillA, FillR, FillG, FillB);
         public void SetFillColor(Color c) { FillR = c.R; FillG = c.G; FillB = c.B; FillA = c.A; }
 
-        public override PageAnnotation Clone() => new TextAnnotation
+        protected override PageAnnotation CloneCore() => new TextAnnotation
         {
             PageIndex = PageIndex, Position = Position, Content = Content, FontSize = FontSize,
             FontName = FontName, Bold = Bold, Italic = Italic, Underline = Underline,
@@ -166,7 +186,7 @@ namespace TDPdf
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
 
-        public override PageAnnotation Clone() => new InkAnnotation
+        protected override PageAnnotation CloneCore() => new InkAnnotation
         {
             PageIndex = PageIndex,
             Points = new List<Point>(Points),
@@ -186,7 +206,7 @@ namespace TDPdf
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
 
-        public override PageAnnotation Clone() => new HighlightAnnotation
+        protected override PageAnnotation CloneCore() => new HighlightAnnotation
         {
             PageIndex = PageIndex, Bounds = Bounds,
             ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
@@ -249,7 +269,7 @@ namespace TDPdf
             var source = LineRects.Count > 0 ? LineRects : new List<Rect> { Bounds };
             foreach (var line in source)
             {
-                int rotation = ((Rotation % 360) + 360) % 360;
+                int rotation = TDPdf.Services.Angles.Mod360(Rotation);
                 bool vertical = rotation is 90 or 270;
                 double t = Math.Max(1.5, (vertical ? line.Width : line.Height) * 0.09);
                 switch (Style)
@@ -275,7 +295,7 @@ namespace TDPdf
             }
         }
 
-        public override PageAnnotation Clone()
+        protected override PageAnnotation CloneCore()
         {
             var copy = new MarkupAnnotation
             {
@@ -294,7 +314,7 @@ namespace TDPdf
     {
         public Rect Bounds { get; set; }
 
-        public override PageAnnotation Clone() => new CropAnnotation { PageIndex = PageIndex, Bounds = Bounds };
+        protected override PageAnnotation CloneCore() => new CropAnnotation { PageIndex = PageIndex, Bounds = Bounds };
     }
 
     /// <summary>
@@ -326,15 +346,36 @@ namespace TDPdf
         public byte ColorB { get; set; } = 0;
         public byte ColorA { get; set; } = 255;
 
+        /// <summary>
+        /// Colour of the rectangle that hides the original text. White, like every edit made before
+        /// this existed; an edit over a scan takes the colour of the paper instead (#229).
+        /// </summary>
+        public byte CoverR { get; set; } = 255;
+        public byte CoverG { get; set; } = 255;
+        public byte CoverB { get; set; } = 255;
+
+        /// <summary>
+        /// Distance in canvas pixels between baselines when <see cref="NewContent"/> holds several
+        /// lines (a paragraph edit, #229). 0 means the font's own line height, which is what a single
+        /// line edit has always used.
+        /// </summary>
+        public double LineHeight { get; set; }
+
+        /// <summary>How the lines sit in <see cref="OriginalBounds"/>: 0 left, 1 centred, 2 right.</summary>
+        public int Align { get; set; }
+
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
+        public Color GetCoverColor() => Color.FromArgb(255, CoverR, CoverG, CoverB);
+        public void SetCoverColor(byte r, byte g, byte b) { CoverR = r; CoverG = g; CoverB = b; }
 
-        public override PageAnnotation Clone() => new TextEditAnnotation
+        protected override PageAnnotation CloneCore() => new TextEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, Position = Position,
             NewContent = NewContent, OriginalContent = OriginalContent,
             FontSize = FontSize, FontName = FontName, Bold = Bold, Italic = Italic,
-            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
+            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA,
+            CoverR = CoverR, CoverG = CoverG, CoverB = CoverB, LineHeight = LineHeight, Align = Align
         };
     }
 
@@ -350,7 +391,7 @@ namespace TDPdf
         public string? ReplacementImagePath { get; set; }
         public bool IsDeleted { get; set; }
 
-        public override PageAnnotation Clone() => new ImageEditAnnotation
+        protected override PageAnnotation CloneCore() => new ImageEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, TargetBounds = TargetBounds,
             Rotation = Rotation,
@@ -368,13 +409,33 @@ namespace TDPdf
         /// <summary>Base-64 encoded PNG. Non-null = image sig; null = drawn strokes.</summary>
         public string? ImageData { get; set; }
 
-        public override PageAnnotation Clone()
+        /// <summary>
+        /// Ink colour of a drawn signature, "#RRGGBB". Null (every signature placed before the editor
+        /// existed) means black. Imported and typed pictures carry their colour in <see cref="ImageData"/>.
+        /// </summary>
+        public string? InkColor { get; set; }
+
+        /// <summary>Pen width of a drawn signature in signature units (scaled by <see cref="PlacedAnnotation.Scale"/>). Null means 2.</summary>
+        public double? PenWidth { get; set; }
+
+        /// <summary>
+        /// The optional date line, "yyyy-MM-dd", fixed when the signature was placed. Null = no date line.
+        /// It is part of the mark: the last <see cref="DateStrip"/> units of <see cref="PlacedAnnotation.SourceHeight"/>
+        /// are the strip it is written in, so it moves, resizes and turns with the signature.
+        /// </summary>
+        public string? DateText { get; set; }
+
+        /// <summary>Height, in signature units, of the date strip at the bottom of the box. 0 when there is no date line.</summary>
+        public double DateStrip { get; set; }
+
+        protected override PageAnnotation CloneCore()
         {
             var copy = new SignatureAnnotation
             {
                 PageIndex = PageIndex, Position = Position, Scale = Scale,
                 SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData,
-                Rotation = Rotation
+                Rotation = Rotation, InkColor = InkColor, PenWidth = PenWidth,
+                DateText = DateText, DateStrip = DateStrip
             };
             foreach (var stroke in Strokes) copy.Strokes.Add(new List<Point>(stroke));
             return copy;
@@ -450,7 +511,7 @@ namespace TDPdf
             }
         }
 
-        public override PageAnnotation Clone()
+        protected override PageAnnotation CloneCore()
         {
             var copy = new ShapeAnnotation
             {
@@ -473,11 +534,51 @@ namespace TDPdf
         /// <summary>Base-64 encoded image bytes (PNG, JPG, BMP, etc.).</summary>
         public string ImageData { get; set; } = "";
 
-        public override PageAnnotation Clone() => new ImageAnnotation
+        protected override PageAnnotation CloneCore() => new ImageAnnotation
         {
             PageIndex = PageIndex, Position = Position, Scale = Scale,
             SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData,
             Rotation = Rotation
+        };
+    }
+
+    /// <summary>Where a stamp's picture comes from.</summary>
+    public enum StampKind { Standard, CustomText, Image }
+
+    /// <summary>
+    /// A stamp placed on a page (3.0): one of the standard rubber stamps (Approved, Draft...), a
+    /// custom text stamp, or a picture. It is a placed mark like a signature or picture, so select,
+    /// move, resize, quarter-turn rotation (with the page), copy and paste, grouping and align all
+    /// work on it for free. Unlike the other marks it is NOT burned into the page content on save: the
+    /// baker writes it as a real /Stamp annotation with an appearance stream, so another viewer still
+    /// shows it as a stamp.
+    /// </summary>
+    public class StampAnnotation : PlacedAnnotation
+    {
+        public StampKind Kind { get; set; } = StampKind.Standard;
+
+        /// <summary>The standard stamp's id (for example "Approved"); empty for a custom one.</summary>
+        public string StampId { get; set; } = "";
+
+        /// <summary>The words on a text stamp, already upper-cased by the factory.</summary>
+        public string Label { get; set; } = "";
+
+        public byte ColorR { get; set; } = 30;
+        public byte ColorG { get; set; } = 138;
+        public byte ColorB { get; set; } = 60;
+
+        /// <summary>0.1 to 1. Applied to the whole stamp, in the canvas and in the saved appearance.</summary>
+        public double Opacity { get; set; } = 1.0;
+
+        /// <summary>Base-64 image bytes for <see cref="StampKind.Image"/>; null otherwise.</summary>
+        public string? ImageData { get; set; }
+
+        protected override PageAnnotation CloneCore() => new StampAnnotation
+        {
+            PageIndex = PageIndex, Position = Position, Scale = Scale,
+            SourceWidth = SourceWidth, SourceHeight = SourceHeight, Rotation = Rotation,
+            Kind = Kind, StampId = StampId, Label = Label,
+            ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, Opacity = Opacity, ImageData = ImageData
         };
     }
 
@@ -502,5 +603,20 @@ namespace TDPdf
         public double CanvasHeight { get; set; } = 150;
         /// <summary>Base-64 encoded PNG for imported image signatures. Null = drawn strokes.</summary>
         public string? ImageData { get; set; }
+
+        // Added by the signature editor. All optional: a file written before them loads as it always
+        // did (black, 2 wide, no source picture), and an older TDPdf reading a file that has them
+        // skips them, because signatures.json is read with System.Text.Json's defaults.
+
+        /// <summary>Ink colour "#RRGGBB". For a drawn signature null is black; for an imported picture null keeps its own colours.</summary>
+        public string? InkColor { get; set; }
+        /// <summary>Pen width of a drawn signature. Null means 2.</summary>
+        public double? PenWidth { get; set; }
+        /// <summary>The imported picture as chosen (PNG, base 64), so editing starts from it rather than from <see cref="ImageData"/>, which is the processed result.</summary>
+        public string? SourceImageData { get; set; }
+        /// <summary>Luminance threshold 1 to 255 used to turn the source into ink; null or 0 means none.</summary>
+        public int? Threshold { get; set; }
+        /// <summary>Edge feather strength 0 to 10; null or 0 means none.</summary>
+        public int? Feather { get; set; }
     }
 }

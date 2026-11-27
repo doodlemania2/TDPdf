@@ -25,6 +25,34 @@ internal static class PageRangeSpecTests
         }
         Check("page range: no pages is an error", !PageRangeSpec.TryParse("1", 0, out _, out _), "");
 
+        // Lenient reading (Print, Export Pages as Images): pins what PrintPreviewWindow.ParseRange did.
+        static string L(string? t, int n) => J(PageRangeSpec.ParseLenient(t, n));
+        Check("lenient: blank is every page", L("", 4) == "0,1,2,3" && L("   ", 4) == "0,1,2,3" && L(null, 4) == "0,1,2,3", L("", 4));
+        Check("lenient: list and range", L("1-3,7", 10) == "0,1,2,6", L("1-3,7", 10));
+        Check("lenient: reversed, overlapping, unsorted", L("5-2, 3, 1", 10) == "0,1,2,3,4", L("5-2, 3, 1", 10));
+        Check("lenient: numbers past the end are dropped, a range is clamped", L("2,9,3-99", 5) == "1,2,3,4", L("2,9,3-99", 5));
+        Check("lenient: junk parts are ignored, good ones kept", L("x,2,1-,3-4-5,,-2", 6) == "1", L("x,2,1-,3-4-5,,-2", 6));
+        Check("lenient: nothing matching is EMPTY, never every page", L("99", 5) == "" && L("abc", 5) == "" && L("0", 5) == "", L("99", 5));
+        Check("lenient: a huge range ends and is clamped", L("1-2147483647", 3) == "0,1,2" && L("-5-2147483647", 3) == "", L("1-2147483647", 3));
+        Check("lenient: semicolons and spaces are not separators", L("1;2", 5) == "" && L("1 2", 5) == "", L("1;2", 5));
+        Check("lenient: spaces around the numbers are fine", L(" 2 - 3 , 5 ", 5) == "1,2,4", L(" 2 - 3 , 5 ", 5));
+
+        // The command line keeps its own wording over the strict parse.
+        foreach (var (spec, n, want) in new[]
+        {
+            ("1-3,x", 10, "Bad page number: \"x\""),
+            ("1-,5", 10, "Bad page range: \"1-\""),
+            ("9-12", 8, "Pages 9-12 out of range - the document has 8 pages"),
+            ("", 8, "Empty page range"),
+            (",", 8, "Empty page range"),
+        })
+        {
+            bool r = PageRangeSpec.TryParseForCli(spec, n, out var q, out var e);
+            Check($"page range (CLI): \"{spec}\" says \"{want}\"", !r && q.Count == 0 && e == want, e);
+        }
+        bool cliOk = PageRangeSpec.TryParseForCli("1-3,5,9-12", 12, out var cp, out _);
+        Check("page range (CLI): the documented example parses", cliOk && J(cp) == "0,1,2,4,8,9,10,11", J(cp));
+
         Check("describe: runs", PageRangeSpec.Describe(new[] { 0, 1, 2, 6 }) == "1-3,7", PageRangeSpec.Describe(new[] { 0, 1, 2, 6 }));
         Check("describe: single and unsorted duplicates", PageRangeSpec.Describe(new[] { 4, 4, 0 }) == "1,5", "");
 

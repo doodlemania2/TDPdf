@@ -104,6 +104,8 @@ namespace TDPdf.Services
     internal sealed class WindowTransferServer : IDisposable
     {
         private readonly Func<string, Task<bool>> _importHandler;
+        /// <summary>Answers a CLOSEVIEW request: the window that opened this one as a read-only split view asks it to close.</summary>
+        public Func<Task<bool>>? CloseViewHandler { get; set; }
         private readonly System.Windows.Threading.Dispatcher _dispatcher;
         private readonly Thread _thread;
         private volatile bool _stopping;
@@ -169,6 +171,17 @@ namespace TDPdf.Services
                         }
                         writer.WriteLine(ok ? "OK" : $"FAIL:{err ?? "the target window rejected it"}");
                     }
+                    else if (parts[0] == "CLOSEVIEW")
+                    {
+                        bool ok = false;
+                        var handler = CloseViewHandler;
+                        if (handler is not null)
+                        {
+                            try { ok = _dispatcher.InvokeAsync(() => handler()).Task.Unwrap().GetAwaiter().GetResult(); }
+                            catch { ok = false; }
+                        }
+                        writer.WriteLine(ok ? "OK" : "FAIL:not a split view window");
+                    }
                     else
                     {
                         writer.WriteLine("FAIL:bad request");
@@ -194,6 +207,13 @@ namespace TDPdf.Services
         /// closed mid-drag, busy, or it declined the file — so the caller can keep its own tab
         /// rather than losing the document.</summary>
         public static bool TryImport(int destProcessId, string path, out string? error, int timeoutMs = 5000)
+            => TrySend(destProcessId, $"IMPORT|{path}", out error, timeoutMs);
+
+        /// <summary>Asks the read-only split view window running as <paramref name="destProcessId"/> to close itself.</summary>
+        public static bool TryCloseView(int destProcessId, out string? error, int timeoutMs = 3000)
+            => TrySend(destProcessId, "CLOSEVIEW|", out error, timeoutMs);
+
+        private static bool TrySend(int destProcessId, string request, out string? error, int timeoutMs)
         {
             error = null;
             try
@@ -205,7 +225,7 @@ namespace TDPdf.Services
                 client.Connect(timeoutMs);
                 using var writer = new StreamWriter(client) { AutoFlush = true };
                 using var reader = new StreamReader(client);
-                writer.WriteLine($"IMPORT|{path}");
+                writer.WriteLine(request);
                 string? response = reader.ReadLine();
                 if (response == "OK") return true;
                 error = response ?? "no response";
@@ -259,12 +279,7 @@ namespace TDPdf.Services
         /// <summary>A theme brush (re-resolved each time a ghost is built, so it follows the active theme)
         /// at the given alpha; the literal fallback is only for a theme dictionary that failed to load.</summary>
         private static SolidColorBrush ThemedBrush(string key, Color fallback, byte alpha)
-        {
-            var c = (Application.Current?.TryFindResource(key) as SolidColorBrush)?.Color ?? fallback;
-            var brush = new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
-            brush.Freeze();
-            return brush;
-        }
+            => ThemeBrushes.Wash(ThemeBrushes.Get(key, fallback).Color, alpha, freeze: true);
 
         private void MakeClickThrough()
         {

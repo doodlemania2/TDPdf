@@ -55,6 +55,22 @@ namespace TDPdf.Services
             catch { return false; }
         }
 
+        /// <summary><c>tdpdf-zip-&lt;8 hex&gt;</c> — the folder a dropped .zip is expanded into.</summary>
+        private static readonly Regex s_zipDir = new(
+            @"^tdpdf-zip-[0-9a-f]{8}$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        /// <summary>Whether a folder name is one a dropped .zip was expanded into.</summary>
+        internal static bool IsZipDirectoryName(string name) => s_zipDir.IsMatch(name);
+
+        /// <summary>Whether a leftover zip-extraction folder is old enough to delete.</summary>
+        internal static bool ShouldSweepDirectory(string name, DateTime lastActivityUtc, DateTime nowUtc, bool otherInstanceRunning)
+        {
+            if (!s_zipDir.IsMatch(name)) return false;
+            TimeSpan min = otherInstanceRunning ? OthersRunningMinAge : AloneMinAge;
+            return nowUtc - lastActivityUtc >= min;
+        }
+
         /// <summary>Whether a leftover file is old enough to delete.</summary>
         internal static bool ShouldSweep(string fileName, DateTime lastWriteUtc, DateTime nowUtc, bool otherInstanceRunning)
         {
@@ -82,6 +98,42 @@ namespace TDPdf.Services
                         if (!ShouldSweep(info.Name, info.LastWriteTimeUtc, nowUtc, otherInstanceRunning)) continue;
                         if ((isLocked ?? IsLocked)(file)) continue;
                         File.Delete(file);
+                        removed++;
+                    }
+                    catch { /* in use, or gone: next one */ }
+                }
+            }
+            catch { /* the folder vanished or is unreadable: nothing to do */ }
+            return removed + SweepZipDirectories(directory, nowUtc, otherInstanceRunning, isLocked);
+        }
+
+        /// <summary>
+        /// Deletes stale <c>tdpdf-zip-*</c> folders (a dropped .zip's expansion) in
+        /// <paramref name="directory"/>. A folder that is a link, or that holds a file another process
+        /// has open, is left alone. Never throws. Returns how many folders were removed.
+        /// </summary>
+        internal static int SweepZipDirectories(string directory, DateTime nowUtc, bool otherInstanceRunning,
+                                                Func<string, bool>? isLocked = null)
+        {
+            int removed = 0;
+            try
+            {
+                foreach (string dir in Directory.EnumerateDirectories(directory, "tdpdf-zip-*"))
+                {
+                    try
+                    {
+                        var info = new DirectoryInfo(dir);
+                        if (info.LinkTarget is not null || (info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                        DateTime activity = info.LastWriteTimeUtc > info.CreationTimeUtc ? info.LastWriteTimeUtc : info.CreationTimeUtc;
+                        if (!ShouldSweepDirectory(info.Name, activity, nowUtc, otherInstanceRunning)) continue;
+
+                        var opts = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
+                        bool busy = false;
+                        foreach (string f in Directory.EnumerateFiles(dir, "*", opts))
+                            if ((isLocked ?? IsLocked)(f)) { busy = true; break; }
+                        if (busy) continue;
+
+                        Directory.Delete(dir, recursive: true);   // does not follow links inside it
                         removed++;
                     }
                     catch { /* in use, or gone: next one */ }

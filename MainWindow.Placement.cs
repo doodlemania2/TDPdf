@@ -22,8 +22,10 @@ namespace TDPdf
 
         /// <summary>True once the constructor placed the window, so FitToStartupMonitor must not re-centre it.</summary>
         private bool _placementApplied;
-        /// <summary>A tear-off window does not own the saved placement: it would overwrite the main window's with its cascaded one.</summary>
+        /// <summary>A tear-off, split-view or read-only window does not own the saved placement: it would overwrite the main window's with its own.</summary>
         private bool _isTearOffWindow;
+        /// <summary>The switches this process was started with (see Services/WindowLaunch.cs).</summary>
+        private WindowLaunch _launch = WindowLaunch.Parse(Array.Empty<string>());
 
         /// <summary>Every monitor's work area in DIPs, using the system DPI scale (the window has no handle yet).</summary>
         private List<Box> MonitorWorkAreasDip()
@@ -39,8 +41,8 @@ namespace TDPdf
                     var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
                     if (GetMonitorInfo(mon, ref info))
                     {
-                        RECT w = info.rcWork;
-                        areas.Add(new Box(w.left / sx, w.top / sx, (w.right - w.left) / sx, (w.bottom - w.top) / sx));
+                        var w = RectToDip(info.rcWork, sx, sx);
+                        areas.Add(new Box(w.X, w.Y, w.Width, w.Height));
                     }
                     return true;
                 }, IntPtr.Zero);
@@ -59,8 +61,9 @@ namespace TDPdf
         {
             try
             {
-                var args = Environment.GetCommandLineArgs();
-                _isTearOffWindow = args.Length > 1 && string.Equals(args[1], "--new-window", StringComparison.OrdinalIgnoreCase);
+                _launch = WindowLaunch.Parse(Environment.GetCommandLineArgs().Skip(1));
+                ReadOnlyGate.ProcessIsReadOnly = _launch.ReadOnly;
+                _isTearOffWindow = _launch.SeparateWindow;
                 var areas = MonitorWorkAreasDip();
                 if (areas.Count == 0) return;
 
@@ -69,7 +72,7 @@ namespace TDPdf
                 if (_isTearOffWindow)
                 {
                     // Never maximized: the point is a window you can see next to the one you tore from.
-                    if (TryParseBoundsArg(args.Skip(2), out var requested))
+                    if (_launch.Bounds is Box requested)
                         target = Restore(requested, areas, MinWidth, MinHeight);
                 }
                 else

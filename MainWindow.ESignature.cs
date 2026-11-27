@@ -484,6 +484,9 @@ namespace TDPdf
                 _ => "The signing service address configured on this device is not valid, so electronic signature is unavailable."
             };
             section.Children.Add(ESignSettingsNote(sourceNote));
+            section.Children.Add(ESignSettingsNote(
+                "To use a saved signature picture when signing, export it from File, Electronic Signature, Export Signature Picture, " +
+                "then choose the file on the signing page's Upload tab. Nothing is sent from this computer when you export."));
 
             var urlError = ESignSettingsNote("");
             urlError.Foreground = BrushResource("DangerRed");

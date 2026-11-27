@@ -60,21 +60,21 @@ namespace TDPdf
                 ["F12"] = ("File", "Document info"),
                 ["Home"] = ("Nav", "First page"),  ["End"] = ("Nav", "Last page"),
                 ["PgUp"] = ("Nav", "Previous page"), ["PgDn"] = ("Nav", "Next page"),
-                ["Left"] = ("Nav", "Previous page"), ["Right"] = ("Nav", "Next page"),
-                ["Up"] = ("Nav", "Previous page"),   ["Down"] = ("Nav", "Next page"),
-                ["Del"] = ("Edit", "Delete annotation"),
+                ["Left"] = ("Nav", "Previous page (nudges selected marks)"), ["Right"] = ("Nav", "Next page (nudges selected marks)"),
+                ["Up"] = ("Nav", "Previous page (nudges selected marks)"),   ["Down"] = ("Nav", "Next page (nudges selected marks)"),
+                ["Del"] = ("Edit", "Delete selected marks"),
                 ["Enter"] = ("Edit", "Confirm"),
-                ["Esc"] = ("Edit", "Cancel / back to Select"),
+                ["Esc"] = ("Edit", "Cancel / deselect / back to Select"),
                 ["Menu"] = ("Edit", "Context menu"),
                 // #193: the only bare letter outside the tool set — B was the one still unclaimed.
-                ["B"] = ("View", "Book layout (Two-Page)"),
+                ["B"] = ("View", "Book layout (two-page views)"),
                 // Tool keys (1.19). Digits mirror the toolbar left to right across the ten
                 // mark-making tools; Select / Pan / Signature / Crop / Redact / Measure are letter-only. Every id here
                 // must also exist in KbRows below or the keycap silently never lights.
                 ["V"] = ("Tools", "Select"),            ["P"] = ("Tools", "Pan / hand"),
                 ["D1"] = ("Tools", "Text"),             ["T"] = ("Tools", "Text"),
                 ["D2"] = ("Tools", "Edit existing text"), ["X"] = ("Tools", "Edit existing text"),
-                ["D3"] = ("Tools", "Edit existing image"),
+                ["D3"] = ("Tools", "Select picture"),
                 ["D4"] = ("Tools", "Insert image"),      ["I"] = ("Tools", "Insert image"),
                 ["D5"] = ("Tools", "Highlight"),        ["H"] = ("Tools", "Highlight"),
                 ["D6"] = ("Tools", "Strikethrough"),    ["K"] = ("Tools", "Strikethrough"),
@@ -84,7 +84,7 @@ namespace TDPdf
                 ["D0"] = ("Tools", "Eraser"),           ["E"] = ("Tools", "Eraser"),
                 ["G"] = ("Tools", "Signature Picture"), ["C"] = ("Tools", "Crop"),
                 ["R"] = ("Tools", "Redact"),      ["F"] = ("Tools", "Form fields"),
-                ["M"] = ("Tools", "Measure"),
+                ["M"] = ("Tools", "Measure"),     ["A"] = ("Tools", "Stamp"),
             },
             [KbLayer.Ctrl] = new()
             {
@@ -93,8 +93,10 @@ namespace TDPdf
                 ["P"] = ("File", "Print"),
                 ["F"] = ("Search", "Find"),         ["A"] = ("Search", "Select all text"),
                 ["Z"] = ("Edit", "Undo"),           ["Y"] = ("Edit", "Redo"),
-                ["C"] = ("Edit", "Copy text"),
+                ["C"] = ("Edit", "Copy marks or text"),
+                ["X"] = ("Edit", "Cut marks"),      ["V"] = ("Edit", "Paste marks, picture or text"),
                 ["R"] = ("Edit", "Rotate pages CW"),
+                ["G"] = ("Edit", "Group marks"),
                 ["D0"] = ("View", "Reset zoom"),    ["D1"] = ("View", "Actual size"),
                 ["D2"] = ("View", "Fit width"),     ["D3"] = ("View", "Fit page"),
                 ["Equals"] = ("View", "Zoom in"),   ["Minus"] = ("View", "Zoom out"),
@@ -105,10 +107,13 @@ namespace TDPdf
                 ["I"] = ("View", "Invert colors"),
                 ["B"] = ("Text", "Bold (while editing a text box)"),
                 ["U"] = ("Text", "Underline (while editing a text box)"),
+                ["Enter"] = ("Text", "Save the paragraph being edited"),
             },
             [KbLayer.CtrlShift] = new()
             {
                 ["S"] = ("File", "Save as"),
+                ["G"] = ("Edit", "Ungroup marks"),
+                ["T"] = ("File", "Reopen closed tab"),
                 ["Z"] = ("Edit", "Redo"),
                 ["R"] = ("Edit", "Rotate pages CCW"),
                 ["U"] = ("Edit", "Rotate pages 180°"),
@@ -128,6 +133,7 @@ namespace TDPdf
             [KbLayer.Alt] = new()
             {
                 ["Left"] = ("Nav", "Back"), ["Right"] = ("Nav", "Forward"),
+                ["V"] = ("Tools", "Compare PDFs (with Shift)"),
             },
         };
 

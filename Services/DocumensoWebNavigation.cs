@@ -176,9 +176,5 @@ namespace TDPdf.Services
             }
             return u.Authority + (path == "/" ? "" : path);
         }
-
-        /// <summary>True for a page after which nothing more can be signed on it.</summary>
-        internal static bool IsSigningFinished(DocumensoWebPage p)
-            => p is DocumensoWebPage.SigningComplete or DocumensoWebPage.SigningRejected or DocumensoWebPage.SigningExpired;
     }
 }

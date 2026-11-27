@@ -70,12 +70,6 @@ internal static class PrintPlan
         Check("custom is clamped to 25-400", PrintSheetPlan.Factor(PrintSheetPlan.ScaleCustom, 0.5, 1.0, 1000) == 4.0
               && PrintSheetPlan.Factor(PrintSheetPlan.ScaleCustom, 0.5, 1.0, 1) == 0.25, "");
         Check("unknown page size falls back to fit", PrintSheetPlan.Factor(PrintSheetPlan.ScaleActual, 0.5, 0, 100) == 0.5, "");
-        Check("fit-limited: fit and a shrunk page", PrintSheetPlan.IsFitLimited(PrintSheetPlan.ScaleFit, 0.5, 1.0)
-              && PrintSheetPlan.IsFitLimited(PrintSheetPlan.ScaleShrink, 0.5, 1.0), "");
-        Check("not fit-limited: actual, custom, or an unshrunk page",
-              !PrintSheetPlan.IsFitLimited(PrintSheetPlan.ScaleActual, 0.5, 1.0)
-              && !PrintSheetPlan.IsFitLimited(PrintSheetPlan.ScaleCustom, 0.5, 1.0)
-              && !PrintSheetPlan.IsFitLimited(PrintSheetPlan.ScaleShrink, 2.0, 1.0), "");
 
         // Saved two-sided choice.
         Check("old bool true reads as long edge", PrintSheetPlan.ResolveDuplex("", true) == "TwoSidedLongEdge", "");

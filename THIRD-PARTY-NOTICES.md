@@ -47,6 +47,11 @@ These ship as native libraries inside the executable and are extracted at runtim
 | Leptonica (`leptonica-1.82.0.dll`) | 1.82.0 | BSD-2-Clause | https://github.com/DanBloomberg/leptonica |
 | Tesseract OCR engine (`tesseract50.dll`) | 5.0 | Apache-2.0 (see section 2) | https://github.com/tesseract-ocr/tesseract |
 | Microsoft Edge WebView2 loader (`WebView2Loader.dll`) | 1.0.4314.35 | BSD-3-Clause (see 1.3) | https://aka.ms/webview2 |
+| Little CMS (`liblcms2-2.dll`, colour management) | 2.20 | MIT (see 1.5) | https://github.com/mm2/Little-CMS |
+| DjVuLibre library (`libdjvulibre-21.dll`) | 3.5.30 | GPL-2.0-or-later (see 1.4) | https://djvu.sourceforge.net/ |
+| libjpeg-turbo (`libjpeg-8.dll`, used by DjVuLibre) | 3.2.1 | IJG and BSD-3-Clause (see 1.4) | https://libjpeg-turbo.org/ |
+| GCC runtime (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`, used by DjVuLibre) | 16.2.0 | GPL-3.0-or-later with the GCC Runtime Library Exception (see 1.4) | https://gcc.gnu.org/ |
+| winpthreads (`libwinpthread-1.dll`, used by DjVuLibre) | 14.0.0 (mingw-w64 e3d18511) | MIT and BSD-3-Clause (see 1.4) | https://www.mingw-w64.org/ |
 
 ### 1.1 PDFium
 
@@ -1433,6 +1438,354 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 1.4 DjVuLibre
+
+TDPdf opens DjVu books with DjVuLibre's library. It is not run as a program: `TDPdf.exe`
+starts a second copy of itself (`--djvu-worker`) that loads the library and calls it, so that a
+damaged book can crash only that copy. The library and the four runtime DLLs it needs are
+unchanged files from MSYS2's UCRT64 packages, embedded in the executable and extracted on first
+use. DjVuLibre is by Leon Bottou, Yann LeCun and contributors and is licensed under the GNU
+General Public License, version 2 or (at your option) any later version, which is compatible
+with the GNU GPL version 3 that TDPdf is licensed under. Its licence is at
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.html and in `third_party/djvulibre/licenses/`.
+
+Corresponding source for what ships: each package below has an MSYS2 recipe, an upstream source
+archive and an MSYS2 source package. `third_party/djvulibre/SOURCES.md` in the TDPdf source lists
+them with exact versions and SHA-256 values; the same links are here.
+
+| Package (MSYS2 UCRT64) | DLL | Recipe | Upstream source | MSYS2 source package |
+|---|---|---|---|---|
+| mingw-w64-ucrt-x86_64-djvulibre 3.5.30-2 | `libdjvulibre-21.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-djvulibre | https://downloads.sourceforge.net/djvu/djvulibre-3.5.30.tar.gz | https://repo.msys2.org/mingw/sources/mingw-w64-djvulibre-3.5.30-2.src.tar.zst |
+| mingw-w64-ucrt-x86_64-libjpeg-turbo 3.2.1-1 | `libjpeg-8.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-libjpeg-turbo | https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.1/libjpeg-turbo-3.2.1.tar.gz | https://repo.msys2.org/mingw/sources/mingw-w64-libjpeg-turbo-3.2.1-1.src.tar.zst |
+| mingw-w64-ucrt-x86_64-libstdc++ 16.2.0-7 and mingw-w64-ucrt-x86_64-libgcc 16.2.0-7 | `libstdc++-6.dll`, `libgcc_s_seh-1.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc | https://ftp.gnu.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz | https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-7.src.tar.zst |
+| mingw-w64-ucrt-x86_64-libwinpthread 14.0.0.r598.ge3d18511f-1 | `libwinpthread-1.dll` | https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-winpthreads | https://sourceforge.net/p/mingw-w64/mingw-w64/ (commit e3d18511f9759d455cae20c34703eea4a0723cf3) | https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst |
+
+The GCC runtime libraries are GPL-3.0-or-later with the GCC Runtime Library Exception 3.1, which
+permits combining them with programs under any licence; the full text of version 3 of the GPL is
+at https://www.gnu.org/licenses/gpl-3.0.html. The exception, as shipped with the package:
+
+```
+GCC RUNTIME LIBRARY EXCEPTION
+
+Version 3.1, 31 March 2009
+
+Copyright (C) 2009 Free Software Foundation, Inc. <http://fsf.org/>
+
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+This GCC Runtime Library Exception ("Exception") is an additional
+permission under section 7 of the GNU General Public License, version
+3 ("GPLv3"). It applies to a given file (the "Runtime Library") that
+bears a notice placed by the copyright holder of the file stating that
+the file is governed by GPLv3 along with this Exception.
+
+When you use GCC to compile a program, GCC may combine portions of
+certain GCC header files and runtime libraries with the compiled
+program. The purpose of this Exception is to allow compilation of
+non-GPL (including proprietary) programs to use, in this way, the
+header files and runtime libraries covered by this Exception.
+
+0. Definitions.
+
+A file is an "Independent Module" if it either requires the Runtime
+Library for execution after a Compilation Process, or makes use of an
+interface provided by the Runtime Library, but is not otherwise based
+on the Runtime Library.
+
+"GCC" means a version of the GNU Compiler Collection, with or without
+modifications, governed by version 3 (or a specified later version) of
+the GNU General Public License (GPL) with the option of using any
+subsequent versions published by the FSF.
+
+"GPL-compatible Software" is software whose conditions of propagation,
+modification and use would permit combination with GCC in accord with
+the license of GCC.
+
+"Target Code" refers to output from any compiler for a real or virtual
+target processor architecture, in executable form or suitable for
+input to an assembler, loader, linker and/or execution
+phase. Notwithstanding that, Target Code does not include data in any
+format that is used as a compiler intermediate representation, or used
+for producing a compiler intermediate representation.
+
+The "Compilation Process" transforms code entirely represented in
+non-intermediate languages designed for human-written code, and/or in
+Java Virtual Machine byte code, into Target Code. Thus, for example,
+use of source code generators and preprocessors need not be considered
+part of the Compilation Process, since the Compilation Process can be
+understood as starting with the output of the generators or
+preprocessors.
+
+A Compilation Process is "Eligible" if it is done using GCC, alone or
+with other GPL-compatible software, or if it is done without using any
+work based on GCC. For example, using non-GPL-compatible Software to
+optimize any GCC intermediate representations would not qualify as an
+Eligible Compilation Process.
+
+1. Grant of Additional Permission.
+
+You have permission to propagate a work of Target Code formed by
+combining the Runtime Library with Independent Modules, even if such
+propagation would otherwise violate the terms of GPLv3, provided that
+all Target Code was generated by Eligible Compilation Processes. You
+may then convey such a combination under terms of your choice,
+consistent with the licensing of the Independent Modules.
+
+2. No Weakening of GCC Copyleft.
+
+The availability of this Exception does not imply any general
+presumption that third-party software is unaffected by the copyleft
+requirements of the license of GCC.
+```
+
+libjpeg-turbo, as shipped with the package (`LICENSE.md`):
+
+```
+libjpeg-turbo Licenses
+======================
+
+libjpeg-turbo is covered by two compatible BSD-style open source licenses:
+
+- The IJG (Independent JPEG Group) License, which is listed in
+  [README.ijg](README.ijg)
+
+  This license applies to the libjpeg API library and associated programs,
+  including any code inherited from libjpeg and any modifications to that
+  code.
+
+- The Modified (3-clause) BSD License, which is listed below
+
+  This license applies to the TurboJPEG API library and associated programs,
+  [libspng](https://libspng.org) (which is used by cjpeg and djpeg), and the
+  build/test system.
+
+  * The TurboJPEG API library wraps the libjpeg API library, so in the context
+    of the overall TurboJPEG API library, both the terms of the IJG License and
+    the terms of the Modified (3-clause) BSD License apply.
+  * cjpeg and djpeg use libspng, so in the context of those programs, both the
+    terms of the IJG License and the terms of the Modified (3-clause) BSD
+    License apply.
+
+
+Component Licenses
+==================
+
+Some of libjpeg-turbo's modules and internal dependencies are covered by less
+restrictive licenses, but in the context of libjpeg-turbo as a whole, the terms
+of the less restrictive licenses are subsumed by either the IJG License or the
+Modified BSD License.  (In other words, the terms of the less restrictive
+licenses are satisfied if the terms of the IJG and Modified BSD Licenses are
+satisfied.)
+
+- The libjpeg-turbo SIMD source code and zlib are covered by the
+  [zlib License](https://spdx.org/licenses/Zlib.html), which is subsumed by the
+  IJG License in the context of the cjpeg and djpeg programs and the libjpeg
+  API library.
+
+- Some of the libspng source code is covered by the
+  [PNG Reference Library License v2](https://spdx.org/licenses/libpng-2.0.html),
+  which is subsumed by the IJG License in the context of the cjpeg and djpeg
+  programs and the TurboJPEG API library.
+
+- Most of the libspng source code is covered by the
+  [Simplified (2-clause) BSD License](https://spdx.org/licenses/BSD-2-Clause.html),
+  which is subsumed by the Modified BSD License in the context of the cjpeg and
+  djpeg programs and the TurboJPEG API library.
+
+
+Complying with the libjpeg-turbo Licenses
+=========================================
+
+This section provides a roll-up of the libjpeg-turbo licensing terms, to the
+best of our understanding.  This is not a license in and of itself.  It is
+intended solely for clarification.
+
+1.  If you are distributing a modified version of the libjpeg-turbo source,
+    then:
+
+    1.  You cannot alter or remove any existing copyright or license notices
+        from the source.
+
+        **Origin**
+        - Clause 1 of the IJG License
+        - Clause 1 of the Modified BSD License
+
+    2.  You must add your own copyright notice to the header of each source
+        file you modified, so others can tell that you modified that file.  (If
+        there is not an existing copyright header in that file, then you can
+        simply add a notice stating that you modified the file.)
+
+        **Origin**
+        - Clause 1 of the IJG License
+
+    3.  You must include the IJG README file, and you must not alter any of the
+        copyright or license text in that file.
+
+        **Origin**
+        - Clause 1 of the IJG License
+
+2.  If you are distributing only libjpeg-turbo binaries without the source, or
+    if you are distributing an application that statically links with
+    libjpeg-turbo, then:
+
+    1.  Your product documentation must include a message stating:
+
+        This software is based in part on the work of the Independent JPEG
+        Group.
+
+        **Origin**
+        - Clause 2 of the IJG license
+
+    2.  If your binary distribution includes or uses the TurboJPEG API or
+        associated programs, cjpeg, or djpeg, then your product documentation
+        must include the text of the Modified BSD License (see below.)
+
+        **Origin**
+        - Clause 2 of the Modified BSD License
+
+3.  You cannot use the name of the IJG or The libjpeg-turbo Project or the
+    contributors thereof in advertising, publicity, etc.
+
+    **Origin**
+    - IJG License
+    - Clause 3 of the Modified BSD License
+
+4.  The authors and distributors do not warrant libjpeg-turbo to be free of
+    defects, nor do we accept any liability for undesirable consequences
+    resulting from your use of the software.
+
+    **Origin**
+    - IJG License
+    - Modified BSD License
+
+
+The Modified (3-clause) BSD License
+===================================
+
+Copyright (C) 2009-2026 D. R. Commander<br>
+Copyright (C) 2018-2023 Randy <randy408@protonmail.com>
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+- Neither the name of the libjpeg-turbo Project nor the names of its
+  contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS",
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+winpthreads, as shipped with the package (`COPYING`):
+
+```
+Copyright (c) 2011 mingw-w64 project
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+/*
+ * Parts of this library are derived by:
+ *
+ * Posix Threads library for Microsoft Windows
+ *
+ * Use at own risk, there is no implied warranty to this code.
+ * It uses undocumented features of Microsoft Windows that can change
+ * at any time in the future.
+ *
+ * (C) 2010 Lockless Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification,
+ * are permitted provided that the following conditions are met:
+ *
+ *
+ *  * Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *  * Neither the name of Lockless Inc. nor the names of its contributors may be
+ *    used to endorse or promote products derived from this software without
+ *    specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AN
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+```
+
+### 1.5 Little CMS
+
+Colour management (ICC profiles, CMYK and soft proofing) uses Little CMS 2.20 (`liblcms2-2.dll`),
+the MSYS2 UCRT64 build of the upstream release, which TDPdf extracts on first use and loads
+only when its SHA-256 matches the one recorded in the app. Only the MIT-licensed core library
+is bundled; the GPL-3.0 `fast_float` plugin from the same package is not. Corresponding
+source: https://github.com/mm2/Little-CMS/releases/tag/lcms2.20.
+
+```
+MIT License
+
+Copyright (c) 2023 Marti Maria Saguer
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the 
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to 
+permit persons to whom the Software is furnished to do so, subject
+to the following conditions:
+
+The above copyright notice and this permission notice shall be 
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ---

@@ -96,58 +96,13 @@ namespace TDPdf.Services
                 "this list refreshes every 30 seconds while it is open.",
                 "TextSecondary", 12, new Thickness(0, 0, 0, 10)));
 
-            // ── Toolbar: Refresh · last updated · paging ─────────────────────────────────────
-            var bar = new Grid { Margin = new Thickness(0, 0, 0, 6) };
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var refreshBtn = MakeButton(owner, "Refresh", primary: false);
-            refreshBtn.ToolTip = "Refresh now (F5)";
-            var updated = Para("", "TextMuted", 11, new Thickness(10, 0, 0, 0));
-            updated.VerticalAlignment = VerticalAlignment.Center;
-            var paging = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            var prevBtn = GlyphButton(owner, "", "Previous page");
-            var pageLabel = Para("", "TextSecondary", 11, new Thickness(8, 0, 8, 0));
-            pageLabel.VerticalAlignment = VerticalAlignment.Center;
-            var nextBtn = GlyphButton(owner, "", "Next page");
-            paging.Children.Add(prevBtn);
-            paging.Children.Add(pageLabel);
-            paging.Children.Add(nextBtn);
-            Grid.SetColumn(updated, 1);
-            Grid.SetColumn(paging, 2);
-            bar.Children.Add(refreshBtn);
-            bar.Children.Add(updated);
-            bar.Children.Add(paging);
-            body.Children.Add(bar);
+            var (refreshBtn, updated, paging, prevBtn, pageLabel, nextBtn) = BuildToolbar(owner, body);
 
-            // ── The inline message line (+ Connect when the sign-in is gone) ─────────────────
-            var messageRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6), Visibility = Visibility.Collapsed };
-            var message = Para("", "DangerRed", 12, new Thickness(0, 0, 10, 0));
-            message.VerticalAlignment = VerticalAlignment.Center;
-            message.MaxWidth = 600;
-            var connectBtn = MakeButton(owner, "Connect…", primary: true);
-            connectBtn.Visibility = Visibility.Collapsed;
-            messageRow.Children.Add(message);
-            messageRow.Children.Add(connectBtn);
-            body.Children.Add(messageRow);
+            var (messageRow, message, connectBtn) = BuildMessageRow(owner, body);
 
-            var list = new StackPanel();
-            var scroller = new ScrollViewer
-            {
-                Content = list,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                MaxHeight = Math.Max(300, SystemParameters.WorkArea.Height - 280),
-                MinHeight = 160,
-            };
-            body.Children.Add(scroller);
-            list.Children.Add(Para("Loading…", "TextSecondary", 12, new Thickness(0, 6, 0, 6)));
+            var list = BuildRequestList(body);
 
-            var footer = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(20, 8, 20, 14) };
-            var closeFooter = MakeButton(owner, "Close", primary: true);
-            closeFooter.IsCancel = true;
-            footer.Children.Add(closeFooter);
-            root.Children.Add(footer);
+            var closeFooter = BuildFooter(owner, root);
 
             var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = interval };
 
@@ -528,5 +483,83 @@ namespace TDPdf.Services
             };
             return win;
         }
+
+        /// <summary>The toolbar: Refresh, last-updated note and paging.</summary>
+        private static (Button RefreshBtn, TextBlock Updated, StackPanel Paging, Button PrevBtn, TextBlock PageLabel, Button NextBtn) BuildToolbar(Window? owner, StackPanel body)
+        {
+            // ── Toolbar: Refresh · last updated · paging ─────────────────────────────────────
+            var bar = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var refreshBtn = MakeButton(owner, "Refresh", primary: false);
+            refreshBtn.ToolTip = "Refresh now (F5)";
+            var updated = Para("", "TextMuted", 11, new Thickness(10, 0, 0, 0));
+            updated.VerticalAlignment = VerticalAlignment.Center;
+            var paging = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var prevBtn = GlyphButton(owner, "", "Previous page");
+            var pageLabel = Para("", "TextSecondary", 11, new Thickness(8, 0, 8, 0));
+            pageLabel.VerticalAlignment = VerticalAlignment.Center;
+            var nextBtn = GlyphButton(owner, "", "Next page");
+            paging.Children.Add(prevBtn);
+            paging.Children.Add(pageLabel);
+            paging.Children.Add(nextBtn);
+            Grid.SetColumn(updated, 1);
+            Grid.SetColumn(paging, 2);
+            bar.Children.Add(refreshBtn);
+            bar.Children.Add(updated);
+            bar.Children.Add(paging);
+            body.Children.Add(bar);
+
+            return (refreshBtn, updated, paging, prevBtn, pageLabel, nextBtn);
+        }
+
+        /// <summary>The inline message line, with Connect when the sign-in is gone.</summary>
+        private static (StackPanel MessageRow, TextBlock Message, Button ConnectBtn) BuildMessageRow(Window? owner, StackPanel body)
+        {
+            // ── The inline message line (+ Connect when the sign-in is gone) ─────────────────
+            var messageRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6), Visibility = Visibility.Collapsed };
+            var message = Para("", "DangerRed", 12, new Thickness(0, 0, 10, 0));
+            message.VerticalAlignment = VerticalAlignment.Center;
+            message.MaxWidth = 600;
+            var connectBtn = MakeButton(owner, "Connect…", primary: true);
+            connectBtn.Visibility = Visibility.Collapsed;
+            messageRow.Children.Add(message);
+            messageRow.Children.Add(connectBtn);
+            body.Children.Add(messageRow);
+
+            return (messageRow, message, connectBtn);
+        }
+
+        /// <summary>The scrolling list the request rows go in, showing a loading note until the first refresh.</summary>
+        private static StackPanel BuildRequestList(StackPanel body)
+        {
+            var list = new StackPanel();
+            var scroller = new ScrollViewer
+            {
+                Content = list,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = Math.Max(300, SystemParameters.WorkArea.Height - 280),
+                MinHeight = 160,
+            };
+            body.Children.Add(scroller);
+            list.Children.Add(Para("Loading…", "TextSecondary", 12, new Thickness(0, 6, 0, 6)));
+
+            return list;
+        }
+
+        /// <summary>The footer with the Close button.</summary>
+        private static Button BuildFooter(Window? owner, StackPanel root)
+        {
+            var footer = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(20, 8, 20, 14) };
+            var closeFooter = MakeButton(owner, "Close", primary: true);
+            closeFooter.IsCancel = true;
+            footer.Children.Add(closeFooter);
+            root.Children.Add(footer);
+
+            return closeFooter;
+        }
+
     }
 }

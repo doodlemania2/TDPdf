@@ -60,6 +60,26 @@ namespace TDPdf.Services
         // Duplexing API cannot see or set. See PrintTicketDuplex.
         private bool _documentDuplex;
         private bool _syncingFromDriver;      // suppresses control handlers while AdoptDriverTicket writes
+
+        // The Color section. _color is what the user chose for the selected printer; _printTransform is the
+        // sRGB-to-printer conversion built from it, and stays null on Driver default or when it could not
+        // be built. A null transform means the job and the preview are exactly what they were before this
+        // section existed.
+        private PrintColorSettings _color = PrintColorSettings.Default;
+        private IColorTransform? _printTransform;
+        private IColorTransform? _previewTransform;
+        private volatile IColorTransform? _jobTransform;   // what the print thread renders with, set in DoPrint
+        private string? _colorProblem;
+        private bool _syncingColor;
+        private ComboBox _cmModeCombo = null!;
+        private ComboBox _cmProfileCombo = null!;
+        private ComboBox _cmIntentCombo = null!;
+        private CheckBox _cmBpc = null!;
+        private CheckBox _cmSkip = null!;
+        private CheckBox _cmProof = null!;
+        private StackPanel _cmBody = null!;
+        private TextBlock _cmStatus = null!;
+        private readonly List<string> _cmProfilePaths = [];   // parallel to the profile combo, before "Browse…"
         private int _scaleMode;              // PrintSheetPlan.Scale*: 0 fit, 1 actual size, 2 shrink oversized, 3 custom
         private double _customPct = 100;     // custom scale % (clamped 25-400)
         private bool _reverse;               // send the sheets last-first (after N-up composition)
@@ -171,29 +191,8 @@ namespace TDPdf.Services
             try { _server?.Dispose(); } catch { /* best effort */ }
         }
 
-        // Resolves a themed brush, falling back to a sensible system brush when the
-        // resource is unavailable (mirrors TdpDialog's lookup so theming stays
-        // centralized on our palette).
-        private static SolidColorBrush R(string key)
-        {
-            return Application.Current?.TryFindResource(key) as SolidColorBrush
-                ?? SystemBrush(key);
-        }
-
-        private static SolidColorBrush SystemBrush(string key) => key switch
-        {
-            "AccentGreen"    => SystemColors.HighlightBrush,
-            "AccentGreenDim" => SystemColors.HighlightBrush,
-            "DangerRed"      => SystemColors.HighlightBrush,
-            "BgDark"         => SystemColors.WindowBrush,
-            "BgPanel"        => SystemColors.WindowBrush,
-            "BgHover"        => SystemColors.ControlBrush,
-            "BgPressed"      => SystemColors.ControlDarkBrush,
-            "BorderDim"      => SystemColors.WindowTextBrush,
-            "TextPrimary"    => SystemColors.WindowTextBrush,
-            "TextSecondary"  => SystemColors.GrayTextBrush,
-            _                => SystemColors.WindowTextBrush
-        };
+        // Resolves a themed brush, falling back to a system brush when the resource is unavailable.
+        private static SolidColorBrush R(string key) => ThemeBrushes.Get(key);
 
         // Pulls a named Style from the owning window so the dialog can reuse the
         // app's themed ComboBox / chrome-close-button styling when present.
@@ -372,6 +371,52 @@ namespace TDPdf.Services
             // because its geometry options are set-and-forget for most jobs, and folding it keeps
             // the 268px column short enough that Copies/Pages are visible without scrolling.
 
+            AddPrinterSection(panel);
+            AddPagesSection(panel);
+            AddLayoutSection(panel);
+            AddOutputSection(panel);
+            AddColorSection(panel);
+
+            // Buttons pinned below the scroller so they stay visible on a short window.
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var cancel = MakeButton("Cancel", false);
+            cancel.Click += (_, _) =>
+            {
+                if (_printing) return;
+                DialogResult = false;
+                Close();
+            };
+            cancel.IsCancel = true;
+            _printBtn = MakeButton("Print", true);
+            _printBtn.Margin = new Thickness(8, 0, 0, 0);
+            _printBtn.Click += (_, _) => DoPrint();
+            _printBtn.IsDefault = true;
+            btnRow.Children.Add(cancel);
+            btnRow.Children.Add(_printBtn);
+
+            var optionsScroller = new ScrollViewer
+            {
+                Content                       = panel,
+                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            };
+            Grid.SetRow(optionsScroller, 0);
+
+            var btnHost = new Border { Child = btnRow, Padding = new Thickness(16, 8, 12, 12) };
+            Grid.SetRow(btnHost, 1);
+
+            var column = new Grid();
+            column.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            column.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            column.Children.Add(optionsScroller);
+            column.Children.Add(btnHost);
+            Grid.SetColumn(column, 0);
+            return column;
+        }
+
+        /// <summary>The PRINTER section: which device, what paper, which tray.</summary>
+        private void AddPrinterSection(StackPanel panel)
+        {
             // --- PRINTER: which device, what paper, which tray ------------------
             int secPrinter = panel.Children.Count;
 
@@ -396,6 +441,7 @@ namespace TDPdf.Services
                     PopulatePaperSources();
                     RefreshArea();
                     UpdateDuplexAvailability();
+                    LoadColorForQueue();
                     UpdatePreview();
                 }
             };
@@ -449,7 +495,11 @@ namespace TDPdf.Services
             panel.Children.Add(source);
 
             WrapSection(panel, secPrinter, "PRINTER", expanded: true);
+        }
 
+        /// <summary>The PAGES TO PRINT section: which pages, how many copies, in what order.</summary>
+        private void AddPagesSection(StackPanel panel)
+        {
             // --- PAGES TO PRINT: which pages, how many copies, in what order ----
             int secPages = panel.Children.Count;
 
@@ -514,7 +564,11 @@ namespace TDPdf.Services
             panel.Children.Add(reverse);
 
             WrapSection(panel, secPages, "PAGES TO PRINT", expanded: true);
+        }
 
+        /// <summary>The LAYOUT section: how the pages sit on the sheet.</summary>
+        private void AddLayoutSection(StackPanel panel)
+        {
             // --- LAYOUT: how the pages sit on the sheet -------------------------
             int secLayout = panel.Children.Count;
 
@@ -656,7 +710,11 @@ namespace TDPdf.Services
             panel.Children.Add(nup);
 
             WrapSection(panel, secLayout, "LAYOUT", expanded: false);
+        }
 
+        /// <summary>The OUTPUT section.</summary>
+        private void AddOutputSection(StackPanel panel)
+        {
             // --- OUTPUT: what comes out of the machine, and how much of it ------
             int secOutput = panel.Children.Count;
 
@@ -715,42 +773,247 @@ namespace TDPdf.Services
             });
 
             WrapSection(panel, secOutput, "OUTPUT", expanded: true);
+        }
 
-            // Buttons pinned below the scroller so they stay visible on a short window.
-            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            var cancel = MakeButton("Cancel", false);
-            cancel.Click += (_, _) =>
+        /// <summary>
+        /// The COLOR section: who manages colour. "Driver default" is today's behaviour and changes
+        /// nothing. "Let TDPdf manage colors" converts each page to a printer profile as it renders.
+        /// </summary>
+        private void AddColorSection(StackPanel panel)
+        {
+            int sec = panel.Children.Count;
+
+            panel.Children.Add(Label("Color management"));
+            var mode = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(mode);
+            mode.Items.Add("Driver default");
+            mode.Items.Add("Let TDPdf manage colors");
+            mode.SelectedIndex = 0;
+            _cmModeCombo = mode;
+            panel.Children.Add(mode);
+
+            _cmBody = new StackPanel { Visibility = Visibility.Collapsed };
+
+            _cmBody.Children.Add(Label("Printer profile"));
+            var profile = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(profile);
+            _cmProfileCombo = profile;
+            _cmBody.Children.Add(profile);
+
+            _cmBody.Children.Add(Label("Rendering intent"));
+            var intent = new ComboBox { Margin = new Thickness(0, 4, 0, 12), Height = 26 };
+            ApplyComboStyle(intent);
+            intent.Items.Add("Perceptual");
+            intent.Items.Add("Relative colorimetric");
+            intent.Items.Add("Saturation");
+            intent.Items.Add("Absolute colorimetric");
+            intent.SelectedIndex = (int)ColorIntent.RelativeColorimetric;
+            _cmIntentCombo = intent;
+            _cmBody.Children.Add(intent);
+
+            CheckBox Box(string text, string tip, bool on)
             {
-                if (_printing) return;
-                DialogResult = false;
-                Close();
-            };
-            cancel.IsCancel = true;
-            _printBtn = MakeButton("Print", true);
-            _printBtn.Margin = new Thickness(8, 0, 0, 0);
-            _printBtn.Click += (_, _) => DoPrint();
-            _printBtn.IsDefault = true;
-            btnRow.Children.Add(cancel);
-            btnRow.Children.Add(_printBtn);
+                var c = new CheckBox
+                {
+                    Content = text, IsChecked = on, ToolTip = tip,
+                    Foreground = R("TextPrimary"), Margin = new Thickness(0, 0, 0, 8)
+                };
+                _cmBody.Children.Add(c);
+                return c;
+            }
+            _cmBpc = Box("Black point compensation",
+                "Maps the page's black to the printer's darkest black, so shadows keep their detail.", true);
+            _cmSkip = Box("Ask the driver to skip its own color management",
+                "Sends a request with the job so the driver does not adjust colors we already converted. The window says whether the driver confirmed it.", false);
+            _cmProof = Box("Preview how it will print",
+                "Shows the preview as the page will look on this printer's profile.", false);
 
-            var optionsScroller = new ScrollViewer
+            _cmStatus = new TextBlock
             {
-                Content                       = panel,
-                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+                TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12),
+                Foreground = R("TextSecondary"), FontFamily = new FontFamily("Segoe UI"), FontSize = 11
             };
-            Grid.SetRow(optionsScroller, 0);
+            _cmBody.Children.Add(_cmStatus);
+            panel.Children.Add(_cmBody);
 
-            var btnHost = new Border { Child = btnRow, Padding = new Thickness(16, 8, 12, 12) };
-            Grid.SetRow(btnHost, 1);
+            mode.SelectionChanged += (_, _) => ColorControlsChanged();
+            profile.SelectionChanged += (_, _) => ColorProfilePicked();
+            intent.SelectionChanged += (_, _) => ColorControlsChanged();
+            foreach (var c in new[] { _cmBpc, _cmSkip, _cmProof })
+            {
+                c.Checked += (_, _) => ColorControlsChanged();
+                c.Unchecked += (_, _) => ColorControlsChanged();
+            }
 
-            var column = new Grid();
-            column.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            column.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            column.Children.Add(optionsScroller);
-            column.Children.Add(btnHost);
-            Grid.SetColumn(column, 0);
-            return column;
+            WrapSection(panel, sec, "COLOR", expanded: false);
+        }
+
+        private const string BrowseProfileItem = "Browse…";
+        private const string NoProfileItem = "Choose a profile";
+
+        /// <summary>Loads the saved Color choice for the selected printer and its associated profiles into the controls.</summary>
+        private void LoadColorForQueue()
+        {
+            if (_cmModeCombo is null) return;
+            string printer = _queue?.FullName ?? "";
+            string stored = "";
+            try { stored = TDPdf.Properties.Settings.Default.PrintColorManagement ?? ""; } catch { }
+            _color = PrintColorStore.Get(stored, printer);
+
+            _syncingColor = true;
+            try
+            {
+                _cmProfilePaths.Clear();
+                foreach (string p in ColorPlatform.PrinterProfiles(printer)) _cmProfilePaths.Add(p);
+                if (!string.IsNullOrWhiteSpace(_color.ProfilePath)
+                    && !_cmProfilePaths.Contains(_color.ProfilePath, StringComparer.OrdinalIgnoreCase))
+                    _cmProfilePaths.Add(_color.ProfilePath);
+                RebuildProfileCombo(_color.ProfilePath);
+
+                _cmModeCombo.SelectedIndex = _color.Mode == PrintColorMode.TdpManaged ? 1 : 0;
+                _cmIntentCombo.SelectedIndex = (int)_color.Intent;
+                _cmBpc.IsChecked = _color.BlackPointCompensation;
+                _cmSkip.IsChecked = _color.SkipDriver;
+                _cmProof.IsChecked = _color.PreviewProof;
+            }
+            finally { _syncingColor = false; }
+            ApplyColorState();
+        }
+
+        private void RebuildProfileCombo(string selectedPath)
+        {
+            _cmProfileCombo.Items.Clear();
+            _cmProfileCombo.Items.Add(NoProfileItem);
+            foreach (string p in _cmProfilePaths) _cmProfileCombo.Items.Add(System.IO.Path.GetFileName(p));
+            _cmProfileCombo.Items.Add(BrowseProfileItem);
+            int at = _cmProfilePaths.FindIndex(p => string.Equals(p, selectedPath, StringComparison.OrdinalIgnoreCase));
+            _cmProfileCombo.SelectedIndex = at >= 0 ? at + 1 : 0;
+        }
+
+        private void ColorProfilePicked()
+        {
+            if (_syncingColor) return;
+            int i = _cmProfileCombo.SelectedIndex;
+            if (i == _cmProfileCombo.Items.Count - 1)
+            {
+                var dlg = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "Choose a printer color profile",
+                    Filter = "Color profiles (*.icc;*.icm)|*.icc;*.icm|All files (*.*)|*.*",
+                    CheckFileExists = true,
+                };
+                string? chosen = dlg.ShowDialog(this) == true ? dlg.FileName : null;
+                _syncingColor = true;
+                try
+                {
+                    if (chosen is not null && !_cmProfilePaths.Contains(chosen, StringComparer.OrdinalIgnoreCase))
+                        _cmProfilePaths.Add(chosen);
+                    RebuildProfileCombo(chosen ?? _color.ProfilePath);
+                }
+                finally { _syncingColor = false; }
+            }
+            ColorControlsChanged();
+        }
+
+        /// <summary>Reads the controls into <see cref="_color"/> and applies it.</summary>
+        private void ColorControlsChanged()
+        {
+            if (_syncingColor) return;
+            int p = _cmProfileCombo.SelectedIndex;
+            _color = new PrintColorSettings
+            {
+                Mode = _cmModeCombo.SelectedIndex == 1 ? PrintColorMode.TdpManaged : PrintColorMode.DriverDefault,
+                ProfilePath = p >= 1 && p - 1 < _cmProfilePaths.Count ? _cmProfilePaths[p - 1] : "",
+                Intent = _cmIntentCombo.SelectedIndex is >= 0 and <= 3 ? (ColorIntent)_cmIntentCombo.SelectedIndex : ColorIntent.RelativeColorimetric,
+                BlackPointCompensation = _cmBpc.IsChecked == true,
+                SkipDriver = _cmSkip.IsChecked == true,
+                PreviewProof = _cmProof.IsChecked == true,
+            };
+            ApplyColorState();
+        }
+
+        /// <summary>Builds the transforms for <see cref="_color"/>, refreshes the status line and the preview.</summary>
+        private void ApplyColorState()
+        {
+            var previousPreview = _previewTransform;
+            _printTransform = null;
+            _previewTransform = null;
+            _colorProblem = null;
+            _cmBody.Visibility = _color.Mode == PrintColorMode.TdpManaged ? Visibility.Visible : Visibility.Collapsed;
+
+            IccProfile? profile = null;
+            if (_color.IsManaged)
+            {
+                profile = ColorPlatform.LoadProfile(_color.ProfilePath);
+                if (profile is null) _colorProblem = "The profile could not be read.";
+                else
+                {
+                    var engine = ColorEngines.Current;
+                    // Pages go to the driver as RGB. An RGB printer profile converts straight to the device
+                    // values. A CMYK or gray profile cannot be written into an RGB bitmap, so the page is
+                    // mapped into what that printer can reproduce and sent back as sRGB (a proof round trip).
+                    _printTransform = profile.IsRgb
+                        ? ColorTransformCache.Get(engine, IccProfile.Srgb, profile, _color.Intent,
+                                                  _color.BlackPointCompensation, out _colorProblem)
+                        : ColorTransformCache.GetProofing(engine, IccProfile.Srgb, profile, IccProfile.Srgb,
+                                                          _color.Intent, _color.BlackPointCompensation,
+                                                          gamutWarning: false, out _colorProblem);
+                    if (_printTransform is not null && _color.PreviewProof)
+                    {
+                        var display = ColorPlatform.LoadProfile(ColorPlatform.ReadMonitor(new WindowInteropHelper(this).Handle).ProfilePath)
+                                      ?? IccProfile.Srgb;
+                        _previewTransform = ColorTransformCache.GetProofing(engine, IccProfile.Srgb, profile, display,
+                                                                            _color.Intent, _color.BlackPointCompensation,
+                                                                            gamutWarning: false, out _);
+                    }
+                }
+            }
+
+            _cmStatus.Text = ColorStatusText(profile);
+            // Previews rendered under the old choice are stale. On Driver default the preview transform
+            // is null before and after, so nothing is cleared and nothing is redrawn.
+            if (!ReferenceEquals(previousPreview, _previewTransform))
+            {
+                Array.Clear(_cache);
+                UpdatePreview();
+            }
+        }
+
+        private string ColorStatusText(IccProfile? profile)
+        {
+            if (_color.Mode != PrintColorMode.TdpManaged) return "";
+            if (!_color.IsManaged) return "Choose a printer profile. Until then pages print as plain sRGB.";
+            if (_printTransform is null)
+                return $"Not color-managed: {_colorProblem ?? "the conversion could not be built"} Pages print as plain sRGB, and the driver is not asked to skip its own color management.";
+
+            string name = string.IsNullOrWhiteSpace(profile?.Description) ? System.IO.Path.GetFileName(_color.ProfilePath) : profile!.Description;
+            string text = profile is { IsRgb: false }
+                ? $"Pages are mapped to what {name} can print, and sent as sRGB ({ColorEngines.Current.Name})."
+                : $"Pages are converted to {name} with {ColorEngines.Current.Name}.";
+            if (!_color.SkipDriver)
+                return text + " The driver's own color management is left on: turn it off in Properties… so colors are not adjusted twice.";
+            return text + (DriverConfirmsNoColorManagement()
+                ? " Driver confirmed it will not color-manage the pages."
+                : " Not confirmed: the driver did not accept the request, so turn off its color management in Properties….");
+        }
+
+        /// <summary>
+        /// The driver counts as confirmed when its capabilities offer None for PageColorManagement and
+        /// the ticket it validates (from a copy of ours) still selects it.
+        /// </summary>
+        private bool DriverConfirmsNoColorManagement()
+        {
+            try
+            {
+                if (_queue is null) return false;
+                var pd = new PrintDialog { PrintQueue = _queue };
+                var copy = WithColorManagement(BaseTicket(pd));
+                using var caps = _queue.GetPrintCapabilitiesAsXml();
+                var validated = _queue.MergeAndValidatePrintTicket(_queue.UserPrintTicket, copy).ValidatedPrintTicket;
+                using var validatedXml = validated.GetXmlStream();
+                return PrintTicketColor.DriverConfirmed(caps, validatedXml);
+            }
+            catch { return false; }
         }
 
         private TextBox MakeTextBox(string text) => TdpDialog.UseThemedTextMenu(new()
@@ -1038,6 +1301,22 @@ namespace TDPdf.Services
                 return rewritten is null ? t : new PrintTicket(rewritten);
             }
             catch { return t; /* the job-scope setting above still stands */ }
+        }
+
+        /// <summary>
+        /// A COPY of the ticket asking the driver to leave colour alone, edited as XML the way two-sided
+        /// printing is. Everything the driver's Properties dialog set (stapling, punch, output bin,
+        /// secure-print PIN, vendor features) passes through; nothing is converted through a DEVMODE here.
+        /// </summary>
+        private PrintTicket WithColorManagement(PrintTicket t)
+        {
+            try
+            {
+                using var xml = t.GetXmlStream();
+                using var rewritten = PrintTicketColor.ForJob(xml, _color, conversionWorks: true);
+                return rewritten is null ? t : new PrintTicket(rewritten);
+            }
+            catch { return t; /* the job still prints, just without the request */ }
         }
 
         private const int WS_POPUP          = unchecked((int)0x80000000);
@@ -1398,7 +1677,9 @@ namespace TDPdf.Services
                 // #141: with the annotations the file carries — what the preview shows has to match
                 // what the spooled sheet prints. White background matches the white sheet. Rendered
                 // as for print, so annotation Print flags decide what shows here too.
-                var bmp = PageRaster.RenderBoxBitmap(_pdfPath, idx, box, forPrint: true);
+                // _previewTransform is null unless "Preview how it will print" is on, so by default this
+                // is the render it has always been.
+                var bmp = PageRaster.RenderBoxBitmap(_pdfPath, idx, box, forPrint: true, _previewTransform);
                 if (bmp is null) return null;
                 _cache[idx] = bmp;
                 return bmp;
@@ -1439,11 +1720,13 @@ namespace TDPdf.Services
         // from what the preview showed.
         //
         // The subset filters on the 1-based page NUMBER the user sees, so 0-based index 0 is page 1 = odd.
-        // Unlike ParseRange, an empty result here is meaningful (e.g. a 1-page document with "Even pages
+        // An empty result is meaningful (a typo in the Pages box, or a 1-page document with "Even pages
         // only") and is NOT widened back to every page — callers treat it as "nothing to print".
+        // The text is read by PageRangeSpec.ParseLenient, the app's one lenient page-range syntax,
+        // which Export Pages as Images shares (hint text included).
         private List<int> SelectedIndices()
         {
-            var list = ParseRange(_pagesBox.Text, _pageCount);
+            var list = PageRangeSpec.ParseLenient(_pagesBox.Text, _pageCount);
             if (_subset == 0) return list;
 
             bool wantOdd = _subset == 1;
@@ -1624,6 +1907,8 @@ namespace TDPdf.Services
                 s.PrintDuplex      = _duplexMode != Duplexing.OneSided;   // kept for older builds / downgrade
                 s.PrintDuplexEdge  = _duplexMode is Duplexing.TwoSidedLongEdge or Duplexing.TwoSidedShortEdge
                                      ? _duplexMode.ToString() : "OneSided";
+                if (_queue != null)
+                    s.PrintColorManagement = PrintColorStore.Set(s.PrintColorManagement, _queue.FullName, _color);
                 s.PrintScaleMode    = _scaleMode;
                 s.PrintScalePercent = (int)Math.Clamp(_customPct, 25, 400);
                 s.Save();
@@ -1699,6 +1984,12 @@ namespace TDPdf.Services
                 // Duplex rides the ticket at both scopes. _duplexMode already holds what the driver
                 // dialog chose (short edge included, see AdoptDriverTicket), so this does not undo it.
                 ticket = WithDuplex(ticket, _duplexMode);
+                // The Color section. On Driver default (_printTransform is null) neither line below does
+                // anything: the ticket is the one built above and the pixels are untouched. Otherwise the
+                // pages are converted as they render, and, only when asked and only because they ARE
+                // converted, the driver is asked to skip its own colour management on a copy of the ticket.
+                _jobTransform = _printTransform;
+                if (_printTransform is not null && _color.SkipDriver) ticket = WithColorManagement(ticket);
                 pd.PrintTicket = ticket;
 
                 double aw = pd.PrintableAreaWidth, ah = pd.PrintableAreaHeight;
@@ -1931,7 +2222,9 @@ namespace TDPdf.Services
                     var box = PrintRasterBox.For(printedWDip, printedHDip, PrintDpi);
                     // #141: with the annotations the file carries - printing used to omit them.
                     // forPrint: each annotation's Print flag decides whether it is on paper.
-                    return PageRaster.RenderBoxBitmap(_owner._pdfPath, idx, box, forPrint: true);
+                    // _jobTransform is null on Driver default (and whenever the page conversion could not
+                    // be built), which is the render and the pixels the job has always had.
+                    return PageRaster.RenderBoxBitmap(_owner._pdfPath, idx, box, forPrint: true, _owner._jobTransform);
                 }
                 catch { return null; /* skip an unrenderable page rather than fail the whole job */ }
             }
@@ -2016,50 +2309,6 @@ namespace TDPdf.Services
                 return;
             }
             base.OnClosing(e);
-        }
-
-        // Parses "1-3,5" style ranges into sorted 0-based indices. Blank = all pages; a range that
-        // matches no page returns empty and the callers surface it (never widened back to every page).
-        // Internal because it is the app's one page-range syntax: the print dialog and the
-        // image export (File ▸ Export Pages as Images…) share it, hint text included.
-        internal static List<int> ParseRange(string? text, int count)
-        {
-            text = text?.Trim() ?? "";
-            if (text.Length == 0) return [.. Enumerable.Range(0, count)];
-
-            var set = new SortedSet<int>();
-            foreach (var raw in text.Split(','))
-            {
-                var part = raw.Trim();
-                if (part.Length == 0) continue;
-                if (part.Contains('-'))
-                {
-                    var seg = part.Split('-');
-                    if (seg.Length == 2 &&
-                        int.TryParse(seg[0].Trim(), out int a) &&
-                        int.TryParse(seg[1].Trim(), out int b))
-                    {
-                        if (a > b) (a, b) = (b, a);
-                        // Clamp the ends rather than testing each i inside the loop. With the test
-                        // inside, "1-2147483647" ran i++ past int.MaxValue, wrapped to int.MinValue,
-                        // and i <= b was true again — the loop never ended. The Pages box drives the
-                        // preview live, so that froze the app on a keystroke. Same output either way.
-                        if (a < 1) a = 1;
-                        if (b > count) b = count;
-                        for (int i = a; i <= b; i++) set.Add(i - 1);
-                    }
-                }
-                else if (int.TryParse(part, out int v))
-                {
-                    if (v >= 1 && v <= count) set.Add(v - 1);
-                }
-            }
-            // A blank box already returned every page above, so reaching here with nothing resolved
-            // means the text matched no page — a number past the end, or a typo. Return the empty set
-            // and let the callers surface it (the preview says "No pages selected", the print guard
-            // blocks). Falling back to every page here meant a slipped keystroke in the Pages box
-            // silently spooled the whole document.
-            return [.. set];
         }
 
         // ---- Button / control factory (matches our themed dialog buttons, no blue hover chrome) ----

@@ -84,49 +84,7 @@ namespace TDPdf
         {
             base.OnPreviewKeyDown(e);
 
-            // Alt+Space: the window's system menu, which the custom chrome would otherwise lose.
-            // The native frame gets it from Windows; full screen has no title bar to anchor it to.
-            if (e.Key == Key.System && e.SystemKey == Key.Space && Keyboard.Modifiers == ModifierKeys.Alt
-                && !_useNativeWindowFrame && !_fullScreen)
-            {
-                e.Handled = true;
-                ShowWindowSystemMenuFromKeyboard();
-                return;
-            }
-
-            // A manual (non-OLE) mouse-captured drag doesn't get Escape-to-cancel for free the way
-            // DragDrop.DoDragDrop would — release capture ourselves; LostMouseCapture on the chip
-            // does the rest (drops the ghost window, clears drag state, no transfer attempted).
-            if (_isDraggingTab && e.Key == Key.Escape)
-            {
-                Mouse.Capture(null);
-                e.Handled = true;
-                return;
-            }
-
-            // Electronic Signature field placement is a mode the Send dialog lent out; Esc hands it
-            // back with the fields as they were (MainWindow.ESignatureFields.cs).
-            if (_eSignPlacement is not null && e.Key == Key.Escape)
-            {
-                EndESignPlacement(ESignPlacementEnd.Cancelled);
-                e.Handled = true;
-                return;
-            }
-
-            // Escape in a form text box cancels that edit before any window-level Esc step-down.
-            if (e.Key == Key.Escape && Keyboard.FocusedElement is TextBox formTb && IsFormFieldElement(formTb))
-            {
-                FormTextBox_PreviewKeyDown(formTb, e);
-                return;
-            }
-
-            // Escape while carrying a signature drops it (and its pointer ghost).
-            if (e.Key == Key.Escape && _pendingSignature is not null)
-            {
-                CancelSignaturePlacement();
-                e.Handled = true;
-                return;
-            }
+            if (TryWindowModeKeys(e)) return;
 
             // While the visual keyboard is showing, holding Ctrl / Shift / Alt previews that
             // modifier layer on the board. (upstream KillerPDF v1.6.4)
@@ -143,15 +101,104 @@ namespace TDPdf
                 return;
             }
 
+            if (IsKeyOwnedByTypingSurface(e)) return;
+
+            // #232: a read-only window refuses the chords that edit or save. The Ctrl chords are
+            // KeyBindings, which run after this preview handler, so stopping them here covers both.
+            if (ReadOnlyGate.ProcessIsReadOnly)
+            {
+                var m = Keyboard.Modifiers;
+                string keyName = e.Key == Key.System ? e.SystemKey.ToString() : e.Key.ToString();
+                if (ReadOnlyGate.IsChordBlocked(keyName, m.HasFlag(ModifierKeys.Control), m.HasFlag(ModifierKeys.Shift), m.HasFlag(ModifierKeys.Alt)))
+                {
+                    e.Handled = true;
+                    SetStatus(ReadOnlyGate.RefusedStatus);
+                    return;
+                }
+            }
+
+            if (TryPagesPanelKeys(e)) return;
+
+            // Standard shortcuts (Ctrl+N/O/S/W/Z, Ctrl+Shift+S, Ctrl+P, Ctrl+F, F1, Alt+F/E/V/T/H)
+            // are routed via CommandBindings and the Menu's access keys — no need to intercept
+            // them here. We still handle the genuinely context-sensitive keys below.
+
+            if (TryPolygonKeys(e)) return;
+            if (TryFullScreenAndTabKeys(e)) return;
+
+            // The chain below is the old else-if ladder in the same order, cut into runs of
+            // related keys: the first run to consume the key ends the handler.
+            if (TryClipboardKeys(e)) return;
+            if (TryEscapeAndOverlayKeys(e)) return;
+            if (TryDeleteAndNudgeKeys(e)) return;
+            if (TryJumpAndZoomKeys(e)) return;
+            if (TryRotateHistoryAndMenuKeys(e)) return;
+            if (TryPageStepKeys(e)) return;
+            if (TryToggleAndToolKeys(e)) return;
+        }
+
+        /// <summary>Alt+Space, and the Esc presses that end a drag, a field placement, a form edit or a carried signature. True when the key was consumed.</summary>
+        private bool TryWindowModeKeys(KeyEventArgs e)
+        {
+            // Alt+Space: the window's system menu, which the custom chrome would otherwise lose.
+            // The native frame gets it from Windows; full screen has no title bar to anchor it to.
+            if (e.Key == Key.System && e.SystemKey == Key.Space && Keyboard.Modifiers == ModifierKeys.Alt
+                && !_useNativeWindowFrame && !_fullScreen)
+            {
+                e.Handled = true;
+                ShowWindowSystemMenuFromKeyboard();
+                return true;
+            }
+
+            // A manual (non-OLE) mouse-captured drag doesn't get Escape-to-cancel for free the way
+            // DragDrop.DoDragDrop would — release capture ourselves; LostMouseCapture on the chip
+            // does the rest (drops the ghost window, clears drag state, no transfer attempted).
+            if (_isDraggingTab && e.Key == Key.Escape)
+            {
+                Mouse.Capture(null);
+                e.Handled = true;
+                return true;
+            }
+
+            // Electronic Signature field placement is a mode the Send dialog lent out; Esc hands it
+            // back with the fields as they were (MainWindow.ESignatureFields.cs).
+            if (_eSignPlacement is not null && e.Key == Key.Escape)
+            {
+                EndESignPlacement(ESignPlacementEnd.Cancelled);
+                e.Handled = true;
+                return true;
+            }
+
+            // Escape in a form text box cancels that edit before any window-level Esc step-down.
+            if (e.Key == Key.Escape && Keyboard.FocusedElement is TextBox formTb && IsFormFieldElement(formTb))
+            {
+                FormTextBox_PreviewKeyDown(formTb, e);
+                return true;
+            }
+
+            // Escape while carrying a signature drops it (and its pointer ghost).
+            if (e.Key == Key.Escape && _pendingSignature is not null)
+            {
+                CancelSignaturePlacement();
+                e.Handled = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>True when a text surface owns this key: AltGr chords, the text box being typed in, an inline bookmark rename, or any other caret-bearing field.</summary>
+        private bool IsKeyOwnedByTypingSurface(KeyEventArgs e)
+        {
             // AltGr is reported as Ctrl+Alt. In a text surface it types a character (@ { [ \\ ~ on
             // many layouts), so none of the chords below may see it.
-            if (IsAltGrChord() && IsTypingTarget()) return;
+            if (IsAltGrChord() && IsTypingTarget()) return true;
 
             // Don't intercept keys when typing in a TextBox
-            if (_activeTextBox is not null && _activeTextBox.IsFocused) return;
+            if (_activeTextBox is not null && _activeTextBox.IsFocused) return true;
             // An inline bookmark rename (#133) owns the keyboard - let arrows / Delete / Home / End
             // edit the text rather than page the document or delete the bookmark.
-            if (_bmRenaming) return;
+            if (_bmRenaming) return true;
             // Any other caret-bearing surface (find bar, sidebar page-jump box, form-field overlay,
             // editable zoom combo) owns its unmodified keys: a bare "d" must type a "d", never swap
             // to the Draw tool, and Delete / arrows / Home / End must edit the text rather than page
@@ -162,8 +209,14 @@ namespace TDPdf
             // is covered by default.
             if (IsTypingTarget() && Keyboard.Modifiers == ModifierKeys.None
                 && e.Key != Key.Escape && (e.Key < Key.F1 || e.Key > Key.F12))
-                return;
+                return true;
 
+            return false;
+        }
+
+        /// <summary>The Pages panel owns Ctrl+A and Delete while it has keyboard focus. True when the key was consumed.</summary>
+        private bool TryPagesPanelKeys(KeyEventArgs e)
+        {
             // The Pages panel owns Ctrl+A and Delete while it has keyboard focus (upstream
             // KillerPDF #289, #296). This has to be decided here rather than on the ListBox: this
             // handler is a PREVIEW on the window, so it tunnels down and reaches Ctrl+A first —
@@ -178,7 +231,7 @@ namespace TDPdf
                     PageList.SelectAll();
                     SetStatus($"Selected all {PageList.Items.Count} page(s)");
                     e.Handled = true;
-                    return;
+                    return true;
                 }
                 if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None
                     && PageList.SelectedItems.Count > 0)
@@ -186,14 +239,16 @@ namespace TDPdf
                     // Same confirmed, reload-backed path as the context menu's Delete Page(s).
                     Delete_Click(this, new RoutedEventArgs());
                     e.Handled = true;
-                    return;
+                    return true;
                 }
             }
 
-            // Standard shortcuts (Ctrl+N/O/S/W/Z, Ctrl+Shift+S, Ctrl+P, Ctrl+F, F1, Alt+F/E/V/T/H)
-            // are routed via CommandBindings and the Menu's access keys — no need to intercept
-            // them here. We still handle the genuinely context-sensitive keys below.
+            return false;
+        }
 
+        /// <summary>An in-progress freeform polygon is the innermost thing Esc can back out of; Backspace walks the vertices back. True when the key was consumed.</summary>
+        private bool TryPolygonKeys(KeyEventArgs e)
+        {
             // An in-progress freeform polygon is the innermost thing Esc can back out of, so it
             // gets first refusal on the key — ahead of full screen, the search bar, the shortcut
             // overlay, and any tool step-down. Backspace walks the vertices back one at a time.
@@ -202,15 +257,21 @@ namespace TDPdf
             {
                 ResolveShapePolygon(commit: false);
                 e.Handled = true;
-                return;
+                return true;
             }
             if (e.Key == Key.Back && _polyVertices.Count > 0)
             {
                 ShapePolyBackspace();
                 e.Handled = true;
-                return;
+                return true;
             }
 
+            return false;
+        }
+
+        /// <summary>F11 / Esc full screen, F12 Document Info, Shift+F4 file size, Ctrl+Shift+T reopen tab. True when the key was consumed.</summary>
+        private bool TryFullScreenAndTabKeys(KeyEventArgs e)
+        {
             // Full-screen (F11) and Document Info (F12) toggles. Esc leaves full-screen first,
             // before any other Esc behaviour (search bar / shortcut overlay), so the very first
             // Esc always drops the user back to the normal windowed layout.
@@ -218,19 +279,19 @@ namespace TDPdf
             {
                 ToggleFullScreen();
                 e.Handled = true;
-                return;
+                return true;
             }
             if (e.Key == Key.Escape && _fullScreen)
             {
                 ToggleFullScreen();
                 e.Handled = true;
-                return;
+                return true;
             }
             if (e.Key == Key.F12)
             {
                 ShowDocumentInfoDialog();
                 e.Handled = true;
-                return;
+                return true;
             }
             // Shift+F4: same file-size flash as clicking the status line (upstream KillerPDF v1.7.2).
             // Bare F4 is left free, and Alt+F4 never reaches here — Alt arrives as Key.System.
@@ -238,151 +299,306 @@ namespace TDPdf
             {
                 ShowCurrentFileSize();
                 e.Handled = true;
-                return;
+                return true;
             }
 
+            // Ctrl+Shift+T: reopen the most recently closed tab (the browser convention).
+            if (e.Key == Key.T && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            {
+                e.Handled = true;
+                _ = ReopenClosedTabAsync();
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>Ctrl+C / X / V / A / G and Ctrl+Shift+O: the clipboard, grouping and OCR chords. True when the key was consumed.</summary>
+        private bool TryClipboardKeys(KeyEventArgs e)
+        {
             if (e.Key == Key.O && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && _doc is not null)
             {
                 ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr()));
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+            if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
             {
-                CopySelectedText();
+                CopyMarksOrText();
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
+            // Ctrl+G groups the selected marks, Ctrl+Shift+G ungroups them. Bare G is the Signature
+            // tool; the modified pair was free.
+            if (e.Key == Key.G && _doc is not null && !IsTypingTarget()
+                     && (Keyboard.Modifiers == ModifierKeys.Control
+                         || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
+            {
+                if (Keyboard.Modifiers == ModifierKeys.Control) GroupSelected();
+                else UngroupSelected();
+                e.Handled = true;
+                return true;
+            }
+            // Ctrl+X / Ctrl+V act on marks only when the caret is not in a text surface (the find
+            // bar, a form field, the page-jump box), where they stay ordinary cut and paste.
+            if (e.Key == Key.X && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null
+                     && !IsTypingTarget() && HasMarkSelection)
+            {
+                CutMarks();
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null
+                     && !IsTypingTarget())
+            {
+                PasteFromClipboard();
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 SelectAllText();
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.Escape && _searchBar is not null && _searchBar.Visibility == Visibility.Visible)
+            return false;
+        }
+
+        /// <summary>Esc stepping down (find bar, shortcut overlay, mark selection, tool) and the shortcut overlay toggle. True when the key was consumed.</summary>
+        private bool TryEscapeAndOverlayKeys(KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape && _searchBar is not null && _searchBar.Visibility == Visibility.Visible)
             {
                 CloseSearchBar();
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.Escape && ShortcutOverlay.Visibility == Visibility.Visible)
+            if (e.Key == Key.Escape && ShortcutOverlay.Visibility == Visibility.Visible)
             {
                 ShortcutOverlay.Visibility = Visibility.Collapsed;
                 e.Handled = true;
+                return true;
+            }
+            // A selected picture lets go first (#244).
+            if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None && HasPictureSelection)
+            {
+                int picPage = _pictureSel!.PageIndex;
+                FlushPictureNudge();
+                ClearSelection();
+                RenderAllAnnotations(picPage);
+                SetStatus("Selection cleared");
+                e.Handled = true;
+                return true;
+            }
+            // Esc first lets go of a mark selection (one mark or many), before anything steps down.
+            if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None && HasMarkSelection)
+            {
+                int selPage = _markSelection[0].PageIndex;
+                ClearSelection();
+                RenderAllAnnotations(selPage);
+                SetStatus("Selection cleared");
+                e.Handled = true;
+                return true;
             }
             // Esc steps DOWN rather than straight out (upstream v1.6.6, adapted): the in-progress
             // polygon, full screen, the find bar and the shortcuts overlay each get first refusal
             // above; with nothing left to cancel, the last step drops back to the Select tool,
             // Acrobat-style. Unlike upstream we stop there - a further Esc does nothing, because
             // TDPdf's Esc has never quit the app and making it do so would be destructive.
-            else if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None
+            if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None
                      && _doc is not null && _currentTool != EditTool.Select)
             {
                 SetTool(EditTool.Select);
                 e.Handled = true;
+                return true;
             }
             // #153: matched by the character the key TYPES, not its position. Typing "?" holds
             // Shift on every layout, so the old exact-equality modifier test meant this only ever
             // fired for Ctrl+/ — even on a US keyboard. The positional check is kept as a fast
             // path (and as the Ctrl+/ spelling) for where it already worked.
-            else if (KeyLayout.IsCtrlChar(e.Key, '?')
+            if (KeyLayout.IsCtrlChar(e.Key, '?')
                      || (e.Key == Key.OemQuestion && Keyboard.Modifiers == ModifierKeys.Control))
             {
                 ShortcutOverlay.Visibility = ShortcutOverlay.Visibility == Visibility.Visible
                     ? Visibility.Collapsed : Visibility.Visible;
                 if (ShortcutOverlay.Visibility == Visibility.Visible) ApplyPersistedShortcutView();
                 e.Handled = true;
+                return true;
             }
+            return false;
+        }
+
+        /// <summary>Delete (form field, then marks) and the arrow-key nudge of selected marks. True when the key was consumed.</summary>
+        private bool TryDeleteAndNudgeKeys(KeyEventArgs e)
+        {
             // Ahead of the annotation case: with the Form tool out there is no selected annotation
             // to compete with, and Delete has to mean "remove the field I just clicked".
-            else if (e.Key == Key.Delete && TryDeleteSelectedFormField())
+            if (e.Key == Key.Delete && TryDeleteSelectedFormField())
             {
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.Delete && _selectedAnnotation is not null)
+            if (e.Key == Key.Delete && HasPictureSelection)
+            {
+                DeletePicture();
+                e.Handled = true;
+                return true;
+            }
+            if (HasPictureSelection && _doc is not null
+                     && Keyboard.FocusedElement is not (ComboBox or ComboBoxItem or Slider or System.Windows.Controls.Primitives.TextBoxBase)
+                     && (Keyboard.Modifiers == ModifierKeys.None || Keyboard.Modifiers == ModifierKeys.Shift)
+                     && (e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Up || e.Key == Key.Down))
+            {
+                double picStep = Keyboard.Modifiers == ModifierKeys.Shift ? 10 : 1;
+                NudgePicture(
+                    e.Key == Key.Left ? -picStep : e.Key == Key.Right ? picStep : 0,
+                    e.Key == Key.Up ? -picStep : e.Key == Key.Down ? picStep : 0);
+                e.Handled = true;
+                return true;
+            }
+            if (e.Key == Key.Delete && HasMarkSelection)
             {
                 DeleteSelected();
                 e.Handled = true;
+                return true;
             }
+            // Arrow keys nudge the selected marks (1 canvas px, 10 with Shift). They only page the
+            // document while no mark is selected, so Esc (which deselects) hands them back.
+            if (HasMarkSelection && _doc is not null && _currentTool == EditTool.Select
+                     && Keyboard.FocusedElement is not (ComboBox or ComboBoxItem or Slider or System.Windows.Controls.Primitives.TextBoxBase)
+                     && (Keyboard.Modifiers == ModifierKeys.None || Keyboard.Modifiers == ModifierKeys.Shift)
+                     && (e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Up || e.Key == Key.Down))
+            {
+                double step = Keyboard.Modifiers == ModifierKeys.Shift ? 10 : 1;
+                NudgeSelection(
+                    e.Key == Key.Left ? -step : e.Key == Key.Right ? step : 0,
+                    e.Key == Key.Up ? -step : e.Key == Key.Down ? step : 0);
+                e.Handled = true;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>Home / End and the Ctrl+1 / 2 / 3 zoom chords. True when the key was consumed.</summary>
+        private bool TryJumpAndZoomKeys(KeyEventArgs e)
+        {
             // Home / End jump to the first / last page (the Acrobat / Sumatra convention). Recorded on
             // the jump history so Alt+Left retraces the hop. (Upstream v1.6.4)
-            else if (e.Key == Key.Home && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
+            if (e.Key == Key.Home && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
             {
                 RecordNavJump();
                 PageList.SelectedIndex = 0;
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.End && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
+            if (e.Key == Key.End && Keyboard.Modifiers == ModifierKeys.None && _doc is not null)
             {
                 RecordNavJump();
                 PageList.SelectedIndex = _doc.PageCount - 1;
                 e.Handled = true;
+                return true;
             }
             // Ctrl+1 / Ctrl+2 / Ctrl+3 = actual size / fit width / fit page (Acrobat/Foxit). Ctrl+0
             // stays the existing 100% reset. (Upstream v1.6.4)
-            else if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            if (e.Key == Key.D1 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
                 BeginAnchoredZoom();
                 // Actual size — a true 100% in every view mode, because Zoom.ZoomLevel is true
                 // zoom and MainWindow converts to the tile's layout scale (DisplayZoomFactor).
                 Zoom.SetZoomLevel(1.0);
                 e.Handled = true;
+                return true;
             }
             // Ctrl+2 / Ctrl+3 are an explicit fit choice, so they are remembered for the next
             // document opened (upstream v1.7.1).
-            else if (e.Key == Key.D2 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            if (e.Key == Key.D2 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
                 SaveDefaultFitMode(ZoomFitMode.Width);
                 FitToWidth();
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.D3 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
+            if (e.Key == Key.D3 && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null)
             {
                 SaveDefaultFitMode(ZoomFitMode.Page);
                 FitToPage();
                 e.Handled = true;
+                return true;
             }
+            return false;
+        }
+
+        /// <summary>Page rotation chords, Alt+Left / Right jump history, and the Menu key. True when the key was consumed.</summary>
+        private bool TryRotateHistoryAndMenuKeys(KeyEventArgs e)
+        {
             // Ctrl+R / Ctrl+Shift+R rotate the selected pages clockwise / counter-clockwise
             // (upstream v1.8.5). Rotation was reachable from the toolbar and the Pages panel but had
             // no key of its own; bare R is the Redact tool, so the modified pair is free.
             // RotatePages_Click already works off PageList.SelectedItems and handles its own errors.
-            else if (e.Key == Key.R && _doc is not null
+            if (e.Key == Key.R && _doc is not null
                      && (Keyboard.Modifiers == ModifierKeys.Control
                          || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
             {
                 RotatePages_Click(Keyboard.Modifiers == ModifierKeys.Control ? 90 : -90);
                 e.Handled = true;
+                return true;
             }
             // Ctrl+Shift+U turns the selected pages half way round. Ctrl+U is underline inside a text
             // box only (that handler never reaches here), and Ctrl+Shift+U was unclaimed.
-            else if (e.Key == Key.U && _doc is not null
+            if (e.Key == Key.U && _doc is not null
                      && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
             {
                 RotatePages_Click(180);
                 e.Handled = true;
+                return true;
             }
             // Jump history: Alt+Left / Alt+Right retrace bookmark / link / jump-box / Home-End hops,
             // browser-style. Alt makes the key arrive as Key.System with the real key in SystemKey.
-            else if (e.Key == Key.System && e.SystemKey == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
+            if (e.Key == Key.System && e.SystemKey == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt)
             {
                 NavHistoryGo(back: true);
                 e.Handled = true;
+                return true;
             }
-            else if (e.Key == Key.System && e.SystemKey == Key.Right && Keyboard.Modifiers == ModifierKeys.Alt)
+            if (e.Key == Key.System && e.SystemKey == Key.Right && Keyboard.Modifiers == ModifierKeys.Alt)
             {
                 NavHistoryGo(back: false);
                 e.Handled = true;
+                return true;
+            }
+            // Alt+Shift+V: compare the open document with another PDF (#239). Alt arrives as
+            // Key.System with the letter in SystemKey, and the chord is claimed here before the menu
+            // bar can treat it as an access key.
+            if (e.Key == Key.System && e.SystemKey == Key.V && Keyboard.Modifiers == (ModifierKeys.Alt | ModifierKeys.Shift))
+            {
+                ShowCompare();
+                e.Handled = true;
+                return true;
             }
             // Menu key / Shift+F10 opens the right-click menu at the current selection (Windows
             // keyboard-accessibility convention). (Upstream v1.6.4)
-            else if ((e.Key == Key.Apps
+            if ((e.Key == Key.Apps
                       || (e.Key == Key.System && e.SystemKey == Key.F10 && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
                      && _doc is not null)
             {
                 OpenContextMenuAtSelection();
                 e.Handled = true;
+                return true;
             }
+            return false;
+        }
+
+        /// <summary>Arrow keys and PgUp / PgDn step through the pages. True when the key was consumed.</summary>
+        private bool TryPageStepKeys(KeyEventArgs e)
+        {
+            // The two-column Pages sidebar steps a row with Up / Down (#246).
+            if (TryPairedSidebarKeys(e)) return true;
+
             // Arrow keys and PgUp/PgDn navigate to the previous / next page. Handled here at the window
             // (Preview) level with e.Handled so paging works the same whether the page canvas or a sidebar
             // thumbnail has focus — otherwise a focused PageList would page its own selection instead. PgUp/
             // PgDn never reorder pages (that stays on the toolbar Move Up / Down buttons).
-            else if (Keyboard.Modifiers == ModifierKeys.None && _doc is not null && PageList.Items.Count > 1
+            if (Keyboard.Modifiers == ModifierKeys.None && _doc is not null && PageList.Items.Count > 1
                      && (e.Key == Key.Left || e.Key == Key.Up || e.Key == Key.Right || e.Key == Key.Down
                          || e.Key == Key.PageUp || e.Key == Key.PageDown))
             {
@@ -390,7 +606,14 @@ namespace TDPdf
                 if (NavigatePageStep(dir))   // one spread at a time in Two-Page mode (#120)
                     PageList.ScrollIntoView(PageList.SelectedItem);
                 e.Handled = true;
+                return true;
             }
+            return false;
+        }
+
+        /// <summary>Shift+N, B, and last of all the unmodified tool keys. True when the key was consumed.</summary>
+        private bool TryToggleAndToolKeys(KeyEventArgs e)
+        {
             // Shift+N pairs with Ctrl+I: it toggles whether night mode inverts PICTURES too — the
             // option on the moon's right-click menu, and the thing that makes a scanned page (one
             // full-page image) usable in night mode. TDPdf keeps Ctrl+I for the mode itself rather
@@ -398,12 +621,13 @@ namespace TDPdf
             // Shift+N is free: TrySelectToolByKey is gated on ModifierKeys.None, and nothing else
             // binds a Shift+letter. The typing guard above only returns for unmodified keys, so the
             // caret check is repeated here — a capital N in the find box must type an N.
-            else if (e.Key == Key.N && Keyboard.Modifiers == ModifierKeys.Shift && _doc is not null
+            if (e.Key == Key.N && Keyboard.Modifiers == ModifierKeys.Shift && _doc is not null
                      && !IsTypingTarget()
                      && ShortcutOverlay.Visibility != Visibility.Visible)
             {
                 ToggleDocInvertImages(!_docInvertImages);
                 e.Handled = true;
+                return true;
             }
             // B toggles the Two-Page book layout (#193, upstream binds the same bare key). Verified
             // free against TrySelectToolByKey and every other branch in this handler before taking
@@ -412,13 +636,14 @@ namespace TDPdf
             // shortcut overlay being closed, and the caret not sitting in a text surface (the
             // unmodified-key typing guard at the top of this method already returned in that case,
             // but the check is repeated so the branch stands on its own).
-            else if (e.Key == Key.B && Keyboard.Modifiers == ModifierKeys.None && _doc is not null
+            if (e.Key == Key.B && Keyboard.Modifiers == ModifierKeys.None && _doc is not null
                      && !IsTypingTarget()
                      && Keyboard.FocusedElement is not ComboBox
                      && ShortcutOverlay.Visibility != Visibility.Visible)
             {
                 ToggleTwoPageBook(!_twoPageBook);
                 e.Handled = true;
+                return true;
             }
             // Unmodified tool keys, last so every context-sensitive key above keeps priority.
             // Only while a document is open and no overlay owns the keyboard; the typing guard at
@@ -426,13 +651,15 @@ namespace TDPdf
             // A focused drop-down (the zoom combo, a PDF choice field) is excluded on top of that:
             // it isn't a caret surface, but WPF gives it letter type-ahead, and jumping to an option
             // by typing must keep working.
-            else if (Keyboard.Modifiers == ModifierKeys.None && _doc is not null
+            if (Keyboard.Modifiers == ModifierKeys.None && _doc is not null
                      && ShortcutOverlay.Visibility != Visibility.Visible
                      && Keyboard.FocusedElement is not ComboBox
                      && TrySelectToolByKey(e.Key))
             {
                 e.Handled = true;
+                return true;
             }
+            return false;
         }
 
         /// <summary>
@@ -454,6 +681,13 @@ namespace TDPdf
         /// </summary>
         private bool TrySelectToolByKey(Key key)
         {
+            // Signature (G) and Crop (C) open their own popups instead of going through SetTool,
+            // which refuses every other editing tool in a read-only window.
+            if (ReadOnlyGate.ProcessIsReadOnly && (key == Key.G || key == Key.C))
+            {
+                SetStatus(ReadOnlyGate.RefusedStatus);
+                return true;
+            }
             switch (key)
             {
                 case Key.V: SetTool(EditTool.Select); return true;
@@ -481,6 +715,9 @@ namespace TDPdf
                 // TOOLS section in MainWindow.xaml — those two drifted apart once and it was
                 // reported as a bug, so a new key goes into all three or none.
                 case Key.M: SetTool(EditTool.Measure); return true;
+                // A for stamp ("Approved"): S, T and the other mnemonics were taken. Mirrored in the keyboard
+                // map and the shortcut list like the keys above.
+                case Key.A: SetTool(EditTool.Stamp); return true;
                 default: return false;
             }
         }

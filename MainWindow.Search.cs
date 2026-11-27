@@ -97,7 +97,7 @@ namespace TDPdf
                     FontFamily = new FontFamily("Segoe UI"),
                     FontSize = 11,
                     IsEnabled = false,
-                    Background = new SolidColorBrush(Color.FromArgb(40, danger.Color.R, danger.Color.G, danger.Color.B)),
+                    Background = TDPdf.Services.ThemeBrushes.Wash(danger.Color, 40),
                     Foreground = danger,
                     BorderBrush = danger,
                     BorderThickness = new Thickness(1),
@@ -383,8 +383,9 @@ namespace TDPdf
             double ch = (top - bottom) * sy;
             var rect = new Rectangle
             {
-                Fill = TdpDialog.FrozenSolidColorBrush(Color.FromArgb(80, 255, 165, 0)),
-                Stroke = TdpDialog.FrozenSolidColorBrush(Color.FromArgb(160, 255, 165, 0)),
+                // The theme's warning colour (orange on Dark, a darker orange on Light), not a fixed one.
+                Fill = TDPdf.Services.ThemeBrushes.Wash("WarningOrange", 80, freeze: true),
+                Stroke = TDPdf.Services.ThemeBrushes.Wash("WarningOrange", 160, freeze: true),
                 StrokeThickness = 1,
                 Width = Math.Max(cw, 4),
                 Height = Math.Max(ch, 4),

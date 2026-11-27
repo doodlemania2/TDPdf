@@ -77,7 +77,12 @@ namespace TDPdf.Services
         /// Docnet's plain render (no annotations) at the same density only if the annotation render
         /// returns nothing and the box is within the limits.
         /// </summary>
-        public static BitmapSource? RenderBoxBitmap(string path, int pageIndex, PrintRasterBox box, bool forPrint)
+        /// <param name="colorTransform">
+        /// The print window's colour conversion, applied to the finished pixels. Null, the default and
+        /// the whole "Driver default" mode, leaves the render exactly as it was.
+        /// </param>
+        public static BitmapSource? RenderBoxBitmap(string path, int pageIndex, PrintRasterBox box, bool forPrint,
+                                                    IColorTransform? colorTransform = null)
         {
             byte[]? bgra = PdfiumInterop.RenderPageWithAnnotations(
                 path, pageIndex, box.Width, box.Height, forPrint: forPrint);
@@ -89,6 +94,12 @@ namespace TDPdf.Services
                 w = pageReader.GetPageWidth();
                 h = pageReader.GetPageHeight();
                 bgra = pageReader.GetImage();
+            }
+            if (colorTransform is { IsIdentity: false } && IsUsable(bgra, w, h))
+            {
+                // A failed conversion must not lose the page: it prints as plain sRGB, as if the
+                // section were on Driver default.
+                try { colorTransform.ApplyBgra(bgra!, w, h); } catch { }
             }
             return ToFrozenBitmap(bgra, w, h, box.Dpi, box.Dpi);
         }

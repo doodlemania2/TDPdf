@@ -8,6 +8,17 @@ namespace TDPdf.Properties
 
         public static Settings Default => defaultInstance;
 
+        // True in any version's first run (no user.config yet); App.EnsureSettingsHealthy then calls
+        // Upgrade() to bring the previous version's settings across and clears it. Without this every
+        // update silently reset all preferences, because the settings folder is named for the version.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool SettingsUpgradeRequired
+        {
+            get => (bool)this[nameof(SettingsUpgradeRequired)];
+            set => this[nameof(SettingsUpgradeRequired)] = value;
+        }
+
         [UserScopedSetting]
         [DefaultSettingValue("System")]
         public string Theme
@@ -127,6 +138,17 @@ namespace TDPdf.Properties
             set => this[nameof(TwoPageBookLayout)] = value;
         }
 
+        // The Pages sidebar shows two thumbnails per row (#246). Off (default) is the single column
+        // it has always been. An app-wide reading preference like the view mode; the pairing follows
+        // TwoPageBookLayout.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool SidebarTwoColumns
+        {
+            get => (bool)this[nameof(SidebarTwoColumns)];
+            set => this[nameof(SidebarTwoColumns)] = value;
+        }
+
         // When true (default), launching TDPdf while it is already running
         // (e.g. double-clicking another PDF in Explorer) forwards the file to
         // the existing window as a new tab instead of opening a second window.
@@ -148,9 +170,10 @@ namespace TDPdf.Properties
             set => this[nameof(EnterAddsNewLine)] = value;
         }
 
-        // Persisted page view mode (app-wide). One of the ViewMode enum names:
-        // "Single", "Continuous", "TwoPage", "Grid". Defaults to Grid, which is
-        // the layout the app opened in before view modes were introduced.
+        // The page view mode the user chose last. One of the ViewMode enum names:
+        // "Single", "Continuous", "TwoPage", "TwoPageContinuous", "Grid". Each tab keeps its own
+        // view; this is the one a NEW tab starts in. Defaults to Grid, which is the layout the app
+        // opened in before view modes were introduced.
         [UserScopedSetting]
         [DefaultSettingValue("Grid")]
         public string ViewMode
@@ -167,6 +190,17 @@ namespace TDPdf.Properties
         {
             get => (string)this[nameof(RecentFiles)];
             set => this[nameof(RecentFiles)] = value;
+        }
+
+        // Folders recently used in the Open / Save / export dialogs (most-recent first, capped at 8),
+        // shown in the dialog's left-hand list. Full paths joined by '|'. Follows the same privacy
+        // switch as the recent-files list.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string RecentFolders
+        {
+            get => (string)this[nameof(RecentFolders)];
+            set => this[nameof(RecentFolders)] = value;
         }
 
         // Privacy switch for the recent-files list (#146, upstream v1.6.5). When true, opening a
@@ -214,6 +248,26 @@ namespace TDPdf.Properties
         {
             get => (string)this[nameof(PrintColor)];
             set => this[nameof(PrintColor)] = value;
+        }
+
+        // The print window's Color section, saved per printer (see PrintColorStore). Empty means every
+        // printer is on "Driver default", which is today's behaviour.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string PrintColorManagement
+        {
+            get => (string)this[nameof(PrintColorManagement)];
+            set => this[nameof(PrintColorManagement)] = value;
+        }
+
+        // Match the monitor's colour profile on screen. Only acts when Windows reports a profile that is
+        // not sRGB; on a plain sRGB monitor no pixel is changed whatever this says.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool MatchMonitorColor
+        {
+            get => (bool)this[nameof(MatchMonitorColor)];
+            set => this[nameof(MatchMonitorColor)] = value;
         }
 
         // Last two-sided (duplex) choice; only applied when the printer supports it.
@@ -274,11 +328,23 @@ namespace TDPdf.Properties
             set => this[nameof(SkipLinkConfirm)] = value;
         }
 
+        // When true, a paragraph edit that cannot be written in the document's own font covers the
+        // paragraph and draws the new text over it without asking first (#229). Set by the "Don't ask
+        // again" box on that question.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool SkipParagraphCoverPrompt
+        {
+            get => (bool)this[nameof(SkipParagraphCoverPrompt)];
+            set => this[nameof(SkipParagraphCoverPrompt)] = value;
+        }
+
         // --- Reopen documents on next launch (session restore) ---
 
         // Whether to reopen the last session's documents on the next launch. One of:
-        // "Ask" (default) prompts on quit when documents are open; "Yes" always reopens
-        // silently; "No" never reopens and never persists the file list (privacy).
+        // "Ask" (default) remembers the open tabs on exit and offers to restore them in a bar at the
+        // next launch; "Yes" restores them silently ("Always restore last session"); "No" never
+        // reopens and never persists the file list (privacy).
         [UserScopedSetting]
         [DefaultSettingValue("Ask")]
         public string ReopenSession
@@ -305,6 +371,17 @@ namespace TDPdf.Properties
         {
             get => (string)this[nameof(SessionActiveFile)];
             set => this[nameof(SessionActiveFile)] = value;
+        }
+
+        // Where each of those documents was (page, zoom or fit, view mode), as a small JSON list
+        // written by Services/SessionState. Only paths and view positions: never a password, never
+        // document content. Merged across windows the same way SessionFiles is.
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string SessionViewStates
+        {
+            get => (string)this[nameof(SessionViewStates)];
+            set => this[nameof(SessionViewStates)] = value;
         }
 
         // Which face of the keyboard-shortcuts overlay to show: "list" (the static two-column
@@ -357,6 +434,16 @@ namespace TDPdf.Properties
         {
             get => (double)this[nameof(AppScale)];
             set => this[nameof(AppScale)] = value;
+        }
+
+        // Save Flattened resolution (#234): 0 = Automatic (each page's own choice), otherwise
+        // one of FlattenResolution.FixedChoices. Anything else reads back as Automatic.
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public double FlattenDpi
+        {
+            get => (double)this[nameof(FlattenDpi)];
+            set => this[nameof(FlattenDpi)] = value;
         }
 
         // Units for the footer's page-size readout (upstream v1.8.5). One of the
@@ -428,6 +515,61 @@ namespace TDPdf.Properties
         {
             get => (bool)this[nameof(DocumensoDefaultSigningOrder)];
             set => this[nameof(DocumensoDefaultSigningOrder)] = value;
+        }
+
+        // --- Books (EPUB layout, #235) ---
+
+        // False until the person has chosen a page size once; the first EPUB asks.
+        [UserScopedSetting]
+        [DefaultSettingValue("False")]
+        public bool BookLayoutChosen
+        {
+            get => (bool)this[nameof(BookLayoutChosen)];
+            set => this[nameof(BookLayoutChosen)] = value;
+        }
+
+        // A BookLayoutOptions.Papers name; empty means the region's default (Letter, or A4 where metric).
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string BookPaper
+        {
+            get => (string)this[nameof(BookPaper)];
+            set => this[nameof(BookPaper)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("20")]
+        public double BookMarginMm
+        {
+            get => (double)this[nameof(BookMarginMm)];
+            set => this[nameof(BookMarginMm)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("11")]
+        public double BookFontSizePt
+        {
+            get => (double)this[nameof(BookFontSizePt)];
+            set => this[nameof(BookFontSizePt)] = value;
+        }
+
+        // Right-click menus (#237): whether rows show their shortcut keys, and the user's own order and
+        // hidden items per menu kind, as one JSON string (see Services/MenuLayouts). Empty means every
+        // menu is in its default arrangement.
+        [UserScopedSetting]
+        [DefaultSettingValue("True")]
+        public bool ShowMenuShortcuts
+        {
+            get => (bool)this[nameof(ShowMenuShortcuts)];
+            set => this[nameof(ShowMenuShortcuts)] = value;
+        }
+
+        [UserScopedSetting]
+        [DefaultSettingValue("")]
+        public string MenuLayouts
+        {
+            get => (string)this[nameof(MenuLayouts)];
+            set => this[nameof(MenuLayouts)] = value;
         }
 
         // There is deliberately no "don't ask again" for the warning before a save strips a digital

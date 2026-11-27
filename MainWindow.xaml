@@ -316,6 +316,84 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Rows of controls inside a right-click menu (MainWindow.ContextMenus.cs): the quick-action
+             tiles, colour swatches and sliders. The row is a MenuItem so the menu's arrow keys, focus
+             and Esc work as for any item; it stays open on click, and the code moves a highlight
+             between the controls inside it with Left and Right. Brushes are dynamic so all three
+             themes repaint it, and the keyboard-focus ring is a real border for HighContrast. -->
+        <Style x:Key="MenuControlRow" TargetType="MenuItem">
+            <Setter Property="StaysOpenOnClick" Value="True"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="RowBd" Padding="2,3" CornerRadius="3" Background="Transparent"
+                                BorderThickness="1" BorderBrush="Transparent">
+                            <ContentPresenter ContentSource="Header" RecognizesAccessKey="False" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="RowBd" Property="BorderBrush" Value="{DynamicResource AccentGreen}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="MenuTile" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="TileBd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TileBd" Property="Background" Value="{DynamicResource BgHover}"/>
+                            </Trigger>
+                            <Trigger Property="Tag" Value="active">
+                                <Setter TargetName="TileBd" Property="Background" Value="{DynamicResource BgHover}"/>
+                                <Setter TargetName="TileBd" Property="BorderBrush" Value="{DynamicResource AccentGreen}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="MenuSwatch" TargetType="RadioButton">
+            <Setter Property="Width" Value="20"/>
+            <Setter Property="Height" Value="20"/>
+            <Setter Property="Margin" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="SwBd" Background="{TemplateBinding Background}" CornerRadius="3"
+                                BorderThickness="1" BorderBrush="{DynamicResource BorderDim}"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="SwBd" Property="BorderBrush" Value="{DynamicResource AccentGreen}"/>
+                                <Setter TargetName="SwBd" Property="BorderThickness" Value="2"/>
+                            </Trigger>
+                            <Trigger Property="Tag" Value="active">
+                                <Setter TargetName="SwBd" Property="BorderBrush" Value="{DynamicResource TextPrimary}"/>
+                                <Setter TargetName="SwBd" Property="BorderThickness" Value="2"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <!-- ======================================================== -->
         <!-- MenuItem — role-aware dark templates                    -->
         <!--                                                          -->
@@ -400,6 +478,9 @@
              the toolbar's icon size: a 14x5 body with three graduation ticks hanging off its top
              edge, the middle one longer, which is what makes it read as a ruler rather than as
              another rectangle at 16px. -->
+        <!-- The Stamp tool's icon: a rubber stamp (handle, neck, flat base), drawn as geometry for the
+             same reason as the ruler below. -->
+        <Geometry x:Key="StampGeometry">M 6.5,2 H 9.5 V 6 C 9.5,7.2 11.5,7.4 11.5,9.5 H 4.5 C 4.5,7.4 6.5,7.2 6.5,6 Z M 2.5,11 H 13.5 V 13.5 H 2.5 Z</Geometry>
         <Geometry x:Key="MeasureRulerGeometry">M 1.5,5.5 H 14.5 V 10.5 H 1.5 Z M 4.5,5.5 V 8.5 M 8,5.5 V 9.5 M 11.5,5.5 V 8.5</Geometry>
 
         <!-- #177: the two halves of a shortcuts-overlay row. Rows are 2-column Grids (a fixed key
@@ -745,7 +826,7 @@
                         DataContextChanged="PageThumb_DataContextChanged">
                 <Border Background="White" BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
                         Visibility="{Binding ThumbVisibility}">
-                    <Grid Width="140" Height="{Binding ThumbHeight}" Margin="0,0,0,2">
+                    <Grid Width="{Binding ThumbWidth}" Height="{Binding ThumbHeight}" Margin="0,0,0,2">
                         <Image Source="{Binding Thumb}" Stretch="Uniform"/>
                         <!-- annotations not yet saved into the file -->
                         <Image Source="{Binding Overlay}" Stretch="Fill" IsHitTestVisible="False"/>
@@ -976,7 +1057,7 @@
         <Border x:Name="CustomTitleBar" Grid.Row="0" Background="{DynamicResource TitleBarBackground}" BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
             <Grid>
-                <Grid x:Name="ChromeA11yLabels" Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
+                <Grid Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
                     <TextBlock x:Name="MinimizeButtonLabel" Text="Minimize window"/>
                     <TextBlock x:Name="MaximizeButtonLabel" Text="Maximize or restore window"/>
                     <TextBlock x:Name="CloseWindowButtonLabel" Text="Close window"/>
@@ -987,7 +1068,7 @@
                          title bar and footer are deliberately NOT scaled, so the logo never moves
                          out from under the cursor. The press is left unhandled so it still bubbles
                          to TitleBar_MouseLeftButtonDown for window drag / double-click maximize. -->
-                    <Border x:Name="LogoBar" Background="Transparent" Padding="4,0"
+                    <Border Background="Transparent" Padding="4,0"
                             VerticalAlignment="Stretch"
                             MouseWheel="LogoBar_MouseWheel"
                             AutomationProperties.Name="TDPdf app size"
@@ -1045,6 +1126,9 @@
                 <MenuItem Header="_Close"           InputGestureText="Ctrl+W"       Click="CloseFile_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE711;"/></MenuItem.Icon>
                 </MenuItem>
+                <MenuItem x:Name="ReopenClosedTabMenuItem" Header="Reopen Closed _Tab" InputGestureText="Ctrl+Shift+T" Click="ReopenClosedTab_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE777;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="_Save"            InputGestureText="Ctrl+S"       Click="SaveInPlace_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE105;"/></MenuItem.Icon>
@@ -1068,9 +1152,21 @@
                 <MenuItem Header="Export Pages as _Images…"                          Click="ExportImages_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE91B;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- #247: reflowable EPUB 3 book from the open PDF. -->
+                <MenuItem Header="Export as EPUB…"                                  Click="ExportEpub_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE736;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- #235: how EPUB books are laid out as pages (page size, margin, text size). -->
+                <MenuItem Header="_Book Layout…"                                    Click="BookLayout_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7BC;"/></MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
                 <MenuItem Header="_Merge…"                                          Click="Merge_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE710;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- #242: pick, order and trim several files and folders; the result opens as a new unsaved tab. -->
+                <MenuItem Header="Mer_ge Files…"                                    Click="MergeFiles_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B7;"/></MenuItem.Icon>
                 </MenuItem>
                 <MenuItem Header="E_xtract Pages…"                                  Click="Split_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8B1;"/></MenuItem.Icon>
@@ -1095,12 +1191,19 @@
                     <MenuItem x:Name="ESignRequestsMenuItem" Header="Signature _Requests…"  Click="ESignRequests_Click">
                         <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE9D5;"/></MenuItem.Icon>
                     </MenuItem>
+                    <MenuItem x:Name="ESignExportSignatureMenuItem" Header="E_xport Signature Picture…" Click="ESignExportSignature_Click">
+                        <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE896;"/></MenuItem.Icon>
+                    </MenuItem>
                     <Separator/>
                     <MenuItem x:Name="ESignVerifyMenuItem"   Header="_Verify Signatures…"   Click="ESignVerify_Click">
                         <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEA18;"/></MenuItem.Icon>
                     </MenuItem>
                 </MenuItem>
                 <Separator/>
+                <!-- #224: lists and saves the files embedded in the PDF; never opens them. -->
+                <MenuItem Header="Attac_hments…"                                     Click="Attachments_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE723;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Document _Info…"   InputGestureText="F12"          Click="DocumentInfo_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE946;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1157,8 +1260,18 @@
                           Header="Invert I_mages Too" InputGestureText="Shift+N"    Click="DocInvertImages_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB9F;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- The page view of the ACTIVE TAB (each tab keeps its own, #246). The five rows are
+                     built in code (BuildPageViewMenu) and checked by SyncViewModeMenu. -->
+                <MenuItem x:Name="PageViewMenuItem" Header="Page _View">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A9;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Toggle _Sidebar"                                  Click="SidebarToggle_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE700;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- Two thumbnails per row in the Pages sidebar (#246); the same switch is on the
+                     sidebar's right-click menu and in Settings. -->
+                <MenuItem x:Name="PairedSidebarMenuItem" Header="_Two-Column Pages Sidebar" Click="PairedSidebar_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8A9;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
                 <!-- Upstream KillerPDF #193: in Two-Page view the cover displays ALONE, so facing
@@ -1166,7 +1279,7 @@
                      (SyncTwoPageBookUi sets IsChecked); only meaningful in Two-Page view, which is
                      why the row says so rather than hiding itself. -->
                 <MenuItem x:Name="TwoPageBookMenuItem"
-                          Header="_Book Layout (Two-Page)" InputGestureText="B"      Click="TwoPageBook_Click">
+                          Header="_Book Layout (Two-Page views)" InputGestureText="B"      Click="TwoPageBook_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8F1;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
@@ -1199,7 +1312,7 @@
                 <MenuItem Header="Edit Existing Te_xt" InputGestureText="2, X"      Click="ToolEditText_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE104;"/></MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="Edit Existing _Image" InputGestureText="3"        Click="ToolEditImage_Click">
+                <MenuItem Header="Select _Picture" InputGestureText="3"        Click="ToolEditImage_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEB9F;"/></MenuItem.Icon>
                 </MenuItem>
                 <MenuItem Header="I_nsert Image"    InputGestureText="4, I"         Click="ToolImage_Click">
@@ -1226,6 +1339,14 @@
                 <MenuItem Header="Si_gnature Picture" InputGestureText="G"          Click="ToolSignature_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xEE56;"/></MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="St_amp"           InputGestureText="A"            Click="ToolStamp_Click">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource StampGeometry}"
+                              Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.2"
+                              StrokeLineJoin="Round" Fill="{x:Null}"
+                              Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="_Crop"            InputGestureText="C"            Click="ToolCrop_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7A8;"/></MenuItem.Icon>
                 </MenuItem>
@@ -1239,8 +1360,31 @@
                               Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="_Watermark…"                                       Click="Watermark_Click"
+                          ToolTip="Add a text or picture watermark and page numbers to a range of pages">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8D2;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Remo_ve Watermark"                                 Click="RemoveWatermark_Click"
+                          ToolTip="Remove the watermarks and page numbers TDPdf added">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE74D;"/></MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Trans_form Page…"                                 Click="ToolTransform_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE90F;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- #225: fills the form from an FDF or XFDF file; one undo step. -->
+                <MenuItem Header="Import Fo_rm Data…"                               Click="ImportFormData_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8E5;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="Comp_are PDFs…"  InputGestureText="Alt+Shift+V"  Click="ComparePdfs_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE8AB;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Check Accessi_bility…"                            Click="CheckAccessibility_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE776;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- #233: a dragged box becomes a picture and its text and graphics leave the page. Not redaction. -->
+                <MenuItem Header="Rasteri_ze Region…"                               Click="RasterizeRegion_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE91B;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
                 <!-- OCR submenu is rebuilt on open (OcrMenu_SubmenuOpened); the placeholder keeps the
@@ -1260,6 +1404,9 @@
                 </MenuItem>
                 <MenuItem Header="_Report an Issue"                                 Click="HelpReportIssue_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE7BA;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="_What's New"                                      Click="HelpWhatsNew_Click">
+                    <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE789;"/></MenuItem.Icon>
                 </MenuItem>
                 <MenuItem Header="View _Changelog"                                  Click="HelpChangelog_Click">
                     <MenuItem.Icon><TextBlock Style="{StaticResource MenuGlyph}" Text="&#xE81C;"/></MenuItem.Icon>
@@ -1294,7 +1441,7 @@
                  the wider spacer between them instead of alignment. The toolbar's row is Auto-height
                  (see the outer Grid.RowDefinitions), so wrapping only grows this Border, never clips. -->
             <WrapPanel Orientation="Horizontal">
-                <Grid x:Name="ToolbarA11yLabels" Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
+                <Grid Width="0" Height="0" IsHitTestVisible="False" Focusable="False" Opacity="0">
                     <TextBlock x:Name="OpenButtonLabel" Text="Open"/><TextBlock x:Name="CloseFileButtonLabel" Text="Close file"/>
                     <TextBlock x:Name="MergeButtonLabel" Text="Merge PDFs"/><TextBlock x:Name="SplitButtonLabel" Text="Extract pages"/>
                     <TextBlock x:Name="DeleteButtonLabel" Text="Delete selected pages"/><TextBlock x:Name="MoveUpButtonLabel" Text="Move page up"/>
@@ -1305,13 +1452,13 @@
                     <TextBlock x:Name="HighlightToolButtonLabel" Text="Highlight tool"/><TextBlock x:Name="DrawToolButtonLabel" Text="Draw tool"/>
                     <TextBlock x:Name="StrikeToolButtonLabel" Text="Strikethrough tool"/><TextBlock x:Name="UnderlineToolButtonLabel" Text="Underline tool"/>
                     <TextBlock x:Name="SignatureButtonLabel" Text="Signature Picture tool"/><TextBlock x:Name="CropToolButtonLabel" Text="Crop tool"/>
-                    <TextBlock x:Name="EditTextToolButtonLabel" Text="Edit existing text tool"/><TextBlock x:Name="EditImageToolButtonLabel" Text="Edit existing image tool"/>
+                    <TextBlock x:Name="EditTextToolButtonLabel" Text="Edit existing text tool"/><TextBlock x:Name="EditImageToolButtonLabel" Text="Select picture tool"/>
                     <TextBlock x:Name="UndoButtonLabel" Text="Undo last annotation"/><TextBlock x:Name="SettingsButtonLabel" Text="Settings"/>
                     <TextBlock x:Name="ClearAnnotationsButtonLabel" Text="Clear annotations"/><TextBlock x:Name="ZoomLabel" Text="Zoom level"/>
                 </Grid>
                 <!-- File operations -->
                     <Button Content="&#xE7C3;" Style="{StaticResource ToolbarButton}" Click="New_Click" ToolTip="New Blank Document (Ctrl+N)" KeyboardNavigation.TabIndex="3" AutomationProperties.Name="New blank document" AutomationProperties.HelpText="Create a single blank A4 page as a new document. Shortcut Ctrl+N." AutomationProperties.AccessKey="N"/>
-                    <Button x:Name="OpenBtn" Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O). Right-click for recent files." KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
+                    <Button Content="&#xE8DA;" Style="{StaticResource ToolbarButton}" Click="Open_Click" MouseRightButtonUp="OpenBtn_RightButtonUp" ToolTip="Open (Ctrl+O, Alt+O). Right-click for recent files." KeyboardNavigation.TabIndex="4" AutomationProperties.Name="Open" AutomationProperties.HelpText="Open a PDF file. Shortcut Ctrl+O. Access key Alt+O. Right-click for recent files." AutomationProperties.AccessKey="O" AutomationProperties.LabeledBy="{Binding ElementName=OpenButtonLabel}"/>
                     <Button x:Name="CloseFileBtn" Content="&#xE711;" Style="{StaticResource ToolbarButton}" Click="CloseFile_Click" ToolTip="Close File (Ctrl+W, Alt+W)" IsEnabled="False" KeyboardNavigation.TabIndex="5" AutomationProperties.Name="Close file" AutomationProperties.HelpText="Close the current PDF and return to the start view. Shortcut Ctrl+W. Access key Alt+W." AutomationProperties.AccessKey="W" AutomationProperties.LabeledBy="{Binding ElementName=CloseFileButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE710;" Style="{StaticResource ToolbarButton}" Click="Merge_Click" ToolTip="Merge PDFs (Alt+M)" KeyboardNavigation.TabIndex="6" AutomationProperties.Name="Merge PDFs" AutomationProperties.HelpText="Combine additional PDFs into this document. Access key Alt+M." AutomationProperties.AccessKey="M" AutomationProperties.LabeledBy="{Binding ElementName=MergeButtonLabel}"/>
@@ -1321,7 +1468,7 @@
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button Content="&#xE74A;" Style="{StaticResource ToolbarButton}" Click="MoveUp_Click" ToolTip="Move Page Up (Alt+U)" KeyboardNavigation.TabIndex="9" AutomationProperties.Name="Move page up" AutomationProperties.HelpText="Move the selected page earlier in the document. Access key Alt+U." AutomationProperties.AccessKey="U" AutomationProperties.LabeledBy="{Binding ElementName=MoveUpButtonLabel}"/>
                     <Button Content="&#xE74B;" Style="{StaticResource ToolbarButton}" Click="MoveDown_Click" ToolTip="Move Page Down (Alt+N)" KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Move page down" AutomationProperties.HelpText="Move the selected page later in the document. Access key Alt+N." AutomationProperties.AccessKey="N" AutomationProperties.LabeledBy="{Binding ElementName=MoveDownButtonLabel}"/>
-                    <Button x:Name="RotateBtn" Content="&#xE7AD;" Style="{StaticResource ToolbarButton}" Click="RotateBtn_Click" MouseRightButtonUp="RotateBtn_RightButtonUp" ToolTip="Rotate Selected Pages Clockwise. Right-click for counter-clockwise or fine rotate." KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Rotate selected pages" AutomationProperties.HelpText="Rotate the selected page(s) 90 degrees clockwise. Right-click for counter-clockwise or a fine-angle transform." AutomationProperties.LabeledBy="{Binding ElementName=RotateButtonLabel}"/>
+                    <Button Content="&#xE7AD;" Style="{StaticResource ToolbarButton}" Click="RotateBtn_Click" MouseRightButtonUp="RotateBtn_RightButtonUp" ToolTip="Rotate Selected Pages Clockwise. Right-click for counter-clockwise or fine rotate." KeyboardNavigation.TabIndex="10" AutomationProperties.Name="Rotate selected pages" AutomationProperties.HelpText="Rotate the selected page(s) 90 degrees clockwise. Right-click for counter-clockwise or a fine-angle transform." AutomationProperties.LabeledBy="{Binding ElementName=RotateButtonLabel}"/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button x:Name="SaveAsBtn" Content="&#xE74E;" Style="{StaticResource ToolbarButtonAccent}" Click="SaveAs_Click" ToolTip="Save As (Ctrl+Shift+S, Alt+S)" KeyboardNavigation.TabIndex="11" AutomationProperties.Name="Save as" AutomationProperties.HelpText="Save the PDF with annotations to a new file. Shortcut Ctrl+Shift+S. Access key Alt+S." AutomationProperties.AccessKey="S" AutomationProperties.LabeledBy="{Binding ElementName=SaveAsButtonLabel}"/>
                     <Button Content="&#xE8B9;" Style="{StaticResource ToolbarButton}" Click="SaveFlattened_Click" ToolTip="Save Flattened PDF (Alt+F)" KeyboardNavigation.TabIndex="12" AutomationProperties.Name="Save flattened PDF" AutomationProperties.HelpText="Rasterize all pages and save a fully uneditable PDF. Access key Alt+F." AutomationProperties.AccessKey="F" AutomationProperties.LabeledBy="{Binding ElementName=SaveFlattenedButtonLabel}"/>
@@ -1338,8 +1485,8 @@
                     <Button x:Name="ToolSelectBtn" Content="&#xE8B3;" Style="{StaticResource ToolbarButton}" Click="ToolSelect_Click" ToolTip="Select Tool (V, Alt+Q)" KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Select tool" AutomationProperties.HelpText="Select annotations, drag to select text, or double-click text to edit. Shortcut V. Access key Alt+Q." AutomationProperties.AccessKey="Q" AutomationProperties.LabeledBy="{Binding ElementName=SelectToolButtonLabel}"/>
                     <Button x:Name="ToolPanBtn" Content="&#xE7C9;" Style="{StaticResource ToolbarButton}" Click="ToolPan_Click" ToolTip="Pan / Hand Tool (P): drag the page. Middle-click to pan in any tool." KeyboardNavigation.TabIndex="14" AutomationProperties.Name="Pan tool" AutomationProperties.HelpText="Drag the page to scroll. Middle-mouse drag also pans while any tool is active. Shortcut P."/>
                     <Button x:Name="ToolTextBtn" Content="&#xE8D2;" Style="{StaticResource ToolbarButton}" Click="ToolText_Click" ToolTip="Text Tool (1 or T, Alt+T)" KeyboardNavigation.TabIndex="15" AutomationProperties.Name="Text tool" AutomationProperties.HelpText="Click the page to add text. Shortcut 1 or T. Access key Alt+T." AutomationProperties.AccessKey="T" AutomationProperties.LabeledBy="{Binding ElementName=TextToolButtonLabel}"/>
-                    <Button x:Name="ToolEditTextBtn" Content="&#xE104;" Style="{StaticResource ToolbarButton}" Click="ToolEditText_Click" ToolTip="Edit Existing Text (2 or X)" KeyboardNavigation.TabIndex="16" AutomationProperties.Name="Edit existing text tool" AutomationProperties.HelpText="Click a PDF text run to white-out and redraw it. Shortcut 2 or X." AutomationProperties.LabeledBy="{Binding ElementName=EditTextToolButtonLabel}"/>
-                    <Button x:Name="ToolEditImageBtn" Content="&#xEB9F;" Style="{StaticResource ToolbarButton}" Click="ToolEditImage_Click" ToolTip="Edit Existing Image (3)" KeyboardNavigation.TabIndex="17" AutomationProperties.Name="Edit existing image tool" AutomationProperties.HelpText="Click a PDF image to replace, delete, or resize it. Shortcut 3." AutomationProperties.LabeledBy="{Binding ElementName=EditImageToolButtonLabel}"/>
+                    <Button x:Name="ToolEditTextBtn" Content="&#xE104;" Style="{StaticResource ToolbarButton}" Click="ToolEditText_Click" ToolTip="Edit Existing Text (2 or X). Ctrl+click edits the whole paragraph" KeyboardNavigation.TabIndex="16" AutomationProperties.Name="Edit existing text tool" AutomationProperties.HelpText="Click a PDF text run to edit it. Hold Ctrl and click to edit the whole paragraph. Shortcut 2 or X." AutomationProperties.LabeledBy="{Binding ElementName=EditTextToolButtonLabel}"/>
+                    <Button x:Name="ToolEditImageBtn" Content="&#xEB9F;" Style="{StaticResource ToolbarButton}" Click="ToolEditImage_Click" ToolTip="Select Picture (3)" KeyboardNavigation.TabIndex="17" AutomationProperties.Name="Select picture tool" AutomationProperties.HelpText="Click a picture in the PDF to move, resize, delete, copy, replace or extract it. Shortcut 3." AutomationProperties.LabeledBy="{Binding ElementName=EditImageToolButtonLabel}"/>
                     <Button x:Name="ToolImageBtn" Content="&#xE91B;" Style="{StaticResource ToolbarButton}" Click="ToolImage_Click" ToolTip="Insert Image (4 or I, Alt+I)" KeyboardNavigation.TabIndex="18" AutomationProperties.Name="Insert image tool" AutomationProperties.HelpText="Click the page to insert a PNG/JPG/BMP/GIF/TIFF as a resizable annotation. Shortcut 4 or I. Access key Alt+I." AutomationProperties.AccessKey="I"/>
                     <Button x:Name="ToolHighlightBtn" Content="&#xED56;" Style="{StaticResource ToolbarButton}" Click="ToolHighlight_Click" ToolTip="Highlight Tool (5 or H, Alt+H)" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Highlight tool" AutomationProperties.HelpText="Drag on the page to add a highlight. Shortcut 5 or H. Access key Alt+H." AutomationProperties.AccessKey="H" AutomationProperties.LabeledBy="{Binding ElementName=HighlightToolButtonLabel}"/>
                     <Button x:Name="ToolStrikeBtn" Content="&#xEDE0;" Style="{StaticResource ToolbarButton}" Click="ToolStrike_Click" ToolTip="Strikethrough (6 or K): drag across text" KeyboardNavigation.TabIndex="19" AutomationProperties.Name="Strikethrough tool" AutomationProperties.HelpText="Drag across words on the page to strike them through. The markup follows the text, hugging each line. Shortcut 6 or K." AutomationProperties.LabeledBy="{Binding ElementName=StrikeToolButtonLabel}"/>
@@ -1349,6 +1496,12 @@
                     <Button x:Name="ToolEraseBtn" Content="&#xE75C;" Style="{StaticResource ToolbarButton}" Click="ToolErase_Click" ToolTip="Eraser (0 or E): click an annotation to remove it" KeyboardNavigation.TabIndex="20" AutomationProperties.Name="Eraser tool" AutomationProperties.HelpText="Click an annotation to delete it. Shortcut 0 or E."/>
                     <Rectangle Width="1" Fill="{DynamicResource BorderDim}" Margin="4,6"/>
                     <Button x:Name="ToolSignatureBtn" Content="&#xEE56;" Style="{StaticResource ToolbarButton}" Click="ToolSignature_Click" ToolTip="Signature Picture (G, Alt+G)" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Signature Picture tool" AutomationProperties.HelpText="Create and place a picture of your signature. Shortcut G. Access key Alt+G." AutomationProperties.AccessKey="G" AutomationProperties.LabeledBy="{Binding ElementName=SignatureButtonLabel}"/>
+                    <Button x:Name="ToolStampBtn" Style="{StaticResource ToolbarButton}" Click="ToolStamp_Click" ToolTip="Stamp (A): place Approved, Draft, Confidential and other stamps, your own text, or a picture" KeyboardNavigation.TabIndex="21" AutomationProperties.Name="Stamp tool" AutomationProperties.HelpText="Pick a stamp in the tool bar, then click the page to place it. Shortcut A.">
+                        <Path Data="{StaticResource StampGeometry}"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2" StrokeLineJoin="Round" Fill="{x:Null}"
+                              Stretch="None" Width="16" Height="16" SnapsToDevicePixels="True"/>
+                    </Button>
                     <Button x:Name="ToolCropBtn" Content="&#xE7A8;" Style="{StaticResource ToolbarButton}" Click="ToolCrop_Click" ToolTip="Crop pages (C, Alt+C)" KeyboardNavigation.TabIndex="22" AutomationProperties.Name="Crop tool" AutomationProperties.HelpText="Drag a rectangle on the page, then apply the crop. Shortcut C. Access key Alt+C." AutomationProperties.AccessKey="C" AutomationProperties.LabeledBy="{Binding ElementName=CropToolButtonLabel}"/>
                     <!-- Measure. Content is a vector Path, not a Segoe MDL2 glyph — see the
                          MeasureRulerGeometry resource for why. The stroke binds to the button's own
@@ -1406,7 +1559,7 @@
                 </ScrollViewer>
                 <!-- Every open tab by name, so a document doesn't have to be hunted for by scrolling
                      past a long run of truncated, same-width chips once many files are open. -->
-                <Button x:Name="TabOverflowBtn" Grid.Column="1" Content="&#xE70D;"
+                <Button Grid.Column="1" Content="&#xE70D;"
                         FontFamily="Segoe MDL2 Assets" FontSize="10"
                         Width="24" Height="24" Margin="4,4,0,4" Padding="0"
                         Background="Transparent" BorderThickness="0"
@@ -1417,12 +1570,24 @@
             </Grid>
         </Border>
 
-        <Grid Grid.Row="4" x:Name="MainContentGrid" KeyboardNavigation.TabNavigation="Continue">
+        <Grid Grid.Row="4" KeyboardNavigation.TabNavigation="Continue">
             <Grid.ColumnDefinitions>
                 <!-- SidebarCol never collapses to 0 — it shrinks to 24px (the toggle strip width). -->
-                <ColumnDefinition x:Name="SidebarCol" Width="180" MinWidth="24" MaxWidth="260"/>
+                <ColumnDefinition x:Name="SidebarCol" Width="180" MinWidth="24" MaxWidth="296"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
+
+            <!-- Drag handle on the sidebar's right edge (#246). The sidebar can be widened until its
+                 thumbnails reach full size (SidebarWidth.Max, applied in code, scales with the
+                 thumbnails). Its visibility follows the sidebar's, so it is gone when the rail is
+                 collapsed and in full screen. Painted above the sidebar so it gets the pointer. -->
+            <GridSplitter x:Name="SidebarSplitter" Grid.Column="0" Width="6" Margin="0,0,-3,0"
+                          HorizontalAlignment="Right" VerticalAlignment="Stretch"
+                          ResizeDirection="Columns" ResizeBehavior="CurrentAndNext"
+                          Background="Transparent" Cursor="SizeWE" Focusable="False"
+                          Panel.ZIndex="20"
+                          Visibility="{Binding Visibility, ElementName=SidebarBorder}"
+                          AutomationProperties.Name="Resize sidebar"/>
 
             <!-- Sidebar column: inner grid splits content from permanent toggle strip.
                  Named because the app-wide UI scale (MainWindow.AppScale.cs) hangs its LayoutTransform here —
@@ -1615,7 +1780,7 @@
                                     <Grid Margin="4,0,4,6">
                                         <TextBlock Text="Recent files" FontFamily="Segoe UI" FontSize="12" FontWeight="SemiBold"
                                                    Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center"/>
-                                        <Button x:Name="ClearRecentBtn" Content="Clear recent files" Click="ClearRecent_Click"
+                                        <Button Content="Clear recent files" Click="ClearRecent_Click"
                                                 HorizontalAlignment="Right" Cursor="Hand" FontFamily="Segoe UI" FontSize="11"
                                                 Foreground="{DynamicResource TextSecondary}" Background="Transparent"
                                                 BorderThickness="0" Padding="4,1"
@@ -1777,7 +1942,7 @@
                              ToolTip="App size. Scroll to resize the menu, toolbar, tab strip and sidebar, or click to reset to 100% (Ctrl+Shift+0)."
                              AutomationProperties.Name="App size"
                              AutomationProperties.HelpText="Scales the application chrome between 70 and 250 percent. Scroll the mouse wheel to change it, or press Control Shift Plus and Control Shift Minus. Click to reset. The document page keeps its own zoom."/>
-                    <Button x:Name="StatusZoomButton" Content="{Binding Zoom.DisplayText, RelativeSource={RelativeSource AncestorType=Window}}"
+                    <Button Content="{Binding Zoom.DisplayText, RelativeSource={RelativeSource AncestorType=Window}}"
                              Style="{StaticResource DarkButton}" Padding="6,2" Margin="0,0,12,0"
                              FontFamily="Consolas" FontSize="10"
                              Click="ResetZoom_Click" ToolTip="Reset zoom to 100% (Ctrl+0)" AutomationProperties.Name="Current zoom" AutomationProperties.HelpText="Reset zoom to 100 percent. Shortcut Control zero."/>
@@ -1903,6 +2068,8 @@
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,0,0,4"/>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+O"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Open"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+W"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Close file"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+T"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Reopen closed tab"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Alt+Shift+V"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Compare two PDFs"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+N"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="New blank document"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Save"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+S"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Save As"/></Grid>
@@ -1929,6 +2096,10 @@
                                        FontFamily="Consolas" FontSize="10" FontWeight="SemiBold" Margin="0,0,0,4"/>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Z"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Undo"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Delete"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Delete selected annotation"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Shift+click / Ctrl+click"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Add a mark to the selection, or take it out"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Drag a box"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Select every mark the box touches (Shift / Ctrl adds)"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Arrow keys"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Nudge selected marks (Shift = 10 px)"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Esc"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Deselect marks"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Enter / Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Confirm / cancel text or crop (Ctrl+Enter confirms when Enter adds a line)"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+R / Ctrl+Shift+R"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Rotate selected pages CW / CCW"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+Shift+U"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Rotate selected pages 180°"/></Grid>
@@ -1938,7 +2109,10 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+F"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Find / search"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Enter / Shift+Enter"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Next / previous result"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+A"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Select all text on page"/></Grid>
-                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Copy selected text"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+C"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Copy selected marks, or selected text"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+X"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Cut selected marks"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+G / Ctrl+Shift+G"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Group / ungroup selected marks"/></Grid>
+                            <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Ctrl+V"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Paste marks, a picture or text onto this page"/></Grid>
 
                             <!-- Tool keys (1.19). Unmodified keys, live only while a document is open
                                  and the keyboard focus is not in a text box. The digits mirror the
@@ -1949,7 +2123,7 @@
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="P"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Pan / hand"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="1 / T"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Text"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="2 / X"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Edit existing text"/></Grid>
-                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="3"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Edit existing image"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="3"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Select picture"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="4 / I"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Insert image"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="5 / H"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Highlight"/></Grid>
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="6 / K"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Strikethrough"/></Grid>
@@ -1965,6 +2139,7 @@
                                  TrySelectToolByKey. This list and the rendered keyboard drifted apart
                                  once already and it was reported as a bug. -->
                             <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="M"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Measure"/></Grid>
+                            <Grid Margin="0,0,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="A"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Stamp"/></Grid>
                             <Grid Margin="0,0,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="132"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Style="{StaticResource KsKeys}" Text="Escape"/><TextBlock Grid.Column="1" Style="{StaticResource KsDesc}" Text="Step back to the Select tool"/></Grid>
 
                             <TextBlock Text="HELP" Foreground="{DynamicResource AccentGreen}"
@@ -1980,7 +2155,7 @@
         </Grid>
 
         <!-- Film grain overlay — main content area only -->
-        <Border x:Name="GrainOverlay"
+        <Border
                 Grid.Row="4"
                 IsHitTestVisible="False"
                 Opacity="0.15"

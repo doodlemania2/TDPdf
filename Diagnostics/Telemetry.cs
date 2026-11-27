@@ -59,6 +59,7 @@ namespace TDPdf.Diagnostics
         /// </summary>
         public static void Initialize(string appVersion)
         {
+            FaultSink.Handler = TrackFault;
             try
             {
                 lock (s_lock)
@@ -256,6 +257,35 @@ namespace TDPdf.Diagnostics
                 OtlpTelemetry.TrackCrash(
                     props["ExceptionType"], props["Message"], props["StackTrace"],
                     source, recoverable, props["GroupingKey"]);
+            }
+            catch { /* swallow */ }
+        }
+
+        private static readonly HashSet<string> s_faultsSeen = new();
+
+        /// <summary>
+        /// Emit a sanitised record of a failure the app handled by carrying on (a field that would
+        /// not render, a name tree it could not read). Distinct from <see cref="TrackCrash"/>: it
+        /// carries only the source, the exception type and the grouping key (no message and no
+        /// stack, which can hold a document path), is not spooled, and is sent once per source and
+        /// type per run so a failure in a render loop cannot flood the collector.
+        /// </summary>
+        public static void TrackFault(string source, Exception exception)
+        {
+            if (!IsEnabled) return;
+            try
+            {
+                string type = exception.GetType().FullName ?? "Unknown";
+                lock (s_faultsSeen)
+                {
+                    if (s_faultsSeen.Count > 200 || !s_faultsSeen.Add(source + "|" + type)) return;
+                }
+                OtlpTelemetry.TrackEvent("App.Fault", ScrubProperties(new Dictionary<string, string>
+                {
+                    ["Source"]        = source,
+                    ["ExceptionType"] = type,
+                    ["GroupingKey"]   = Sanitizer.GroupingKey(exception),
+                }));
             }
             catch { /* swallow */ }
         }

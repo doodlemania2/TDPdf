@@ -80,7 +80,7 @@ namespace TDPdf.Services
             }, cancellationToken);
         }
 
-        public Task SaveFlattenedAsync(string sourcePath, string destinationPath, IReadOnlyList<PdfPageSize> pageSizes, CancellationToken cancellationToken, Action<int, int>? progress = null)
+        public Task SaveFlattenedAsync(string sourcePath, string destinationPath, IReadOnlyList<PdfPageSize> pageSizes, CancellationToken cancellationToken, Action<int, int>? progress = null, double fixedDpi = 0)
         {
             return Task.Run(() =>
             {
@@ -96,7 +96,7 @@ namespace TDPdf.Services
                 // back all-false, which is the old, lossless behaviour.
                 bool[] jpegHints = PdfPageImageEncoder.ReadJpegPageHints(sourcePath, pageCount);
                 // Upstream #462: each page keeps its own resolution (150 floor, 600 ceiling, pixel-capped).
-                double[] pageDpis = FlattenResolution.ReadPageDpis(sourcePath, [.. pageSizes.Select(p => (p.WidthPoint, p.HeightPoint))]);
+                double[] pageDpis = FlattenResolution.ReadPageDpis(sourcePath, [.. pageSizes.Select(p => (p.WidthPoint, p.HeightPoint))], fixedDpi);
 
                 // Rasterize pages across CPU cores. Docnet/PDFium (pdfium.dll) is NOT
                 // thread-safe, so the page render is serialized behind a lock; the
@@ -380,7 +380,7 @@ namespace TDPdf.Services
                 // like any other; the protection travels on the result and is written back on save.
                 document = PdfReader.OpenAllowingUserPassword(path, password ?? string.Empty);
                 PdfProtection? protection = ReapplicableProtection(document);
-                var tempDec = Path.Combine(Path.GetTempPath(), $"tdpdf_dec_{Guid.NewGuid():N}.pdf");
+                var tempDec = TempFilePolicy.NewPath("dec");
                 document.Save(tempDec);
                 document.Close();
                 document = PdfReader.Open(tempDec, PdfDocumentOpenMode.Modify);
@@ -450,8 +450,7 @@ namespace TDPdf.Services
         private static PdfOpenResult? TryOpenViaPdfiumRepair(string path, bool ownerRestricted,
                                                              CancellationToken cancellationToken)
         {
-            string prefix = ownerRestricted ? "tdpdf_unlock_" : "tdpdf_repair_";
-            string repairedPath = Path.Combine(Path.GetTempPath(), $"{prefix}{Guid.NewGuid():N}.pdf");
+            string repairedPath = TempFilePolicy.NewPath(ownerRestricted ? "unlock" : "repair");
             PdfDocument? document = null;
             try
             {
@@ -502,7 +501,7 @@ namespace TDPdf.Services
                 const double dpi = 150.0;
                 double scale = dpi / 72.0;
 
-                tempPath = Path.Combine(Path.GetTempPath(), $"tdpdf_recover_{Guid.NewGuid():N}.pdf");
+                tempPath = TempFilePolicy.NewPath("recover");
 
                 using (var outDoc = new PdfDocument())
                 using (var docReader = DocLib.Instance.GetDocReader(path, new PageDimensions(scale)))
@@ -615,7 +614,11 @@ namespace TDPdf.Services
                 {
                     int width = pageReader.GetPageWidth();
                     int height = pageReader.GetPageHeight();
-                    return PageRaster.ToFrozenBitmap(pageReader.GetImage(), width, height, 96, 96);
+                    var pixels = pageReader.GetImage();
+                    // Display-only: a thumbnail is shown on the monitor, so it takes the monitor's
+                    // profile like the page does. A no-op on an sRGB monitor.
+                    DisplayColor.Apply(pixels, width, height);
+                    return PageRaster.ToFrozenBitmap(pixels, width, height, 96, 96);
                 }
             }
             catch

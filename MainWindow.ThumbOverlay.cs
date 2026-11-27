@@ -206,10 +206,11 @@ namespace TDPdf
                     if (sa.ImageData is not null)
                     {
                         if (DecodeThumbImage(sa.ImageData) is { } img)
-                            dc.DrawImage(img, new Rect(sa.Position.X, sa.Position.Y, sw, sh));
+                            dc.DrawImage(img, new Rect(sa.Position.X, sa.Position.Y, sw, sh - SigStrip(sa) * sa.Scale));
                         break;
                     }
-                    var pen = ThumbPen(Colors.Black, 2 * sa.Scale);
+                    var (tr, tg, tb) = SignatureInk.ResolveColor(sa.InkColor);
+                    var pen = ThumbPen(Color.FromRgb(tr, tg, tb), SignatureInk.ResolvePenWidth(sa.PenWidth) * sa.Scale);
                     foreach (var stroke in sa.Strokes)
                     {
                         if (stroke.Count < 2) continue;
@@ -217,6 +218,14 @@ namespace TDPdf
                                                                 sa.Position.Y + pt.Y * sa.Scale)).ToList();
                         dc.DrawGeometry(null, pen, ThumbPolyline(pts, false));
                     }
+                    break;
+                }
+                case StampAnnotation stamp:
+                {
+                    if (!TryGetPlacedSize(stamp, out _, out _)) break;
+                    dc.PushTransform(new TranslateTransform(stamp.Position.X, stamp.Position.Y));
+                    DrawStamp(dc, stamp, dpi);
+                    dc.Pop();
                     break;
                 }
                 case ImageAnnotation pic:

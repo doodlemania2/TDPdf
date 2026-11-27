@@ -115,12 +115,7 @@ namespace TDPdf.Services
             try
             {
                 using var key = Registry.CurrentUser.OpenSubKey(StatePath);
-                if (key?.GetValue(LastCheckValue) is not string stamp) return true;
-                if (!DateTime.TryParse(stamp, System.Globalization.CultureInfo.InvariantCulture,
-                        System.Globalization.DateTimeStyles.RoundtripKind, out var last)) return true;
-                // A stamp in the future means the clock moved backwards; treat it as due rather
-                // than letting a bad clock disable checking until it catches up.
-                return DateTime.UtcNow - last >= CheckInterval || last > DateTime.UtcNow;
+                return UpdateCheckPolicy.IntervalElapsed(key?.GetValue(LastCheckValue) as string, DateTime.UtcNow, CheckInterval);
             }
             catch { return true; }
         }
@@ -192,7 +187,7 @@ namespace TDPdf.Services
         {
             try
             {
-                var psi = new ProcessStartInfo("schtasks.exe")
+                var psi = new ProcessStartInfo(SystemTool.Path("schtasks.exe"))
                 {
                     // "Schedule #3" is the enrollment client's own periodic sync.
                     Arguments = $"/Run /TN \"\\Microsoft\\Windows\\EnterpriseMgmt\\{enrollmentId}\\Schedule #3 created by enrollment client\"",
@@ -226,7 +221,7 @@ namespace TDPdf.Services
             {
                 if (!File.Exists(installedExePath)) return false;
                 var info = FileVersionInfo.GetVersionInfo(installedExePath);
-                return Version.TryParse(info.FileVersion, out var onDisk) && onDisk > runningVersion;
+                return UpdateCheckPolicy.IsNewerThanRunning(info.FileVersion, runningVersion);
             }
             catch { return false; }
         }

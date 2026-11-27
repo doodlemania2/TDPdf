@@ -277,7 +277,13 @@ namespace TDPdf
                 // highlight) gets selected, exactly as it did before flowing selection existed.
                 // A markup tool's click just drops the empty gesture.
                 ClearTextSelection();
-                if (commitTool is null && clickAnnot is not null) SelectAnnotation(clickAnnot, clickBounds);
+                if (commitTool is null && clickAnnot is not null)
+                {
+                    if (clickAnnot.GroupId is not null)
+                        SelectMarks(ExpandToGroups(clickAnnot.PageIndex, new[] { clickAnnot }));
+                    else
+                        SelectAnnotation(clickAnnot, clickBounds);
+                }
                 return;
             }
 

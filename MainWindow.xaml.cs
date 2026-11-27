@@ -219,6 +219,7 @@ namespace TDPdf
         // SetTool(Select), which clears the measurement, and a ruler the user has to re-drag after
         // switching documents is exactly what a ruler should do.
         private readonly Button _toolMeasureBtn = null!;
+        private readonly Button _toolStampBtn = null!;
 
         /// <summary>True only between mouse-down and mouse-up on the Measure tool.</summary>
         private bool _isMeasuring;
@@ -359,7 +360,7 @@ namespace TDPdf
         // Signatures are stored under %LocalAppData%\TDPdf\ so the file stays
         // writable when the EXE is installed machine-wide under %ProgramFiles%
         // (no admin rights on that directory). A legacy file next to the EXE
-        // from older builds is migrated on first read.
+        // from older builds is migrated on first read, but only from TDPdf's install folder.
         private static readonly string SignatureDir = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TDPdf");
         private static readonly string SignatureFile = System.IO.Path.Combine(SignatureDir, "signatures.json");
@@ -393,6 +394,7 @@ namespace TDPdf
         private Border _recentFilesBox = null!;
         private StackPanel _recentFilesList = null!;
         private MenuItem _removePasswordMenuItem = null!;
+        private MenuItem _reopenClosedTabMenuItem = null!;
         // Electronic Signature submenu (MainWindow.ESignature.cs); visibility and enablement are
         // set in FileMenu_SubmenuOpened.
         private MenuItem _eSignatureMenuItem = null!;
@@ -415,11 +417,22 @@ namespace TDPdf
         private BitmapSource? _primaryPageBitmap;
 
         // ============================================================
-        // View mode (app-wide). Single and Grid behave exactly as the original
-        // single-page / grid layouts did; Continuous and TwoPage are additive.
+        // View mode (per tab, #246). Single and Grid behave exactly as the original
+        // single-page / grid layouts did; Continuous, TwoPage and TwoPageContinuous are additive.
+        // _viewMode is the ACTIVE tab's mode: DocumentContext.Mode keeps each tab's own, and
+        // ActivateContext puts the incoming tab's back. _lastChosenViewMode is the last mode the
+        // user picked (the persisted Settings.ViewMode), which a tab with no mode of its own yet
+        // takes on first use.
         // ============================================================
-        private enum ViewMode { Single, Continuous, TwoPage, Grid }
+        private enum ViewMode { Single, Continuous, TwoPage, TwoPageContinuous, Grid }
         private ViewMode _viewMode = ViewMode.Grid;
+        private ViewMode _lastChosenViewMode = ViewMode.Grid;
+
+        /// <summary>True in the two scrolling strips: Continuous and Two pages, continuous.</summary>
+        private bool IsContinuousFamily => _viewMode is ViewMode.Continuous or ViewMode.TwoPageContinuous;
+
+        /// <summary>True when the strip lays pages out two to a row.</summary>
+        private bool IsPairedStrip => _viewMode == ViewMode.TwoPageContinuous;
 
         // ── Two-Page "book layout" (upstream KillerPDF #193) ───────────────────────────────────
         // Off (default) is the pairing Two-Page has always used: the primary page plus the one
@@ -448,7 +461,8 @@ namespace TDPdf
         // Continuous-view state.
         private StackPanel _continuousPanel = null!;
         private CancellationTokenSource? _continuousRenderCts;
-        private readonly List<double> _continuousTops = [];
+        private readonly List<double> _continuousTops = [];   // top of each page's row, in strip units
+        private readonly List<Border> _continuousSlots = [];   // the slot of each page (see MainWindow.ContinuousView.cs)
         private int _continuousScrollTarget = -1; // re-scroll here once true heights are known
         private double _continuousPageW;
         private bool _suppressContinuousScrollSync;
@@ -533,6 +547,13 @@ namespace TDPdf
             // whether a second LAUNCH folds into this window, but once two windows exist (via a
             // tab tear-off, or SingleInstanceTabs being off) either one can be a drop target.
             _windowTransferServer = new WindowTransferServer(Dispatcher, ImportTabFromAnotherWindowAsync);
+            // File dialogs list the active document's folder first; warm the recent-folder checks in the background.
+            FileDialogs.DocumentFolderProvider = () =>
+            {
+                string? original = _ctx.OriginalPath;
+                return string.IsNullOrEmpty(original) ? null : System.IO.Path.GetDirectoryName(original);
+            };
+            FileDialogs.WarmUp();
             var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
             if (v != null) VersionLabel.Text = $"v{v.Major}.{v.Minor}.{v.Build}";
             _annotationCanvas = (Canvas)FindName("AnnotationCanvas")!;
@@ -554,6 +575,7 @@ namespace TDPdf
             _toolRedactBtn = (Button)FindName("ToolRedactBtn")!;
             _toolFormBtn = (Button)FindName("ToolFormBtn")!;
             _toolMeasureBtn = (Button)FindName("ToolMeasureBtn")!;
+            _toolStampBtn = (Button)FindName("ToolStampBtn")!;
             _toolPanBtn = (Button)FindName("ToolPanBtn")!;
             _toolEraseBtn = (Button)FindName("ToolEraseBtn")!;
             _toolShapeBtn = (Button)FindName("ToolShapeBtn")!;
@@ -568,6 +590,7 @@ namespace TDPdf
             _recentFilesBox = (Border)FindName("RecentFilesBox")!;
             _recentFilesList = (StackPanel)FindName("RecentFilesList")!;
             _removePasswordMenuItem = (MenuItem)FindName("RemovePasswordMenuItem")!;
+            _reopenClosedTabMenuItem = (MenuItem)FindName("ReopenClosedTabMenuItem")!;
             _eSignatureMenuItem = (MenuItem)FindName("ESignatureMenuItem")!;
             _eSignSendMenuItem = (MenuItem)FindName("ESignSendMenuItem")!;
             _eSignSelfMenuItem = (MenuItem)FindName("ESignSelfMenuItem")!;
@@ -577,13 +600,14 @@ namespace TDPdf
             _invertColorsMenuItem = (MenuItem)FindName("InvertColorsMenuItem")!;
             _invertImagesMenuItem = (MenuItem)FindName("InvertImagesMenuItem")!;
             _twoPageBookMenuItem = (MenuItem)FindName("TwoPageBookMenuItem")!;
+            BuildPageViewMenu();
             _pageBadge = (Border)FindName("PageBadge")!;
             _pageBadgeText = (TextBlock)FindName("PageBadgeText")!;
             _pageBadgeSlide = (TranslateTransform)FindName("PageBadgeSlide")!;
             _continuousPanel = (StackPanel)FindName("ContinuousPanel")!;
             // Restore the persisted view mode (defaults to Grid, matching the original layout).
             if (Enum.TryParse<ViewMode>(TDPdf.Properties.Settings.Default.ViewMode, out var savedVm))
-                _viewMode = savedVm;
+                _viewMode = _lastChosenViewMode = savedVm;
             _gridViewToggle.IsChecked = _viewMode == ViewMode.Grid;
             // #193: restore the persisted Two-Page book layout and light its View-menu check.
             try { _twoPageBook = TDPdf.Properties.Settings.Default.TwoPageBookLayout; }
@@ -646,8 +670,10 @@ namespace TDPdf
             CommandBindings.Add(new CommandBinding(CloseOtherTabsCommand, (_, _) => CloseOtherTabs(_ctx)));
             InitDocInvert();   // #135: restore the persisted display-only dark mode + light the rail moon
             InitAppScale();    // upstream v1.6.5: restore the persisted app-wide chrome scale
+            InitPairedSidebar();   // #246: two-column Pages sidebar, and the width it may be dragged to
             InitPageSizeReadout();   // upstream v1.8.5: restore the footer page-size chip's unit
             ApplyLayoutShortcutLabels();   // #153: spell the zoom chords for THIS keyboard layout
+            InitSideBySide();   // #232: View ▸ Split View, and everything the read-only window turns off
             LoadSignatures();
             BuildContextMenu();
             SetTool(EditTool.Select);
@@ -690,21 +716,23 @@ namespace TDPdf
                 // via FinishOpenFileAsync.
                 SyncSidebarToDocState(hasDoc: _doc is not null, startup: true);
 
-                var args = Environment.GetCommandLineArgs();
-                // GetCommandLineArgs()[0] is always the exe path; --new-window (tab tear-off /
-                // "Move to New Window") shifts the file argument over by one and, being a
-                // single-purpose window spun up around one specific document, must not then pull in
-                // whatever multi-tab session was last saved from some unrelated window.
-                bool isTearOffLaunch = args.Length > 1 &&
-                    string.Equals(args[1], "--new-window", StringComparison.OrdinalIgnoreCase);
-                int fileArgIndex = isTearOffLaunch ? 2 : 1;
+                // --new-window (tab tear-off / "Move to New Window") and --read-only (split view) windows
+                // are single-purpose windows spun up around one specific document, so they must not
+                // pull in whatever multi-tab session was last saved from some unrelated window.
+                // WindowLaunch reads the switches in any order and finds the document among them.
+                bool isTearOffLaunch = _launch.SeparateWindow;
                 // Only the first TDPdf window owns (and restores) the saved session; see SaveSession.
                 bool ownsSession = RegisterSessionWindow() && !isTearOffLaunch;
                 if (ownsSession) ClaimSavedSession();
-                if (args.Length > fileArgIndex && System.IO.File.Exists(args[fileArgIndex]))
-                    await OpenRequestedPathAsync(args[fileArgIndex]);   // an explicitly-requested file wins over the saved session
+                if (_launch.Path is { } launchPath && System.IO.File.Exists(launchPath))
+                {
+                    await OpenRequestedPathAsync(launchPath);   // an explicitly-requested file wins over the saved session
+                    // The saved session is not offered and is left alone, so it is still there the
+                    // next time TDPdf starts without a file (HandleSessionOnClose skips it).
+                    _sessionPending = ownsSession && _sessionContributed.Count > 0;
+                }
                 else if (ownsSession)
-                    await RestoreSessionAsync();     // otherwise reopen last session's tabs when enabled
+                    await OfferSessionRestoreAsync();   // otherwise bring last session's tabs back, or offer to
 
                 if (App.IsPortable())
                 {
@@ -720,6 +748,9 @@ namespace TDPdf
                 // behind, still hitting a bug every one of those releases had fixed.
                 var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
                               ?? new Version(0, 0, 0, 0);
+                // Before the update check stamps its first run, and not for a tear-off window, which
+                // is spun up around one document.
+                if (!isTearOffLaunch) ShowWhatsNewIfUpdated(running);
                 TDPdf.Services.UpdateCheck.StartBackgroundCheck(running);
 
                 // #134: an update CAN land under a running instance — Windows refuses to overwrite
@@ -905,6 +936,7 @@ namespace TDPdf
             _hwndSource?.AddHook(WndProc);
             InitializeTaskbarIcons(hwnd);
             ApplyNativeTitleBarTheme(hwnd);
+            InitMonitorColor();   // MainWindow.MonitorColor.cs
 
             // Custom chrome (AllowsTransparency=True, see ApplyInitialWindowChromeSettings) makes
             // this a layered window, and DWM cannot generate its own live taskbar thumbnail /
@@ -986,6 +1018,7 @@ namespace TDPdf
 
         private const int WM_GETMINMAXINFO = 0x0024;
         private const int WM_DPICHANGED = 0x02E0;
+        private const int WM_DISPLAYCHANGE = 0x007E;
         private const int WM_MOUSEHWHEEL = 0x020E;
         private const int WM_KEYDOWN = 0x0100;
         private const int VK_ESCAPE = 0x1B;
@@ -1040,6 +1073,12 @@ namespace TDPdf
             {
                 WmDpiChanged(hwnd, wParam, lParam);
                 handled = true;
+                Dispatcher.BeginInvoke(new Action(RefreshMonitorColor));   // the window may have landed on another monitor
+            }
+            else if (msg == WM_DISPLAYCHANGE)
+            {
+                // Observe only: WPF still needs to see it. A monitor was added, removed or reconfigured.
+                Dispatcher.BeginInvoke(new Action(RefreshMonitorColor));
             }
             else if (msg == WM_MOUSEHWHEEL)
             {
@@ -1371,6 +1410,10 @@ namespace TDPdf
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int left, top, right, bottom; }
 
+        /// <summary>A monitor rectangle in device pixels as device-independent units, dividing by the given DPI scales.</summary>
+        private static Rect RectToDip(RECT r, double scaleX, double scaleY)
+            => new(r.left / scaleX, r.top / scaleY, (r.right - r.left) / scaleX, (r.bottom - r.top) / scaleY);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct MINMAXINFO
         {
@@ -1500,10 +1543,8 @@ namespace TDPdf
             IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
             GetMonitorInfo(mon, ref info);
-            var r = info.rcMonitor;
             var dpi = VisualTreeHelper.GetDpi(this);
-            return new Rect(r.left / dpi.DpiScaleX, r.top / dpi.DpiScaleY,
-                            (r.right - r.left) / dpi.DpiScaleX, (r.bottom - r.top) / dpi.DpiScaleY);
+            return RectToDip(info.rcMonitor, dpi.DpiScaleX, dpi.DpiScaleY);
         }
 
         // All state belonging to one open PDF (one tab). The shared UI controls
@@ -1660,11 +1701,16 @@ namespace TDPdf
             public double ViewZoomLevel = 1.0;
             public ZoomFitMode ViewFitMode = ZoomFitMode.None;
             public bool ViewManualZoomIntent;   // mirrors MainWindow._manualZoomIntent (#201)
-            // The view mode the offsets were captured in. View mode is app-wide, so it can change
-            // while a tab sits in the background, and an offset into the continuous strip means
-            // nothing in Grid — a mismatch drops the resume instead of scrolling somewhere
-            // arbitrary.
+            // The view mode the offsets were captured in. The tab's mode (Mode, below) normally
+            // cannot change while it sits in the background, but a reload can, and an offset into
+            // the continuous strip means nothing in Grid — a mismatch drops the resume instead of
+            // scrolling somewhere arbitrary.
             public ViewMode ViewModeAtCapture = ViewMode.Single;
+
+            // This tab's own page view (#246). Null until the tab is first shown, when it takes the
+            // last mode the user chose; from then on it is only changed by choosing a mode while
+            // this tab is active, and switching to the tab brings it back.
+            public ViewMode? Mode;
 
             // The clickable tab-header chip (built lazily by RebuildTabStrip).
             public Border? Chip;
@@ -1971,8 +2017,10 @@ namespace TDPdf
                     _portableBadge.Visibility = Visibility.Visible;
                 }
             }
-            else if (choice == MessageBoxResult.No)
+            else if (choice == MessageBoxResult.No && PortableInstallPolicy.CanUninstall(offer))
             {
+                // The prompt only ever reaches here for an install this user owns, which is exactly
+                // what CanUninstall decides (tests/PdfCore/PortableInstall.cs).
                 App.UninstallFromPortable(this);
                 RefreshPortableBadge();
             }
@@ -2092,7 +2140,7 @@ namespace TDPdf
             CaptureViewState();
             try
             {
-                if (TDPdf.Properties.Settings.Default.ReopenSession != "No")
+                if (TDPdf.Properties.Settings.Default.ReopenSession != "No" && !_sessionPending)
                     SaveSession(OpenSessionFiles());
             }
             catch { /* never hold up the sign-out over the session list */ }
@@ -2139,6 +2187,7 @@ namespace TDPdf
             ThemeManager.ThemeChanged -= ThemeManager_ThemeChanged;
             _hwndSource?.RemoveHook(WndProc);
             _windowTransferServer?.Dispose();
+            DisposeSideBySide();
             base.OnClosing(e);
         }
 
@@ -2217,6 +2266,13 @@ namespace TDPdf
                     active ?? "");
         }
 
+        /// <summary>The saved view states as they are on disk now (see <see cref="ReadSavedSession"/>).</summary>
+        private static string ReadSavedViewStates()
+        {
+            try { return new TDPdf.Properties.Settings().SessionViewStates ?? ""; }
+            catch { return TDPdf.Properties.Settings.Default.SessionViewStates ?? ""; }
+        }
+
         /// <summary>
         /// First window only: takes responsibility for the session left by the last run, so that
         /// closing this window replaces it (as a lone window always did) rather than adding to it.
@@ -2236,39 +2292,22 @@ namespace TDPdf
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // On close, remember (or forget) the open documents so the next launch can restore them.
-        // Preference "Yes" always remembers, "No" never does, "Ask" prompts once (with an optional
-        // "remember my choice" that locks the answer). Forgetting drops this window's documents;
-        // turning the preference to "No" clears the saved paths entirely, for privacy.
+        // On close, remember (or forget) the open documents so the next launch can offer them back.
+        // "No" never remembers (and clears what was saved, for privacy); anything else remembers.
+        // A saved session this window has not answered yet (TDPdf was launched with a file, or the
+        // restore bar was never used) is left exactly as it was, so it is still there next time.
         private void HandleSessionOnClose()
         {
+            if (_sessionPending) return;
+            if (ReadOnlyGate.ProcessIsReadOnly) return;   // a read-only view is a second look at a file another window owns
             var openFiles = OpenSessionFiles();
-            if (openFiles.Count == 0) { SaveSession(openFiles); return; }
-
-            bool reopen;
-            switch (TDPdf.Properties.Settings.Default.ReopenSession)
+            if (TDPdf.Properties.Settings.Default.ReopenSession == "No")
             {
-                case "Yes": reopen = true;  break;
-                case "No":  reopen = false; break;
-                default:
-                    string msg = openFiles.Count == 1
-                        ? "Reopen this document next time you open TDPdf?"
-                        : $"Reopen these {openFiles.Count} documents next time you open TDPdf?";
-                    var (res, remember) = TdpDialog.ShowWithCheckbox(
-                        this, msg, "Remember my choice", "TDPdf",
-                        MessageBoxButton.YesNo, MessageBoxImage.Question);
-                    reopen = res == MessageBoxResult.Yes;
-                    if (remember)
-                    {
-                        TDPdf.Properties.Settings.Default.ReopenSession = reopen ? "Yes" : "No";
-                        TDPdf.Properties.Settings.Default.Save();
-                    }
-                    break;
+                if (openFiles.Count > 0) ClearSavedSession();
+                else SaveSession(openFiles);
+                return;
             }
-
-            if (reopen) SaveSession(openFiles);
-            else if (TDPdf.Properties.Settings.Default.ReopenSession == "No") ClearSavedSession();
-            else SaveSession(new List<string>());   // declined this once: forget only this window's
+            SaveSession(openFiles);
         }
 
         /// <summary>Merges this window's documents into the saved session; see the block comment above.</summary>
@@ -2284,12 +2323,17 @@ namespace TDPdf
                     : merged.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, savedActive)) ? savedActive
                     : "";
                 _sessionContributed = TDPdf.Services.FilePathPolicy.NormalizeDistinct(openFiles);
+                var mineStates = _tabs.Select(SnapshotTabState).OfType<TDPdf.Services.TabViewState>()
+                                .Where(t => openFiles.Any(f => TDPdf.Services.FilePathPolicy.SamePath(f, t.Path)));
+                string states = TDPdf.Services.SessionState.Merge(ReadSavedViewStates(), merged, mineStates);
                 if (merged.SequenceEqual(saved, StringComparer.OrdinalIgnoreCase)
-                    && string.Equals(active, savedActive, StringComparison.OrdinalIgnoreCase))
+                    && string.Equals(active, savedActive, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(states, ReadSavedViewStates(), StringComparison.Ordinal))
                     return;   // nothing changed: leave user.config alone
                 var s = TDPdf.Properties.Settings.Default;
                 s.SessionFiles = string.Join("|", merged);
                 s.SessionActiveFile = active;
+                s.SessionViewStates = states;
                 s.Save();
             });
         }
@@ -2301,30 +2345,49 @@ namespace TDPdf
                 && ReadSavedSession().Files.Count == 0) return;   // nothing to clear
             s.SessionFiles = "";
             s.SessionActiveFile = "";
+            s.SessionViewStates = "";
             s.Save();
         }
 
         /// <summary>
-        /// Reopens the documents saved from the previous session as tabs, then re-selects the tab that was
-        /// active last time. Skipped when the user opted out ("No"), when nothing was saved, or (by the
-        /// caller) when a file was passed on the command line — that file takes precedence over the session —
-        /// or when this is not the first TDPdf window (the first one already restored it).
+        /// Reopens the documents saved from the previous session as tabs, each back on its page and
+        /// zoom, then re-selects the tab that was active last time. Files that no longer exist are
+        /// skipped and named in the status line; a password-protected file asks for its password
+        /// like any other open (nothing is ever stored for it). Only the first TDPdf window ever
+        /// calls this, so several windows' tabs all come back into that one window.
         /// </summary>
         private async Task RestoreSessionAsync()
         {
-            if (TDPdf.Properties.Settings.Default.ReopenSession == "No") return;
-
+            _sessionPending = false;
+            HideSessionRestoreBar();
             // The list ClaimSavedSession just read under the lock, rather than Settings.Default's
-            // startup copy.
-            var files = _sessionContributed
-                .Where(System.IO.File.Exists)
-                .ToList();
-            if (files.Count == 0) return;
+            // startup copy. Working copies under %TEMP% are never reopened on their own.
+            var (files, missing) = TDPdf.Services.SessionState.SplitExisting(
+                _sessionContributed, System.IO.File.Exists, System.IO.Path.GetTempPath());
+            if (files.Count == 0)
+            {
+                if (missing.Count > 0) ReportSessionSkipped(0, missing);
+                return;
+            }
 
-            foreach (var f in files)
-                await OpenInTabAsync(f);
-
+            var states = TDPdf.Services.SessionState.Parse(ReadSavedViewStates());
             string active = ReadSavedSession().Active;
+            // Each tab comes back in the view it was saved in (#246).
+            int restored = 0;
+            var failed = new List<string>();
+            foreach (var f in files)
+            {
+                await OpenInTabAsync(f);
+                if (_ctx.Doc is null || !TDPdf.Services.FilePathPolicy.SamePath(_ctx.OriginalPath, f))
+                {
+                    failed.Add(f);   // not a PDF any more, damaged, or the password prompt was cancelled
+                    continue;
+                }
+                restored++;
+                var state = TDPdf.Services.SessionState.For(states, f);
+                await ApplyTabViewStateAsync(state, applyViewMode: true);
+            }
+
             if (!string.IsNullOrEmpty(active))
             {
                 var target = _tabs.FirstOrDefault(t =>
@@ -2335,6 +2398,20 @@ namespace TDPdf
                     RebuildTabStrip();
                 }
             }
+            ReportSessionSkipped(restored, missing, failed);
+        }
+
+        private void ReportSessionSkipped(int restored, List<string> missing, List<string>? failed = null)
+        {
+            string opened = restored == 1 ? "Restored 1 tab" : $"Restored {restored} tabs";
+            string Names(List<string> paths) => paths.Count <= 3
+                ? string.Join(", ", paths.Select(p => System.IO.Path.GetFileName(p)))
+                : $"{string.Join(", ", paths.Take(3).Select(p => System.IO.Path.GetFileName(p)))} and {paths.Count - 3} more";
+            var notes = new List<string>();
+            if (missing.Count > 0) notes.Add($"{Names(missing)} no longer exist{(missing.Count == 1 ? "s" : "")}");
+            if (failed is { Count: > 0 }) notes.Add($"{Names(failed)} could not be opened");
+            if (notes.Count == 0) { SetStatus(opened); return; }
+            SetStatusHeld($"{opened}; {string.Join("; ", notes)}", 12000);
         }
 
         // ============================================================
@@ -2348,17 +2425,11 @@ namespace TDPdf
 
         private void ShowSettingsDialog()
         {
-            var win = new Window
-            {
-                Title = "Settings",
-                Width = 360,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = BrushResource("BgPanel"),
-                Foreground = BrushResource("TextPrimary")
-            };
+            // The shared dialog shell (design width 360 at scale 1), so this follows the app size and
+            // stays on screen. The settings list can be taller than a small screen, so it scrolls
+            // within the room the shell leaves.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Settings", 360);
+            win.Foreground = BrushResource("TextPrimary");
 
             var panel = new StackPanel { Margin = new Thickness(20, 16, 20, 16) };
             panel.Children.Add(new TextBlock
@@ -2398,7 +2469,7 @@ namespace TDPdf
 
             panel.Children.Add(new TextBlock
             {
-                Text = "Page view",
+                Text = "Page view (this tab, and new tabs)",
                 FontWeight = FontWeights.SemiBold,
                 Foreground = BrushResource("TextPrimary"),
                 Margin = new Thickness(0, 0, 0, 8)
@@ -2410,6 +2481,7 @@ namespace TDPdf
                 (ViewMode.Single,     "Single page"),
                 (ViewMode.Continuous, "Continuous scroll"),
                 (ViewMode.TwoPage,    "Two pages"),
+                (ViewMode.TwoPageContinuous, "Two pages, continuous"),
                 (ViewMode.Grid,       "Grid"),
             })
             {
@@ -2428,6 +2500,16 @@ namespace TDPdf
                 };
                 viewModeGroup.Children.Add(vmRadio);
             }
+            var twoColumnSidebar = new CheckBox
+            {
+                Content = "Two-column page thumbnails in the sidebar",
+                IsChecked = _pairedSidebar,
+                Foreground = BrushResource("TextPrimary"),
+                Margin = new Thickness(0, 4, 0, 6)
+            };
+            twoColumnSidebar.Checked += (_, _) => { if (!_pairedSidebar) SetPairedSidebar(true, persist: true); };
+            twoColumnSidebar.Unchecked += (_, _) => { if (_pairedSidebar) SetPairedSidebar(false, persist: true); };
+            panel.Children.Add(twoColumnSidebar);
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
@@ -2471,6 +2553,25 @@ namespace TDPdf
             enterNewLine.Checked += EnterNewLineChanged;
             enterNewLine.Unchecked += EnterNewLineChanged;
             panel.Children.Add(enterNewLine);
+            AddWhatsNewSettingsRow(panel);   // MainWindow.WhatsNew.cs
+
+            var alwaysRestore = new CheckBox
+            {
+                Content = "Always restore last session",
+                IsChecked = TDPdf.Properties.Settings.Default.ReopenSession == "Yes",
+                IsEnabled = TDPdf.Properties.Settings.Default.ReopenSession != "No",
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Reopen the tabs that were open when TDPdf last closed, without asking. Off, TDPdf offers them in a bar at launch.",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            void AlwaysRestoreChanged(object? s, RoutedEventArgs e)
+            {
+                TDPdf.Properties.Settings.Default.ReopenSession = alwaysRestore.IsChecked == true ? "Yes" : "Ask";
+                try { TDPdf.Properties.Settings.Default.Save(); } catch { /* the choice still holds for this session */ }
+            }
+            alwaysRestore.Checked += AlwaysRestoreChanged;
+            alwaysRestore.Unchecked += AlwaysRestoreChanged;
+            panel.Children.Add(alwaysRestore);
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 8, 0, 12) });
 
@@ -2495,6 +2596,29 @@ namespace TDPdf
             forgetRecent.Checked += ForgetRecentFilesSettingChanged;
             forgetRecent.Unchecked += ForgetRecentFilesSettingChanged;
             panel.Children.Add(forgetRecent);
+
+            // The switch behind session restore: with it on, TDPdf keeps no record of which
+            // documents were open, and turning it on empties what was kept.
+            var forgetSession = new CheckBox
+            {
+                Content = "Don't remember open documents between sessions",
+                IsChecked = TDPdf.Properties.Settings.Default.ReopenSession == "No",
+                Foreground = BrushResource("TextPrimary"),
+                ToolTip = "Stops TDPdf recording which documents were open when it closed. Turning this on also clears the last session.",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            void ForgetSessionChanged(object? s, RoutedEventArgs e)
+            {
+                bool forget = forgetSession.IsChecked == true;
+                TDPdf.Properties.Settings.Default.ReopenSession = forget ? "No"
+                    : alwaysRestore.IsChecked == true ? "Yes" : "Ask";
+                alwaysRestore.IsEnabled = !forget;
+                if (forget) { _sessionPending = false; ClearSavedSession(); HideSessionRestoreBar(); }
+                else { try { TDPdf.Properties.Settings.Default.Save(); } catch { } }
+            }
+            forgetSession.Checked += ForgetSessionChanged;
+            forgetSession.Unchecked += ForgetSessionChanged;
+            panel.Children.Add(forgetSession);
 
             // The read-side companion to the link confirmation's "Don't ask again" checkbox. Without
             // this the opt-out is a one-way trapdoor: ConfirmOpenLink is the only writer of
@@ -2542,6 +2666,8 @@ namespace TDPdf
             });
 
             panel.Children.Add(new Separator { Margin = new Thickness(0, 0, 0, 12) });
+            AddMenuSettingsSection(panel);         // MainWindow.ContextMenus.cs
+            AddColorSettingsSection(panel);        // MainWindow.MonitorColor.cs
             AddESignatureSettingsSection(panel);   // MainWindow.ESignature.cs
 
             var note = new TextBlock
@@ -2563,7 +2689,13 @@ namespace TDPdf
             close.Click += (_, _) => win.Close();
             panel.Children.Add(close);
 
-            win.Content = panel;
+            shellBody.Children.Add(new ScrollViewer
+            {
+                Content = panel,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = TdpDialog.ScrollBodyMaxHeight(this),
+            });
             win.ShowDialog();
         }
 
@@ -2692,11 +2824,7 @@ namespace TDPdf
         /// at creation time like every other overlay brush, so a wash built after a theme switch uses the
         /// new theme's accent (a hardcoded dark-theme green is unreadable on the Light theme).
         /// </summary>
-        private SolidColorBrush AccentWash(byte alpha)
-        {
-            var c = BrushResource("AccentGreen").Color;
-            return new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
-        }
+        private SolidColorBrush AccentWash(byte alpha) => TDPdf.Services.ThemeBrushes.Wash(BrushResource("AccentGreen").Color, alpha);
 
         // ============================================================
         // Context menu
@@ -2722,80 +2850,6 @@ namespace TDPdf
             }
             bmp.WritePixels(new System.Windows.Int32Rect(0, 0, size, size), pixels, size * 4, 0);
             GrainBrush.ImageSource = bmp;
-        }
-
-        private void BuildContextMenu()
-        {
-            var menu = new ContextMenu();
-
-            menu.Items.Add(MakeMenuItem("_Copy Text", (s, e) => CopySelectedText(), "Ctrl+C", "Copy selected text to the clipboard", "\uE8C8"));
-            menu.Items.Add(MakeMenuItem(
-                PageList.SelectedItems.Count > 1 ? "OCR Selected Pages to Clip_board" : "OCR Page to Clip_board",
-                (s, e) => ObserveOcr(OcrPagesToClipboard(SelectedPageIndicesForOcr())),
-                "Ctrl+Shift+O", "Recognize the current page's text with OCR and copy it to the clipboard", "\uEE6F"));
-            menu.Items.Add(MakeMenuItem("_Print", (s, e) => Print_Click(s!, e), "Ctrl+P", "Print the current PDF", "\uE749"));
-            menu.Items.Add(new Separator());
-            // Tool rows carry the toolbar's glyph and the tool's single-key shortcut (see OnPreviewKeyDown).
-            menu.Items.Add(MakeMenuItem("_Select Tool", (s, e) => SetTool(EditTool.Select), "V", "Switch to the select tool", "\uE8B3"));
-            menu.Items.Add(MakeMenuItem("_Text Tool", (s, e) => SetTool(EditTool.Text), "1", "Switch to the text tool", "\uE8D2"));
-            menu.Items.Add(MakeMenuItem("Edit Existing Text", (s, e) => SetTool(EditTool.EditText), "2", "Switch to the existing text edit tool", "\uE104"));
-            menu.Items.Add(MakeMenuItem("Edit Existing Image", (s, e) => SetTool(EditTool.EditImage), "3", "Switch to the existing image edit tool", "\uEB9F"));
-            menu.Items.Add(MakeMenuItem("_Highlight Tool", (s, e) => SetTool(EditTool.Highlight), "5", "Switch to the highlight tool", "\uED56"));
-            menu.Items.Add(MakeMenuItem("_Draw Tool", (s, e) => SetTool(EditTool.Draw), "9", "Switch to the draw tool", "\uED63"));
-            menu.Items.Add(MakeMenuItem("_Crop Tool", (s, e) => SetTool(EditTool.Crop), "C", "Switch to the crop tool", "\uE7A8"));
-            menu.Items.Add(MakeMenuItem("_Redact", (s, e) => SetTool(EditTool.Redact), "R",
-                "Mark areas whose content is permanently removed from the file", "\uE73B"));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("De_lete Selected", (s, e) => DeleteSelected(), "Delete", "Delete the selected annotation", "\uE74D"));
-            menu.Items.Add(MakeMenuItem("_Undo Last", (s, e) => Undo_Click(s!, e), "Ctrl+Z", "Undo the last annotation change", "\uE7A7"));
-            menu.Items.Add(MakeMenuItem("Cle_ar Page Annotations", (s, e) => ClearAnnotations_Click(s!, e), null, "Clear all annotations on this page", "\uED62"));
-
-            _annotationCanvas.ContextMenu = menu;
-        }
-
-        private void PageList_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
-        {
-            if (_doc is null) return;
-            var menu = new ContextMenu();
-            int[] selectedPages = SelectedPageIndices();
-            menu.Items.Add(MakeMenuItem("Insert Blank Page After", (s, ev) => InsertBlankPage_Click(s!, ev), null, null, "\uE7C3"));
-            // Pluralised on the plain count, unlike the Move rows below: every selected page is
-            // duplicated whether or not the selection is contiguous, so there is no equivalent of
-            // movesBlock's "does this actually move more than one page" question to ask.
-            var duplicate = MakeMenuItem(selectedPages.Length > 1 ? "Duplicate Pages" : "Duplicate Page",
-                (s, ev) => DuplicatePages_Click(), null,
-                "Insert a copy of each selected page after the last of them", "\uE8C8");
-            // Greyed rather than falling back to the current page. Duplicating is a structural edit:
-            // it rewrites and reloads the document and takes the unsaved overlay annotations with it
-            // (see SaveTempAndReload), so guessing at what the user meant is expensive to be wrong
-            // about. In practice the list always has a selection \u2014 opening a document and every
-            // reload select a page \u2014 so this state is the genuinely ambiguous one, and a greyed row
-            // says "choose the pages first" without spending anything to say it.
-            duplicate.IsEnabled = selectedPages.Length > 0;
-            menu.Items.Add(duplicate);
-            menu.Items.Add(new Separator());
-            // One Rotate glyph serves both directions: the counter-clockwise row draws it mirrored,
-            // so the pair reads as a matched set instead of two unrelated icons.
-            menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
-            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
-                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", "\uE90F"));
-            menu.Items.Add(new Separator());
-            // #135: a contiguous multi-page selection now moves as a block, so say so \u2014 the rows
-            // used to move exactly one page whatever was selected.
-            bool movesBlock = selectedPages.Length > 1
-                              && selectedPages[^1] - selectedPages[0] == selectedPages.Length - 1;
-            menu.Items.Add(MakeMenuItem(movesBlock ? "Move Pages Up" : "Move Page Up",
-                (s, ev) => MoveUp_Click(s!, ev), null, null, "\uE74A"));
-            menu.Items.Add(MakeMenuItem(movesBlock ? "Move Pages Down" : "Move Page Down",
-                (s, ev) => MoveDown_Click(s!, ev), null, null, "\uE74B"));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(MakeMenuItem("Extract Page(s)", (s, ev) => Split_Click(s!, ev), null, null, "\uE8B1"));
-            menu.Items.Add(MakeMenuItem("Delete Page(s)", (s, ev) => Delete_Click(s!, ev), null, null, "\uE8C6"));
-            menu.PlacementTarget = PageList;
-            menu.IsOpen = true;
-            e.Handled = true;
         }
 
         private void RotatePages_Click(int delta)
@@ -2828,7 +2882,7 @@ namespace TDPdf
                     RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
                 }
                 foreach (var idx in indices)
-                    doc.Pages[idx].Rotate = ((doc.Pages[idx].Rotate + delta) % 360 + 360) % 360;
+                    doc.Pages[idx].Rotate = TDPdf.Services.Angles.Mod360(doc.Pages[idx].Rotate + delta);
                 int restoreIdx = PageList.SelectedIndex;
                 SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = Math.Min(restoreIdx, PageList.Items.Count - 1);
@@ -2839,27 +2893,6 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)FitToPage);
                 SetStatus($"Rotated {indices.Count} page(s)");
             });
-        }
-
-        // Rotate was previously reachable only via right-click on a page thumbnail in the Pages
-        // panel — reported back as "the rotate command is missing" when someone went looking for it
-        // on the toolbar instead. Left-click here does the common case (clockwise); right-click
-        // opens the same CW / CCW / Transform menu the page-list context menu already offers, so
-        // the two entry points stay in sync rather than drifting into two different feature sets.
-        private void RotateBtn_Click(object sender, RoutedEventArgs e) => RotatePages_Click(90);
-
-        private void RotateBtn_RightButtonUp(object sender, MouseButtonEventArgs e)
-        {
-            e.Handled = true;
-            var menu = new ContextMenu();
-            menu.Items.Add(MakeMenuItem("Rotate CW",  (s, ev) => RotatePages_Click(90), null, null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Rotate CCW", (s, ev) => RotatePages_Click(-90), null, null, RotateGlyph, mirrorGlyph: true));
-            menu.Items.Add(MakeMenuItem("Rotate 180°", (s, ev) => RotatePages_Click(180), "Ctrl+Shift+U", null, RotateGlyph));
-            menu.Items.Add(MakeMenuItem("Transform…", (s, ev) => ToolTransform_Click(s!, ev), null,
-                "Rotate by a fine angle, scale, flip, or straighten the page (rasterizes it to an image)", ""));
-            menu.PlacementTarget = (UIElement)sender;
-            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
-            menu.IsOpen = true;
         }
 
         private static (int w, int h) AnnotationCanvasSize(PdfPage page)
@@ -2924,8 +2957,11 @@ namespace TDPdf
                                              bool literalHeader = false)
         {
             var item = new MenuItem { Header = literalHeader ? EscapeMenuHeader(header) : header };
+            // A read-only window (split view) keeps only the commands that look; a file name (literalHeader) is an Open entry.
+            if (ReadOnlyGate.ProcessIsReadOnly && !literalHeader && !ReadOnlyGate.IsMenuCommandAllowed(header))
+                item.IsEnabled = false;
             item.Click += click;
-            if (gesture != null)
+            if (gesture != null && TDPdf.Properties.Settings.Default.ShowMenuShortcuts)
                 item.InputGestureText = gesture;
             if (glyph != null)
                 item.Icon = MakeMenuGlyph(glyph, mirrorGlyph);
@@ -3014,8 +3050,8 @@ namespace TDPdf
         /// </summary>
         private void RefreshPageView(int pageIndex)
         {
-            // Continuous manages its own rendering through SetupContinuousView; nothing to do here.
-            if (_viewMode == ViewMode.Continuous) return;
+            // The continuous strips manage their own rendering through SetupContinuousView; nothing to do here.
+            if (IsContinuousFamily) return;
 
             // Row-wrapping in Grid/TwoPage comes from the explicit _pageContentPanel.Width set in
             // RenderAdditionalPages, not from constraining the ScrollViewer's available width — so
@@ -3040,6 +3076,21 @@ namespace TDPdf
             }
         }
 
+        /// <summary>
+        /// Makes the window's live <c>_viewMode</c> the one <paramref name="ctx"/> keeps (#246). A tab
+        /// with no mode of its own yet takes the last mode the user chose. Only the field and its
+        /// toolbar / menu marks move here; the caller owns laying the view out.
+        /// </summary>
+        private void AdoptContextViewMode(DocumentContext ctx)
+        {
+            ViewMode mode = ctx.Mode ??= _lastChosenViewMode;
+            if (_viewMode == mode) { SyncViewModeMenu(); return; }
+            _viewMode = mode;
+            _wheelFlipGate.Reset();   // the scroll surface under the wheel just changed
+            _gridViewToggle.IsChecked = mode == ViewMode.Grid;
+            SyncViewModeMenu();
+        }
+
         // The toolbar toggle is a quick switch between Grid and Single views.
         private void GridViewToggle_Click(object sender, RoutedEventArgs e)
         {
@@ -3051,17 +3102,32 @@ namespace TDPdf
         // ============================================================
 
         /// <summary>
-        /// Switches the app-wide page view mode, persists it, swaps the visible layout host
+        /// Switches the ACTIVE TAB's page view mode (#246), swaps the visible layout host
         /// (wrap panel vs. continuous strip), and applies the open-fit rule for the new mode:
-        /// Single/Two-Page → fit page, Continuous → fit width, Grid → existing column-fit.
+        /// Single/Two-Page → fit page, Continuous and Two pages, continuous → fit width,
+        /// Grid → existing column-fit. With <paramref name="userChoice"/> the mode also becomes
+        /// "the last mode chosen" (persisted), which new tabs start in; a restore of a saved
+        /// session or closed tab passes false so it never rewrites that preference.
         /// </summary>
-        private void SetViewMode(ViewMode mode)
+        private void SetViewMode(ViewMode mode, bool userChoice = true)
         {
+            _ctx.Mode = mode;
+            if (userChoice)
+            {
+                _lastChosenViewMode = mode;
+                try
+                {
+                    TDPdf.Properties.Settings.Default.ViewMode = mode.ToString();
+                    TDPdf.Properties.Settings.Default.Save();
+                }
+                catch { /* non-critical user preference */ }
+            }
             if (_viewMode == mode)
             {
                 // Keep the toolbar toggle in sync even on a no-op (e.g. settings re-selecting
                 // the active mode) so it never drifts out of step with _viewMode.
                 _gridViewToggle.IsChecked = mode == ViewMode.Grid;
+                SyncViewModeMenu();
                 return;
             }
             // #131: a view-mode switch is an explicit gesture and belongs on the commit
@@ -3086,14 +3152,9 @@ namespace TDPdf
             // page-flip gesture from the previous mode must not complete against the new one.
             _wheelFlipGate.Reset();
             _gridViewToggle.IsChecked = mode == ViewMode.Grid;
-            try
-            {
-                TDPdf.Properties.Settings.Default.ViewMode = mode.ToString();
-                TDPdf.Properties.Settings.Default.Save();
-            }
-            catch { /* non-critical user preference */ }
+            SyncViewModeMenu();
 
-            bool isContinuous = mode == ViewMode.Continuous;
+            bool isContinuous = mode is ViewMode.Continuous or ViewMode.TwoPageContinuous;
             _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
             // The primary page's parent Border (first child of PageContentGrid) must also hide
             // so its leftover bitmap/overlay doesn't show behind the continuous strip.
@@ -3113,13 +3174,14 @@ namespace TDPdf
                 _continuousBaseBitmaps.Clear();
                 _continuousSharpW = 0;
                 _continuousPanel.Children.Clear();
+                _continuousSlots.Clear();
                 _continuousTops.Clear();
             }
 
             if (_doc is null) return;
             int idx = Math.Max(0, PageList.SelectedIndex);
 
-            if (mode == ViewMode.Continuous)
+            if (isContinuous)
             {
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     () => { SetupContinuousView(idx); ReapplyZoomAfterViewSwitch(keepFit, keepZoom); });
@@ -3176,7 +3238,7 @@ namespace TDPdf
                 Zoom.SetZoomLevel(zoom);
                 SyncLayoutZoom();   // the layout scale differs per mode even at an equal true zoom
             }
-            else if (_viewMode == ViewMode.Continuous) FitToWidth();
+            else if (IsContinuousFamily) FitToWidth();
             else FitToPage();
         }
 
@@ -3201,6 +3263,16 @@ namespace TDPdf
             }
             catch { /* non-critical user preference */ }
             SetStatus(on ? "Book layout on. The cover shows alone" : "Book layout off. Pages pair from the cover");
+            // The two-column Pages sidebar pairs the same way (#246).
+            SyncPairedSidebarBook();
+            if (_doc is not null && _viewMode == ViewMode.TwoPageContinuous)
+            {
+                // The strip re-lays its rows around the page that was on screen.
+                int keep = Math.Max(0, PageList.SelectedIndex);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
+                    (Action)(() => { if (_viewMode == ViewMode.TwoPageContinuous) SetupContinuousView(keep); }));
+                return;
+            }
             if (_doc is null || _viewMode != ViewMode.TwoPage) return;
             // Re-pair what is on screen. Toggling is an explicit request about pairing, so unlike
             // every other navigation path it is allowed to move the selection onto the new spread's
@@ -3220,7 +3292,11 @@ namespace TDPdf
         private void ApplyViewModeOnOpen()
         {
             if (_doc is null) return;
-            bool isContinuous = _viewMode == ViewMode.Continuous;
+            // #246: a tab that has no view of its own yet starts in the last mode the user chose.
+            // _viewMode may still be another tab's, so it is brought across here (the layout hosts
+            // and the strips below are set up from it).
+            AdoptContextViewMode(_ctx);
+            bool isContinuous = IsContinuousFamily;
             _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
             if (PageImage.Parent is FrameworkElement pageGridChild
                 && pageGridChild.Parent is FrameworkElement primaryBorder)
@@ -3246,7 +3322,7 @@ namespace TDPdf
 
             if (isContinuous)
             {
-                // SetupContinuousView ends in FitToWidth, which is also Continuous's own default;
+                // SetupContinuousView ends in FitToWidth, which is also the strips' own default;
                 // only a remembered Fit Page — or a remembered manual zoom — has to override it,
                 // once the strip exists.
                 SetupContinuousView(Math.Max(0, PageList.SelectedIndex));
@@ -3415,7 +3491,7 @@ namespace TDPdf
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Open link failed: {ex}");
+                FaultSink.Report("OpenLink", ex);
                 SetStatus("Could not open the link.");
             }
         }
@@ -3534,16 +3610,11 @@ namespace TDPdf
                 Canvas.SetLeft(overlay, lnk.Cx);
                 Canvas.SetTop(overlay, lnk.Cy);
 
-                // Right-click context menu: copy the target or remove the native PDF annotation.
-                var cm = new ContextMenu();
-                if (lnk.Tag is string uriTag && uriTag.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
-                    cm.Items.Add(MakeMenuItem("Copy Email Address", (_, _) =>
-                        Clipboard.SetText(uriTag["mailto:".Length..]), null, null, "\uE715"));
-                else if (lnk.Tag is string httpTag)
-                    cm.Items.Add(MakeMenuItem("Copy URL", (_, _) => Clipboard.SetText(httpTag), null, null, "\uE71B"));
-                cm.Items.Add(MakeMenuItem("Remove Link from PDF", (_, _) =>
-                    RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex), null, null, "\uE74D"));
-                overlay.ContextMenu = cm;
+                // Right-click menu: copy the target or remove the native PDF annotation (MainWindow.ContextMenus.cs).
+                var linkKind = lnk.Tag is string uri && uri.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) ? LinkMenuKind.Mail
+                             : lnk.Tag is string ? LinkMenuKind.Url : LinkMenuKind.Other;
+                AttachLinkMenu(this, overlay, linkKind, lnk.Tag as string,
+                    () => RemoveLinkAnnotation(info.PageIndex, info.AnnotIndex));
 
                 // #156 pushed the form-field overlays to ZIndex -1 so annotations paint above them.
                 // Links are added to this same canvas BEFORE the fields on the initial page render, so
@@ -3635,37 +3706,6 @@ namespace TDPdf
                 PageList.SelectedIndex = sel;
                 SetStatus("Link removed.");
             });
-        }
-
-        /// <summary>
-        /// Strips visual styling (border, color, appearance stream) from all Link annotations
-        /// in the document so they render as invisible clickable areas rather than colored
-        /// rectangles that can look like strikethroughs in other PDF viewers.
-        /// </summary>
-        private static void StripLinkAnnotationBorders(PdfDocument doc)
-        {
-            foreach (var pdfPage in doc.Pages)
-            {
-                var annotsArr = pdfPage.Elements.GetArray("/Annots");
-                if (annotsArr is null) continue;
-                for (int i = 0; i < annotsArr.Elements.Count; i++)
-                {
-                    PdfItem? elem = annotsArr.Elements[i];
-                    PdfDictionary? ann = elem as PdfDictionary ?? PdfItems.Deref(elem) as PdfDictionary;
-                    if (ann is null) continue;
-                    var subtype = ann.Elements["/Subtype"]?.ToString() ?? "";
-                    if (!subtype.Contains("Link")) continue;
-                    // Remove appearance stream and color; set /Border [0 0 0] for invisible border.
-                    ann.Elements.Remove("/AP");
-                    ann.Elements.Remove("/C");
-                    ann.Elements.Remove("/BS");
-                    var borderArr = new PdfArray();
-                    borderArr.Elements.Add(new PdfInteger(0));
-                    borderArr.Elements.Add(new PdfInteger(0));
-                    borderArr.Elements.Add(new PdfInteger(0));
-                    ann.Elements["/Border"] = borderArr;
-                }
-            }
         }
 
         /// <summary>
@@ -3769,6 +3809,11 @@ namespace TDPdf
 
         private void SetTool(EditTool tool)
         {
+            if (ReadOnlyGate.ProcessIsReadOnly && !ReadOnlyGate.IsToolAllowed(tool.ToString()))
+            {
+                SetStatus(ReadOnlyGate.RefusedStatus);
+                return;
+            }
             // Picking a tool means leaving Electronic Signature field placement; the fields placed so
             // far stay on the tab for the next Send for Signature.
             if (_eSignPlacement is not null) EndESignPlacement(ESignPlacementEnd.Aborted);
@@ -3783,6 +3828,7 @@ namespace TDPdf
             ClearTextSelection();
             CancelActivePointerOperation(removePreview: true);
             _currentTool = tool;
+            if (tool != EditTool.EditImage) ClearPictureSelection();
             // Tool bars edit tool defaults, not a selected annotation.
             _styleTarget = null;
 
@@ -3804,7 +3850,8 @@ namespace TDPdf
                 (_toolMeasureBtn, EditTool.Measure),
                 (_toolPanBtn, EditTool.Pan),
                 (_toolEraseBtn, EditTool.Erase),
-                (_toolShapeBtn, EditTool.Shape)
+                (_toolShapeBtn, EditTool.Shape),
+                (_toolStampBtn, EditTool.Stamp)
             };
             var green = (SolidColorBrush)FindResource("AccentGreen");
             var greenDim = (SolidColorBrush)FindResource("AccentGreenDim");
@@ -3834,6 +3881,7 @@ namespace TDPdf
                 EditTool.Pan => Cursors.Hand,
                 EditTool.Erase => Cursors.Cross,
                 EditTool.Shape => Cursors.Cross,
+                EditTool.Stamp => Cursors.Hand,
                 _ => Cursors.Arrow
             };
 
@@ -3856,6 +3904,12 @@ namespace TDPdf
                 ShowShapeSettings();
             else
                 HideShapeSettings();
+
+            // The stamp bar: which stamp, its size and opacity.
+            if (tool == EditTool.Stamp)
+                ShowStampSettings();
+            else
+                HideStampSettings();
 
             // The redaction bar is the only place the pending marks can be applied or cleared, so
             // it stays up for as long as any mark exists — switching tools must not strand marks
@@ -3955,8 +4009,8 @@ namespace TDPdf
 
         private bool IsPointerOperationActive =>
             _isDrawing || _isSelecting || _isDraggingAnnot || _isResizingSig ||
-            _isResizingImage || _isMovingAnnot || _isResizingAnnot || _isPanning ||
-            _txtSelActive || _isMeasuring;
+            _isResizingImage || _isMovingAnnot || _isMovingMulti || _isResizingAnnot || _isPanning ||
+            _txtSelActive || _isMeasuring || _pictureDrag != PictureDrag.None;
 
         // Sidebar toggle strip button and the View menu's "Toggle Sidebar" both land here.
         private void SidebarToggle_Click(object sender, RoutedEventArgs e) =>
@@ -4150,6 +4204,7 @@ namespace TDPdf
         private void ToolPan_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Pan);
         private void ToolErase_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Erase);
         private void ToolShape_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Shape);
+        private void ToolStamp_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Stamp);
         private void ToolRedact_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Redact);
         private void ToolForm_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Form);
         private void ToolMeasure_Click(object sender, RoutedEventArgs e) => SetTool(EditTool.Measure);
@@ -4670,7 +4725,7 @@ namespace TDPdf
             {
                 Width = w,
                 Height = h,
-                Fill = new SolidColorBrush(Color.FromArgb(46, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Fill = TDPdf.Services.ThemeBrushes.Wash(danger.Color, 46),
                 Stroke = danger,
                 StrokeThickness = 2,
                 StrokeDashArray = new DoubleCollection { 4, 3 },
@@ -4897,7 +4952,7 @@ namespace TDPdf
                 Content = "Redact Permanently",
                 Style = btnStyle,
                 IsEnabled = marks > 0,
-                Background = new SolidColorBrush(Color.FromArgb(40, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Background = TDPdf.Services.ThemeBrushes.Wash(danger.Color, 40),
                 Foreground = danger,
                 BorderBrush = danger,
                 ToolTip = "Delete the marked content from the file. This cannot be undone."
@@ -5021,8 +5076,8 @@ namespace TDPdf
 
             using var op = Telemetry.StartOperation("Redact");
             SetFileOperationBusy(true, "Redacting...");
-            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_src_{Guid.NewGuid():N}.pdf");
-            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_out_{Guid.NewGuid():N}.pdf");
+            string source = NewTempPath("redact_src");
+            string result = NewTempPath("redact_out");
             try
             {
                 // Redact the CURRENT document, structural edits and all — not the file on disk,
@@ -5086,6 +5141,8 @@ namespace TDPdf
                     summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
                 if (outcome.AnnotationsRemoved > 0)
                     summary += $"; {outcome.AnnotationsRemoved} annotation{(outcome.AnnotationsRemoved == 1 ? "" : "s")} or form field{(outcome.AnnotationsRemoved == 1 ? "" : "s")} removed";
+                if (outcome.AttachmentsRemoved > 0)
+                    summary += $"; {outcome.AttachmentsRemoved} attached file{(outcome.AttachmentsRemoved == 1 ? "" : "s")} removed from the document";
                 if (outcome.Rasterized.Count > 0)
                     summary += $"; page{(outcome.Rasterized.Count == 1 ? "" : "s")} " +
                                string.Join(", ", outcome.Rasterized.Select(p => p + 1)) +
@@ -5150,40 +5207,47 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
-            string? supersededFile = _currentFile;
-            _doc?.Close();
-            _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
-            _currentFile = redactedPath;
+            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes;
+            // AdoptWorkingFile retires it.
+            AdoptWorkingFile(redactedPath, null, () =>
+            {
+                _annotations.Clear();
+                _redactionMarks.Clear();
+                ESignDropFieldsForLayoutChange(_ctx);
+                ClearMeasurement();
+                ClearFormState();
+                InvalidateRenderCache();
+                _contentEditor.ClearCache();
+                InvalidateTextRunCache();
+                ClearSelection();
+                _undoStack.Clear();
+                _redoStack.Clear();
+                HideRedactSettings();
+                MarkDirty();
 
-            _annotations.Clear();
-            _redactionMarks.Clear();
-            ESignDropFieldsForLayoutChange(_ctx);
-            ClearMeasurement();
-            ClearFormState();
-            InvalidateRenderCache();
-            _contentEditor.ClearCache();
-            InvalidateTextRunCache();
-            ClearSelection();
-            _undoStack.Clear();
-            _redoStack.Clear();
-            HideRedactSettings();
-            MarkDirty();
+                ReselectAfterAdopt(selectedIdx);
+            });
+        }
 
+        /// <summary>
+        /// Rebuilds the sidebar after a working copy was swapped in and puts the selection back on
+        /// the page that was selected (or the first page), re-running the continuous view when it is
+        /// the active mode.
+        /// </summary>
+        private void ReselectAfterAdopt(int selectedIdx)
+        {
             RefreshPageList(ThumbRefresh.Stale);
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
             else if (PageList.Items.Count > 0)
                 PageList.SelectedIndex = 0;
 
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 int contIdx = Math.Max(0, PageList.SelectedIndex);
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
-
-            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes.
-            RetireWorkingCopy(supersededFile);
         }
 
         /// <summary>
@@ -5303,6 +5367,10 @@ namespace TDPdf
                     bounds = PlacedVisualRect(sa);
                     return bounds.Contains(pos);
 
+                case StampAnnotation st:
+                    bounds = PlacedVisualRect(st);
+                    return bounds.Contains(pos);
+
                 case ImageAnnotation ia:
                     bounds = PlacedVisualRect(ia);
                     return bounds.Contains(pos);
@@ -5342,7 +5410,10 @@ namespace TDPdf
         private void SelectAnnotation(PageAnnotation annot, Rect bounds)
         {
             ClearSelection();
+            // Selecting a mark lets go of any selected text, so Ctrl+C copies the thing picked last.
+            ClearTextSelection();
             _selectedAnnotation = annot;
+            _markSelection.Add(annot);
             // #181: the selection chrome is sized from these bounds and WPF rejects NaN/infinity on
             // Width/Height, so a caller that passed geometry derived from a malformed annotation — or
             // Rect.Empty, which WPF itself defines as (+∞, +∞, -∞, -∞) — used to crash here rather
@@ -5395,7 +5466,7 @@ namespace TDPdf
                 Canvas.SetLeft(_resizeHandle, bounds.X + bounds.Width - 4 - hSize / 2);
                 Canvas.SetTop(_resizeHandle, bounds.Y + bounds.Height - 4 - hSize / 2);
                 _annotationCanvas.Children.Add(_resizeHandle);
-                string label = annot is SignatureAnnotation ? "Signature picture" : "Image";
+                string label = annot is SignatureAnnotation ? "Signature picture" : annot is StampAnnotation ? "Stamp" : "Image";
                 SetStatus($"{label} selected. Drag the corner handle to resize, Delete to remove");
             }
             else if (annot is ShapeAnnotation or HighlightAnnotation or InkAnnotation or TextAnnotation or TextEditAnnotation)
@@ -5495,21 +5566,34 @@ namespace TDPdf
         private void RestyleLive(PageAnnotation annot)
         {
             var now = DateTime.UtcNow;
+            // With several marks selected the bar is bound to ONE of them (_styleTarget); whatever the
+            // user just changed on it is carried to the others below, inside the same undo step.
+            bool multi = IsMultiSelection && ReferenceEquals(annot, _styleTarget);
             if (_restylePre is not null && ReferenceEquals(annot, _styleTarget) &&
                 _annotations.TryGetValue(annot.PageIndex, out var pageList))
             {
                 if (!_restyleStepOpen || now - _restyleLastChange > RestyleStepIdle)
                 {
-                    var before = pageList.Select(a => ReferenceEquals(a, annot) ? _restylePre.Clone() : a.Clone()).ToList();
+                    var before = pageList.Select(a =>
+                        ReferenceEquals(a, annot) ? _restylePre.Clone()
+                        : multi && _restylePreMulti.TryGetValue(a, out var pre) ? pre.Clone()
+                        : a.Clone()).ToList();
                     PushUndo(new UndoEntry(UndoKind.PageSnapshot, annot.PageIndex, PageAnnotations: before));
                     _restyleStepOpen = true;
                 }
                 _restyleLastChange = now;
+                if (multi)
+                {
+                    var delta = StyleDelta.Between(_restylePre, annot);
+                    foreach (var other in _markSelection)
+                        if (!ReferenceEquals(other, annot)) delta.ApplyTo(other);
+                    foreach (var m in _markSelection) _restylePreMulti[m] = m.Clone();
+                }
                 _restylePre = annot.Clone();
             }
             MarkDirty();
             RenderAllAnnotations(annot.PageIndex);
-            if (HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
+            if (!IsMultiSelection && HitTestAnnotation(annot, GetAnyPointInside(annot), out Rect b))
                 RefreshSelectionVisuals(b);
         }
 
@@ -5592,6 +5676,8 @@ namespace TDPdf
             TextEditAnnotation tea => new Point(tea.OriginalBounds.X + 1, tea.OriginalBounds.Y + 1),
             SignatureAnnotation sg => sg.Rotation == 0 ? new Point(sg.Position.X + 1, sg.Position.Y + 1)
                                                        : TopLeftInside(PlacedVisualRect(sg)),
+            StampAnnotation sp => sp.Rotation == 0 ? new Point(sp.Position.X + 1, sp.Position.Y + 1)
+                                                   : TopLeftInside(PlacedVisualRect(sp)),
             ImageAnnotation ig => ig.Rotation == 0 ? new Point(ig.Position.X + 1, ig.Position.Y + 1)
                                                    : TopLeftInside(PlacedVisualRect(ig)),
             _ => new Point(0, 0)
@@ -5646,6 +5732,7 @@ namespace TDPdf
 
         private void ClearSelection()
         {
+            ClearPictureSelection();
             FinishResizeInProgress();
             _restyleStepOpen = false;
             _restylePre = null;
@@ -5680,6 +5767,10 @@ namespace TDPdf
             _resizingAnnot = null;
             _resizeOriginalGeom = null;
             _selectedAnnotation = null;
+            _markSelection.Clear();
+            _restylePreMulti.Clear();
+            ClearMultiChrome();
+            HideArrangeBar();
 
             // Tear down any restyle-in-place binding. In Select mode the bound bar exists only for the
             // selection, so hide it; in other tools the visible bar belongs to the active tool — leave it.
@@ -5723,21 +5814,6 @@ namespace TDPdf
             }
         }
 
-        private void DeleteSelected()
-        {
-            if (_selectedAnnotation is null) return;
-            int pageIdx = _selectedAnnotation.PageIndex;
-            if (_annotations.ContainsKey(pageIdx))
-            {
-                PushPageSnapshot(pageIdx);
-                _annotations[pageIdx].Remove(_selectedAnnotation);
-            }
-            ClearSelection();
-            RenderAllAnnotations(pageIdx);
-            MarkDirty();
-            SetStatus("Deleted selected annotation");
-        }
-
         /// <summary>
         /// Ctrl+A: select every character on the current page. Since upstream KillerPDF v1.6.5
         /// (#127) this paints REAL per-line quads through the flowing-selection model instead of
@@ -5748,6 +5824,7 @@ namespace TDPdf
             if (_currentFile is null) return;
             int pageIdx = PageList.SelectedIndex;
             if (pageIdx < 0) return;
+            if (HasMarkSelection) { ClearSelection(); RenderAllAnnotations(pageIdx); }   // the text is now what Ctrl+C copies
 
             try
             {
@@ -5801,6 +5878,7 @@ namespace TDPdf
                 _selectRect = null;
             }
             _selectedText = null;
+            _boxSelection = null;
             // Flowing selection (upstream KillerPDF v1.6.5, #127) shares this teardown, so every
             // existing caller — tool switch, page change, tab switch, double-click, Escape — drops
             // the quads and the caret range too.
@@ -5941,7 +6019,7 @@ namespace TDPdf
         /// edit refer to a different document layout, so we clear the stacks here.
         /// Must be called BEFORE modifying _doc.
         /// </summary>
-        private void PushDocUndo()
+        private void PushDocUndo(bool keepMarks = false)
         {
             if (_doc is null) return;
             // Undoing a document change reloads the document and drops every pending form value
@@ -5952,7 +6030,7 @@ namespace TDPdf
             _doc.Save(ms);
             _undoStack.Clear();
             _redoStack.Clear();
-            _undoStack.AddLast(new UndoEntry(UndoKind.Document, DocBytes: ms.ToArray()));
+            _undoStack.AddLast(new UndoEntry(UndoKind.Document, DocBytes: ms.ToArray(), KeepMarks: keepMarks));
         }
 
         private void RenderTextAnnotation(TextAnnotation ta)
@@ -6187,13 +6265,8 @@ namespace TDPdf
         /// the list in order, so annotations within each group keep their existing relative z-order
         /// and already-annotated documents render unchanged apart from the bug being fixed.
         /// </remarks>
-        private static IEnumerable<PageAnnotation> InPaintOrder(IList<PageAnnotation> annots)
-        {
-            for (int i = 0; i < annots.Count; i++)
-                if (annots[i] is TextEditAnnotation or ImageEditAnnotation) yield return annots[i];
-            for (int i = 0; i < annots.Count; i++)
-                if (annots[i] is not (TextEditAnnotation or ImageEditAnnotation)) yield return annots[i];
-        }
+        private static IEnumerable<PageAnnotation> InPaintOrder(IList<PageAnnotation> annots) =>
+            AnnotationBaker.InPaintOrder(annots);
 
         private (double W, double H) MeasureTextForRotate(TextAnnotation ta)
         {
@@ -6383,6 +6456,7 @@ namespace TDPdf
             // Every annotation change on a page ends up here, so this is also where the sidebar's
             // thumbnail of that page learns its unsaved markup changed (debounced there).
             QueueThumbOverlayRefresh(pageIndex);
+            RestoreAccessibilityOutline(pageIndex);   // #243: the finding last clicked in the accessibility panel
             // Clearing the canvas also drops form-field overlays — restore them so they
             // survive every annotation re-render (edits, undo, selection, …).
             if (!_annotations.ContainsKey(pageIndex))
@@ -6467,7 +6541,9 @@ namespace TDPdf
                         // ApplyResizeTo) so a still-too-generous default can be shrunk by hand.
                         var wo = new Rectangle
                         {
-                            Fill = Brushes.White,
+                            Fill = tea.CoverR == 255 && tea.CoverG == 255 && tea.CoverB == 255
+                                ? Brushes.White
+                                : TdpDialog.FrozenSolidColorBrush(tea.GetCoverColor()),
                             Width = tea.OriginalBounds.Width + 2,
                             Height = tea.OriginalBounds.Height + 2,
                             IsHitTestVisible = false
@@ -6487,7 +6563,19 @@ namespace TDPdf
                             Padding = new Thickness(0),
                             IsHitTestVisible = false
                         };
-                        Canvas.SetLeft(etb, tea.Position.X);
+                        // A paragraph edit (#229) has a fixed line pitch and may be centred or right-aligned
+                        // inside the box it replaced; a one-line edit keeps the TextBlock's natural size.
+                        if (tea.LineHeight > 0)
+                        {
+                            etb.LineHeight = tea.LineHeight;
+                            etb.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+                        }
+                        if (tea.Align != 0)
+                        {
+                            etb.Width = Math.Max(tea.OriginalBounds.Width, 1);
+                            etb.TextAlignment = tea.Align == 1 ? TextAlignment.Center : TextAlignment.Right;
+                        }
+                        Canvas.SetLeft(etb, tea.Align != 0 ? tea.OriginalBounds.X : tea.Position.X);
                         Canvas.SetTop(etb, tea.Position.Y);
                         _annotationCanvas.Children.Add(etb);
                         break;
@@ -6547,11 +6635,13 @@ namespace TDPdf
                                     bmp.EndInit();
                                 }
                                 if (bmp.CanFreeze) bmp.Freeze();
+                                // The date line, when there is one, owns the bottom strip of the box.
+                                double sigImgH = sigH - SigStrip(sa) * sa.Scale;
                                 var imgCtrl = new System.Windows.Controls.Image
                                 {
                                     Source = bmp,
                                     Width = sigW,
-                                    Height = sigH,
+                                    Height = sigImgH,
                                     Stretch = System.Windows.Media.Stretch.Uniform,
                                     IsHitTestVisible = false
                                 };
@@ -6569,8 +6659,8 @@ namespace TDPdf
                                 if (stroke.Count < 2) continue;
                                 var sigPoly = new Polyline
                                 {
-                                    Stroke = Brushes.Black,
-                                    StrokeThickness = 2 * sa.Scale,
+                                    Stroke = SignatureInkBrush(sa.InkColor),
+                                    StrokeThickness = SignatureInk.ResolvePenWidth(sa.PenWidth) * sa.Scale,
                                     StrokeLineJoin = PenLineJoin.Round,
                                     StrokeStartLineCap = PenLineCap.Round,
                                     StrokeEndLineCap = PenLineCap.Round,
@@ -6586,6 +6676,19 @@ namespace TDPdf
                                 _annotationCanvas.Children.Add(sigPoly);
                             }
                         }
+                        if (BuildSignatureDateBlock(sa, sa.Scale) is { } dateBlock)
+                        {
+                            Canvas.SetLeft(dateBlock, sa.Position.X);
+                            Canvas.SetTop(dateBlock, sa.Position.Y + sigH - SigStrip(sa) * sa.Scale);
+                            // Turned about the centre of the whole box, which is not the block's own centre.
+                            ApplyAnnotationRotation(dateBlock, sa.Rotation, sigW / 2, SigStrip(sa) * sa.Scale - sigH / 2);
+                            _annotationCanvas.Children.Add(dateBlock);
+                        }
+                        break;
+
+                    case StampAnnotation stamp:
+                        if (!TryGetPlacedSize(stamp, out _, out _)) continue;
+                        _annotationCanvas.Children.Add(MakeStampElement(stamp));
                         break;
 
                     case ImageAnnotation ia:
@@ -6629,6 +6732,10 @@ namespace TDPdf
             // Flowing text-selection quads live on this canvas too and were wiped by the clear;
             // repaint them last so they sit on top and survive every re-render.
             ApplyTextSelectionQuads(pageIndex);
+            // A selection of several marks has no single border to re-add: rebuild its outlines.
+            RestoreMultiSelectionChrome(pageIndex);
+            // A selected picture's box and handles (#244).
+            RestorePictureChrome(pageIndex);
         }
 
         /// <summary>
@@ -6926,7 +7033,7 @@ namespace TDPdf
                 bmp.CacheOption = BitmapCacheOption.OnLoad;
                 bmp.EndInit();
                 bmp.Freeze();
-                int rotation = ((edit.Rotation % 360) + 360) % 360;
+                int rotation = TDPdf.Services.Angles.Mod360(edit.Rotation);
                 if (rotation == 0) return bmp;
                 var rotated = new TransformedBitmap(bmp, new RotateTransform(rotation));
                 rotated.Freeze();
@@ -6955,6 +7062,7 @@ namespace TDPdf
             _isResizingSig = false;
             _isResizingImage = false;
             _isMovingAnnot = false;
+            _isMovingMulti = false;
             _isResizingAnnot = false;
             _movingAnnot = null;
             _moveOriginalGeom = null;
@@ -6994,6 +7102,9 @@ namespace TDPdf
 
         private void MarkDirty(bool dirty = true)
         {
+            // A read-only window never holds changes: whatever got past the menus and keys is refused
+            // here and the file's own version is put back (MainWindow.SideBySide.cs).
+            if (dirty && ReadOnlyGate.ProcessIsReadOnly) { dirty = false; ReadOnlyMutationAttempted(); }
             _isDirty = dirty;
             if (_saveAsBtnRef != null)
             {
@@ -7062,53 +7173,82 @@ namespace TDPdf
             }
             var tempPath = NewTempPath("temp");
             doc.Save(tempPath);
+            string unrepaired = tempPath;
             var reopened = OpenWorkingCopy(ref tempPath);
+            // PDFium repaired a copy that would not reopen: the file it was made from is no longer wanted.
+            if (!string.Equals(unrepaired, tempPath, StringComparison.OrdinalIgnoreCase)) RetireWorkingCopy(unrepaired);
 
             // The new document is open: from here on nothing can leave the tab without one.
-            string? supersededFile = _currentFile;
-            try { doc.Close(); } catch { /* the old instance is discarded either way */ }
-            _doc = reopened;
-            _currentFile = tempPath;
-
-            // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
-            // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
-            // cleared by default. Every caller that can keep them passes keepAnnotations: true
-            // having first made them valid for the new layout: rotation remaps its pages'
-            // annotations through the turn (RotatePages_Click); insert / delete / reorder /
-            // duplicate renumber them with their pages (ApplyPageIndexMap); merge and append-drop
-            // only add pages at the end, so nothing needs to move.
-            if (!keepAnnotations) _annotations.Clear();
-            // Unconditional, for the same reason the redaction marks below are: every caller has
-            // just changed page geometry or page numbering, so a surviving ruler would be two
-            // canvas points measured against a page that is no longer the page they were taken on.
-            ClearMeasurement();
-            // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
-            // a page index, and every caller here has just moved, deleted, reordered or resized
-            // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
-            // remaps its annotations through the turn and keeps them; there is no equivalent for a
-            // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
-            // user a re-drag.
-            if (PendingRedactionCount > 0)
+            AdoptWorkingFile(tempPath, reopened, () =>
             {
-                _redactionMarks.Clear();
-                HideRedactSettings();
-                // Held: every caller of this sets its own status line immediately afterwards
-                // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
-                // marks silently gone.
-                SetStatusHeld("Redaction marks were cleared because the page layout changed. Mark the areas again.", 4000);
+                // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
+                // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
+                // cleared by default. Every caller that can keep them passes keepAnnotations: true
+                // having first made them valid for the new layout: rotation remaps its pages'
+                // annotations through the turn (RotatePages_Click); insert / delete / reorder /
+                // duplicate renumber them with their pages (ApplyPageIndexMap); merge and append-drop
+                // only add pages at the end, so nothing needs to move.
+                if (!keepAnnotations) _annotations.Clear();
+                // Unconditional, for the same reason the redaction marks below are: every caller has
+                // just changed page geometry or page numbering, so a surviving ruler would be two
+                // canvas points measured against a page that is no longer the page they were taken on.
+                ClearMeasurement();
+                // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
+                // a page index, and every caller here has just moved, deleted, reordered or resized
+                // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
+                // remaps its annotations through the turn and keeps them; there is no equivalent for a
+                // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
+                // user a re-drag.
+                if (PendingRedactionCount > 0)
+                {
+                    _redactionMarks.Clear();
+                    HideRedactSettings();
+                    // Held: every caller of this sets its own status line immediately afterwards
+                    // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
+                    // marks silently gone.
+                    SetStatusHeld("Redaction marks were cleared because the page layout changed. Mark the areas again.", 4000);
+                }
+                // Placed Electronic Signature fields are positions on pages for exactly the same reason.
+                ESignDropFieldsForLayoutChange(_ctx);
+                ClearFormState();
+                // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
+                // this tab's captured scroll offset now measures against a layout that no longer
+                // exists. Drop the resume point and let the next activation place the view the way it
+                // did before the feature, rather than restoring a number that means nothing.
+                _ctx.ViewCaptured = false;
+                ClearSelection();
+                MarkDirty();
+                ShowReloadedDocument(selectedIdx);
+            });
+        }
+
+        /// <summary>
+        /// The one way a tab swaps in a new working copy. Every path that replaces the file the
+        /// document is read from goes through here, so the superseded copy is always retired: before
+        /// this existed two of six call sites forgot, and a pre-edit copy holding text the edit had
+        /// replaced sat in %TEMP% until the tab closed.
+        /// </summary>
+        /// <param name="path">The file that becomes <c>_currentFile</c>.</param>
+        /// <param name="opened">The document already opened from <paramref name="path"/> (the caller
+        /// may have had to repair it); null opens it here in Modify mode. It is opened BEFORE the old
+        /// one is closed, so a failure to open leaves the tab holding its old, still-open document.</param>
+        /// <param name="afterSwap">Whatever the caller must do with the new document: clear
+        /// annotations, undo history or selection, refresh the page list. It runs after the swap and
+        /// before the old file is retired, so nothing it rebuilds still reads the file it deletes.</param>
+        private void AdoptWorkingFile(string path, PdfDocument? opened, Action? afterSwap = null)
+        {
+            var previous = _doc;
+            string? superseded = _currentFile;
+            _doc = opened ?? PdfReader.Open(path, PdfDocumentOpenMode.Modify);
+            _currentFile = path;
+            try { previous?.Close(); } catch { /* the old instance is discarded either way */ }
+            try { afterSwap?.Invoke(); }
+            finally
+            {
+                // RetireWorkingCopy skips the new current file, a page operation's held rollback
+                // point, and any file the tab does not own (the user's own is never deleted).
+                RetireWorkingCopy(superseded);
             }
-            // Placed Electronic Signature fields are positions on pages for exactly the same reason.
-            ESignDropFieldsForLayoutChange(_ctx);
-            ClearFormState();
-            // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
-            // this tab's captured scroll offset now measures against a layout that no longer
-            // exists. Drop the resume point and let the next activation place the view the way it
-            // did before the feature, rather than restoring a number that means nothing.
-            _ctx.ViewCaptured = false;
-            ClearSelection();
-            MarkDirty();
-            ShowReloadedDocument(selectedIdx);
-            RetireWorkingCopy(supersededFile);
         }
 
         // Page operations hold their pre-edit working file as a rollback point until they finish;
@@ -7142,7 +7282,7 @@ namespace TDPdf
         /// PDFium, which rebuilds a valid xref and strips encryption while preserving the edit, and
         /// the open is retried; <paramref name="path"/> then names the repaired file.
         /// </summary>
-        private static PdfDocument OpenWorkingCopy(ref string path)
+        private PdfDocument OpenWorkingCopy(ref string path)
         {
             try
             {
@@ -7150,10 +7290,13 @@ namespace TDPdf
             }
             catch (Exception openEx) when (TDPdf.Services.PdfDocumentService.IsXRefException(openEx))
             {
-                var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                var fixedPath = NewTempPath("fixed");
                 if (!TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
+                {
+                    TDPdf.Services.TempFilePolicy.TryDelete(fixedPath);
+                    _ctx.TempFiles.Release(fixedPath);
                     throw; // PDFium also failed — re-throw the original reopen error
+                }
                 path = fixedPath;
                 return PdfReader.Open(path, PdfDocumentOpenMode.Modify);
             }
@@ -7182,7 +7325,7 @@ namespace TDPdf
 
             // Continuous view caches one slot per page; the page set may have changed (rotate,
             // delete, reorder, crop) so rebuild the strip from the reloaded document.
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 int contIdx = Math.Max(0, PageList.SelectedIndex);
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
@@ -7361,9 +7504,9 @@ namespace TDPdf
                 return;
             }
 
-            // Grid and Continuous are a single scroll over the WHOLE document, so the wheel must
+            // Grid and the continuous strips are a single scroll over the WHOLE document, so the wheel must
             // never be hijacked for page navigation there — it always just scrolls (boosted).
-            if (_viewMode == ViewMode.Grid || _viewMode == ViewMode.Continuous)
+            if (_viewMode == ViewMode.Grid || IsContinuousFamily)
             {
                 ScrollWheel(e);
                 return;
@@ -7439,7 +7582,7 @@ namespace TDPdf
             int cur = PageList.SelectedIndex;
             if (cur < 0) cur = 0;
             int count = _doc.PageCount;
-            if (_viewMode == ViewMode.TwoPage)
+            if (_viewMode is ViewMode.TwoPage or ViewMode.TwoPageContinuous)
             {
                 int baseIdx = SpreadStart(Math.Max(0, cur));   // left page of the current spread
                 // #193: book layout steps cover → 1 → 3 → 5…, because the cover is a row of its
@@ -7491,20 +7634,6 @@ namespace TDPdf
         {
             if (e.ChangedButton == MouseButton.XButton1)      { NavHistoryGo(back: true);  e.Handled = true; }
             else if (e.ChangedButton == MouseButton.XButton2) { NavHistoryGo(back: false); e.Handled = true; }
-        }
-
-        // Keyboard access to the right-click menu (Menu key / Shift+F10): opens the annotation canvas
-        // context menu centered on the page rather than at the mouse. Placement is set to Center just
-        // for this open and restored on close, so the mouse path keeps its open-at-cursor behavior.
-        private void OpenContextMenuAtSelection()
-        {
-            if (_doc is null || _annotationCanvas.ContextMenu is not ContextMenu cm) return;
-            cm.PlacementTarget = _annotationCanvas;
-            var prevPlacement = cm.Placement;
-            cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Center;
-            void Restore(object? s, RoutedEventArgs a) { cm.Placement = prevPlacement; cm.Closed -= Restore; }
-            cm.Closed += Restore;
-            cm.IsOpen = true;
         }
 
         private void Zoom_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -7604,7 +7733,7 @@ namespace TDPdf
         // true zoom; only the three places that touch layout convert, via LayoutZoomScale.
         private double DisplayZoomFactor()
         {
-            if (_viewMode == ViewMode.Continuous || _doc is null) return 1.0;
+            if (IsContinuousFamily || _doc is null) return 1.0;
             // The page in the PRIMARY tile, which is what the transform is being sized against.
             // RenderPage stamps it on PageImage.Tag; before the first render fall back to the
             // sidebar selection.
@@ -7770,7 +7899,7 @@ namespace TDPdf
             // view doesn't jump when zooming.
             Point? centreAnchor = _centreZoomAnchor;
             _centreZoomAnchor = null;
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 // ...except after a zoom gesture, which has already scrolled so the point under the
                 // pointer stayed put; snapping to the page top now would undo exactly that. A
@@ -7929,12 +8058,13 @@ namespace TDPdf
             if (viewW <= 0) return;
             // Continuous view fits against the strip's natural page width (zoom-independent), not
             // the hidden primary PageImage. Its display factor is 1, so no conversion.
-            if (_viewMode == ViewMode.Continuous)
+            // Two pages, continuous fits the whole row of facing pages, not one page.
+            if (IsContinuousFamily)
             {
                 if (_continuousPageW <= 0) return;
                 _zoomFitMode = ZoomFitMode.Width;
                 _manualZoomIntent = false;   // #201: a fit retires the remembered manual zoom
-                Zoom.SetZoomLevel(viewW / _continuousPageW);
+                Zoom.SetZoomLevel(viewW / ContinuousStripWidth());
                 return;
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0) return;
@@ -7952,16 +8082,15 @@ namespace TDPdf
             // this used to silently do nothing (Ctrl+3 and a remembered Fit Page were both dropped
             // in Continuous). Fit against the strip's own slot geometry instead — natural width by
             // the current page's natural height, both already in true-zoom space.
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 if (_doc is null || _doc.PageCount == 0 || _continuousPageW <= 0) return;
                 int idx = Math.Clamp(PageList.SelectedIndex, 0, _doc.PageCount - 1);
-                var slotPage = _doc.Pages[idx];
-                var (pw, ph) = PdfPageGeometry.DisplaySize(slotPage);   // same slot geometry as BuildContinuousView
-                double slotH = _continuousPageW * Math.Max(0.1, ph / Math.Max(1, pw));
+                // The current page's natural slot, or the taller page of its row in the two-page strip.
+                double slotH = ContinuousNaturalRowHeight(idx);
                 _zoomFitMode = ZoomFitMode.Page;
                 _manualZoomIntent = false;   // #201
-                Zoom.SetZoomLevel(Math.Min(viewW / _continuousPageW, viewH / slotH));
+                Zoom.SetZoomLevel(Math.Min(viewW / ContinuousStripWidth(), viewH / slotH));
                 return;
             }
             if (PageImage.Source is null || PageImage.ActualWidth <= 0 || PageImage.ActualHeight <= 0) return;
@@ -8167,7 +8296,7 @@ namespace TDPdf
             {
                 if (Directory.Exists(p)) return true;
                 if (p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) return true;
-                if (IsOpenablePath(p)) return true;
+                if (IsOpenablePath(p) || IsBookPath(p)) return true;
             }
             return false;
         }
@@ -8217,7 +8346,7 @@ namespace TDPdf
                 // Continuous view: the whole document is one scroll, so a sidebar selection
                 // scrolls the strip rather than re-rendering a single page. The scroll-sync
                 // suppression flag avoids a feedback loop with PagePreviewPanel_ScrollChanged.
-                if (_viewMode == ViewMode.Continuous)
+                if (IsContinuousFamily)
                 {
                     // #197: Continuous never re-renders a primary tile, and the scroll it is about
                     // to run is suppressed, so this is the only place a page change can raise the

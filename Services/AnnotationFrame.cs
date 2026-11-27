@@ -17,7 +17,7 @@ namespace TDPdf.Services
         /// <summary>Folds any angle into 0, 90, 180 or 270 (nearest quarter turn).</summary>
         public static int Normalize(int rotation)
         {
-            int r = ((rotation % 360) + 360) % 360;
+            int r = Angles.Mod360(rotation);
             return (int)(Math.Round(r / 90.0) * 90) % 360;
         }
 

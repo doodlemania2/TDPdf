@@ -65,6 +65,25 @@ namespace TDPdf
             return "User-" + (sid ?? Environment.UserName);
         }
 
+        /// <summary>
+        /// True when this process runs from the per-user or the machine-wide install folder, which only
+        /// the user (or an administrator) can write to. A portable copy runs from wherever it was
+        /// downloaded, so files beside it are not trusted.
+        /// </summary>
+        internal static bool RunsFromInstallFolder =>
+            UninstallPolicy.IsInside(AppContext.BaseDirectory, PerUserInstallDir) ||
+            UninstallPolicy.IsInside(AppContext.BaseDirectory, PerMachineInstallDir);
+
+        private static bool IsElevatedOrSystem()
+        {
+            try
+            {
+                using var id = WindowsIdentity.GetCurrent();
+                return id.IsSystem || new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch { return false; }
+        }
+
         private static bool IsSystemContextSafe()
         {
             try { return WindowsIdentity.GetCurrent().IsSystem; }
@@ -125,6 +144,13 @@ namespace TDPdf
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // The DjVu worker (Services/DjvuWorker.cs): TDPdf.exe started by TDPdf to run DjVuLibre in a
+            // process of its own. Handled before anything else (no window, no settings, no font resolver,
+            // no single-instance check) and not listed in any help. It refuses to run unless its stdin is a
+            // pipe from the parent; a launch that is not exactly "--djvu-worker 1" is the normal app.
+            if (DjvuWorkerProtocol.IsWorkerLaunch(e.Args))
+                Environment.Exit(DjvuWorker.Run());
+
             base.OnStartup(e);
 
             // #168: install the font resolver before ANYTHING can create an XFont — PdfSharpCore
@@ -158,108 +184,15 @@ namespace TDPdf
             // Diagnostics/TelemetryConfig.cs). Its `/set-telemetry` counterpart was removed in
             // 1.24.0.0 along with Application Insights: the OTLP collector is provisioned by
             // policy, so there is no longer a secret for an operator to pipe in by hand.
-            if (e.Args.Length > 0)
-            {
-                bool silent = e.Args.Length > 1 &&
-                              string.Equals(e.Args[1], "/silent", StringComparison.OrdinalIgnoreCase);
+            if (e.Args.Length > 0 && TryRunInstallerSwitch(e)) return;
 
-                // Unattended-install aliases. TDPdf's own switch is `/install /silent`, which
-                // nobody outside this repo would guess, and Microsoft Store certification runs the
-                // installer with NO UI permitted — a reviewer reaches for whichever spelling the
-                // ecosystem taught them (`/S` is NSIS, `/quiet` is MSI, `/verysilent` is Inno).
-                // Accepting the common ones costs nothing and is the difference between a working
-                // submission and a rejected one.
-                //
-                // This also fixes a real bug in passing: a bare `/silent` previously fell through
-                // to the document-open path, so TDPdf tried to open a file literally named
-                // "/silent". Only an argument list of exactly one is treated as an alias, so
-                // `/install /silent` and a genuine file path are both unaffected.
-                bool bareSilentInstall = e.Args.Length == 1 && IsSilentInstallAlias(e.Args[0]);
-
-                if (bareSilentInstall ||
-                    string.Equals(e.Args[0], "/install", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (bareSilentInstall) silent = true;
-                    InstallLog.WriteHeader("INSTALL", e.Args);
-                    // SYSTEM-context install is the right moment to retire a legacy
-                    // telemetry.dat, since this is the one path that reliably runs elevated.
-                    TelemetryStore.RemoveLegacyStore();
-                    Telemetry.Initialize(AppVersionString());
-                    Telemetry.TrackEvent("Install.Start", InstallProps(silent));
-                    try
-                    {
-                        using (InstallerExitCodes.Acquire(InstallLockKey()))
-                            DoInstall(wantDesktop: false);
-                        InstallLog.Write("INSTALL OK");
-                        Telemetry.TrackEvent("Install.Success", InstallProps(silent));
-                        Telemetry.Flush();
-                        Shutdown(0);
-                    }
-                    catch (Exception ex)
-                    {
-                        int code = InstallerExitCodes.FromException(ex);
-                        InstallLog.WriteError($"INSTALL FAILED (exit {code})", ex);
-                        if (code == InstallerExitCodes.Busy)
-                            Telemetry.TrackEvent("Install.Busy", InstallProps(silent));
-                        else
-                            Telemetry.TrackCrash(ex, "Install", recoverable: false);
-                        Telemetry.Flush();
-                        Shutdown(code);
-                    }
-                    return;
-                }
-
-                if (string.Equals(e.Args[0], "/uninstall", StringComparison.OrdinalIgnoreCase))
-                {
-                    InstallLog.WriteHeader("UNINSTALL", e.Args);
-                    Telemetry.Initialize(AppVersionString());
-                    Telemetry.TrackEvent("Uninstall.Start", InstallProps(silent));
-                    try
-                    {
-                        bool done;
-                        using (InstallerExitCodes.Acquire(InstallLockKey()))
-                            done = Uninstall(silent: silent);
-                        InstallLog.Write(done ? "UNINSTALL OK" : "UNINSTALL NOT DONE");
-                        Telemetry.TrackEvent("Uninstall.Success", InstallProps(silent));
-                        Telemetry.Flush();
-                        Shutdown(0);
-                    }
-                    catch (Exception ex)
-                    {
-                        int code = InstallerExitCodes.FromException(ex);
-                        InstallLog.WriteError($"UNINSTALL FAILED (exit {code})", ex);
-                        if (code == InstallerExitCodes.Busy)
-                            Telemetry.TrackEvent("Uninstall.Busy", InstallProps(silent));
-                        else
-                            Telemetry.TrackCrash(ex, "Uninstall", recoverable: false);
-                        Telemetry.Flush();
-                        Shutdown(code);
-                    }
-                    return;
-                }
-
-                if (string.Equals(e.Args[0], "/clear-telemetry", StringComparison.OrdinalIgnoreCase))
-                {
-                    InstallLog.WriteHeader("CLEAR-TELEMETRY", e.Args);
-                    try
-                    {
-                        // Clear() also removes any legacy telemetry.dat left by a pre-1.24.0.0
-                        // install. That file held a DPAPI-encrypted Application Insights
-                        // connection string which nothing reads any more; leaving a dead secret
-                        // on disk across the fleet is not a state worth preserving.
-                        TelemetryStore.Clear();
-                        TelemetryStore.MarkDisabled();
-                        InstallLog.Write("CLEAR-TELEMETRY OK");
-                        Shutdown(0);
-                    }
-                    catch (Exception ex)
-                    {
-                        InstallLog.WriteError("CLEAR-TELEMETRY FAILED", ex);
-                        Shutdown(1);
-                    }
-                    return;
-                }
-            }
+            // Heal a corrupt user.config and carry settings over from the previous version BEFORE
+            // any Settings.Default access (the headless CLI commands below read settings too, then
+            // the single-instance check, theme load, and MainWindow field initializers). A
+            // truncated user.config — from a hard shutdown, a full disk, or a roaming-profile sync
+            // conflict — otherwise throws an uncaught ConfigurationErrorsException and the app dies
+            // before any window or crash handler exists.
+            EnsureSettingsHealthy();
 
             // Headless CLI commands (see MainWindow.Cli.cs; --batch-resave in MainWindow.BatchMode.cs). Checked
             // AFTER the install/telemetry flags above but BEFORE the single-instance mutex
@@ -272,15 +205,6 @@ namespace TDPdf
                 Shutdown(cliExit);
                 return;
             }
-
-            // Interactive launch. Heal a corrupt user.config BEFORE any
-            // Settings.Default access (the single-instance check, theme
-            // load, and MainWindow field initializers all read settings).
-            // A truncated user.config — from a hard shutdown, a full disk,
-            // or a roaming-profile sync conflict — otherwise throws an
-            // uncaught ConfigurationErrorsException and the app dies before
-            // any window or crash handler exists.
-            EnsureSettingsHealthy();
 
             // Wire crash handling FIRST so failures anywhere below (theme
             // load, single-instance pipe, window construction) are caught,
@@ -325,8 +249,26 @@ namespace TDPdf
             // back into whichever window happens to hold the mutex would silently undo the user's
             // drag. MainWindow's own startup path strips the flag back off before looking at args[1]
             // for the file to open.
-            bool isTearOffLaunch = e.Args.Length > 0 &&
-                string.Equals(e.Args[0], "--new-window", StringComparison.OrdinalIgnoreCase);
+            if (TryForwardToRunningInstance(e)) return;
+
+            ThemeManager.Initialize(ParseThemeSetting(SafeSetting(() => TDPdf.Properties.Settings.Default.Theme, "")));
+
+            TrackStartup(appVersion);
+
+            ShutdownMode = ShutdownMode.OnLastWindowClose;
+
+            ShowMainWindow();
+        }
+
+        /// <summary>
+        /// Single-instance forwarding. True when this launch handed its file to the running window and
+        /// is shutting down; false when it should carry on and open a window of its own.
+        /// </summary>
+        private bool TryForwardToRunningInstance(StartupEventArgs e)
+        {
+            // --new-window and --read-only (split view) both mean "a window of its own": folding them into
+            // the running window would drop the read-only flag, or undo the drag that asked for a new window.
+            bool isTearOffLaunch = WindowLaunch.Parse(e.Args).SeparateWindow;
             if (!isTearOffLaunch && SafeSetting(() => TDPdf.Properties.Settings.Default.SingleInstanceTabs, true))
             {
                 try
@@ -340,7 +282,7 @@ namespace TDPdf
                         if (TrySendToRunningInstance(payload))
                         {
                             Shutdown(0);
-                            return;
+                            return true;
                         }
                         // Couldn't reach the running instance — continue and open
                         // a normal window so the user is never left with nothing.
@@ -356,8 +298,143 @@ namespace TDPdf
                 }
             }
 
-            ThemeManager.Initialize(ParseThemeSetting(SafeSetting(() => TDPdf.Properties.Settings.Default.Theme, "")));
+            return false;
+        }
 
+        /// <summary>
+        /// Handles the install / uninstall / telemetry switches, which are headless by design and
+        /// must run BEFORE any UI, theme or crash plumbing. True when one was handled (the process is
+        /// shutting down); false for an ordinary launch.
+        /// </summary>
+        private bool TryRunInstallerSwitch(StartupEventArgs e)
+        {
+            bool silent = e.Args.Length > 1 &&
+                          string.Equals(e.Args[1], "/silent", StringComparison.OrdinalIgnoreCase);
+
+            // Unattended-install aliases. TDPdf's own switch is `/install /silent`, which
+            // nobody outside this repo would guess, and Microsoft Store certification runs the
+            // installer with NO UI permitted — a reviewer reaches for whichever spelling the
+            // ecosystem taught them (`/S` is NSIS, `/quiet` is MSI, `/verysilent` is Inno).
+            // Accepting the common ones costs nothing and is the difference between a working
+            // submission and a rejected one.
+            //
+            // This also fixes a real bug in passing: a bare `/silent` previously fell through
+            // to the document-open path, so TDPdf tried to open a file literally named
+            // "/silent". Only an argument list of exactly one is treated as an alias, so
+            // `/install /silent` and a genuine file path are both unaffected.
+            bool bareSilentInstall = e.Args.Length == 1 && IsSilentInstallAlias(e.Args[0]);
+
+            if (bareSilentInstall ||
+                string.Equals(e.Args[0], "/install", StringComparison.OrdinalIgnoreCase))
+            {
+                if (bareSilentInstall) silent = true;
+                RunInstallSwitch(e, silent);
+                return true;
+            }
+
+            if (string.Equals(e.Args[0], "/uninstall", StringComparison.OrdinalIgnoreCase))
+            {
+                RunUninstallSwitch(e, silent);
+                return true;
+            }
+
+            if (string.Equals(e.Args[0], "/clear-telemetry", StringComparison.OrdinalIgnoreCase))
+            {
+                RunClearTelemetrySwitch(e);
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// <c>/install</c> (and its unattended aliases): installs headless and shuts down with the
+        /// installer exit code.
+        /// </summary>
+        private void RunInstallSwitch(StartupEventArgs e, bool silent)
+        {
+            InstallLog.WriteHeader("INSTALL", e.Args);
+            // SYSTEM-context install is the right moment to retire a legacy
+            // telemetry.dat, since this is the one path that reliably runs elevated.
+            TelemetryStore.RemoveLegacyStore();
+            Telemetry.Initialize(AppVersionString());
+            Telemetry.TrackEvent("Install.Start", InstallProps(silent));
+            try
+            {
+                using (InstallerExitCodes.Acquire(InstallLockKey()))
+                    DoInstall(wantDesktop: false);
+                InstallLog.Write("INSTALL OK");
+                Telemetry.TrackEvent("Install.Success", InstallProps(silent));
+                Telemetry.Flush();
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                int code = InstallerExitCodes.FromException(ex);
+                InstallLog.WriteError($"INSTALL FAILED (exit {code})", ex);
+                if (code == InstallerExitCodes.Busy)
+                    Telemetry.TrackEvent("Install.Busy", InstallProps(silent));
+                else
+                    Telemetry.TrackCrash(ex, "Install", recoverable: false);
+                Telemetry.Flush();
+                Shutdown(code);
+            }
+        }
+
+        /// <summary><c>/uninstall</c>: uninstalls and shuts down with the installer exit code.</summary>
+        private void RunUninstallSwitch(StartupEventArgs e, bool silent)
+        {
+            InstallLog.WriteHeader("UNINSTALL", e.Args);
+            Telemetry.Initialize(AppVersionString());
+            Telemetry.TrackEvent("Uninstall.Start", InstallProps(silent));
+            try
+            {
+                bool done;
+                using (InstallerExitCodes.Acquire(InstallLockKey()))
+                    done = Uninstall(silent: silent);
+                InstallLog.Write(done ? "UNINSTALL OK" : "UNINSTALL NOT DONE");
+                Telemetry.TrackEvent("Uninstall.Success", InstallProps(silent));
+                Telemetry.Flush();
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                int code = InstallerExitCodes.FromException(ex);
+                InstallLog.WriteError($"UNINSTALL FAILED (exit {code})", ex);
+                if (code == InstallerExitCodes.Busy)
+                    Telemetry.TrackEvent("Uninstall.Busy", InstallProps(silent));
+                else
+                    Telemetry.TrackCrash(ex, "Uninstall", recoverable: false);
+                Telemetry.Flush();
+                Shutdown(code);
+            }
+        }
+
+        /// <summary><c>/clear-telemetry</c>: the admin / SYSTEM device opt-out; shuts down when done.</summary>
+        private void RunClearTelemetrySwitch(StartupEventArgs e)
+        {
+            InstallLog.WriteHeader("CLEAR-TELEMETRY", e.Args);
+            try
+            {
+                // Clear() also removes any legacy telemetry.dat left by a pre-1.24.0.0
+                // install. That file held a DPAPI-encrypted Application Insights
+                // connection string which nothing reads any more; leaving a dead secret
+                // on disk across the fleet is not a state worth preserving.
+                TelemetryStore.Clear();
+                TelemetryStore.MarkDisabled();
+                InstallLog.Write("CLEAR-TELEMETRY OK");
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                InstallLog.WriteError("CLEAR-TELEMETRY FAILED", ex);
+                Shutdown(1);
+            }
+        }
+
+        /// <summary>The <c>App.Startup</c> event: version, install scope and the machine's basics.</summary>
+        private static void TrackStartup(string appVersion)
+        {
             string installScope = DetectInstalledScope() switch
             {
                 InstallScope.PerMachine => "PerMachine",
@@ -374,9 +451,14 @@ namespace TDPdf
                 ["ProcessorCount"]    = Environment.ProcessorCount.ToString(),
                 ["SettingsRecovered"] = s_settingsRecovered ? "true" : "false",
             });
+        }
 
-            ShutdownMode = ShutdownMode.OnLastWindowClose;
-
+        /// <summary>
+        /// Shows the startup splash and then the main window; the splash is dismissed once the window has
+        /// rendered.
+        /// </summary>
+        private void ShowMainWindow()
+        {
             // Immediate startup feedback. MainWindow has a heavy first render
             // (large XAML, FindName resolution, tab strip / context menu build,
             // grain texture, signature load, then the async document open), so a
@@ -434,6 +516,21 @@ namespace TDPdf
             {
                 // Force ApplicationSettingsBase to parse user.config now.
                 _ = TDPdf.Properties.Settings.Default.Theme;
+
+                // .NET keeps user.config in a folder named for the assembly version, so every
+                // update starts from an empty file unless the previous version's settings are
+                // pulled across. Upgrade() does that once per version: SettingsUpgradeRequired
+                // defaults to true in a new version's (absent) file, is cleared and saved here, and
+                // so stays false until the next version ships. The folder name also carries a hash
+                // of the exe path: the per-user install path is stable, so an installed copy keeps
+                // its settings, while a portable copy run from a NEW path starts fresh.
+                var settings = TDPdf.Properties.Settings.Default;
+                if (settings.SettingsUpgradeRequired)
+                {
+                    settings.Upgrade();
+                    settings.SettingsUpgradeRequired = false;
+                    settings.Save();
+                }
             }
             catch (System.Configuration.ConfigurationErrorsException ex)
             {
@@ -597,6 +694,14 @@ namespace TDPdf
             security.SetOwner(me);
             security.AddAccessRule(new PipeAccessRule(me,
                 PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+            // An elevated window must not take file paths from a normal-integrity process in the same
+            // session: that would let an unelevated program make the elevated TDPdf open (and then
+            // save over) files of its choosing. A High mandatory label with NO_WRITE_UP makes the
+            // pipe unwritable by anything running below High. The unelevated launch that cannot
+            // reach it just opens its own window, which is what it already does when the forward
+            // fails. Not applied to a normal window, where the same-user DACL above is the boundary.
+            if (IsElevatedOrSystem())
+                security.SetSecurityDescriptorSddlForm("S:(ML;;NW;;;HI)", AccessControlSections.Audit);
             return NamedPipeServerStreamAcl.Create(SingleInstancePipeName, PipeDirection.In, 1,
                 PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
         }
@@ -1239,6 +1344,7 @@ namespace TDPdf
                 k.SetValue("TDPdf.pdf", new byte[0], RegistryValueKind.None);
 
             RegisterImageOpenWith(hive, installExe);
+            RegisterBookOpenWith(hive, installExe);
 
             // RegisteredApplications capability (used by Default Programs UI)
             using (var k = hive.CreateSubKey(
@@ -1283,6 +1389,54 @@ namespace TDPdf
             {
                 using var k = hive.CreateSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids");
                 k.SetValue(ImageProgId, new byte[0], RegistryValueKind.None);
+            }
+        }
+
+        // Books TDPdf converts to a PDF when it opens them (#235). Same shape as the picture types above:
+        // one ProgID per kind, listed under each extension's OpenWithProgids only, so TDPdf is offered in
+        // Explorer's "Open with" and never becomes the default, and not added to Capabilities either.
+        private const string EpubProgId = "TDPdf.epub";
+        private const string DjvuProgId = "TDPdf.djvu";
+        private static readonly (string ProgId, string Description, string[] Extensions)[] BookOpenWith =
+        {
+            (EpubProgId, "EPUB book (open as a PDF in TDPdf)", new[] { ".epub" }),
+            (DjvuProgId, "DjVu book (open as a PDF in TDPdf)", new[] { ".djvu", ".djv" }),
+        };
+
+        private static void RegisterBookOpenWith(RegistryKey hive, string installExe)
+        {
+            foreach (var (progId, description, extensions) in BookOpenWith)
+            {
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId))
+                    k.SetValue("", description);
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId + @"\DefaultIcon"))
+                    k.SetValue("", $"{installExe},0");
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId + @"\shell\open"))
+                    k.SetValue("FriendlyAppName", AppName);
+                using (var k = hive.CreateSubKey(@"Software\Classes\" + progId + @"\shell\open\command"))
+                    k.SetValue("", $"\"{installExe}\" \"%1\"");
+                foreach (var ext in extensions)
+                {
+                    using var k = hive.CreateSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids");
+                    k.SetValue(progId, new byte[0], RegistryValueKind.None);
+                }
+            }
+        }
+
+        private static void UnregisterBookOpenWith(RegistryKey root)
+        {
+            foreach (var (progId, _, extensions) in BookOpenWith)
+            {
+                try { root.DeleteSubKeyTree(@"Software\Classes\" + progId, throwOnMissingSubKey: false); } catch { }
+                foreach (var ext in extensions)
+                {
+                    try
+                    {
+                        using var k = root.OpenSubKey(@"Software\Classes\" + ext + @"\OpenWithProgids", writable: true);
+                        k?.DeleteValue(progId, throwOnMissingValue: false);
+                    }
+                    catch { }
+                }
             }
         }
 
@@ -1504,6 +1658,7 @@ namespace TDPdf
                     @"Software\Microsoft\Windows\CurrentVersion\Uninstall\TDPdf"); } catch { }
                 try { root.DeleteSubKeyTree(@"Software\Classes\TDPdf.pdf"); } catch { }
                 UnregisterImageOpenWith(root);
+                UnregisterBookOpenWith(root);
 
                 try
                 {
@@ -1531,9 +1686,6 @@ namespace TDPdf
             // pre-placed at a fixed %TEMP% path runs in its place.
             string dir = installDir.TrimEnd('\\');
             string batName = $"tdpdf_uninstall_{Guid.NewGuid():N}.bat";
-            string tempDir = Path.GetTempPath();
-            string bat = Path.Combine(tempDir, batName);
-            File.WriteAllText(bat, UninstallPolicy.DeferredDeleteScript, Encoding.ASCII);
 
             // The message comes first and the batch starts after it, so the minute of retries is spent
             // after this process is about to exit rather than while a dialog nobody has clicked holds
@@ -1544,7 +1696,23 @@ namespace TDPdf
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
-            var psi = new ProcessStartInfo("cmd.exe", UninstallPolicy.DeferredDeleteArguments(batName))
+            // The batch is written only now, straight before it runs, so nothing can swap it while a
+            // modal prompt is up. An elevated process (and SYSTEM, which is how Intune runs this)
+            // puts it in %WINDIR%\Temp: ordinary users can create files there but cannot modify one
+            // an administrator created, whereas the user's own %TEMP% is writable by any
+            // medium-integrity process in the same session. CreateNew refuses a pre-planted file.
+            string tempDir = IsElevatedOrSystem()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Temp")
+                : Path.GetTempPath();
+            Directory.CreateDirectory(tempDir);
+            string bat = Path.Combine(tempDir, batName);
+            using (var fs = new FileStream(bat, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                byte[] body = Encoding.ASCII.GetBytes(UninstallPolicy.DeferredDeleteScript);
+                fs.Write(body, 0, body.Length);
+            }
+
+            var psi = new ProcessStartInfo(TDPdf.Services.SystemTool.Path("cmd.exe"), UninstallPolicy.DeferredDeleteArguments(batName))
             {
                 WorkingDirectory = tempDir,
                 UseShellExecute  = false,   // required to pass the environment variable

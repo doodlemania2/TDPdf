@@ -60,6 +60,30 @@ internal static class CleanupSecurity
         Check("sweep of a missing folder does not throw",
               TempFilePolicy.Sweep(Path.Combine(dir, "nope"), DateTime.UtcNow, false) == 0, "");
 
+        // ── zip extraction folders ─────────────────────────────────────────────────────────
+        DateTime t0 = DateTime.UtcNow;
+        Check("zip folder names: only the ones TDPdf makes",
+              TempFilePolicy.IsZipDirectoryName("tdpdf-zip-0123abcd") && !TempFilePolicy.IsZipDirectoryName("tdpdf-zip-xyz") &&
+              !TempFilePolicy.IsZipDirectoryName("tdpdf-zip-0123abcd2") && !TempFilePolicy.IsZipDirectoryName("my-tdpdf-zip-0123abcd"), "");
+        Check("zip folder age rule matches the working files (1 hour alone, 7 days with another TDPdf)",
+              TempFilePolicy.ShouldSweepDirectory("tdpdf-zip-0123abcd", t0.AddHours(-2), t0, false) &&
+              !TempFilePolicy.ShouldSweepDirectory("tdpdf-zip-0123abcd", t0.AddMinutes(-5), t0, false) &&
+              !TempFilePolicy.ShouldSweepDirectory("tdpdf-zip-0123abcd", t0.AddDays(-3), t0, true) &&
+              !TempFilePolicy.ShouldSweepDirectory("Documents", t0.AddYears(-1), t0, false), "");
+        string zStale = Path.Combine(dir, "tdpdf-zip-aaaaaaaa"), zBusy = Path.Combine(dir, "tdpdf-zip-bbbbbbbb"), zOther = Path.Combine(dir, "photos");
+        foreach (var d in new[] { zStale, zBusy, zOther }) Directory.CreateDirectory(Path.Combine(d, "sub"));
+        string zFile = Path.Combine(zStale, "sub", "a.pdf"), zBusyFile = Path.Combine(zBusy, "sub", "b.pdf");
+        File.WriteAllText(zFile, "x"); File.WriteAllText(zBusyFile, "x"); File.WriteAllText(Path.Combine(zOther, "sub", "c.pdf"), "x");
+        int zr = TempFilePolicy.SweepZipDirectories(dir, DateTime.UtcNow.AddDays(2), false, p => p == zBusyFile);
+        Check("zip sweep removes a stale extraction folder with its contents",
+              zr == 1 && !Directory.Exists(zStale), $"removed {zr}");
+        Check("zip sweep keeps a folder with a file in use, and any folder not named tdpdf-zip-*",
+              Directory.Exists(zBusy) && Directory.Exists(zOther), "");
+        Check("zip sweep keeps a fresh folder",
+              TempFilePolicy.SweepZipDirectories(dir, DateTime.UtcNow, false, _ => false) == 0 && Directory.Exists(zBusy), "");
+        Check("zip sweep of a missing folder does not throw",
+              TempFilePolicy.SweepZipDirectories(Path.Combine(dir, "nope"), DateTime.UtcNow, false) == 0, "");
+
         // A real lock (FileShare.None) is detected.
         using (var held = new FileStream(fresh, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
             Check("IsLocked sees a file held open exclusively", TempFilePolicy.IsLocked(fresh), "");
@@ -110,6 +134,14 @@ internal static class CleanupSecurity
         Check("an AES file that can be re-keyed is flagged as downgraded",
               ProtectedSave.Assess(true, true, true) == ProtectedSave.Impact.Downgraded, "");
         Check("an RC4 file written back as RC4 is silent", ProtectedSave.Assess(true, true, false) == I, "");
+        Check("a 40-bit RC4 file written back as 40-bit is flagged, 128-bit stays silent",
+              ProtectedSave.Assess(true, true, false, weak40Bit: true) == ProtectedSave.Impact.Weak40Bit
+              && ProtectedSave.Assess(true, true, false, weak40Bit: false) == I
+              && ProtectedSave.Assess(true, false, false, weak40Bit: true) == ProtectedSave.Impact.Removed
+              && ProtectedSave.Assess(false, true, false, weak40Bit: true) == I, "");
+        string weakMsg = ProtectedSave.ImpactMessage(ProtectedSave.Impact.Weak40Bit, "a.pdf", null);
+        Check("the 40-bit warning names the file, the weakness and the way out",
+              weakMsg.Contains("a.pdf") && weakMsg.Contains("40-bit") && weakMsg.Contains("Remove Password"), weakMsg);
         Check("the dialog text names the file and what will be written",
               ProtectedSave.ImpactMessage(ProtectedSave.Impact.Removed, "a.pdf", null).Contains("NO password")
               && ProtectedSave.ImpactMessage(ProtectedSave.Impact.Downgraded, "a.pdf", null).Contains("RC4")

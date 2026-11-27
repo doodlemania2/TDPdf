@@ -65,5 +65,23 @@ internal static class FlattenDpi
         Check("a page without images gets 150", dpis[1] == 150, $"{dpis[1]}");
         Check("a file PdfPig cannot open gives 150 for every page",
               FlattenResolution.ReadPageDpis(Path.Combine(tmp, "flatten-dpi.png"), [(144, 144), (144, 144)]) is [150, 150], "");
+        // #234: the options step.
+        var sizes = new (double, double)[] { (612, 792), (1224, 792), (300, 300) };
+        Check("Automatic choice returns the automatic dpi", FlattenResolution.ForChoice(0, 240, 612, 792) == 240, "");
+        Check("a fixed choice is used as asked", FlattenResolution.ForChoice(300, 150, 612, 792) == 300, "");
+        Check("a fixed choice is lowered on a huge page", FlattenResolution.ForChoice(300, 150, 7200, 7200) < 300, "");
+        Check("pixel size at 150 dpi for Letter", FlattenResolution.PixelSize(612, 792, 150) == (1275, 1650), "");
+        Check("pixel size at 72 dpi is the point size", FlattenResolution.PixelSize(612, 792, 72) == (612, 792), "");
+        Check("pixel size is never below 1", FlattenResolution.PixelSize(0.1, 0.1, 72) == (1, 1), "");
+        Check("scale percent", FlattenResolution.ScalePercent(150) == 208 && FlattenResolution.ScalePercent(72) == 100, "");
+        Check("the largest page is found by area", FlattenResolution.LargestPage(sizes) == 1, "");
+        Check("no pages has no largest", FlattenResolution.LargestPage([]) == -1, "");
+        Check("choices normalise", FlattenResolution.NormaliseChoice(200) == 200 && FlattenResolution.NormaliseChoice(123) == 0
+              && FlattenResolution.NormaliseChoice(0) == 0, "");
+        double[] fixedDpis = FlattenResolution.ReadPageDpis(path, [(144, 144), (144, 144)], 200);
+        Check("a fixed choice overrides the image-derived dpi on every page", fixedDpis is [200, 200], $"{string.Join(",", fixedDpis)}");
+        double[] onlyDpis = FlattenResolution.ReadPageDpis(path, [(144, 144), (144, 144)], 0, new HashSet<int> { 1 });
+        Check("a restricted read leaves skipped pages at the default", onlyDpis is [150, 150], $"{string.Join(",", onlyDpis)}");
+
     }
 }

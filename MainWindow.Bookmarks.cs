@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using PdfSharpCore.Pdf;
+using TDPdf.Services;
 
 namespace TDPdf
 {
@@ -30,7 +31,7 @@ namespace TDPdf
 
         // PdfSharpCore cannot save a document opened read-only (owner-password / XRef-fallback opens),
         // so bookmark editing is hidden there rather than failing at save time.
-        private bool CanEditBookmarks => _doc is not null && !_doc.IsReadOnly;
+        private bool CanEditBookmarks => _doc is not null && !_doc.IsReadOnly && !ReadOnlyGate.ProcessIsReadOnly;
 
         // Multi-select. WPF's TreeView is hard single-select, so its built-in selection stays the
         // "primary" item and Ctrl/Shift clicks maintain this extra set on top. Keyed by PdfOutline so
@@ -489,8 +490,11 @@ namespace TDPdf
             var menu = new ContextMenu();
             TextOptions.SetTextFormattingMode(menu, TextFormattingMode.Display);
             TextOptions.SetTextRenderingMode(menu, TextRenderingMode.Grayscale);
-            if (tvi?.Tag is OutlineNodeRef nref)
+            var ctx = new ContextMenuContext { Kind = ContextMenuKind.Sidebar, ReadOnly = ReadOnlyGate.ProcessIsReadOnly };
+            OutlineNodeRef? nref = null;
+            if (tvi?.Tag is OutlineNodeRef found)
             {
+                nref = found;
                 // Right-click outside the multi-selection collapses it to the clicked item (the
                 // file-explorer convention); inside it, the menu acts on the whole set.
                 bool inMulti = _bmExtraSel.Contains(nref.Outline);
@@ -501,37 +505,47 @@ namespace TDPdf
 
                 if (inMulti && _bmExtraSel.Count > 1)
                 {
-                    menu.Items.Add(MakeMenuItem($"Delete ({_bmExtraSel.Count})",
-                                                (_, _2) => DeleteSelectedBookmarks(nref), "Delete", null, "\uE74D"));
+                    ctx = new ContextMenuContext
+                    {
+                        Kind = ContextMenuKind.Sidebar, ReadOnly = ctx.ReadOnly,
+                        Bookmark = BookmarkMenuState.Multiple, BookmarksSelected = _bmExtraSel.Count,
+                    };
                 }
                 else
                 {
-                    menu.Items.Add(MakeMenuItem("_Rename", (_, _2) => BeginInlineRename(tvi, nref), "F2", null, "\uE8AC"));
-                    menu.Items.Add(MakeMenuItem("Add _child bookmark", (_, _2) => AddBookmarkInto(nref), null, null, "\uE710"));
-                    menu.Items.Add(MakeMenuItem("Set destination to current page", (_, _2) => SetBookmarkDestination(nref), null, null, "\uE718"));
-                    menu.Items.Add(new Separator());
                     int idx = nref.Parent.IndexOf(nref.Outline);
-                    var up = MakeMenuItem("Move _up", (_, _2) => MoveBookmark(nref, -1), null, null, "\uE74A");
-                    up.IsEnabled = idx > 0;
-                    menu.Items.Add(up);
-                    var down = MakeMenuItem("Move _down", (_, _2) => MoveBookmark(nref, +1), null, null, "\uE74B");
-                    down.IsEnabled = idx >= 0 && idx < nref.Parent.Count - 1;
-                    menu.Items.Add(down);
-                    menu.Items.Add(new Separator());
-                    menu.Items.Add(MakeMenuItem("_Delete", (_, _2) => DeleteSelectedBookmarks(nref), "Delete", null, "\uE74D"));
+                    ctx = new ContextMenuContext
+                    {
+                        Kind = ContextMenuKind.Sidebar, ReadOnly = ctx.ReadOnly, Bookmark = BookmarkMenuState.Item,
+                        BookmarkCanMoveUp = idx > 0,
+                        BookmarkCanMoveDown = idx >= 0 && idx < nref.Parent.Count - 1,
+                    };
                 }
             }
             else
             {
-                menu.Items.Add(MakeMenuItem("_Add bookmark", (_, _2) => AddBookmarkInto(null), null, null, "\uE710"));
-                bool hasAny = _doc?.Internals.Catalog.Elements.ContainsKey("/Outlines") == true
-                              && _outlineTree.Items.Count > 1;   // ghost row + at least one real entry
-                if (hasAny)
+                ctx = new ContextMenuContext
                 {
-                    menu.Items.Add(new Separator());
-                    menu.Items.Add(MakeMenuItem("Delete all bookmarks", (_, _2) => DeleteAllBookmarks(), null, null, "\uE74D"));
-                }
+                    Kind = ContextMenuKind.Sidebar, ReadOnly = ctx.ReadOnly, Bookmark = BookmarkMenuState.Empty,
+                    BookmarksExist = _doc?.Internals.Catalog.Elements.ContainsKey("/Outlines") == true
+                                     && _outlineTree.Items.Count > 1,   // ghost row + at least one real entry
+                };
             }
+
+            var node = nref;
+            var row = tvi;
+            FillMenu(menu, ctx, id => id switch
+            {
+                MenuId.BmRename when node is not null && row is not null => (_, _2) => BeginInlineRename(row, node),
+                MenuId.BmAddChild when node is not null => (_, _2) => AddBookmarkInto(node),
+                MenuId.BmSetDest when node is not null => (_, _2) => SetBookmarkDestination(node),
+                MenuId.BmMoveUp when node is not null => (_, _2) => MoveBookmark(node, -1),
+                MenuId.BmMoveDown when node is not null => (_, _2) => MoveBookmark(node, +1),
+                MenuId.BmDelete when node is not null => (_, _2) => DeleteSelectedBookmarks(node),
+                MenuId.BmAdd => (_, _2) => AddBookmarkInto(null),
+                MenuId.BmDeleteAll => (_, _2) => DeleteAllBookmarks(),
+                _ => null,
+            });
             menu.PlacementTarget = _outlineTree;
             menu.IsOpen = true;
             e.Handled = true;

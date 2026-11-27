@@ -12,9 +12,9 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\tdpdf-icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>2.3.0.0</Version>
-    <AssemblyVersion>2.3.0.0</AssemblyVersion>
-    <FileVersion>2.3.0.0</FileVersion>
+    <Version>3.0.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- The vendored PdfSharpCore (net8.0, AnyCPU) is referenced by this x64 app. By default
          the SDK unsets the parent's Configuration/Platform when building the ProjectReference, so the
@@ -129,6 +129,36 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- Colour management: the lcms2 (Little CMS, MIT) native library, embedded like the OCR natives and
+       extracted on first use by Services/LcmsNative.cs (LcmsBootstrap). It is used ONLY when its SHA-256
+       equals LcmsBootstrap.PinnedSha256, so a file dropped here without updating the pin is ignored (and
+       tests/PdfCore fails). Without the file the managed colour engine is used.
+       Provenance: third_party\lcms2\SOURCES.md. -->
+  <PropertyGroup>
+    <LcmsNativeFile>$(MSBuildThisFileDirectory)third_party\lcms2\win-x64\liblcms2-2.dll</LcmsNativeFile>
+    <LcmsPinFile>$(MSBuildThisFileDirectory)third_party\lcms2\SHA256SUMS</LcmsPinFile>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(LcmsNativeFile)')">
+    <EmbeddedResource Include="$(LcmsNativeFile)">
+      <LogicalName>TDPdf.ColorNative.liblcms2-2.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+  <!-- The file must be listed in third_party\lcms2\SHA256SUMS ("<sha256>  <file name>") or the build stops. -->
+  <Target Name="VerifyLcmsNativePin" BeforeTargets="BeforeBuild;CoreCompile" Condition="Exists('$(LcmsNativeFile)')">
+    <Error Condition="!Exists('$(LcmsPinFile)')" Text="third_party\lcms2\SHA256SUMS is missing: the lcms2 binary in third_party\lcms2\win-x64 must be pinned by SHA-256." />
+    <ReadLinesFromFile File="$(LcmsPinFile)" Condition="Exists('$(LcmsPinFile)')">
+      <Output TaskParameter="Lines" ItemName="LcmsPinLine" />
+    </ReadLinesFromFile>
+    <GetFileHash Files="$(LcmsNativeFile)" Algorithm="SHA256" HashEncoding="hex">
+      <Output TaskParameter="Items" ItemName="LcmsHashed" />
+    </GetFileHash>
+    <PropertyGroup>
+      <LcmsPins>;@(LcmsPinLine->'%(Identity)', ';');</LcmsPins>
+    </PropertyGroup>
+    <Error Condition="'@(LcmsHashed)' != '' And !$(LcmsPins.Contains(';$([System.String]::Copy(&apos;%(LcmsHashed.FileHash)&apos;).ToLowerInvariant())  %(LcmsHashed.Filename)%(LcmsHashed.Extension);'))"
+           Text="%(LcmsHashed.Filename)%(LcmsHashed.Extension) does not match the SHA-256 pinned in third_party\lcms2\SHA256SUMS ($([System.String]::Copy('%(LcmsHashed.FileHash)').ToLowerInvariant()))." />
+  </Target>
+
   <!-- WebView2's native loader, the OCR way: embedded as a resource and extracted on first use
        (Services/WebView2Bootstrap.cs), which then calls CoreWebView2Environment.SetLoaderDllFolderPath.
        WebView2NeverCopyLoaderDllToOutputDirectory switches off the package's loose
@@ -144,6 +174,42 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- DjVuLibre (#235): the DjVuLibre LIBRARY, not its command-line tools. TDPdf.exe in its worker mode
+       (Services/DjvuWorker.cs) loads libdjvulibre-21.dll in a process of its own and calls it through
+       its C API, so a book that crashes DjVuLibre ends that process and not your tabs. DjVuLibre is
+       GPL-2.0-or-later, so a build that carries it must also offer its corresponding source:
+       third_party\djvulibre\SOURCES.md names every package, its exact version, its MSYS2 recipe and
+       its upstream source, and THIRD-PARTY-NOTICES.md says where to get them. The five DLLs (the
+       library and the runtime pieces it imports, and nothing else) come from MSYS2's UCRT64
+       packages. They are embedded as TDPdf.DjvuNative.<file> and extracted on first use, the OCR
+       way. Nothing is fetched at build time and nothing is embedded unpinned: every file in the
+       folder must be listed in third_party\djvulibre\SHA256SUMS ("<sha256>  <file name>", the output
+       of sha256sum) and no program (.exe) may be in it, or the build stops. -->
+  <PropertyGroup>
+    <DjvuNativeDir>$(MSBuildThisFileDirectory)third_party\djvulibre\win-x64\</DjvuNativeDir>
+    <DjvuPinFile>$(MSBuildThisFileDirectory)third_party\djvulibre\SHA256SUMS</DjvuPinFile>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(DjvuNativeDir)libdjvulibre-21.dll')">
+    <DjvuNativeFile Include="$(DjvuNativeDir)*.dll" />
+    <DjvuForbiddenFile Include="$(DjvuNativeDir)*.exe" />
+    <EmbeddedResource Include="@(DjvuNativeFile)" LogicalName="TDPdf.DjvuNative.%(Filename)%(Extension)" />
+  </ItemGroup>
+  <Target Name="VerifyDjvuNativePins" BeforeTargets="BeforeBuild;CoreCompile" Condition="'@(DjvuNativeFile)' != ''">
+    <Error Condition="'@(DjvuForbiddenFile)' != ''" Text="third_party\djvulibre\win-x64 must hold the DjVuLibre library DLLs only; remove @(DjvuForbiddenFile->'%(Filename)%(Extension)', ', ')." />
+    <Error Condition="!Exists('$(DjvuPinFile)')" Text="third_party\djvulibre\SHA256SUMS is missing: the DjVuLibre binaries in third_party\djvulibre\win-x64 must be pinned by SHA-256." />
+    <ReadLinesFromFile File="$(DjvuPinFile)" Condition="Exists('$(DjvuPinFile)')">
+      <Output TaskParameter="Lines" ItemName="DjvuPinLine" />
+    </ReadLinesFromFile>
+    <GetFileHash Files="@(DjvuNativeFile)" Algorithm="SHA256" HashEncoding="hex">
+      <Output TaskParameter="Items" ItemName="DjvuHashed" />
+    </GetFileHash>
+    <PropertyGroup>
+      <DjvuPins>;@(DjvuPinLine->'%(Identity)', ';');</DjvuPins>
+    </PropertyGroup>
+    <Error Condition="'@(DjvuHashed)' != '' And !$(DjvuPins.Contains(';$([System.String]::Copy(&apos;%(DjvuHashed.FileHash)&apos;).ToLowerInvariant())  %(DjvuHashed.Filename)%(DjvuHashed.Extension);'))"
+           Text="%(DjvuHashed.Filename)%(DjvuHashed.Extension) does not match the SHA-256 pinned in third_party\djvulibre\SHA256SUMS ($([System.String]::Copy('%(DjvuHashed.FileHash)').ToLowerInvariant()))." />
+  </Target>
+
   <!-- Third-party licence notices. MIT and BSD both require their copyright notice to travel
        with binary distributions, and Apache-2.0 section 4(a) requires a copy of the licence
        itself; TDPdf ships as a single self-contained exe, so those components are physically
@@ -154,6 +220,15 @@
   <ItemGroup>
     <EmbeddedResource Include="THIRD-PARTY-NOTICES.md">
       <LogicalName>TDPdf.THIRD-PARTY-NOTICES.md</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- The user-facing release notes (.github/release-notes/v*.md), shown by What's new after an
+       update and from Help > What's New. Each is embedded as TDPdf.ReleaseNotes.v<version>.md;
+       Only v2.0.1.0 and later are embedded: older files were not written for users. -->
+  <ItemGroup>
+    <EmbeddedResource Include=".github\release-notes\v*.md" Exclude=".github\release-notes\v1.*.md;.github\release-notes\v2.0.0.0.md">
+      <LogicalName>TDPdf.ReleaseNotes.%(Filename).md</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PdfSharpCore.Pdf;
+using TDPdf.Services;
 
 namespace TDPdf
 {
@@ -36,6 +37,9 @@ namespace TDPdf
         /// </summary>
         private async Task OpenInTabAsync(string path)
         {
+            // An EPUB or DjVu book is converted to a temporary PDF, which then comes back through here
+            // as an ordinary PDF (MainWindow.Books.cs).
+            if (IsBookPath(path)) { await OpenBookAsync(path); return; }
             EnsureActiveTabRegistered();
             var previous = _ctx;
             DocumentContext? created = null;
@@ -149,9 +153,9 @@ namespace TDPdf
         /// </remarks>
         private void ApplyPendingViewResume()
         {
-            // Continuous has its own anchor point — RenderContinuousPages re-scrolls once the slot
-            // heights above the target page are final — so its offsets must not be applied here.
-            if (_viewMode == ViewMode.Continuous) return;
+            // The continuous strips have their own anchor point — RenderContinuousPages re-scrolls once
+            // the slot heights above the target page are final — so their offsets must not be applied here.
+            if (IsContinuousFamily) return;
 
             if (_resumeZoomFor is { } zoomCtx)
             {
@@ -212,6 +216,12 @@ namespace TDPdf
 
             _ctx = ctx;
 
+            // #246: the view is per tab. Bring this tab's own mode back (a tab with none yet takes
+            // the last mode the user chose); the layout below is then built for it.
+            ViewMode modeBefore = _viewMode;
+            AdoptContextViewMode(ctx);
+            bool modeChanged = _viewMode != modeBefore;
+
             // Tear down transient overlays/tools tied to the previous document.
             ClearSelection();
             CloseSearchBar();
@@ -257,8 +267,13 @@ namespace TDPdf
             {
                 DropZone.Visibility = Visibility.Collapsed;
                 PagePreviewPanel.Visibility = Visibility.Visible;
-                // View mode is app-wide; make sure the correct layout host is visible for this tab.
-                bool isContinuous = _viewMode == ViewMode.Continuous;
+                // Make sure the layout host for this tab's own view mode is the visible one.
+                bool isContinuous = IsContinuousFamily;
+                if (modeChanged)
+                {
+                    _secondaryRenderCts?.Cancel();
+                    _pageContentPanel.Width = double.NaN;
+                }
                 _pageContentPanel.Visibility = isContinuous ? Visibility.Collapsed : Visibility.Visible;
                 if (PageImage.Parent is FrameworkElement pgChild
                     && pgChild.Parent is FrameworkElement primBorder)
@@ -295,7 +310,7 @@ namespace TDPdf
                     // so it goes on NOW and the incoming page renders at the right size first
                     // time; a FIT measures whatever page is on screen — which at this instant is
                     // still the OUTGOING tab's — so it has to wait for this tab's render.
-                    if (_viewMode != ViewMode.Grid && _viewMode != ViewMode.Continuous)
+                    if (_viewMode != ViewMode.Grid && !IsContinuousFamily)
                     {
                         if (_ctx.ViewFitMode == ZoomFitMode.None) RestoreTabZoom(_ctx);
                         else _resumeZoomFor = resumeCtx;
@@ -304,9 +319,9 @@ namespace TDPdf
 
                 if (idx >= 0)
                 {
-                    if (_viewMode == ViewMode.Continuous)
+                    if (IsContinuousFamily)
                     {
-                        // View mode is app-wide but the continuous strip is per-document; rebuild
+                        // The continuous strip is per-document; rebuild
                         // it for the newly-activated tab. Set the index without firing a stale
                         // scroll, then SetupContinuousView scrolls to the right page.
                         _suppressContinuousScrollSync = true;
@@ -330,6 +345,13 @@ namespace TDPdf
                     // If the index is unchanged, render explicitly.
                     else if (PageList.SelectedIndex == idx) RerenderCurrentPage();
                     else PageList.SelectedIndex = idx;
+
+                    // #246: a tab that comes back in a different view than the tab it replaced, and
+                    // has no zoom of its own to resume, is placed by the standing open rules, as if
+                    // it had just been opened in that view.
+                    if (modeChanged && !resume && !IsContinuousFamily)
+                        _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                            (Action)(() => { if (ReferenceEquals(_ctx, resumeCtx)) ApplyViewModeOnOpen(); }));
                 }
                 else
                 {
@@ -510,25 +532,8 @@ namespace TDPdf
                 _tabDragCandidate = null;
             };
 
-            // Right-click menu. Rebuilt with the strip on every tab change, so "Close Other Tabs"
-            // can be enabled purely from the current count with no live refresh to maintain.
-            var chipMenu = new ContextMenu();
-            chipMenu.Items.Add(MakeMenuItem("Close Tab", (_, _) => CloseTab(ctx), "Ctrl+W",
-                "Close this document", "\uE8BB"));
-            var closeOthers = MakeMenuItem("Close Other Tabs", (_, _) => CloseOtherTabs(ctx), "Ctrl+Shift+W",
-                "Close every open document except this one", "\uE711");
-            closeOthers.IsEnabled = _tabs.Count > 1;
-            chipMenu.Items.Add(closeOthers);
-            chipMenu.Items.Add(MakeMenuItem("Move to New Window", (_, _) => _ = TearOffTabToNewWindowAsync(ctx), null,
-                "Open this document alone in a new TDPdf window", "\uE78B"));
-            // OriginalPath, not the working path: after a decrypt-on-open or a structural edit the
-            // working file is a temp copy, and revealing %TEMP% is not what "containing folder"
-            // means. A document with no home on disk (a merge result, say) has nothing to show.
-            var openFolder = MakeMenuItem("Open Containing Folder", (_, _) => RevealInExplorer(ctx.OriginalPath), null,
-                "Show this document in File Explorer", "\uE8DA");
-            openFolder.IsEnabled = ctx.OriginalPath is not null;
-            chipMenu.Items.Add(openFolder);
-            chip.ContextMenu = chipMenu;
+            // Right-click menu: refilled each time it opens (MainWindow.ContextMenus.cs).
+            AttachTabMenu(chip, ctx);
             return chip;
         }
 
@@ -548,12 +553,12 @@ namespace TDPdf
             {
                 if (System.IO.File.Exists(path))
                 {
-                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(TDPdf.Services.SystemTool.WindowsPath("explorer.exe"), $"/select,\"{path}\"") { UseShellExecute = true });
                     return;
                 }
                 string? folder = System.IO.Path.GetDirectoryName(path);
                 if (System.IO.Directory.Exists(folder))
-                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(TDPdf.Services.SystemTool.WindowsPath("explorer.exe"), $"\"{folder}\"") { UseShellExecute = true });
                 else
                     SetStatus("That folder is no longer available");
             }
@@ -577,7 +582,7 @@ namespace TDPdf
                 if (ctx.Chip.Child is StackPanel sp && sp.Children.Count > 0 && sp.Children[0] is TextBlock tb)
                 {
                     string name = string.IsNullOrEmpty(ctx.DisplayName) ? "Untitled.pdf" : ctx.DisplayName;
-                    tb.Text = (ctx.IsDirty ? "● " : "") + name;
+                    tb.Text = (ctx.IsDirty ? "● " : "") + name + (ReadOnlyGate.ProcessIsReadOnly ? " (read-only)" : "");
                     tb.FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal;
                     tb.Foreground = active ? BrushResource("TextPrimary") : BrushResource("TextSecondary");
                     // Chip text truncates at 180px (TextTrimming.CharacterEllipsis in BuildTabChip),
@@ -598,9 +603,10 @@ namespace TDPdf
         // window) so windows become distinguishable at the OS level, not just inside the app.
         private void UpdateWindowTitle()
         {
-            if (_ctx.Doc is null) { Title = "TDPdf"; return; }
+            string readOnlyNote = ReadOnlyGate.ProcessIsReadOnly ? " [Read-only view]" : "";
+            if (_ctx.Doc is null) { Title = "TDPdf" + readOnlyNote; return; }
             string name = string.IsNullOrEmpty(_ctx.DisplayName) ? "Untitled.pdf" : _ctx.DisplayName;
-            Title = _tabs.Count > 1 ? $"{name} - TDPdf ({_tabs.Count} tabs)" : $"{name} - TDPdf";
+            Title = (_tabs.Count > 1 ? $"{name} - TDPdf ({_tabs.Count} tabs)" : $"{name} - TDPdf") + readOnlyNote;
         }
 
         /// <summary>Closes a tab (prompting if it has unsaved changes) and activates a neighbor.</summary>
@@ -634,9 +640,83 @@ namespace TDPdf
                 if (!_tabs.Contains(ctx)) return;   // the modal pumped messages; it may be gone
             }
 
+            // Remember where the tab was so Ctrl+Shift+T can bring it back. Taken after the dirty
+            // prompt was accepted: unsaved changes are deliberately not part of what comes back.
+            _closedTabs.Push(SnapshotTabState(ctx));
             RemoveTabSilently(ctx);
             SetStatus("Ready");
         }
+
+        // ── Reopen closed tab (Ctrl+Shift+T) ────────────────────────────────────────────────────
+        // A per-window stack of the tabs closed with Ctrl+W / the tab's close button / Close Other
+        // Tabs. Only the user's own file is kept (never a temp or decrypted working copy), so a
+        // password-protected file asks for its password again through the ordinary open path.
+
+        private readonly TDPdf.Services.ClosedTabStack _closedTabs = new();
+
+        /// <summary>Where a tab is now, for reopening it later or saving the session; null when it has no file of its own to come back to.</summary>
+        private TDPdf.Services.TabViewState? SnapshotTabState(DocumentContext ctx)
+        {
+            if (ctx.Doc is null || !IsRecentEligiblePath(ctx.OriginalPath)) return null;
+            if (ReferenceEquals(_ctx, ctx)) CaptureViewState();   // the live tab: park its zoom and page on the context
+            bool fit = ctx.ViewCaptured && ctx.ViewFitMode != ZoomFitMode.None;
+            double zoom = ctx.ViewCaptured && !fit ? ctx.ViewZoomLevel : 0;
+            return new TDPdf.Services.TabViewState(
+                ctx.OriginalPath!,
+                Math.Max(0, ctx.SelectedPageIndex),
+                zoom,
+                ctx.ViewCaptured ? ctx.ViewFitMode.ToString() : nameof(ZoomFitMode.None),
+                (ctx.Mode ?? _lastChosenViewMode).ToString());   // each tab keeps its own view (#246)
+        }
+
+        /// <summary>
+        /// Puts a reopened tab back on its page, zoom and view. Waits for the open's own deferred
+        /// view setup (ApplyViewModeOnOpen runs at Background priority) so this is applied after it,
+        /// not overwritten by it. The view mode belongs to the tab (#246), so it is put on the tab
+        /// that was just opened, without touching the "last mode chosen" that new tabs start in.
+        /// </summary>
+        private async Task ApplyTabViewStateAsync(TDPdf.Services.TabViewState state, bool applyViewMode)
+        {
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+            if (_doc is null) return;
+            if (applyViewMode && Enum.TryParse(state.ViewMode, out ViewMode mode) && Enum.IsDefined(mode) && mode != _viewMode)
+                SetViewMode(mode, userChoice: false);
+            if (_viewMode != ViewMode.Grid)
+            {
+                if (state.Fit == nameof(ZoomFitMode.Width)) FitToWidth();
+                else if (state.Fit == nameof(ZoomFitMode.Page)) FitToPage();
+                else if (state.Zoom > 0) ApplyRestoredManualZoom(state.Zoom);
+            }
+            int page = Math.Clamp(state.Page, 0, Math.Max(0, _doc.PageCount - 1));
+            if (page != PageList.SelectedIndex) PageList.SelectedIndex = page;
+        }
+
+        /// <summary>Reopens the most recently closed tab that still exists (File menu, Ctrl+Shift+T); repeated calls go further back.</summary>
+        private async Task ReopenClosedTabAsync()
+        {
+            var missing = new List<string>();
+            var entry = _closedTabs.TakeLatestExisting(System.IO.File.Exists, missing);
+            string MissingNote() => missing.Count == 1
+                ? $"{System.IO.Path.GetFileName(missing[0])} no longer exists"
+                : $"{missing.Count} closed files no longer exist";
+            if (entry is null)
+            {
+                SetStatus(missing.Count > 0 ? $"Nothing to reopen: {MissingNote()}" : "No closed tabs to reopen");
+                return;
+            }
+
+            await OpenInTabAsync(entry.Path);
+            bool opened = _ctx.Doc is not null && TDPdf.Services.FilePathPolicy.SamePath(_ctx.OriginalPath, entry.Path);
+            if (!opened)
+            {
+                _closedTabs.Push(entry);   // the open failed or the password prompt was cancelled: keep it for another try
+                return;
+            }
+            await ApplyTabViewStateAsync(entry, applyViewMode: true);
+            if (missing.Count > 0) SetStatus($"Reopened {System.IO.Path.GetFileName(entry.Path)} ({MissingNote()})");
+        }
+
+        private async void ReopenClosedTab_Click(object sender, RoutedEventArgs e) => await ReopenClosedTabAsync();
 
         /// <summary>
         /// The actual tab-removal mechanics, with no dirty-changes prompt — CloseTab gates on that
@@ -754,7 +834,11 @@ namespace TDPdf
             }
             store.PageCount = count;
 
-            var session = new PageThumbSession(ctx, store.Generation);
+            var session = new PageThumbSession(ctx, store.Generation)
+            {
+                ThumbWidth = _thumbWidth,        // the sidebar's current thumbnail size (#246)
+                PairedCells = _pairedSidebar,
+            };
             store.Session = session;
             var items = new List<PageThumbItem>(count);
             for (int i = 0; i < count; i++) items.Add(new PageThumbItem(i, session));
@@ -917,6 +1001,7 @@ namespace TDPdf
         private void PageList_PreviewMouseMove(object sender, MouseEventArgs e)
         {
             if (e.LeftButton != MouseButtonState.Pressed) return;
+            if (ReadOnlyGate.ProcessIsReadOnly) return;   // no page reordering in a read-only view
             var diff = _dragStartPoint - e.GetPosition(null);
             if (Math.Abs(diff.X) > SystemParameters.MinimumHorizontalDragDistance ||
                 Math.Abs(diff.Y) > SystemParameters.MinimumVerticalDragDistance)
@@ -959,7 +1044,12 @@ namespace TDPdf
             if (e.Data.GetDataPresent(typeof(int[])))
             {
                 e.Effects = DragDropEffects.Move;
-                ShowPageDropLine(DropTargetIndex(e.GetPosition(PageList)));
+                // The two-column list drops by both x and y and draws a vertical bar.
+                if (!ShowPairedDropLine(e.GetPosition(PageList)))
+                {
+                    ResetDropLineShape();
+                    ShowPageDropLine(DropTargetIndex(e.GetPosition(PageList)));
+                }
             }
             else if (_doc is not null && DroppedOpenablePaths(e).Length > 0)
             {
@@ -987,6 +1077,9 @@ namespace TDPdf
         /// </remarks>
         private int DropTargetIndex(Point pos)
         {
+            // Two-column list: both coordinates decide, by the cell's horizontal midpoint.
+            if (PairedDropGap(pos) is int gap) return gap;
+
             // The list virtualises, so only some entries have containers. Ask the entry under the
             // pointer first (cheap, and right for the common case of hovering over a page)...
             if (PageList.InputHitTest(pos) is DependencyObject hit
@@ -1136,8 +1229,7 @@ namespace TDPdf
                 "TDPdf", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (ask != MessageBoxResult.Yes) return;
 
-            string fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+            string fixedPath = NewTempPath("fixed");
             SetBusy(true, $"Repairing {name}...");
             try
             {
@@ -1168,6 +1260,7 @@ namespace TDPdf
         private async void PageList_Drop(object sender, DragEventArgs e)
         {
             HidePageDropLine();
+            if (ReadOnlyGate.ProcessIsReadOnly) { SetStatus(ReadOnlyGate.RefusedStatus); return; }
             // #172: a FileDrop appends; anything carrying the internal page payload falls through to
             // the reorder below, unchanged.
             if (_doc is not null && !e.Data.GetDataPresent(typeof(int[])))

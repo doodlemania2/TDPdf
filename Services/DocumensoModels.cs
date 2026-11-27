@@ -222,55 +222,6 @@ namespace TDPdf.Services
         string? Search = null,
         bool NewestFirst = true);
 
-    /// <summary>One recipient for <c>/envelope/recipient/create-many</c>.</summary>
-    internal sealed record DocumensoRecipientDraft(
-        string Email,
-        string Name,
-        DocumensoRecipientRole Role,
-        int? SigningOrder = null);
-
-    /// <summary>
-    /// One field for <c>/envelope/field/create-many</c>. Exactly one of the two shapes the API
-    /// accepts: placed (<see cref="Page"/> plus the four percentages) or anchored to a text
-    /// placeholder in the PDF (<see cref="Placeholder"/>, optional size).
-    /// </summary>
-    /// <remarks>
-    /// Geometry is <b>percent of the page</b>, 0–100, origin <b>top-left</b>, and
-    /// <see cref="Page"/> is <b>1-based</b>. The live API names the position
-    /// <c>positionX</c>/<c>positionY</c> — the design document's <c>pageX</c>/<c>pageY</c> came
-    /// from older docs and is wrong for v2.18.
-    /// </remarks>
-    internal sealed record DocumensoFieldDraft
-    {
-        public long RecipientId { get; init; }
-        public DocumensoFieldType Type { get; init; }
-        public string? EnvelopeItemId { get; init; }
-        public int? Page { get; init; }
-        public double? PositionX { get; init; }
-        public double? PositionY { get; init; }
-        public double? Width { get; init; }
-        public double? Height { get; init; }
-        public string? Placeholder { get; init; }
-        public bool? MatchAll { get; init; }
-
-        public static DocumensoFieldDraft Placed(long recipientId, DocumensoFieldType type, int page,
-            double x, double y, double width, double height, string? envelopeItemId = null) => new()
-        {
-            RecipientId = recipientId, Type = type, EnvelopeItemId = envelopeItemId, Page = page,
-            PositionX = Clamp(x), PositionY = Clamp(y), Width = Clamp(width), Height = Clamp(height),
-        };
-
-        public static DocumensoFieldDraft AtPlaceholder(long recipientId, DocumensoFieldType type,
-            string placeholder, bool matchAll = false, string? envelopeItemId = null) => new()
-        {
-            RecipientId = recipientId, Type = type, EnvelopeItemId = envelopeItemId,
-            Placeholder = placeholder, MatchAll = matchAll ? true : null,
-        };
-
-        // The API rejects anything outside 0–100; canvas rounding at a page edge can produce 100.0001.
-        private static double Clamp(double v) => Math.Clamp(v, 0, 100);
-    }
-
     /// <summary>The optional <c>meta</c> block shared by create and distribute.</summary>
     internal sealed record DocumensoEnvelopeMeta
     {
@@ -290,7 +241,7 @@ namespace TDPdf.Services
         public DocumensoEnvelopeMeta? Meta { get; init; }
         /// <summary>
         /// Recipients created together with the envelope, in list order, each carrying its placed
-        /// fields. Null sends none (the follow-up <c>recipient/create-many</c> path).
+        /// fields. Null sends none.
         /// </summary>
         /// <remarks>
         /// Send for Signature always fills this, and the reason is the <c>{{…}}</c> placeholders.
@@ -319,8 +270,9 @@ namespace TDPdf.Services
     /// <summary>
     /// A placed field inside a create-payload recipient. No <c>recipientId</c> (the recipient does
     /// not exist yet — nesting is what binds them) and no <c>identifier</c> (omitted means the
-    /// first, and for TDPdf only, uploaded file). Geometry as in <see cref="DocumensoFieldDraft"/>:
-    /// percent of the displayed page, origin top-left, <see cref="Page"/> 1-based.
+    /// first, and for TDPdf only, uploaded file). Geometry is percent of the displayed page (0 to 100;
+    /// the live API names the position <c>positionX</c>/<c>positionY</c>, not the design document's
+    /// <c>pageX</c>/<c>pageY</c>), origin top-left, <see cref="Page"/> 1-based.
     /// </summary>
     internal sealed record DocumensoInlineField
     {

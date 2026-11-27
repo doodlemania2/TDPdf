@@ -56,9 +56,14 @@ namespace TDPdf
                     _textColor = existingEdit.GetColor();
 
                     var reb = existingEdit.OriginalBounds;
+                    bool reeditParagraph = existingEdit.LineHeight > 0;
                     var retb = new TextBox
                     {
-                        Text = existingEdit.NewContent,
+                        // A paragraph overlay (#229) was reflowed into lines; the box shows it as running
+                        // text so it reflows again to the same column when saved.
+                        Text = reeditParagraph
+                            ? existingEdit.NewContent.Replace("\r\n", "\n").Replace('\n', ' ')
+                            : existingEdit.NewContent,
                         Background = new SolidColorBrush(Color.FromArgb(240, 255, 255, 255)),
                         Foreground = new SolidColorBrush(_textColor),
                         BorderBrush = (SolidColorBrush)FindResource("AccentGreen"),
@@ -85,6 +90,7 @@ namespace TDPdf
                             ExistingAnnotation = existingEdit
                         }
                     };
+                    if (reeditParagraph) ConfigureParagraphEditBox(retb, reb);
                     Canvas.SetLeft(retb, reb.X);
                     Canvas.SetTop(retb, reb.Y);
                     _textEditorCanvas.Children.Add(retb);
@@ -204,6 +210,8 @@ namespace TDPdf
             public bool Italic { get; set; }
             /// <summary>Non-null when re-editing an already-committed annotation; update in place instead of adding a new one.</summary>
             public TextEditAnnotation? ExistingAnnotation { get; set; }
+            /// <summary>Non-null when the box holds a whole paragraph (#229) rather than one line.</summary>
+            public ParagraphEditState? Paragraph { get; set; }
         }
 
         private void EditTextBox_KeyDown(object sender, KeyEventArgs e)
@@ -215,6 +223,8 @@ namespace TDPdf
             }
             else if (e.Key == Key.Enter)
             {
+                // A paragraph box takes Enter as a new line; Ctrl+Enter saves it (see ConfigureParagraphEditBox).
+                if (sender is TextBox { AcceptsReturn: true }) return;
                 CommitTextEdit();
                 e.Handled = true;
             }
@@ -275,6 +285,13 @@ namespace TDPdf
                 return;
             }
 
+            // A whole paragraph (#229) has its own decision table, engine and fallback.
+            if (ctx.Paragraph is not null)
+            {
+                CommitParagraphEdit(ctx, tb, newText);
+                return;
+            }
+
             // The style bar can change font/size/color/bold/italic without the wording changing at
             // all (e.g. just recoloring existing text) — bailing out purely on unchanged TEXT used
             // to silently discard every style-only edit before it ever reached the code below.
@@ -301,12 +318,14 @@ namespace TDPdf
                 // Re-editing an existing overlay stays an overlay: the original text is still under
                 // it, and the run this annotation replaced is no longer the thing being changed.
                 PushPageSnapshot(ctx.ExistingAnnotation.PageIndex);
-                ctx.ExistingAnnotation.NewContent = newText;
                 ctx.ExistingAnnotation.FontSize = tb.FontSize;
                 ctx.ExistingAnnotation.FontName = tb.FontFamily.Source;
                 ctx.ExistingAnnotation.Bold = tb.FontWeight == FontWeights.Bold;
                 ctx.ExistingAnnotation.Italic = tb.FontStyle == FontStyles.Italic;
                 ctx.ExistingAnnotation.SetColor(tbColor);
+                ctx.ExistingAnnotation.NewContent = ctx.ExistingAnnotation.LineHeight > 0
+                    ? ReflowParagraphOverlay(ctx.ExistingAnnotation, newText)
+                    : newText;
                 MarkDirty();
             }
             // A style change cannot be done in place — see TryEditTextInPlace — so it goes straight
@@ -387,8 +406,8 @@ namespace TDPdf
                 page, ctx.CanvasBounds.X, ctx.CanvasBounds.Y,
                 ctx.CanvasBounds.Width, ctx.CanvasBounds.Height, dims.w, dims.h);
 
-            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_edit_src_{Guid.NewGuid():N}.pdf");
-            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_edit_out_{Guid.NewGuid():N}.pdf");
+            string source = NewTempPath("edit_src");
+            string result = NewTempPath("edit_out");
             try
             {
                 // Against the CURRENT document, structural edits and all — the file on disk may be
@@ -441,28 +460,16 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
-            _doc?.Close();
-            _doc = PdfReader.Open(editedPath, PdfDocumentOpenMode.Modify);
-            _currentFile = editedPath;
-
-            InvalidateRenderCache();
-            _contentEditor.ClearCache();
-            InvalidateTextRunCache();
-            ClearSelection();
-            MarkDirty();
-
-            RefreshPageList(ThumbRefresh.Stale);
-            if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
-                PageList.SelectedIndex = selectedIdx;
-            else if (PageList.Items.Count > 0)
-                PageList.SelectedIndex = 0;
-
-            if (_viewMode == ViewMode.Continuous)
+            AdoptWorkingFile(editedPath, null, () =>
             {
-                int contIdx = Math.Max(0, PageList.SelectedIndex);
-                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
-                    (Action)(() => SetupContinuousView(contIdx)));
-            }
+                InvalidateRenderCache();
+                _contentEditor.ClearCache();
+                InvalidateTextRunCache();
+                ClearSelection();
+                MarkDirty();
+
+                ReselectAfterAdopt(selectedIdx);
+            });
         }
 
         /// <summary>
@@ -582,26 +589,14 @@ namespace TDPdf
             return Convert.ToBase64String(ms.ToArray());
         }
 
-        private void ShowImageEditMenu(ImageEditAnnotation edit)
-        {
-            var menu = new ContextMenu();
-            menu.Items.Add(MakeMenuItem("Replace Image...", (s, e) => ReplaceImageEdit(edit), null, null, "\uE91B"));
-            menu.Items.Add(MakeMenuItem("Delete Image", (s, e) => DeleteImageEdit(edit), null, null, "\uE74D"));
-            menu.Items.Add(MakeMenuItem("Reset Size", (s, e) => ResetImageEditSize(edit), null, null, "\uE72C"));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(new MenuItem { Header = "Resize: drag the green handle" });
-            menu.PlacementTarget = _annotationCanvas;
-            menu.IsOpen = true;
-        }
-
         private void ReplaceImageEdit(ImageEditAnnotation edit)
         {
             var dlg = new OpenFileDialog
             {
-                Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
+                Filter = FileDialogFilters.ImagesBasic,
                 Title = "Select replacement image"
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowOpen(dlg, FileDialogPurpose.Picture, this)) return;
 
             PushPageSnapshot(edit.PageIndex);
             edit.ReplacementImagePath = dlg.FileName;
@@ -1260,6 +1255,8 @@ namespace TDPdf
                     // A re-edited box keeps its turn: the editor shows it upright at the same place,
                     // and committing puts it back turned.
                     Rotation = ctx?.Existing?.Rotation ?? 0,
+                    // ...and its group: editing the words of a grouped text box must not drop it out.
+                    GroupId = ctx?.Existing?.GroupId,
                     Width = double.IsNaN(width) || width <= 0 ? 0 : width,
                     HasFill = _textWhiteout
                 };

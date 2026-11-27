@@ -30,7 +30,7 @@ namespace TDPdf.Services
     // the order this PDFium build expects: form (while its page is still alive), then page, then
     // document.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    internal static class PdfiumInterop
+    internal static partial class PdfiumInterop
     {
         internal static readonly object PdfiumLock =
             typeof(DocLib).GetField("Lock",
@@ -963,7 +963,10 @@ namespace TDPdf.Services
 
                 // A form can straddle a rectangle while only some of its children are inside it,
                 // so descend rather than judging the wrapper by its bounding box.
-                if (type == PageObjForm && CanEditFormXObjectContent)
+                // A form wholly inside a mark goes whole: everything in it is under the mark, and its
+                // children's bounds are in the form's own space, so judging them against page-space
+                // marks would miss an image drawn through a placed or scaled form.
+                if (type == PageObjForm && CanEditFormXObjectContent && hit != Hit.Inside)
                 {
                     if (RedactFormObjects(obj, pageIndex, rects, removePartial, outcome, orphaned))
                         touched = true;

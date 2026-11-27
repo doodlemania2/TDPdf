@@ -61,6 +61,31 @@
       ]
     },
     {
+      "id": "compare-pdfs",
+      "name": "Compare two PDFs",
+      "status": "ready",
+      "summary": "See what changed between two versions of a document: words added or removed, pages added, removed or moved, and areas that look different, side by side or laid over each other.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.Compare.cs",
+        "Services/CompareWindow.cs",
+        "Services/PdfCompare*.cs"
+      ]
+    },
+    {
+      "id": "accessibility-check",
+      "name": "Check accessibility",
+      "status": "ready",
+      "summary": "See what stops a screen reader using a PDF, such as a missing language or title, untagged text, pictures with no description or a skipped heading level, and fix the simple ones in one click. A list covers what only a person can judge.",
+      "audiences": ["user", "it-admin"],
+      "screens": [],
+      "sources": [
+        "MainWindow.Accessibility.cs",
+        "Services/PdfUa*.cs"
+      ]
+    },
+    {
       "id": "redaction",
       "name": "Redaction",
       "status": "ready",
@@ -97,6 +122,21 @@
       ]
     },
     {
+      "id": "edit-paragraph",
+      "name": "Edit a whole paragraph",
+      "status": "ready",
+      "summary": "Hold Ctrl when you click a line with Edit Text, or double-click it with Select, or right-click and choose Edit Paragraph. The whole block opens as one box. When you save, the words flow across lines again in the document's own font, size and line spacing, and highlights follow them. It works on recognised text over a scan too.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.Paragraphs.cs",
+        "Services/Paragraph*.cs",
+        "Services/PdfParagraphEdit.cs",
+        "Services/PdfiumInterop.Paragraph.cs",
+        "Services/PaperColor.cs"
+      ]
+    },
+    {
       "id": "form-filling",
       "name": "Fill in forms",
       "status": "ready",
@@ -104,6 +144,15 @@
       "audiences": ["user"],
       "screens": ["form-fill"],
       "sources": ["MainWindow.Forms.cs", "Services/PdfFormText.cs", "Services/FormFieldSiblings.cs", "Services/PdfFieldChrome.cs", "Services/PdfFormMerge.cs"]
+    },
+    {
+      "id": "import-form-data",
+      "name": "Import form data",
+      "status": "ready",
+      "summary": "Fill a form from an FDF or XFDF file. Fields are matched by name, the whole import is one undo step, and any names the form does not have are listed.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Forms.cs", "Services/FormDataParsers.cs", "Services/FormImport.cs"]
     },
     {
       "id": "form-building",
@@ -139,6 +188,15 @@
       "audiences": ["user"],
       "screens": ["signature-place"],
       "sources": ["MainWindow.Signatures.cs", "Services/SignatureStoreFile.cs"]
+    },
+    {
+      "id": "signature-editor",
+      "name": "Signature editor",
+      "status": "ready",
+      "summary": "Choose the ink colour and pen width of a drawn signature, clean up a photographed one with a threshold and a soft edge, add today's date under it, and save it as a PNG to use on the signing page.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.SignatureEditor.cs", "MainWindow.Signatures.cs", "Services/SignatureInk.cs", "Services/AnnotationBaker.cs"]
     },
     {
       "id": "pages",
@@ -190,6 +248,46 @@
       "sources": ["MainWindow.Ocr.cs", "Services/Ocr*.cs", "Services/FormOcrPolicy.cs"]
     },
     {
+      "id": "read-books",
+      "name": "Read EPUB and DjVu books",
+      "status": "ready",
+      "summary": "Open an EPUB or DjVu book in its own tab. EPUB books are laid out as pages at the page size and text size you pick, with their pictures, links and contents. DjVu scans keep their pictures, text layer and bookmarks. Save As writes a PDF and the book is never changed.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Books.cs", "Services/Epub*.cs", "Services/Djvu*.cs", "Services/Book*.cs", "Services/WebView2Bootstrap.cs"]
+    },
+    {
+      "id": "rasterize-region",
+      "name": "Rasterize a region",
+      "status": "ready",
+      "summary": "Turn a boxed area of a page into a picture at the resolution you choose, with its text and graphics taken off the page. This is not redaction.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.RasterizeRegion.cs",
+        "TdpDialog.RasterizeRegion.cs",
+        "Services/RegionRaster.cs",
+        "Services/PdfRegionRasterizer.cs",
+        "Services/PdfTaggedFigure.cs",
+        "Services/PdfiumInterop.RegionRaster.cs"
+      ]
+    },
+    {
+      "id": "merge-files",
+      "name": "Merge files",
+      "status": "ready",
+      "summary": "Add PDFs and whole folders, drag them into order, and leave out or rearrange individual pages before they are merged into one new document. Form fields, fonts and bookmarks come along.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.MergeDialog.cs",
+        "TdpDialog.MergeFiles.cs",
+        "Services/MergePlan.cs",
+        "Services/PdfMerger.cs",
+        "Services/PdfFormMerge.cs"
+      ]
+    },
+    {
       "id": "tabs",
       "name": "Tabs",
       "status": "ready",
@@ -217,6 +315,20 @@
       , "MainWindow.Placement.cs", "Services/WindowPlacementMath.cs"]
     },
     {
+      "id": "two-page-view",
+      "name": "Two pages, continuous",
+      "status": "ready",
+      "summary": "Scroll through the document with facing pages side by side, with an optional book layout that keeps the cover on its own. Each tab keeps its own view, and the Pages sidebar can show two thumbnails per row.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.ContinuousView.cs",
+        "MainWindow.PairedSidebar.cs",
+        "Controls/PairedThumbnailPanel.cs",
+        "Services/SpreadRows.cs"
+      ]
+    },
+    {
       "id": "print-flatten",
       "name": "Print and flatten",
       "status": "ready",
@@ -229,6 +341,15 @@
         "Services/PrintTicketDuplex.cs",
         "Services/FlattenResolution.cs"
       , "Services/PrintRaster.cs", "Services/ShellVerbCommands.cs"]
+    },
+    {
+      "id": "flatten-options",
+      "name": "Choose the Save Flattened resolution",
+      "status": "ready",
+      "summary": "Pick Automatic or 72, 150, 200 or 300 dpi before saving a flattened copy, and see the pixel size each choice gives for the first and the largest page.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.FlattenOptions.cs", "Services/FlattenResolution.cs"]
     },
     {
       "id": "locked-pdfs",
@@ -258,6 +379,15 @@
       "sources": ["Services/MeasureGeometry.cs"]
     },
     {
+      "id": "file-dialogs",
+      "name": "Smarter Open and Save dialogs",
+      "status": "ready",
+      "summary": "Open and Save remember a separate folder for each job, list your recent folders beside Quick Access, show a preview of the PDF you pick, and can open the file in a new window.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["Services/FileDialogs.cs", "Services/FileDialogs.Com.cs", "Services/FileDialogPolicy.cs", "Services/FileDialogFilters.cs"]
+    },
+    {
       "id": "export-images",
       "name": "Export pages as images",
       "status": "ready",
@@ -267,6 +397,32 @@
       "sources": ["MainWindow.ExportImages.cs", "Services/PageImageExporter.cs", "Services/PdfPageImageEncoder.cs"]
     },
     {
+      "id": "export-epub",
+      "name": "Export as EPUB",
+      "status": "ready",
+      "summary": "Turn a PDF into an EPUB book for phones and e-readers. Bookmarks become the table of contents, and headings, lists, tables and pictures are kept. Also available from the command line.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.ExportEpub.cs", "Services/EpubExport*.cs", "Services/EpubExporter.cs", "Services/PdfiumInterop.EpubExport.cs"]
+    },
+    {
+      "id": "page-pictures",
+      "name": "Move, replace and extract pictures",
+      "status": "ready",
+      "summary": "Click a picture on the page to move it, resize it, delete it, copy it, save it as a file, swap in another one, or cut a box or one colour area out of it as a transparent picture.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": [
+        "MainWindow.PageImages.cs",
+        "MainWindow.PictureExtract.cs",
+        "Services/PdfiumInterop.Images.cs",
+        "Services/PdfImageObjects.cs",
+        "Services/PicturePlacement.cs",
+        "Services/PictureOrientation.cs",
+        "Services/ColorKeyMask.cs"
+      ]
+    },
+    {
       "id": "export-tables",
       "name": "Export tables",
       "status": "ready",
@@ -274,6 +430,15 @@
       "audiences": ["user"],
       "screens": ["export-tables"],
       "sources": ["Services/TableExtractor.cs"]
+    },
+    {
+      "id": "attachments",
+      "name": "Save attached files",
+      "status": "ready",
+      "summary": "See the files attached to a PDF with their size, date and description, and save one or all of them. Names are made safe, programs and scripts are flagged before saving, and nothing is ever opened for you.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Attachments.cs", "Services/AttachmentNames.cs", "Services/PdfAttachments.cs"]
     },
     {
       "id": "themes",
@@ -348,6 +513,51 @@
       "summary": "Merge, split, flatten, decrypt, print, OCR or convert PDFs to images from a script, with no window.",
       "audiences": ["it-admin"],
       "sources": ["MainWindow.Cli.cs", "MainWindow.BatchMode.cs", "docs/command-line.md"]
+    },
+    {
+      "id": "stamps",
+      "name": "Stamps",
+      "status": "ready",
+      "summary": "Stamp a page Approved, Draft, Confidential or Final, or with your own words or a picture. Stamps are saved as real stamp annotations, so other PDF viewers show them too.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Stamps.cs", "Services/StampLibrary.cs", "Services/StampWriter.cs", "Services/AnnotationBaker.cs"]
+    },
+    {
+      "id": "watermarks",
+      "name": "Watermarks and page numbers",
+      "status": "ready",
+      "summary": "Add a text or picture watermark and page numbers to the pages you choose, with a live preview. Remove them again later from Tools.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Watermark.cs", "Services/WatermarkSpec.cs", "Services/WatermarkWriter.cs", "Services/TypedNumber.cs"]
+    },
+    {
+      "id": "split-view",
+      "name": "Split view",
+      "status": "ready",
+      "summary": "Put two documents side by side in two windows that snap to the halves of your screen, or open the same document twice. The second window of one document is read-only and updates when you save.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.SideBySide.cs", "MainWindow.TabDrag.cs", "MainWindow.Placement.cs", "Services/SplitLayout.cs", "Services/ReadOnlyGate.cs", "Services/WindowLaunch.cs"]
+    },
+    {
+      "id": "color-management",
+      "name": "Color management",
+      "status": "ready",
+      "summary": "On a monitor with its own color profile, pages show their real colors. In the print window, choose a printer profile and rendering intent, preview how a page will print, and see whether the driver agreed to leave color to TDPdf.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.MonitorColor.cs", "Services/Color*.cs", "Services/Lcms*.cs", "Services/PrintTicketColor.cs", "Services/PrintPreviewWindow.cs"]
+    },
+    {
+      "id": "right-click-menus",
+      "name": "Right-click menus",
+      "status": "ready",
+      "summary": "Right-click a mark, a picture, a page, a thumbnail or a tab and the menu is about that. A row of buttons and colour, opacity and width controls sit at the top of a mark menu, and you can drag the items of any menu into your own order or hide the ones you never use.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.ContextMenus.cs", "TdpDialog.EditMenu.cs", "Services/ContextMenuModel.cs", "Services/MenuLayouts.cs"]
     }
   ],
   "scenarios": [

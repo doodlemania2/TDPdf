@@ -23,7 +23,9 @@ namespace TDPdf.Services
     ///   user typed and the built-in default.</item>
     ///   <item><see cref="BaseUrlEnvironmentVariableName"/> — developers, or someone pointing a
     ///   public build at their own instance without admin rights. Session-scoped and obvious to
-    ///   anyone reading it, the same argument TelemetryConfig makes for not using HKCU.</item>
+    ///   anyone reading it, the same argument TelemetryConfig makes for not using HKCU. Like the
+    ///   user's own URL below it is ignored when the policy pins the instance (<c>BaseUrl</c> set
+    ///   and <c>AllowUserOverride = 0</c>).</item>
     ///   <item><c>Settings.Default.DocumensoBaseUrl</c> — the user's own choice, but only when no
     ///   policy URL is set or the policy allows overriding it (<c>AllowUserOverride</c> absent or
     ///   non-zero). An organisation that pins its instance sets <c>AllowUserOverride = 0</c>.</item>
@@ -130,10 +132,13 @@ namespace TDPdf.Services
         {
             if (!i.PolicyEnabled) return null;
 
-            if (!string.IsNullOrWhiteSpace(i.Environment))
-                return Normalise(i.Environment) is { } env ? (env, Source.Environment) : null;
-
             bool policySet = !string.IsNullOrWhiteSpace(i.PolicyBaseUrl);
+
+            // The variable is a user-level override like the Settings value, so a policy that pins
+            // the instance (BaseUrl set, AllowUserOverride = 0) outranks it too. Ignored, not
+            // malformed: an organisation's pin must not depend on what a user's environment holds.
+            if (!string.IsNullOrWhiteSpace(i.Environment) && (!policySet || i.AllowUserOverride))
+                return Normalise(i.Environment) is { } env ? (env, Source.Environment) : null;
 
             if (!string.IsNullOrWhiteSpace(i.UserBaseUrl) && (!policySet || i.AllowUserOverride))
                 return Normalise(i.UserBaseUrl) is { } user ? (user, Source.User) : null;

@@ -42,7 +42,8 @@ namespace TDPdf
         // Options that consume the next argument as their value.
         private static readonly string[] CliValueOptions =
         [
-            "--log", "--dpi", "--format", "--pages", "--printer", "--lang", "--password", "--copies",
+            "--log", "--dpi", "--format", "--pages", "--printer", "--lang", "--password", "--copies", "--chapters",
+            "--paper", "--margin", "--font",
         ];
 
         // Valueless switches. These need no entry above (and must not have one, or they
@@ -50,6 +51,7 @@ namespace TDPdf
         // an empty value, so the commands just probe them with options.ContainsKey.
         //   --quiet         (--batch-resave)
         //   --transparent   (--to-image, png only)
+        //   --overwrite, --no-pictures, --keep-headers, --no-fonts   (--export-epub)
 
         // Temp files a CLI run creates (decrypt copies, flatten sources); deleted in TryRunCli's finally.
         private static readonly List<string> _cliTemps = new();
@@ -73,7 +75,7 @@ namespace TDPdf
                 Eq(a, "--version") || Eq(a, "-v") ||
                 Eq(a, "--merge") || Eq(a, "--extract-pages") || Eq(a, "--split") ||
                 Eq(a, "--decrypt") || Eq(a, "--to-image") || Eq(a, "--flatten") ||
-                Eq(a, "--print") || Eq(a, "--ocr"));
+                Eq(a, "--print") || Eq(a, "--ocr") || Eq(a, "--pdfua") || Eq(a, "--export-epub") || Eq(a, "--convert-book"));
             if (command is null) return false;
 
             var con = OpenBatchConsole();
@@ -116,6 +118,15 @@ namespace TDPdf
                     case "--ocr":
                         exitCode = CliOcr(positionals, options, con);
                         break;
+                    case "--pdfua":
+                        exitCode = CliPdfUa(positionals, options, con);
+                        break;
+                    case "--export-epub":
+                        exitCode = CliExportEpub(positionals, options, con);
+                        break;
+                    case "--convert-book":
+                        exitCode = CliConvertBook(positionals, options, con);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -151,6 +162,7 @@ namespace TDPdf
             "  --decrypt <in.pdf> <out.pdf> [--password <p>]",
             "                                           remove encryption (lossless when possible)",
             "  --to-image <in.pdf> <outDir> [--dpi <n>] [--format png|jpg] [--pages <range>] [--transparent]",
+            "  --export-epub <in.pdf> <out.epub> [--pages <range>] [--chapters bookmarks|headings|none] [--no-pictures] [--keep-headers] [--no-fonts] [--overwrite] [--password <p>]",
             "                                           render pages to images (default 150 dpi, png;",
             "                                           the page background composites to white unless",
             "                                           --transparent is given, which needs --format png)",
@@ -159,11 +171,20 @@ namespace TDPdf
             "                                           print silently (default printer if none named)",
             "  --ocr <in.pdf> <out.pdf> [--lang <code>] add an invisible searchable text layer (default eng;",
             "                                           other languages download on first use)",
+            "  --pdfua <file.pdf|folder> [more ...] [--json]",
+            "                                           check accessibility (PDF/UA) and print what is wrong;",
+            "                                           --json names the standard checked for each file.",
+            "                                           A pass means TDPdf's machine checks found nothing.",
+            "  --convert-book <book.epub|book.djvu|book.djv> <out.pdf> [--paper Letter|A4|A5|Book|Pocket] [--margin <mm>] [--font <pt>]",
+            "                                           turn an EPUB or DjVu book into a PDF (the layout options",
+            "                                           are for EPUB)",
             "  --batch-resave <in> <out> [--log <f.csv>] [--quiet]",
             "                                           resave a file or tree through the standard",
             "                                           open/save pipeline (validation harness)",
             "",
             "Exit codes: 0 success, 1 operation failed, 2 bad usage.",
+            "  --pdfua: 0 every file passed the machine checks, 3 a file failed or was only partly",
+            "  checked, 1 a file could not be read, 2 bad usage.",
             "Runs headless and works while the TDPdf window is open.",
         ]);
 
@@ -193,41 +214,6 @@ namespace TDPdf
                 }
             }
             return (positionals, options);
-        }
-
-        /// <summary>
-        /// Parses a 1-based page range spec like "1-3,5,9-12" into sorted,
-        /// distinct 0-based indices. Returns null with a message in error when
-        /// the spec is malformed or out of range.
-        /// </summary>
-        private static List<int>? CliParsePageRange(string spec, int pageCount, out string error)
-        {
-            error = string.Empty;
-            var pages = new SortedSet<int>();
-            foreach (var rawPart in spec.Split(','))
-            {
-                var part = rawPart.Trim();
-                if (part.Length == 0) continue;
-                int a, b;
-                int dash = part.IndexOf('-');
-                if (dash > 0)
-                {
-                    if (!int.TryParse(part[..dash].Trim(), out a) ||
-                        !int.TryParse(part[(dash + 1)..].Trim(), out b))
-                    { error = $"Bad page range: \"{part}\""; return null; }
-                }
-                else
-                {
-                    if (!int.TryParse(part, out a)) { error = $"Bad page number: \"{part}\""; return null; }
-                    b = a;
-                }
-                if (a > b) (a, b) = (b, a);
-                if (a < 1 || b > pageCount)
-                { error = $"Pages {part} out of range - the document has {pageCount} pages"; return null; }
-                for (int p = a; p <= b; p++) pages.Add(p - 1);
-            }
-            if (pages.Count == 0) { error = "Empty page range"; return null; }
-            return [.. pages];
         }
 
         // ============================================================
@@ -296,8 +282,7 @@ namespace TDPdf
             if (!File.Exists(inPath)) { con.WriteLine($"Input not found: {inPath}"); return 2; }
 
             using var importDoc = PdfReader.Open(inPath, PdfDocumentOpenMode.Import);
-            var indices = CliParsePageRange(spec, importDoc.PageCount, out string err);
-            if (indices is null) { con.WriteLine(err); return 2; }
+            if (!PageRangeSpec.TryParseForCli(spec, importDoc.PageCount, out var indices, out string err)) { con.WriteLine(err); return 2; }
 
             using var newDoc = new PdfDocument();
             foreach (var idx in indices)
@@ -380,6 +365,14 @@ namespace TDPdf
         }
 
         // ============================================================
+        // --pdfua <file.pdf|folder> [more ...] [--json]
+        // ============================================================
+        // The checking, the output and the exit codes (0 passed, 3 failed or partly checked, 1 unreadable,
+        // 2 bad usage) live in Services/PdfUaCli.cs so they are tested off Windows.
+        private static int CliPdfUa(List<string> pos, Dictionary<string, string> options, TextWriter con) =>
+            PdfUaCli.Run(pos, options.ContainsKey("--json"), con);
+
+        // ============================================================
         // --to-image <in.pdf> <outDir> [--dpi n] [--format png|jpg] [--pages range] [--transparent]
         // ============================================================
         // PDFium leaves unpainted background pixels at BGRA 0,0,0,0, so a bare export
@@ -419,14 +412,70 @@ namespace TDPdf
             List<int>? selected = null;
             if (options.TryGetValue("--pages", out var rangeSpec))
             {
-                selected = CliParsePageRange(rangeSpec, PageImageExporter.GetPageCount(renderPath), out string err);
-                if (selected is null) { con.WriteLine(err); return 2; }
+                if (!PageRangeSpec.TryParseForCli(rangeSpec, PageImageExporter.GetPageCount(renderPath), out var parsedRange, out string err))
+                { con.WriteLine(err); return 2; }
+                selected = parsedRange;
             }
 
             string baseName = Path.GetFileNameWithoutExtension(inPath);
             int written = PageImageExporter.Export(renderPath, outDir, baseName, selected, dpi, fmt,
                                                    transparent, report: null, CancellationToken.None);
             con.WriteLine($"Rendered {written} pages at {dpi:0} dpi ({fmt}{(transparent ? ", transparent" : "")}) into {outDir}");
+            return 0;
+        }
+
+        // ============================================================
+        // --export-epub <in.pdf> <out.epub> [--pages range] [--chapters bookmarks|headings|none]
+        //               [--no-pictures] [--keep-headers] [--no-fonts] [--overwrite] [--password p]
+        // ============================================================
+        // The headless twin of File > Export as EPUB (#247): the same EpubExporter, run on the file as
+        // it is on disk. It never replaces an existing book unless --overwrite is given, because
+        // there is nobody to ask.
+        private static int CliExportEpub(List<string> pos, Dictionary<string, string> options, TextWriter con)
+        {
+            if (pos.Count != 2)
+            {
+                con.WriteLine("Usage: TDPdf.exe --export-epub <in.pdf> <out.epub> [--pages <range>] [--chapters bookmarks|headings|none] [--no-pictures] [--keep-headers] [--no-fonts] [--overwrite]");
+                return 2;
+            }
+            string inPath = Path.GetFullPath(pos[0]), outPath = Path.GetFullPath(pos[1]);
+            if (!File.Exists(inPath)) { con.WriteLine($"Input not found: {inPath}"); return 2; }
+            if (File.Exists(outPath) && !options.ContainsKey("--overwrite"))
+            { con.WriteLine($"{outPath} already exists. Use --overwrite to replace it."); return 1; }
+
+            var opt = new EpubExportOptions
+            {
+                IncludePictures = !options.ContainsKey("--no-pictures"),
+                DropHeadersAndFooters = !options.ContainsKey("--keep-headers"),
+                EmbedFonts = !options.ContainsKey("--no-fonts"),
+            };
+            if (options.TryGetValue("--chapters", out var ch))
+            {
+                switch (ch.ToLowerInvariant())
+                {
+                    case "bookmarks": opt.Split = EpubChapterSplit.Bookmarks; break;
+                    case "headings":  opt.Split = EpubChapterSplit.Headings; break;
+                    case "none":      opt.Split = EpubChapterSplit.None; break;
+                    default: con.WriteLine("--chapters must be bookmarks, headings or none"); return 2;
+                }
+            }
+
+            options.TryGetValue("--password", out var password);
+            string source = CliPrepareRenderSource(inPath, password);
+            if (options.TryGetValue("--pages", out var rangeSpec))
+            {
+                if (!PageRangeSpec.TryParseForCli(rangeSpec, PageImageExporter.GetPageCount(source), out var parsedRange, out string err))
+                { con.WriteLine(err); return 2; }
+                opt.Pages = parsedRange;
+            }
+
+            CliEnsureParentDir(outPath);
+            var result = EpubExporter.Export(source, outPath, opt, progress: null, CancellationToken.None);
+            con.WriteLine($"Wrote {outPath}: {result.Pages} page(s), {result.Book.Chapters.Count} chapter(s), {result.PictureCount} picture(s).");
+            if (result.ScannedPages > 0)
+                con.WriteLine($"{result.ScannedPages} page(s) had no text and were added as pictures. Run --ocr first to get readable text.");
+            foreach (var f in result.SkippedFonts) con.WriteLine("Font note: " + f);
+            foreach (var n in result.Notes) con.WriteLine("Note: " + n);
             return 0;
         }
 
@@ -570,8 +619,8 @@ namespace TDPdf
                 int pageCount = dr.GetPageCount();
                 if (options.TryGetValue("--pages", out var rangeSpec))
                 {
-                    var parsed = CliParsePageRange(rangeSpec, pageCount, out string err);
-                    if (parsed is null) { con.WriteLine(err); return 2; }
+                    if (!PageRangeSpec.TryParseForCli(rangeSpec, pageCount, out var parsed, out string err))
+                    { con.WriteLine(err); return 2; }
                     selected = parsed;
                 }
                 else
@@ -696,21 +745,11 @@ namespace TDPdf
             {
                 Task.Run(async () =>
                 {
-                    using var http = MakeDownloadClient();
-                    using var resp = await http.GetAsync(url, System.Net.Http.HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-                    resp.EnsureSuccessStatusCode();
-                    var part = dest + ".part";
-                    using (var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
-                    using (var f = File.Create(part))
-                        await s.CopyToAsync(f).ConfigureAwait(false);
-                    if (!OcrModelCatalog.Verify(part, lang, hq))
-                    {
-                        try { File.Delete(part); } catch { /* best-effort */ }
-                        throw new InvalidDataException("the download failed its SHA-256 integrity check and was discarded");
-                    }
-                    if (File.Exists(dest)) File.Delete(dest);
-                    File.Move(part, dest);
+                    using var http = OcrModelDownloader.CreateClient();
+                    await OcrModelDownloader.DownloadAsync(http, lang, hq, dest, null, CancellationToken.None).ConfigureAwait(false);
                 }).GetAwaiter().GetResult();
+                // The GUI records a high-quality arrival so toggling the setting later does not fetch it again.
+                MarkLanguageHq(lang, hq);
                 return true;
             }
             catch (Exception ex)
@@ -780,7 +819,7 @@ namespace TDPdf
 
         private static string CliTempFile(string tag)
         {
-            string p = Path.Combine(Path.GetTempPath(), $"tdpdf_{tag}_{Guid.NewGuid():N}.pdf");
+            string p = TempFilePolicy.NewPath(tag);
             _cliTemps.Add(p);
             return p;
         }

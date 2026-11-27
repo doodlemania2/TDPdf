@@ -53,7 +53,7 @@ namespace TDPdf
         //
         // APP-WIDE, NOT PER-TAB. This is a reading-comfort preference of the person, not a
         // property of any one document, and it matches how TDPdf already treats its sibling view
-        // state (_viewMode is app-wide and persisted; ActivateTab even re-asserts it per tab).
+        // state (the last view chosen is app-wide and persisted; each tab then keeps its own).
         // Keeping it global means switching tabs never silently changes how a document looks, and
         // because the flip is applied at display time the per-tab render caches hold true-color
         // bitmaps and need no flushing when it is toggled.
@@ -256,7 +256,7 @@ namespace TDPdf
 
         /// <summary>
         /// Re-renders whatever is currently on screen so the pages pick up (or drop) the inversion.
-        /// Covers all four view modes: Continuous rebuilds its strip, Single / Two-Page / Grid go
+        /// Covers every view mode: the continuous strips rebuild, Single / Two-Page / Grid go
         /// through RenderPage, which re-renders the primary page and re-runs the secondary-tile and
         /// overlay pass for the mode.
         /// </summary>
@@ -264,7 +264,7 @@ namespace TDPdf
         {
             if (_doc is null) return;
             int idx = Math.Max(0, PageList.SelectedIndex);
-            if (_viewMode == ViewMode.Continuous)
+            if (IsContinuousFamily)
             {
                 SetupContinuousView(idx);
                 return;
@@ -279,8 +279,13 @@ namespace TDPdf
         /// </summary>
         private BitmapSource? DisplayBitmap(BitmapSource? source, FracRect[] keep)
         {
-            if (source is null || !_docInvert) return source;
-            return _invertedBitmaps.GetValue(source, s => InvertedCopy(s, keep));
+            if (source is null) return source;
+            // The monitor's colour profile comes first (MainWindow.MonitorColor.cs), then the night-mode
+            // invert, so the invert works on what the screen will show. Both are the identity on an
+            // sRGB monitor in true colour, and the bitmap comes back untouched.
+            var coloured = MonitorColored(source);
+            if (!_docInvert) return coloured;
+            return _invertedBitmaps.GetValue(coloured, s => InvertedCopy(s, keep));
         }
 
         /// <summary>Frozen inverted copy of a bitmap. Falls back to the original if it can't be read.</summary>

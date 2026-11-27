@@ -37,7 +37,7 @@ namespace TDPdf
             if (ShowExportImagesDialog(pageCount) is not { } choice) return;
 
             // Same page-range syntax (and blank = all rule) as the print dialog.
-            var pages = Services.PrintPreviewWindow.ParseRange(choice.Range, pageCount);
+            var pages = Services.PageRangeSpec.ParseLenient(choice.Range, pageCount);
             if (pages.Count == 0) { TdpDialog.Show(this, "That page range doesn't select any pages."); return; }
 
             string format = choice.Jpeg ? PageImageExporter.JpgFormat : PageImageExporter.PngFormat;
@@ -52,7 +52,7 @@ namespace TDPdf
                 // prompt would ask about the wrong file. We ask about the real ones below.
                 OverwritePrompt = false
             };
-            if (dlg.ShowDialog(this) != true) return;
+            if (!FileDialogs.ShowSave(dlg, FileDialogPurpose.ExportImages, this)) return;
 
             // The picked file is only a folder plus a base name: each page becomes its own file.
             string outDir = System.IO.Path.GetDirectoryName(dlg.FileName) ?? string.Empty;
@@ -114,7 +114,7 @@ namespace TDPdf
             {
                 // The clean copy may have become the live working file (see
                 // PrepareImageExportSourceAsync); only the render source is ours to delete.
-                if (renderSource is not null && renderSource != _currentFile) TryDeleteFile(renderSource);
+                if (renderSource is not null && renderSource != _currentFile) TDPdf.Services.TempFilePolicy.TryDelete(renderSource);
                 EndCancellableOp();
             }
         }
@@ -139,13 +139,13 @@ namespace TDPdf
             bool hasPending = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
             if (!hasPending)
             {
-                var temp = MakeTempPdfPath("exportsrc");
+                var temp = NewTempPath("exportsrc");
                 await _pdfDocumentService.SaveAsync(() => doc.Save(temp), CancellationToken.None);
                 return temp;
             }
 
-            var tempClean  = MakeTempPdfPath("clean");
-            var tempBurned = MakeTempPdfPath("burned");
+            var tempClean  = NewTempPath("clean");
+            var tempBurned = NewTempPath("burned");
             await _pdfDocumentService.SaveAsync(() => doc.Save(tempClean), CancellationToken.None);
             DrawAnnotationsOnDocument();
 
@@ -180,7 +180,6 @@ namespace TDPdf
         /// </summary>
         private (bool Jpeg, double Dpi, string Range)? ShowExportImagesDialog(int pageCount)
         {
-            var bgDark        = BrushResource("BgDark");
             var bgPanel       = BrushResource("BgPanel");
             var borderDim     = BrushResource("BorderDim");
             var textPrimary   = BrushResource("TextPrimary");
@@ -188,20 +187,13 @@ namespace TDPdf
             var accent        = BrushResource("AccentGreen");
             var danger        = BrushResource("DangerRed");
 
-            var win = new Window
-            {
-                Title = "Export Pages as Images",
-                Width = 400,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = bgDark,
-                Foreground = textPrimary,
-                ShowInTaskbar = false,
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12
-            };
+            // The shared dialog shell (design width 400 at scale 1), so this follows the app size and
+            // stays on screen. Its body is the stack below; font and foreground are inherited.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Export Pages as Images", 400);
+            win.ShowInTaskbar = false;
+            win.Foreground = textPrimary;
+            win.FontFamily = new FontFamily("Segoe UI");
+            win.FontSize = 12;
 
             var root = new StackPanel { Margin = new Thickness(16) };
 
@@ -263,7 +255,7 @@ namespace TDPdf
             root.Children.Add(countHint);
             void UpdateCount()
             {
-                int selected = Services.PrintPreviewWindow.ParseRange(rangeBox.Text, pageCount).Count;
+                int selected = Services.PageRangeSpec.ParseLenient(rangeBox.Text, pageCount).Count;
                 countHint.Text = $"{selected} of {pageCount} page(s) will be exported, one file per page.";
             }
 
@@ -277,7 +269,7 @@ namespace TDPdf
             // the others differ, rather than silently showing page 1's size for a mixed document.
             void UpdatePixelHint()
             {
-                var pages = Services.PrintPreviewWindow.ParseRange(rangeBox.Text, pageCount);
+                var pages = Services.PageRangeSpec.ParseLenient(rangeBox.Text, pageCount);
                 if (_doc is null || pages.Count == 0 || !PageImageExporter.TryParseDpi(dpiBox.Text, out double previewDpi))
                 {
                     pixelHint.Text = string.Empty;
@@ -340,13 +332,7 @@ namespace TDPdf
             buttons.Children.Add(exportBtn);
             root.Children.Add(buttons);
 
-            win.Content = new Border
-            {
-                Background = bgPanel,
-                BorderBrush = borderDim,
-                BorderThickness = new Thickness(1),
-                Child = root
-            };
+            shellBody.Children.Add(root);
 
             double dpi = PageImageExporter.DefaultDpi;
             cancelBtn.Click += (_, _) => win.DialogResult = false;

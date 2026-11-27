@@ -60,8 +60,56 @@ namespace TDPdf.Services
             return dpi;
         }
 
+        /// <summary>The resolutions the Save Flattened options offer besides Automatic (0).</summary>
+        public static readonly double[] FixedChoices = [72, 150, 200, 300];
+
+        /// <summary>Normalises a remembered or typed choice: 0 (Automatic) or one of <see cref="FixedChoices"/>.</summary>
+        public static double NormaliseChoice(double choice) =>
+            Array.IndexOf(FixedChoices, choice) >= 0 ? choice : 0;
+
         /// <summary>
-        /// DPI per page for <paramref name="path"/>. Never throws: a file PdfPig cannot read, or a
+        /// DPI for one page under a user choice. 0 means Automatic and returns <paramref name="autoDpi"/>
+        /// untouched; a fixed choice is used as asked, lowered only so the page stays within
+        /// <see cref="MaxPagePixels"/> (the same memory bound Automatic obeys).
+        /// </summary>
+        public static double ForChoice(double choice, double autoDpi, double pageWidthPoint, double pageHeightPoint)
+        {
+            if (!(choice > 0)) return autoDpi;
+            double dpi = choice;
+            double area = pageWidthPoint * pageHeightPoint;
+            if (double.IsFinite(area) && area > 0)
+            {
+                double cap = Math.Floor(72.0 * Math.Sqrt(MaxPagePixels / area));
+                if (dpi > cap) dpi = Math.Max(1, cap);
+            }
+            return dpi;
+        }
+
+        /// <summary>
+        /// Pixel size a page is rasterised to at <paramref name="dpi"/>: the same truncating
+        /// arithmetic the flatten loop uses, never below 1 x 1.
+        /// </summary>
+        public static (int Width, int Height) PixelSize(double pageWidthPoint, double pageHeightPoint, double dpi) =>
+            (Math.Max(1, (int)(pageWidthPoint * dpi / 72.0)), Math.Max(1, (int)(pageHeightPoint * dpi / 72.0)));
+
+        /// <summary>The scale against the page's own size, in percent (72 dpi is 100%).</summary>
+        public static int ScalePercent(double dpi) => (int)Math.Round(dpi / 72.0 * 100.0);
+
+        /// <summary>Index of the page with the largest area (the first on a tie); -1 for none.</summary>
+        public static int LargestPage(IReadOnlyList<(double WidthPoint, double HeightPoint)> pageSizes)
+        {
+            int best = -1; double bestArea = -1;
+            for (int i = 0; i < pageSizes.Count; i++)
+            {
+                double a = pageSizes[i].WidthPoint * pageSizes[i].HeightPoint;
+                if (double.IsFinite(a) && a > bestArea) { bestArea = a; best = i; }
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// DPI per page for <paramref name="path"/> (Automatic, or <paramref name="fixedChoice"/> when above 0;
+        /// <paramref name="only"/> limits the PdfPig reads to those pages for a quick preview). Never throws: a file PdfPig cannot read, or a
         /// page it cannot parse, gets the 150 default (the behaviour before this existed).
         /// </summary>
         /// <remarks>
@@ -69,11 +117,20 @@ namespace TDPdf.Services
         /// PdfPig reports image boxes in the displayed frame, which is the frame the placed size
         /// is wanted in.
         /// </remarks>
-        public static double[] ReadPageDpis(string path, IReadOnlyList<(double WidthPoint, double HeightPoint)> pageSizes)
+        public static double[] ReadPageDpis(string path, IReadOnlyList<(double WidthPoint, double HeightPoint)> pageSizes,
+            double fixedChoice = 0, IReadOnlyCollection<int>? only = null)
         {
             var result = new double[pageSizes.Count];
             for (int i = 0; i < result.Length; i++)
                 result[i] = ChooseDpi(pageSizes[i].WidthPoint, pageSizes[i].HeightPoint, []);
+
+            // A fixed choice never looks at the images, so PdfPig is not opened at all.
+            if (fixedChoice > 0)
+            {
+                for (int i = 0; i < result.Length; i++)
+                    result[i] = ForChoice(fixedChoice, result[i], pageSizes[i].WidthPoint, pageSizes[i].HeightPoint);
+                return result;
+            }
 
             try
             {
@@ -81,6 +138,7 @@ namespace TDPdf.Services
                 int n = Math.Min(result.Length, doc.NumberOfPages);
                 for (int i = 0; i < n; i++)
                 {
+                    if (only is not null && !only.Contains(i)) continue;
                     try
                     {
                         var placed = new List<PlacedImage>();

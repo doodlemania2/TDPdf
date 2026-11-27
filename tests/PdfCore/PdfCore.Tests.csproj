@@ -39,12 +39,24 @@
          shared framework (net10.0-windows), which this plain net10.0 console does not reference.
          Nothing here ships, so it needs no THIRD-PARTY-NOTICES entry. -->
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+    <!-- ProtectedData is Windows-only at run time; the credential-store tests call only the paths
+         that return before DPAPI. It is here so the real file compiles. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
     <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
     <Compile Include="..\..\Services\PdfiumInterop.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.Images.cs" />
+    <Compile Include="..\..\Services\PdfImageObjects.cs" />
+    <Compile Include="..\..\Services\PicturePlacement.cs" />
+    <Compile Include="..\..\Services\ColorKeyMask.cs" />
+    <Compile Include="..\..\Services\PictureOrientation.cs" />
     <Compile Include="..\..\Services\CmapCoverage.cs" />
     <Compile Include="..\..\Services\ZipLimits.cs" />
     <Compile Include="..\..\Services\PdfItems.cs" />
+    <Compile Include="..\..\Services\AttachmentNames.cs" />
+    <Compile Include="..\..\Services\PdfAttachments.cs" />
+    <Compile Include="..\..\Services\FormDataParsers.cs" />
+    <Compile Include="..\..\Services\FormImport.cs" />
     <Compile Include="..\..\Services\PdfNamedDestinations.cs" />
     <Compile Include="..\..\Services\PdfPageGeometry.cs" />
     <Compile Include="..\..\Services\MeasureGeometry.cs" />
@@ -54,6 +66,7 @@
     <Compile Include="..\..\Services\PdfPageRasterizer.cs" />
     <Compile Include="..\..\Services\PdfRedaction.cs" />
     <Compile Include="..\..\Services\PdfRedactionResidue.cs" />
+    <Compile Include="..\..\Services\PdfRedactionHidden.cs" />
     <Compile Include="..\..\Services\PdfTextSearch.cs" />
     <Compile Include="..\..\Services\PdfBoxExtent.cs" />
     <Compile Include="..\..\Services\TextRunService.cs" />
@@ -64,9 +77,25 @@
     <Compile Include="..\..\Services\PageBlockMove.cs" />
     <Compile Include="..\..\Services\PageIndexRemap.cs" />
     <Compile Include="..\..\Services\CanvasPixels.cs" />
+    <Compile Include="..\..\Services\MergePlan.cs" />
+    <Compile Include="..\..\Services\PdfMerger.cs" />
+    <Compile Include="..\..\Services\RegionRaster.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.RegionRaster.cs" />
+    <Compile Include="..\..\Services\PdfRegionRasterizer.cs" />
+    <Compile Include="..\..\Services\PdfTaggedFigure.cs" />
+    <Compile Include="..\..\Diagnostics\FaultSink.cs" />
+    <Compile Include="..\..\Services\MarkArrange.cs" />
+    <Compile Include="..\..\Services\ContextMenuModel.cs" />
+    <Compile Include="..\..\Services\MenuLayouts.cs" />
+    <Compile Include="..\..\Services\ReleaseNotesMarkdown.cs" />
+    <Compile Include="..\..\Services\WhatsNewPolicy.cs" />
     <Compile Include="..\..\Services\HighlightMultiply.cs" />
     <Compile Include="..\..\Services\LruCache.cs" />
     <Compile Include="..\..\Services\CropMargins.cs" />
+    <Compile Include="..\..\Services\Angles.cs" />
+    <Compile Include="..\..\Services\QuarterTurn.cs" />
+    <Compile Include="..\..\Services\CropDocument.cs" />
+    <Compile Include="..\..\Services\DocumensoCredentialStore.cs" />
     <Compile Include="..\..\Services\AnnotationFrame.cs" />
     <Compile Include="..\..\Services\PageRangeSpec.cs" />
     <Compile Include="..\..\Services\ShellVerbCommands.cs" />
@@ -78,23 +107,40 @@
     <Compile Include="..\..\Services\SelectCursorPolicy.cs" />
     <Compile Include="..\..\Services\PortableInstallPolicy.cs" />
     <Compile Include="..\..\Services\PrintTicketDuplex.cs" />
+    <Compile Include="..\..\Services\ColorProfiles.cs" />
+    <Compile Include="..\..\Services\ColorEngine.cs" />
+    <Compile Include="..\..\Services\ColorTransform.cs" />
+    <Compile Include="..\..\Services\ColorMonitorPolicy.cs" />
+    <Compile Include="..\..\Services\PrintTicketColor.cs" />
+    <Compile Include="..\..\Services\LcmsNative.cs" />
     <Compile Include="..\..\Services\PrintSheetPlan.cs" />
     <Compile Include="..\..\Services\PrintRaster.cs" />
     <Compile Include="..\..\Services\OcrTextFit.cs" />
     <Compile Include="..\..\Services\AtomicFileWriter.cs" />
     <Compile Include="..\..\Services\SignatureStoreFile.cs" />
+    <Compile Include="..\..\Services\SignatureInk.cs" />
     <Compile Include="..\..\Services\PdfEncryptionScan.cs" />
     <Compile Include="..\..\Services\ProtectedSave.cs" />
     <Compile Include="..\..\Services\FilePathPolicy.cs" />
+    <Compile Include="..\..\Services\FileDialogPolicy.cs" />
+    <Compile Include="..\..\Services\FileDialogFilters.cs" />
+    <Compile Include="..\..\Services\ClosedTabStack.cs" />
+    <Compile Include="..\..\Services\SpreadRows.cs" />
+    <Compile Include="..\..\Services\SessionState.cs" />
+    <Compile Include="..\..\Services\OpenBatchReport.cs" />
     <Compile Include="..\..\Services\FileFingerprint.cs" />
     <Compile Include="..\..\Services\ZoomAnchorMath.cs" />
     <Compile Include="..\..\Services\WindowFitMath.cs" />
     <Compile Include="..\..\Services\WindowPlacementMath.cs" />
+    <Compile Include="..\..\Services\SplitLayout.cs" />
+    <Compile Include="..\..\Services\WindowLaunch.cs" />
+    <Compile Include="..\..\Services\ReadOnlyGate.cs" />
     <Compile Include="..\..\Services\PaperSizeNames.cs" />
     <Compile Include="..\..\Services\PdfImages.cs" />
     <Compile Include="..\..\Services\InkDot.cs" />
     <Compile Include="..\..\Services\FlattenResolution.cs" />
     <Compile Include="..\..\Services\OcrModelCatalog.cs" />
+    <Compile Include="..\..\Services\OcrModelDownloader.cs" />
     <!-- Electronic Signature: the WPF-free parts. The registry reads in DocumensoConfig are
          guarded by OperatingSystem.IsWindows(), and Settings.Default is shimmed in Shims.cs. -->
     <Compile Include="..\..\Services\DocumensoConfig.cs" />
@@ -119,7 +165,59 @@
     <Compile Include="..\..\Services\InstallerExitCodes.cs" />
     <Compile Include="..\..\Diagnostics\StatusRingBuffer.cs" />
     <Compile Include="..\..\Diagnostics\PrivilegedPathGuard.cs" />
+    <Compile Include="..\..\Services\DllSearchPaths.cs" />
+    <Compile Include="..\..\Services\SystemTool.cs" />
     <Compile Include="..\..\Services\TempFiles.cs" />
+    <Compile Include="..\..\Models\Annotations.cs" />
+    <Compile Include="..\..\Services\AnnotationBaker.cs" />
+    <Compile Include="..\..\Services\StampLibrary.cs" />
+    <Compile Include="..\..\Services\StampWriter.cs" />
+    <Compile Include="..\..\Services\TypedNumber.cs" />
+    <Compile Include="..\..\Services\WatermarkSpec.cs" />
+    <Compile Include="..\..\Services\WatermarkWriter.cs" />
+    <Compile Include="..\..\Services\UpdateCheckPolicy.cs" />
+    <Compile Include="..\..\Services\PdfFonts.cs" />
+    <Compile Include="..\..\Services\FontCoverage.cs" />
+    <Compile Include="..\..\Services\PdfCompareText.cs" />
+    <Compile Include="..\..\Services\PdfCompareAlign.cs" />
+    <Compile Include="..\..\Services\PdfCompareRaster.cs" />
+    <Compile Include="..\..\Services\PdfCompareEngine.cs" />
+    <Compile Include="..\..\Services\PdfUaReport.cs" />
+    <Compile Include="..\..\Services\PdfUaValidator.cs" />
+    <Compile Include="..\..\Services\PdfUaFixes.cs" />
+    <Compile Include="..\..\Services\PdfUaCli.cs" />
+    <Compile Include="..\..\Services\EpubExportModel.cs" />
+    <Compile Include="..\..\Services\EpubExportFonts.cs" />
+    <Compile Include="..\..\Services\EpubExportAnalyzer.cs" />
+    <Compile Include="..\..\Services\EpubExportPackage.cs" />
+    <Compile Include="..\..\Services\EpubExporter.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.EpubExport.cs" />
+    <Compile Include="..\..\Services\EpubArchive.cs" />
+    <Compile Include="..\..\Services\EpubPackage.cs" />
+    <Compile Include="..\..\Services\EpubFontDeobfuscation.cs" />
+    <Compile Include="..\..\Services\EpubBook.cs" />
+    <Compile Include="..\..\Services\EpubResourceServer.cs" />
+    <Compile Include="..\..\Services\EpubOutline.cs" />
+    <Compile Include="..\..\Services\BookLayoutOptions.cs" />
+    <Compile Include="..\..\Services\BookConversion.cs" />
+    <Compile Include="..\..\Services\DjvuModel.cs" />
+    <Compile Include="..\..\Services\DjvuWorkerProtocol.cs" />
+    <Compile Include="..\..\Services\DjvuWorkerClient.cs" />
+    <Compile Include="..\..\Services\DjvuLibreDecoder.cs" />
+    <Compile Include="..\..\Services\DjvuNativeBootstrap.cs" />
+    <Compile Include="..\..\Services\DjvuToPdf.cs" />
+    <!-- A two-page DjVu book (one bitonal, one colour page, hidden text, outline) made with DjVuLibre
+         from synthetic pixels, for a real-decode check on Windows (the library is Windows-only, so no
+         check on macOS or Linux opens it). -->
+    <None Include="fixtures\book.djvu" CopyToOutputDirectory="PreserveNewest" LinkBase="" />
+    <Compile Include="..\..\Services\ParagraphFinder.cs" />
+    <Compile Include="..\..\Services\ParagraphReflow.cs" />
+    <Compile Include="..\..\Services\ParagraphHighlights.cs" />
+    <Compile Include="..\..\Services\ParagraphEditPolicy.cs" />
+    <Compile Include="..\..\Services\PaperColor.cs" />
+    <Compile Include="..\..\Services\ParagraphPageReader.cs" />
+    <Compile Include="..\..\Services\PdfiumInterop.Paragraph.cs" />
+    <Compile Include="..\..\Services\PdfParagraphEdit.cs" />
   </ItemGroup>
 
 </Project>
