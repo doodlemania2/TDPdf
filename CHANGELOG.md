@@ -6,6 +6,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 
 ## [Unreleased]
 
+## [3.0.0.0] - 2026-11-27
+
+TDPdf 3.0: 28 new features chosen from what upstream KillerPDF added in 1.9.3 to 1.9.7 (built on TDPdf's own libraries, never copied), plus a full security audit and a code-cleanliness audit of the whole codebase, every finding approved individually.
+
+### Security
+
+- Every update used to reset all settings (theme, zoom, recent files, session), because the settings file lives in a folder named after the version and nothing carried it forward. Settings now carry over.
+- Windows system tools (task scheduler, command shell, Explorer) are started from the Windows folder by full path, never from the folder TDPdf runs from.
+- The uninstall clean-up script calls its tools by full path and is written just before it runs, so it can no longer be swapped or hijacked; when elevated it is written to an admin-only folder.
+- The whole process searches only the Windows system folder and TDPdf's own extracted libraries for DLLs (2.3.0.0 covered only TDPdf's own calls).
+- Redaction proves that pictures under a mark are gone from the saved file, prunes resources nothing draws any more, and refuses to save if a picture survives. A picture inside a placed form object used to survive redaction; it no longer does.
+- Redact Permanently removes attached files from the whole document and says how many.
+- An elevated TDPdf window only accepts files from elevated programs.
+- A signatures file planted next to a downloaded copy is no longer imported.
+- Folders made for dropped zip files are cleaned up, and zip files are checked as they expand rather than only by their declared sizes; an unreadable zip is refused.
+- An administrator-pinned signing server can no longer be overridden by an environment variable.
+- The signing window denies permission prompts, cancels page-started downloads, keeps frames on the allow-list and asks before opening off-site links.
+- Saving over a 40-bit encrypted file warns that it stays weak.
+- Only the repository owner can start a manual release or Store submission.
+- The shared fleet-presence workflow is pinned to a commit.
+
+### Added
+
+- Select several marks with Shift+click, Ctrl+click or a drag box; move, nudge, delete or restyle them together.
+- Copy, cut and paste marks and pictures, within a document and between windows.
+- Group marks (Ctrl+G, Ctrl+Shift+G); align, space and match the size of several marks.
+- Reopen a closed tab with Ctrl+Shift+T, and restore the last session at launch.
+- After an update, What's new shows the notes of every version since the one you last saw.
+- File attachments: list and save them, with safe names and a warning before saving programs.
+- Import form data from FDF and XFDF files.
+- Save Flattened asks for the resolution and shows the output size.
+- Stamps, saved as real stamp annotations; watermarks and page numbers, removable later.
+- Rasterize Region, and a Merge Files dialog with page arrangement that keeps fields and bookmarks.
+- Compare two PDFs side by side or overlaid (Alt+Shift+V).
+- Check Accessibility (PDF/UA), with fixes for language, title and the tagged flag; `--pdfua` on the command line.
+- Signature editor: ink colour, pen width, threshold and soft edge for photographed signatures, a date line, and a PNG for TDPdf Sign's Upload tab.
+- Per-tab view mode, a fifth view mode (Two pages, continuous) and a two-column thumbnail sidebar.
+- Split view as two snapped windows; the same document twice opens read-only and reloads on save.
+- Open and Save remember a folder per task, list recent folders, show a preview and can open in a new window.
+- Open EPUB and DjVu books (converted to PDF; DjVu decodes in a separate process with the bundled DjVuLibre library), and export a PDF as EPUB.
+- Colour management: monitor profile matching, and a Color section in the print window with printer profiles, rendering intent, black-point compensation and a preview (Little CMS bundled). With the Color section on Driver default, printing is unchanged.
+- Edit pictures that are part of the page: move, resize, delete, copy, replace, save, and extract a box or colour area as a transparent picture.
+- Edit a whole paragraph, reflowed in its own font.
+- Right-click menus that match what is under the pointer, with quick buttons, colour and opacity controls, raise and lower, and an Edit Menu window to reorder or hide items.
+
+### Changed
+
+- The Edit Existing Image tool is now Select Picture.
+- The annotation bake, the canvas mouse and keyboard handlers and several window builders were split up and moved into tested services; settings, Insert Page, Document Info, Export Images and the signature creators use the shared dialog shell and scale with the app.
+
+### Fixed
+
+- A failure while writing form values is reported after the save instead of silently dropping them.
+- Text edits and Transform delete the working copy they replace.
+- The command line, print and image export share one page-range parser.
+- OCR language downloads replace the file atomically, and the command line keeps the high-quality model record.
+- A file opened after a tab drag reports a failure instead of failing silently.
+
 ## [2.3.0.0] - 2026-11-26
 
 A curated sync with upstream KillerPDF 1.9.3 to 1.9.7. As before, upstream's changes were read as a list of problems to look for in TDPdf's own code, every applicable item was approved individually, and nothing was copied from upstream's new engine. Several fixes below are defects of TDPdf's own that the comparison turned up, including thumbnails that turned into placeholders after an edit.
@@ -1457,7 +1515,8 @@ First release under the **TDPdf** identity, maintained by **The Doodle Project, 
 
 _Historical entries to be backfilled._
 
-[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v2.3.0.0...HEAD
+[Unreleased]: https://github.com/doodlemania2/TDPdf/compare/v3.0.0.0...HEAD
+[3.0.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.3.0.0...v3.0.0.0
 [2.3.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.2.1.0...v2.3.0.0
 [2.2.1.0]: https://github.com/doodlemania2/TDPdf/compare/v2.2.0.0...v2.2.1.0
 [2.2.0.0]: https://github.com/doodlemania2/TDPdf/compare/v2.1.1.1...v2.2.0.0

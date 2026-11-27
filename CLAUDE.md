@@ -12,7 +12,8 @@ TDPdf is a Windows-only WPF PDF editor shipped as a single self-contained `TDPdf
 - Cross-compiling from macOS/Linux (where this repo often lives): add `-p:EnableWindowsTargeting=true`. The app itself only runs on Windows (WPF + native `pdfium.dll` P/Invoke).
 - Publish single-EXE: `dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true` → `bin/Release/net10.0-windows/win-x64/publish/TDPdf.exe`. Publish also runs the `BundleSource` MSBuild target (`build/bundle-source.ps1`) producing the GPLv3 corresponding-source zip; it uses `git ls-files`, so untracked files are silently excluded.
 - Local build: `./release.ps1` (Windows) is an **unsigned** local build only (no Certum, no signtool). Signed releases come only from pushing a tag, which runs `.github/workflows/release.yml`.
-- **Tests: `tests/PdfCore`** is a macOS/Linux/Windows-runnable console harness (about 2,050 checks) covering the pure logic in `Services/` and the PDF round-trips. Run `dotnet run --project tests/PdfCore/PdfCore.Tests.csproj -c Release`; it must print **ALL PASS**. It gates `release.yml` (nothing is signed unless it passes). Add tests for any pure logic you add or move in `Services/`: compile the service file into the test project with a `<Compile Include>` in `tests/PdfCore/PdfCore.Tests.csproj` and register the suite in `tests/PdfCore/Program.cs`. There is no linter; `dotnet build` warnings are the lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
+- **Tests: `tests/PdfCore`** is a macOS/Linux/Windows-runnable console harness (about 3,600 checks) covering the pure logic in `Services/` and the PDF round-trips. Run `dotnet run --project tests/PdfCore/PdfCore.Tests.csproj -c Release`; it must print **ALL PASS**. It gates `release.yml` (nothing is signed unless it passes). Add tests for any pure logic you add or move in `Services/`: compile the service file into the test project with a `<Compile Include>` in `tests/PdfCore/PdfCore.Tests.csproj` and register the suite in `tests/PdfCore/Program.cs`. There is no linter; `dotnet build` warnings are the lint signal — do not introduce new warnings. Nullable reference types are enabled project-wide; don't silence `CS8602` etc. with `!` unless the invariant is genuinely guaranteed.
+- **Bundled native libraries.** Besides PDFium and the OCR natives, the exe embeds DjVuLibre (`third_party/djvulibre/`, GPL-2.0-or-later, with its runtime DLLs) and Little CMS (`third_party/lcms2/`, MIT), all taken from MSYS2 UCRT64 packages whose signatures were checked, and each pinned by a `SHA256SUMS` file: the build fails on an unpinned or changed file, and DjVu refuses any `.exe`. `SOURCES.md` in each folder names the exact package, its recipe and its source. Replace them only from the same channel, update the pins and regenerate `THIRD-PARTY-NOTICES.md` in the same PR.
 - Single-file publish uses SDK properties in `TDPdf.csproj` (`IncludeNativeLibrariesForSelfExtract`, compression); do not reintroduce Costura/Fody bundling. `PublishTrimmed` and Native AOT are intentionally off — WPF and the PDF libraries are not trim-safe.
 - **Always check warnings with `--no-incremental`.** An incremental build skips `CoreCompile` and can report a false clean that hides every `CS*` warning you just introduced. The baseline is **0 warnings, 0 errors** (it was 4 before 2.2.1.0 cleared the `MSB3243` and `CS8602` ones); keep it there.
 
@@ -96,6 +97,24 @@ Single-window WPF app with no DI and no view-model layer beyond `ZoomViewModel`.
 | `MainWindow.ESignatureSelfSign.cs` | Electronic Signature: Sign This Document |
 | `MainWindow.ESignatureVerify.cs` | Electronic Signature: Verify Signatures and Document Info digital signatures |
 | `MainWindow.ESignatureWeb.cs` | Electronic Signature: the signing service's pages inside TDPdf (WebView2) |
+| `MainWindow.CanvasTools.cs` | Per-tool mouse handlers that `Canvas_MouseLeftButtonDown/Up` dispatch to |
+| `MainWindow.Stamps.cs` | Stamp tool (standard, text and picture stamps, saved as real /Stamp annotations; `Services/StampWriter.cs`) |
+| `MainWindow.Watermark.cs` | Watermark and Remove Watermark (marked-content artifacts; `Services/WatermarkWriter.cs`) |
+| `MainWindow.PageImages.cs` | Pictures in the page content: select, move, resize, delete, copy, replace, save (PDFium page objects; `Services/PdfImageObjects.cs`) |
+| `MainWindow.PictureExtract.cs` | Extract Image: a box or colour area of a picture into a transparent picture mark |
+| `MainWindow.Paragraphs.cs` | Edit Paragraph: find, edit and reflow a whole paragraph (`Services/Paragraph*.cs`, `Services/PdfParagraphEdit.cs`) |
+| `MainWindow.RasterizeRegion.cs` | Rasterize Region: a box becomes a picture and the content under it leaves the page |
+| `MainWindow.MergeDialog.cs` | Merge Files dialog with page arrangement (`Services/MergePlan.cs`, `Services/PdfMerger.cs`) |
+| `MainWindow.Attachments.cs` | List and save file attachments (`Services/PdfAttachments.cs`, `Services/AttachmentNames.cs`) |
+| `MainWindow.FlattenOptions.cs` | Save Flattened resolution step |
+| `MainWindow.Compare.cs` | Compare PDFs entry point (`Services/CompareWindow.cs`, `Services/PdfCompare*.cs`) |
+| `MainWindow.Accessibility.cs` | Check Accessibility panel and fixes (`Services/PdfUa*.cs`) |
+| `MainWindow.ExportEpub.cs` | Export as EPUB (`Services/EpubExport*.cs`) |
+| `MainWindow.Books.cs` | Open EPUB and DjVu books by converting them to a temp PDF (`Services/Epub*.cs`, `Services/Djvu*.cs`; DjVu decodes in the `--djvu-worker` child process) |
+| `MainWindow.SignatureEditor.cs` | Signature editor: ink colour, pen width, threshold and feather for imported signatures, PNG export |
+| `MainWindow.MonitorColor.cs` | Monitor colour matching (`Services/Color*.cs`, `Services/LcmsNative.cs`) |
+| `MainWindow.SideBySide.cs` | Split view as two snapped windows, and the read-only second view (`Services/ReadOnlyGate.cs`) |
+| `MainWindow.PairedSidebar.cs` | Two-column thumbnail sidebar (`Controls/PairedThumbnailPanel.cs`) |
 
 `TdpDialog` is **not** a `MainWindow` partial — it is the standalone themed `MessageBox` replacement, a `static partial class` split across `TdpDialog.cs` and `TdpDialog.PageRange.cs` (the page-range prompt). Alongside `Services/`, `ViewModels/` and `Diagnostics/`, `Models/` holds `Annotations.cs` and `PageThumbItem.cs`, and `Controls/` holds the small reusable WPF controls and layout helpers (`SafeCanvas`, `SafeWrapPanel`, `GridLengthAnimation`, `RadioGroupKeyboard`, `LayoutRace`).
 
