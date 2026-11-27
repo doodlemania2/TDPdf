@@ -5183,6 +5183,8 @@ namespace TDPdf
                     summary += $", including {outcome.InvisibleTextRemoved} invisible OCR run{(outcome.InvisibleTextRemoved == 1 ? "" : "s")}";
                 if (outcome.AnnotationsRemoved > 0)
                     summary += $"; {outcome.AnnotationsRemoved} annotation{(outcome.AnnotationsRemoved == 1 ? "" : "s")} or form field{(outcome.AnnotationsRemoved == 1 ? "" : "s")} removed";
+                if (outcome.AttachmentsRemoved > 0)
+                    summary += $"; {outcome.AttachmentsRemoved} attached file{(outcome.AttachmentsRemoved == 1 ? "" : "s")} removed from the document";
                 if (outcome.Rasterized.Count > 0)
                     summary += $"; page{(outcome.Rasterized.Count == 1 ? "" : "s")} " +
                                string.Join(", ", outcome.Rasterized.Select(p => p + 1)) +
