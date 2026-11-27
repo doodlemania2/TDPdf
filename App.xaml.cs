@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Windows.Threading;
@@ -527,9 +528,9 @@ namespace TDPdf
         // Named from the user SID plus the session id (InstanceIdentity): the pipe namespace is
         // machine-wide, so a user-name key let a second RDP session of the same account forward
         // its files to the first session's window, and let another account pre-create the pipe
-        // and receive our paths. CurrentUserOnly on both ends closes the second hole. A running
-        // TDPdf older than this uses the old names, so a new launch will not find it and opens
-        // its own window instead.
+        // and receive our paths. The pipe is locked to this user on both ends (see CreateServerPipe
+        // and PipeOwnedByCurrentUser) to close the second hole. A running TDPdf older than this
+        // uses the old names, so a new launch will not find it and opens its own window instead.
         private static readonly string SingleInstanceMutexName =
             "Local\\TDPdf.SingleInstance.Mutex." + InstanceIdentity.Suffix;
         private static readonly string SingleInstancePipeName =
@@ -542,9 +543,15 @@ namespace TDPdf
         {
             try
             {
-                using var client = new NamedPipeClientStream(".", SingleInstancePipeName, PipeDirection.Out,
-                    PipeOptions.CurrentUserOnly);
+                // Not PipeOptions.CurrentUserOnly: .NET compares the pipe's owner with the token's
+                // Owner, which is the Administrators group in an elevated token, while the server
+                // below is owned by the user SID. Every forward from an elevated process failed and
+                // opened a second window. We check the owner ourselves, before sending anything.
+                using var client = new NamedPipeClientStream(".", SingleInstancePipeName,
+                    PipeAccessRights.Write | PipeAccessRights.ReadPermissions, PipeOptions.None,
+                    TokenImpersonationLevel.Identification, HandleInheritability.None);
                 client.Connect(3000);
+                if (!PipeOwnedByCurrentUser(client)) return false;
                 using var writer = new StreamWriter(client) { AutoFlush = true };
                 writer.WriteLine(payload);
                 return true;
@@ -553,6 +560,45 @@ namespace TDPdf
             {
                 return false;
             }
+        }
+
+        // Threat model: the pipe name is machine-wide, so another account on the machine could create
+        // a pipe with our name first and collect the paths we forward, or connect to ours and make us
+        // open files. Only this user's own processes may talk to the pipe. The server grants access to
+        // this user's SID alone and is owned by that SID; the client refuses to send unless the pipe
+        // it reached is owned by that same SID. The user SID is the same in an elevated and a
+        // non-elevated token (the token's Owner is not), so an elevated window and a normal launch
+        // of the same account can still find each other.
+        private static SecurityIdentifier? CurrentUserSid()
+        {
+            using var id = WindowsIdentity.GetCurrent();
+            return id.User;
+        }
+
+        private static bool PipeOwnedByCurrentUser(NamedPipeClientStream client)
+        {
+            try
+            {
+                var me = CurrentUserSid();
+                if (me == null) return false;
+                var owner = client.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+                return owner != null && owner.Equals(me);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static NamedPipeServerStream CreateServerPipe()
+        {
+            var me = CurrentUserSid() ?? throw new InvalidOperationException("No user SID.");
+            var security = new PipeSecurity();
+            security.SetOwner(me);
+            security.AddAccessRule(new PipeAccessRule(me,
+                PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+            return NamedPipeServerStreamAcl.Create(SingleInstancePipeName, PipeDirection.In, 1,
+                PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
         }
 
         /// <summary>
@@ -581,12 +627,7 @@ namespace TDPdf
             {
                 try
                 {
-                    using var server = new NamedPipeServerStream(
-                        SingleInstancePipeName,
-                        PipeDirection.In,
-                        1,
-                        PipeTransmissionMode.Byte,
-                        PipeOptions.CurrentUserOnly);
+                    using var server = CreateServerPipe();
                     server.WaitForConnection();
                     using var reader = new StreamReader(server);
                     string? line = reader.ReadLine();
