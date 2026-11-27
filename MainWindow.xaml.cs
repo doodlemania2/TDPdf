@@ -6376,6 +6376,9 @@ namespace TDPdf
 
         private void RenderAllAnnotations(int pageIndex)
         {
+            // True when the page's highlights are multiplied into the page image (see
+            // MainWindow.HighlightComposite.cs), so the canvas must not paint them a second time.
+            bool highlightsBlended = SyncHighlightComposite(pageIndex);
             _annotationCanvas.Children.Clear();
             // Every annotation change on a page ends up here, so this is also where the sidebar's
             // thumbnail of that page learns its unsaved markup changed (debounced there).
@@ -6404,6 +6407,7 @@ namespace TDPdf
                     // it is a subclass, and plain highlights must keep their single-rect render.
                     case MarkupAnnotation mk:
                     {
+                        if (highlightsBlended && IsMultiplied(mk)) break;
                         var mkBrush = TdpDialog.FrozenSolidColorBrush(mk.GetColor());
                         foreach (var pr in mk.PaintRects())
                         {
@@ -6413,7 +6417,8 @@ namespace TDPdf
                                 Fill = mkBrush,
                                 Width = pr.Width,
                                 Height = pr.Height,
-                                IsHitTestVisible = false
+                                IsHitTestVisible = false,
+                                Tag = IsMultiplied(mk) ? HighlightFallbackTag : null
                             };
                             Canvas.SetLeft(band, pr.X);
                             Canvas.SetTop(band, pr.Y);
@@ -6422,13 +6427,15 @@ namespace TDPdf
                         break;
                     }
                     case HighlightAnnotation ha:
+                        if (highlightsBlended) break;
                         if (!IsFinitePositive(ha.Bounds.Width) || !IsFinitePositive(ha.Bounds.Height)) continue;
                         var rect = new Rectangle
                         {
                             Fill = TdpDialog.FrozenSolidColorBrush(ha.GetColor()),
                             Width = ha.Bounds.Width,
                             Height = ha.Bounds.Height,
-                            IsHitTestVisible = false
+                            IsHitTestVisible = false,
+                            Tag = HighlightFallbackTag
                         };
                         Canvas.SetLeft(rect, ha.Bounds.X);
                         Canvas.SetTop(rect, ha.Bounds.Y);

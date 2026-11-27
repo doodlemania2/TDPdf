@@ -411,6 +411,14 @@ namespace TDPdf
                 cancellationToken.ThrowIfCancellationRequested();
                 if (_doc is null) return;
 
+                // Highlights are multiplied into the page image (MainWindow.HighlightComposite.cs), from
+                // the true-colour raster and before the display-only invert. Built here, ahead of every
+                // write below, so the page identity, the cached bitmap and the image all change together.
+                var (highlighted, highlightSig) = await HighlightedPageAsync(
+                    pageIndex, renderedPage.Bitmap, renderedPage.DisplayWidth, renderedPage.DisplayHeight, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_doc is null) return;
+
                 _renderDims[pageIndex] = ((int)Math.Round(renderedPage.DisplayWidth), (int)Math.Round(renderedPage.DisplayHeight));
                 PageImage.Tag = pageIndex;   // page identity for Grid scroll tracking (nearest-tile counter)
                 // #135: DisplayBitmap returns the cached bitmap untouched unless the display-only
@@ -418,7 +426,7 @@ namespace TDPdf
                 // _primaryPageBitmap, which the image-edit tool bakes into the saved PDF) keep the
                 // document's true colors.
                 _primaryPageBitmap = renderedPage.Bitmap;
-                PageImage.Source = DisplayBitmap(renderedPage.Bitmap, keepRects);
+                ShowPrimaryBitmap(pageIndex, renderedPage.Bitmap, highlighted, highlightSig, keepRects);
                 PageImage.Width = renderedPage.DisplayWidth;
                 PageImage.Height = renderedPage.DisplayHeight;
                 _annotationCanvas.Width = renderedPage.DisplayWidth;
