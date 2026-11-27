@@ -42,76 +42,11 @@ namespace TDPdf.Services
         /// <summary>
         /// A borderless themed window: rounded accent border, draggable Consolas title bar, MDL2
         /// close glyph. Returns the window and the stack its content goes in (below the title bar).
+        /// Built on the shared <see cref="TdpDialog"/> shell, so it follows the app size and stays
+        /// inside the owner's work area; <paramref name="width"/> is the design width at scale 1.
         /// </summary>
         internal static (Window Window, StackPanel Root, Button Close) CreateShell(Window? owner, string title, double width)
-        {
-            var win = new Window
-            {
-                Title = title,
-                Width = width,
-                SizeToContent = SizeToContent.Height,
-                WindowStyle = WindowStyle.None,
-                AllowsTransparency = true,
-                Background = Brushes.Transparent,
-                ResizeMode = ResizeMode.NoResize,
-                Owner = owner,
-                WindowStartupLocation = owner is not null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
-                ShowInTaskbar = false,
-            };
-
-            var outer = new Border
-            {
-                Background = Brush("BgDark"),
-                BorderBrush = Brush("AccentGreenDim"),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(6),
-            };
-            var root = new StackPanel();
-            outer.Child = root;
-            win.Content = outer;
-
-            var titleBar = new Border
-            {
-                Background = Brush("BgPanel"),
-                Padding = new Thickness(14, 8, 8, 8),
-                CornerRadius = new CornerRadius(5, 5, 0, 0),
-            };
-            titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
-            var grid = new Grid();
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            grid.Children.Add(new TextBlock
-            {
-                Text = title,
-                Foreground = Brush("AccentGreen"),
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 13,
-                FontFamily = new FontFamily("Consolas"),
-                VerticalAlignment = VerticalAlignment.Center,
-            });
-            var close = new Button
-            {
-                Content = "",
-                FontFamily = new FontFamily("Segoe MDL2 Assets"),
-                FontSize = 10,
-                Width = 28,
-                Height = 28,
-                Background = Brushes.Transparent,
-                Foreground = Brush("TextSecondary"),
-                BorderThickness = new Thickness(0),
-                Cursor = Cursors.Hand,
-                VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = "Close",
-            };
-            System.Windows.Automation.AutomationProperties.SetName(close, "Close");
-            close.MouseEnter += (_, _) => close.Foreground = Brush("DangerRed");
-            close.MouseLeave += (_, _) => close.Foreground = Brush("TextSecondary");
-            Grid.SetColumn(close, 1);
-            grid.Children.Add(close);
-            titleBar.Child = grid;
-            root.Children.Add(titleBar);
-            return (win, root, close);
-        }
+            => TdpDialog.CreateShellWithClose(owner, title, width);
 
         internal static TextBlock Para(string text, string brushKey, double size, Thickness margin, bool semiBold = false)
             => new()

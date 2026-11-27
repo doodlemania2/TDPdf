@@ -64,17 +64,39 @@ namespace TDPdf
         /// bar) holding a rounded panel with an accent border and a draggable Consolas wordmark
         /// title bar. Returns the window plus the vertical stack each dialog fills with its body.
         /// </summary>
-        private static (Window Window, StackPanel Body) CreateShell(Window? owner, string title)
+        internal static (Window Window, StackPanel Body) CreateShell(Window? owner, string title)
+        {
+            var (win, root, _) = BuildShell(owner, title, DefaultShellWidth, withClose: false);
+            return (win, root);
+        }
+
+        /// <summary>
+        /// The same shell with a close glyph in the title bar and no taskbar button, for the
+        /// Electronic Signature windows (<c>DocumensoUi.CreateShell</c>). <paramref name="width"/> is the
+        /// design width at scale 1; the window is that wide times the app size, within the owner's
+        /// work area.
+        /// </summary>
+        internal static (Window Window, StackPanel Body, Button Close) CreateShellWithClose(
+            Window? owner, string title, double width)
+        {
+            var (win, root, close) = BuildShell(owner, title, width, withClose: true);
+            return (win, root, close!);
+        }
+
+        private const double DefaultShellWidth = 380;
+
+        private static (Window Window, StackPanel Body, Button? Close) BuildShell(
+            Window? owner, string title, double designWidth, bool withClose)
         {
             // Dialogs follow the app size (upstream 1.9.2 "DialogScale"). One place: the shell's
             // content gets a LayoutTransform of the current app scale and the window's width is
             // scaled to match, so every prompt built on this shell (password, save-on-close, quit,
             // choice dialogs) scales with no per-dialog code. Clamped to the owner's work area.
-            double scale = CurrentScale(owner);
+            double scale = CurrentScale(owner, Math.Max(WidestShellWidth, designWidth));
             var win = new Window
             {
                 Title = title,
-                Width = 380 * scale,
+                Width = designWidth * scale,
                 MaxHeight = WorkAreaCap(owner)?.Height ?? double.PositiveInfinity,
                 SizeToContent = SizeToContent.Height,
                 WindowStyle = WindowStyle.None,
@@ -86,6 +108,7 @@ namespace TDPdf
                 Owner = owner,
                 ResizeMode = ResizeMode.NoResize
             };
+            if (withClose) win.ShowInTaskbar = false;
 
             var outerBorder = new Border
             {
@@ -100,11 +123,11 @@ namespace TDPdf
             var titleBar = new Border
             {
                 Background   = Brush("BgPanel"),
-                Padding      = new Thickness(16, 10, 16, 10),
+                Padding      = withClose ? new Thickness(14, 8, 8, 8) : new Thickness(16, 10, 16, 10),
                 CornerRadius = new CornerRadius(5, 5, 0, 0)
             };
             titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
-            titleBar.Child = new TextBlock
+            var titleText = new TextBlock
             {
                 Text       = title,
                 Foreground = Brush("AccentGreen"),
@@ -112,23 +135,56 @@ namespace TDPdf
                 FontSize   = 13,
                 FontFamily = new System.Windows.Media.FontFamily("Consolas")
             };
+            Button? close = null;
+            if (!withClose)
+            {
+                titleBar.Child = titleText;
+            }
+            else
+            {
+                titleText.VerticalAlignment = VerticalAlignment.Center;
+                var grid = new Grid();
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                grid.Children.Add(titleText);
+                close = new Button
+                {
+                    Content = "\uE8BB",
+                    FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
+                    FontSize = 10,
+                    Width = 28,
+                    Height = 28,
+                    Background = System.Windows.Media.Brushes.Transparent,
+                    Foreground = Brush("TextSecondary"),
+                    BorderThickness = new Thickness(0),
+                    Cursor = Cursors.Hand,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    ToolTip = "Close",
+                };
+                AutomationProperties.SetName(close, "Close");
+                close.MouseEnter += (_, _) => close.Foreground = Brush("DangerRed");
+                close.MouseLeave += (_, _) => close.Foreground = Brush("TextSecondary");
+                Grid.SetColumn(close, 1);
+                grid.Children.Add(close);
+                titleBar.Child = grid;
+            }
             root.Children.Add(titleBar);
 
             outerBorder.Child = root;
             if (Math.Abs(scale - 1.0) > 0.0005)
                 outerBorder.LayoutTransform = new ScaleTransform(scale, scale);
             win.Content = outerBorder;
-            return (win, root);
+            return (win, root, close);
         }
 
-        // Scale of the main window's chrome, clamped so a 380 DIP shell (and the 460 DIP wide
-        // three-button variant) still fits the owner's monitor. 1.0 when no main window is up.
-        private static double CurrentScale(Window? owner)
+        // Scale of the main window's chrome, clamped so a shell of the given design width (380 DIP, the
+        // 460 DIP wide three-button variant, or a wider Electronic Signature window) still fits the owner's monitor. 1.0 when no main window is up.
+        private static double CurrentScale(Window? owner, double widest = WidestShellWidth)
         {
             double scale = (owner as MainWindow ?? Application.Current?.MainWindow as MainWindow)?._appScale ?? 1.0;
             if (!double.IsFinite(scale) || scale <= 0) return 1.0;
             if (WorkAreaCap(owner) is { } cap)
-                scale = Math.Min(scale, cap.Width / WidestShellWidth);
+                scale = Math.Min(scale, cap.Width / widest);
             return Math.Max(0.5, scale);
         }
 
