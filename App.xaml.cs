@@ -1161,7 +1161,7 @@ namespace TDPdf
                 // renders it as the "Size" column. InstallDate is yyyyMMdd, which is the only
                 // format the Settings app parses.
                 key.SetValue("EstimatedSize",        (int)Math.Max(1, fi.Length / 1024), RegistryValueKind.DWord);
-                key.SetValue("InstallDate",          DateTime.Now.ToString("yyyyMMdd"));
+                key.SetValue("InstallDate",          DateTime.Now.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture));
                 key.SetValue("URLInfoAbout",         "https://github.com/doodlemania2/TDPdf");
                 key.SetValue("HelpLink",             "https://github.com/doodlemania2/TDPdf/issues");
             }

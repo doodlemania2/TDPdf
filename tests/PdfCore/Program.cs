@@ -194,6 +194,7 @@ Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);
 CanvasPixelsTests.Run(Check);
+DateCulture.Run(Check, tmp);
 SignatureScan.Run(Check);
 SignatureInspect.Run(Check, tmp);
 Duplicate.Run(Check, tmp);
