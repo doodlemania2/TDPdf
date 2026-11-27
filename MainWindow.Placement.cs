@@ -39,8 +39,8 @@ namespace TDPdf
                     var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
                     if (GetMonitorInfo(mon, ref info))
                     {
-                        RECT w = info.rcWork;
-                        areas.Add(new Box(w.left / sx, w.top / sx, (w.right - w.left) / sx, (w.bottom - w.top) / sx));
+                        var w = RectToDip(info.rcWork, sx, sx);
+                        areas.Add(new Box(w.X, w.Y, w.Width, w.Height));
                     }
                     return true;
                 }, IntPtr.Zero);

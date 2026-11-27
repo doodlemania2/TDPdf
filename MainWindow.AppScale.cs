@@ -60,9 +60,8 @@ namespace TDPdf
                 var info = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(MONITORINFO)) };
                 if (!GetMonitorInfo(mon, ref info)) return null;
                 var dpi = VisualTreeHelper.GetDpi(this);
-                var r = info.rcWork;
-                double w = (r.right - r.left) / dpi.DpiScaleX, h = (r.bottom - r.top) / dpi.DpiScaleY;
-                return w > 0 && h > 0 ? new Size(w, h) : null;
+                var area = RectToDip(info.rcWork, dpi.DpiScaleX, dpi.DpiScaleY);
+                return area.Width > 0 && area.Height > 0 ? new Size(area.Width, area.Height) : null;
             }
             catch { return null; }
         }

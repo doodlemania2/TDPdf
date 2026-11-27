@@ -1,4 +1,5 @@
 using PdfSharpCore.Pdf;
+using TDPdf.Diagnostics;
 
 namespace TDPdf.Services
 {
@@ -136,7 +137,7 @@ namespace TDPdf.Services
                     });
                 }
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"BuildNamedDestMap: {ex}"); }
+            catch (Exception ex) { FaultSink.Report("NamedDestinations.BuildNamedDestMap", ex); }
             return map;
         }
 
@@ -218,7 +219,7 @@ namespace TDPdf.Services
                         }
                     }
                 }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RewriteNamedDestLinks p{pi}: {ex}"); }
+                catch (Exception ex) { FaultSink.Report("NamedDestinations.RewriteLinks", ex); }
             }
         }
 

@@ -49,10 +49,6 @@ namespace TDPdf.Services
             };
         }
 
-        /// <summary>True when the result is the fit factor, so the caller may snap to the printable edge.</summary>
-        public static bool IsFitLimited(int mode, double fit, double actual)
-            => mode == ScaleFit || !(actual > 0) || (mode == ScaleShrink && fit <= actual);
-
         /// <summary>
         /// Whether a 1-up page is turned 90 degrees on the sheet: only for Fit to page, only when the page
         /// is not square, and only when the page and the sheet are oriented differently (a landscape page

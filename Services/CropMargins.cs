@@ -84,6 +84,6 @@ namespace TDPdf.Services
             return (a * k, b * k);
         }
 
-        private static int Normalize(int rotation) => ((rotation % 360) + 360) % 360;
+        private static int Normalize(int rotation) => Angles.Mod360(rotation);
     }
 }

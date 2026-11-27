@@ -380,7 +380,7 @@ namespace TDPdf.Services
                 // like any other; the protection travels on the result and is written back on save.
                 document = PdfReader.OpenAllowingUserPassword(path, password ?? string.Empty);
                 PdfProtection? protection = ReapplicableProtection(document);
-                var tempDec = Path.Combine(Path.GetTempPath(), $"tdpdf_dec_{Guid.NewGuid():N}.pdf");
+                var tempDec = TempFilePolicy.NewPath("dec");
                 document.Save(tempDec);
                 document.Close();
                 document = PdfReader.Open(tempDec, PdfDocumentOpenMode.Modify);
@@ -450,8 +450,7 @@ namespace TDPdf.Services
         private static PdfOpenResult? TryOpenViaPdfiumRepair(string path, bool ownerRestricted,
                                                              CancellationToken cancellationToken)
         {
-            string prefix = ownerRestricted ? "tdpdf_unlock_" : "tdpdf_repair_";
-            string repairedPath = Path.Combine(Path.GetTempPath(), $"{prefix}{Guid.NewGuid():N}.pdf");
+            string repairedPath = TempFilePolicy.NewPath(ownerRestricted ? "unlock" : "repair");
             PdfDocument? document = null;
             try
             {
@@ -502,7 +501,7 @@ namespace TDPdf.Services
                 const double dpi = 150.0;
                 double scale = dpi / 72.0;
 
-                tempPath = Path.Combine(Path.GetTempPath(), $"tdpdf_recover_{Guid.NewGuid():N}.pdf");
+                tempPath = TempFilePolicy.NewPath("recover");
 
                 using (var outDoc = new PdfDocument())
                 using (var docReader = DocLib.Instance.GetDocReader(path, new PageDimensions(scale)))

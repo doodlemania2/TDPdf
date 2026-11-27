@@ -288,7 +288,7 @@ namespace TDPdf
             var grid = new Grid { Width = w, Height = h, IsHitTestVisible = false, ClipToBounds = true };
             grid.Children.Add(new Rectangle
             {
-                Fill = new SolidColorBrush(Color.FromArgb(40, brush.Color.R, brush.Color.G, brush.Color.B)),
+                Fill = TDPdf.Services.ThemeBrushes.Wash(brush.Color, 40),
                 Stroke = brush,
                 StrokeThickness = 2,
                 StrokeDashArray = new DoubleCollection { 4, 3 },

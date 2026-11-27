@@ -39,6 +39,9 @@
          shared framework (net10.0-windows), which this plain net10.0 console does not reference.
          Nothing here ships, so it needs no THIRD-PARTY-NOTICES entry. -->
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+    <!-- ProtectedData is Windows-only at run time; the credential-store tests call only the paths
+         that return before DPAPI. It is here so the real file compiles. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
     <ProjectReference Include="..\..\third_party\PdfSharpCore\PdfSharpCore.csproj" />
     <!-- THE REAL SHIPPING FILE. Compiled in, not duplicated. -->
     <Compile Include="..\..\Services\PdfiumInterop.cs" />
@@ -65,12 +68,17 @@
     <Compile Include="..\..\Services\PageBlockMove.cs" />
     <Compile Include="..\..\Services\PageIndexRemap.cs" />
     <Compile Include="..\..\Services\CanvasPixels.cs" />
+    <Compile Include="..\..\Diagnostics\FaultSink.cs" />
     <Compile Include="..\..\Services\MarkArrange.cs" />
     <Compile Include="..\..\Services\ReleaseNotesMarkdown.cs" />
     <Compile Include="..\..\Services\WhatsNewPolicy.cs" />
     <Compile Include="..\..\Services\HighlightMultiply.cs" />
     <Compile Include="..\..\Services\LruCache.cs" />
     <Compile Include="..\..\Services\CropMargins.cs" />
+    <Compile Include="..\..\Services\Angles.cs" />
+    <Compile Include="..\..\Services\QuarterTurn.cs" />
+    <Compile Include="..\..\Services\CropDocument.cs" />
+    <Compile Include="..\..\Services\DocumensoCredentialStore.cs" />
     <Compile Include="..\..\Services\AnnotationFrame.cs" />
     <Compile Include="..\..\Services\PageRangeSpec.cs" />
     <Compile Include="..\..\Services\ShellVerbCommands.cs" />
@@ -102,6 +110,7 @@
     <Compile Include="..\..\Services\InkDot.cs" />
     <Compile Include="..\..\Services\FlattenResolution.cs" />
     <Compile Include="..\..\Services\OcrModelCatalog.cs" />
+    <Compile Include="..\..\Services\OcrModelDownloader.cs" />
     <!-- Electronic Signature: the WPF-free parts. The registry reads in DocumensoConfig are
          guarded by OperatingSystem.IsWindows(), and Settings.Default is shimmed in Shims.cs. -->
     <Compile Include="..\..\Services\DocumensoConfig.cs" />

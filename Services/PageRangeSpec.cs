@@ -28,12 +28,23 @@ namespace TDPdf.Services
         /// en dash. Fails with a message for the user when the text is empty, not a list of numbers
         /// and ranges, or names a page the document does not have.
         /// </summary>
-        public static bool TryParse(string? spec, int pageCount, out List<int> pages, out string error)
+        public static bool TryParse(string? spec, int pageCount, out List<int> pages, out string error) =>
+            Parse(spec, pageCount, cliWording: false, out pages, out error);
+
+        /// <summary>
+        /// The same strict parse for the command line, with the command line's wording ("Bad page
+        /// range", "Pages 9-12 out of range - the document has 8 pages") instead of the dialog's.
+        /// </summary>
+        public static bool TryParseForCli(string? spec, int pageCount, out List<int> pages, out string error) =>
+            Parse(spec, pageCount, cliWording: true, out pages, out error);
+
+        private static bool Parse(string? spec, int pageCount, bool cliWording, out List<int> pages, out string error)
         {
             pages = new List<int>();
             error = string.Empty;
-            if (pageCount < 1) { error = "The document has no pages."; return false; }
-            if (string.IsNullOrWhiteSpace(spec)) { error = "Type the pages, for example 1-3,7."; return false; }
+            string empty = cliWording ? "Empty page range" : "Type the pages, for example 1-3,7.";
+            if (pageCount < 1 && !cliWording) { error = "The document has no pages."; return false; }
+            if (string.IsNullOrWhiteSpace(spec)) { error = empty; return false; }
 
             var set = new SortedSet<int>();
             var items = spec.Replace('–', '-').Replace('—', '-')
@@ -44,27 +55,74 @@ namespace TDPdf.Services
                 int a, b;
                 if (dash < 0)
                 {
-                    if (!TryNumber(item, out a)) { error = $"\"{item}\" is not a page number."; return false; }
+                    if (!TryNumber(item, out a))
+                    { error = cliWording ? $"Bad page number: \"{item}\"" : $"\"{item}\" is not a page number."; return false; }
                     b = a;
                 }
                 else
                 {
                     if (!TryNumber(item[..dash], out a) || !TryNumber(item[(dash + 1)..], out b))
-                    { error = $"\"{item}\" is not a page range. Use a form like 3-5."; return false; }
+                    { error = cliWording ? $"Bad page range: \"{item}\"" : $"\"{item}\" is not a page range. Use a form like 3-5."; return false; }
                 }
                 if (a > b) (a, b) = (b, a);
                 if (a < 1 || b > pageCount)
                 {
-                    error = pageCount == 1
-                        ? $"Page {(a < 1 ? a : b)} is outside the document, which has 1 page."
-                        : $"Page {(a < 1 ? a : b)} is outside the document, which has {pageCount} pages.";
+                    error = cliWording
+                        ? $"Pages {item} out of range - the document has {pageCount} pages"
+                        : pageCount == 1
+                            ? $"Page {(a < 1 ? a : b)} is outside the document, which has 1 page."
+                            : $"Page {(a < 1 ? a : b)} is outside the document, which has {pageCount} pages.";
                     return false;
                 }
                 for (int p = a; p <= b; p++) set.Add(p - 1);
             }
-            if (set.Count == 0) { error = "Type the pages, for example 1-3,7."; return false; }
+            if (set.Count == 0) { error = empty; return false; }
             pages = [.. set];
             return true;
+        }
+
+        /// <summary>
+        /// The forgiving reading used by Print and Export Pages as Images, where the text drives a
+        /// live preview and must never throw an error mid-keystroke. Blank means every page; commas
+        /// separate items; an item that is not a number or a "from-to" pair is ignored; numbers
+        /// outside the document are clamped away. Returns sorted 0-based indices. A range that
+        /// matches no page returns an EMPTY list and the caller says so (the preview shows "No pages
+        /// selected", print is blocked): it is never widened back to every page, because a slipped
+        /// keystroke would then spool the whole document.
+        /// </summary>
+        public static List<int> ParseLenient(string? text, int count)
+        {
+            text = text?.Trim() ?? "";
+            if (text.Length == 0) return [.. Enumerable.Range(0, Math.Max(0, count))];
+
+            var set = new SortedSet<int>();
+            foreach (var raw in text.Split(','))
+            {
+                var part = raw.Trim();
+                if (part.Length == 0) continue;
+                if (part.Contains('-'))
+                {
+                    var seg = part.Split('-');
+                    if (seg.Length == 2 &&
+                        int.TryParse(seg[0].Trim(), out int a) &&
+                        int.TryParse(seg[1].Trim(), out int b))
+                    {
+                        if (a > b) (a, b) = (b, a);
+                        // Clamp the ends rather than testing each i inside the loop. With the test
+                        // inside, "1-2147483647" ran i++ past int.MaxValue, wrapped to int.MinValue,
+                        // and i <= b was true again, so the loop never ended. The Pages box drives
+                        // the preview live, so that froze the app on a keystroke.
+                        if (a < 1) a = 1;
+                        if (b > count) b = count;
+                        for (int i = a; i <= b; i++) set.Add(i - 1);
+                    }
+                }
+                else if (int.TryParse(part, out int v))
+                {
+                    if (v >= 1 && v <= count) set.Add(v - 1);
+                }
+            }
+            return [.. set];
         }
 
         private static bool TryNumber(string s, out int n) =>

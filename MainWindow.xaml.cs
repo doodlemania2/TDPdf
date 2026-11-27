@@ -1381,6 +1381,10 @@ namespace TDPdf
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int left, top, right, bottom; }
 
+        /// <summary>A monitor rectangle in device pixels as device-independent units, dividing by the given DPI scales.</summary>
+        private static Rect RectToDip(RECT r, double scaleX, double scaleY)
+            => new(r.left / scaleX, r.top / scaleY, (r.right - r.left) / scaleX, (r.bottom - r.top) / scaleY);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct MINMAXINFO
         {
@@ -1510,10 +1514,8 @@ namespace TDPdf
             IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             var info = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
             GetMonitorInfo(mon, ref info);
-            var r = info.rcMonitor;
             var dpi = VisualTreeHelper.GetDpi(this);
-            return new Rect(r.left / dpi.DpiScaleX, r.top / dpi.DpiScaleY,
-                            (r.right - r.left) / dpi.DpiScaleX, (r.bottom - r.top) / dpi.DpiScaleY);
+            return RectToDip(info.rcMonitor, dpi.DpiScaleX, dpi.DpiScaleY);
         }
 
         // All state belonging to one open PDF (one tab). The shared UI controls
@@ -2777,11 +2779,7 @@ namespace TDPdf
         /// at creation time like every other overlay brush, so a wash built after a theme switch uses the
         /// new theme's accent (a hardcoded dark-theme green is unreadable on the Light theme).
         /// </summary>
-        private SolidColorBrush AccentWash(byte alpha)
-        {
-            var c = BrushResource("AccentGreen").Color;
-            return new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
-        }
+        private SolidColorBrush AccentWash(byte alpha) => TDPdf.Services.ThemeBrushes.Wash(BrushResource("AccentGreen").Color, alpha);
 
         // ============================================================
         // Context menu
@@ -2925,7 +2923,7 @@ namespace TDPdf
                     RemapAnnotationSnapshots(_redoStack, idx, delta, dims.w, dims.h);
                 }
                 foreach (var idx in indices)
-                    doc.Pages[idx].Rotate = ((doc.Pages[idx].Rotate + delta) % 360 + 360) % 360;
+                    doc.Pages[idx].Rotate = TDPdf.Services.Angles.Mod360(doc.Pages[idx].Rotate + delta);
                 int restoreIdx = PageList.SelectedIndex;
                 SaveTempAndReload(keepAnnotations: true);
                 PageList.SelectedIndex = Math.Min(restoreIdx, PageList.Items.Count - 1);
@@ -3512,7 +3510,7 @@ namespace TDPdf
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Open link failed: {ex}");
+                FaultSink.Report("OpenLink", ex);
                 SetStatus("Could not open the link.");
             }
         }
@@ -4767,7 +4765,7 @@ namespace TDPdf
             {
                 Width = w,
                 Height = h,
-                Fill = new SolidColorBrush(Color.FromArgb(46, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Fill = TDPdf.Services.ThemeBrushes.Wash(danger.Color, 46),
                 Stroke = danger,
                 StrokeThickness = 2,
                 StrokeDashArray = new DoubleCollection { 4, 3 },
@@ -4994,7 +4992,7 @@ namespace TDPdf
                 Content = "Redact Permanently",
                 Style = btnStyle,
                 IsEnabled = marks > 0,
-                Background = new SolidColorBrush(Color.FromArgb(40, danger.Color.R, danger.Color.G, danger.Color.B)),
+                Background = TDPdf.Services.ThemeBrushes.Wash(danger.Color, 40),
                 Foreground = danger,
                 BorderBrush = danger,
                 ToolTip = "Delete the marked content from the file. This cannot be undone."
@@ -5118,8 +5116,8 @@ namespace TDPdf
 
             using var op = Telemetry.StartOperation("Redact");
             SetFileOperationBusy(true, "Redacting...");
-            string source = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_src_{Guid.NewGuid():N}.pdf");
-            string result = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_redact_out_{Guid.NewGuid():N}.pdf");
+            string source = NewTempPath("redact_src");
+            string result = NewTempPath("redact_out");
             try
             {
                 // Redact the CURRENT document, structural edits and all — not the file on disk,
@@ -5249,25 +5247,35 @@ namespace TDPdf
         {
             int selectedIdx = PageList.SelectedIndex;
 
-            string? supersededFile = _currentFile;
-            _doc?.Close();
-            _doc = PdfReader.Open(redactedPath, PdfDocumentOpenMode.Modify);
-            _currentFile = redactedPath;
+            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes;
+            // AdoptWorkingFile retires it.
+            AdoptWorkingFile(redactedPath, null, () =>
+            {
+                _annotations.Clear();
+                _redactionMarks.Clear();
+                ESignDropFieldsForLayoutChange(_ctx);
+                ClearMeasurement();
+                ClearFormState();
+                InvalidateRenderCache();
+                _contentEditor.ClearCache();
+                InvalidateTextRunCache();
+                ClearSelection();
+                _undoStack.Clear();
+                _redoStack.Clear();
+                HideRedactSettings();
+                MarkDirty();
 
-            _annotations.Clear();
-            _redactionMarks.Clear();
-            ESignDropFieldsForLayoutChange(_ctx);
-            ClearMeasurement();
-            ClearFormState();
-            InvalidateRenderCache();
-            _contentEditor.ClearCache();
-            InvalidateTextRunCache();
-            ClearSelection();
-            _undoStack.Clear();
-            _redoStack.Clear();
-            HideRedactSettings();
-            MarkDirty();
+                ReselectAfterAdopt(selectedIdx);
+            });
+        }
 
+        /// <summary>
+        /// Rebuilds the sidebar after a working copy was swapped in and puts the selection back on
+        /// the page that was selected (or the first page), re-running the continuous view when it is
+        /// the active mode.
+        /// </summary>
+        private void ReselectAfterAdopt(int selectedIdx)
+        {
             RefreshPageList(ThumbRefresh.Stale);
             if (selectedIdx >= 0 && selectedIdx < PageList.Items.Count)
                 PageList.SelectedIndex = selectedIdx;
@@ -5280,9 +5288,6 @@ namespace TDPdf
                 Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,
                     (Action)(() => SetupContinuousView(contIdx)));
             }
-
-            // The un-redacted working copy would otherwise sit in %TEMP% until the tab closes.
-            RetireWorkingCopy(supersededFile);
         }
 
         /// <summary>
@@ -7033,7 +7038,7 @@ namespace TDPdf
                 bmp.CacheOption = BitmapCacheOption.OnLoad;
                 bmp.EndInit();
                 bmp.Freeze();
-                int rotation = ((edit.Rotation % 360) + 360) % 360;
+                int rotation = TDPdf.Services.Angles.Mod360(edit.Rotation);
                 if (rotation == 0) return bmp;
                 var rotated = new TransformedBitmap(bmp, new RotateTransform(rotation));
                 rotated.Freeze();
@@ -7170,53 +7175,82 @@ namespace TDPdf
             }
             var tempPath = NewTempPath("temp");
             doc.Save(tempPath);
+            string unrepaired = tempPath;
             var reopened = OpenWorkingCopy(ref tempPath);
+            // PDFium repaired a copy that would not reopen: the file it was made from is no longer wanted.
+            if (!string.Equals(unrepaired, tempPath, StringComparison.OrdinalIgnoreCase)) RetireWorkingCopy(unrepaired);
 
             // The new document is open: from here on nothing can leave the tab without one.
-            string? supersededFile = _currentFile;
-            try { doc.Close(); } catch { /* the old instance is discarded either way */ }
-            _doc = reopened;
-            _currentFile = tempPath;
-
-            // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
-            // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
-            // cleared by default. Every caller that can keep them passes keepAnnotations: true
-            // having first made them valid for the new layout: rotation remaps its pages'
-            // annotations through the turn (RotatePages_Click); insert / delete / reorder /
-            // duplicate renumber them with their pages (ApplyPageIndexMap); merge and append-drop
-            // only add pages at the end, so nothing needs to move.
-            if (!keepAnnotations) _annotations.Clear();
-            // Unconditional, for the same reason the redaction marks below are: every caller has
-            // just changed page geometry or page numbering, so a surviving ruler would be two
-            // canvas points measured against a page that is no longer the page they were taken on.
-            ClearMeasurement();
-            // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
-            // a page index, and every caller here has just moved, deleted, reordered or resized
-            // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
-            // remaps its annotations through the turn and keeps them; there is no equivalent for a
-            // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
-            // user a re-drag.
-            if (PendingRedactionCount > 0)
+            AdoptWorkingFile(tempPath, reopened, () =>
             {
-                _redactionMarks.Clear();
-                HideRedactSettings();
-                // Held: every caller of this sets its own status line immediately afterwards
-                // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
-                // marks silently gone.
-                SetStatusHeld("Redaction marks were cleared because the page layout changed. Mark the areas again.", 4000);
+                // Edits that change page GEOMETRY (crop / transform) invalidate the overlay
+                // annotations, whose canvas coordinates are tied to the pre-edit frame, so they are
+                // cleared by default. Every caller that can keep them passes keepAnnotations: true
+                // having first made them valid for the new layout: rotation remaps its pages'
+                // annotations through the turn (RotatePages_Click); insert / delete / reorder /
+                // duplicate renumber them with their pages (ApplyPageIndexMap); merge and append-drop
+                // only add pages at the end, so nothing needs to move.
+                if (!keepAnnotations) _annotations.Clear();
+                // Unconditional, for the same reason the redaction marks below are: every caller has
+                // just changed page geometry or page numbering, so a surviving ruler would be two
+                // canvas points measured against a page that is no longer the page they were taken on.
+                ClearMeasurement();
+                // Redaction marks go unconditionally, keepAnnotations or not. A mark is a rectangle on
+                // a page index, and every caller here has just moved, deleted, reordered or resized
+                // pages — so a surviving mark would point at whatever now occupies that spot. Rotation
+                // remaps its annotations through the turn and keeps them; there is no equivalent for a
+                // mark, and quietly redacting the wrong area is not a risk worth carrying to save the
+                // user a re-drag.
+                if (PendingRedactionCount > 0)
+                {
+                    _redactionMarks.Clear();
+                    HideRedactSettings();
+                    // Held: every caller of this sets its own status line immediately afterwards
+                    // ("Cropped 1 page", "Deleted 2 pages"), and losing the notice would leave the
+                    // marks silently gone.
+                    SetStatusHeld("Redaction marks were cleared because the page layout changed. Mark the areas again.", 4000);
+                }
+                // Placed Electronic Signature fields are positions on pages for exactly the same reason.
+                ESignDropFieldsForLayoutChange(_ctx);
+                ClearFormState();
+                // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
+                // this tab's captured scroll offset now measures against a layout that no longer
+                // exists. Drop the resume point and let the next activation place the view the way it
+                // did before the feature, rather than restoring a number that means nothing.
+                _ctx.ViewCaptured = false;
+                ClearSelection();
+                MarkDirty();
+                ShowReloadedDocument(selectedIdx);
+            });
+        }
+
+        /// <summary>
+        /// The one way a tab swaps in a new working copy. Every path that replaces the file the
+        /// document is read from goes through here, so the superseded copy is always retired: before
+        /// this existed two of six call sites forgot, and a pre-edit copy holding text the edit had
+        /// replaced sat in %TEMP% until the tab closed.
+        /// </summary>
+        /// <param name="path">The file that becomes <c>_currentFile</c>.</param>
+        /// <param name="opened">The document already opened from <paramref name="path"/> (the caller
+        /// may have had to repair it); null opens it here in Modify mode. It is opened BEFORE the old
+        /// one is closed, so a failure to open leaves the tab holding its old, still-open document.</param>
+        /// <param name="afterSwap">Whatever the caller must do with the new document: clear
+        /// annotations, undo history or selection, refresh the page list. It runs after the swap and
+        /// before the old file is retired, so nothing it rebuilds still reads the file it deletes.</param>
+        private void AdoptWorkingFile(string path, PdfDocument? opened, Action? afterSwap = null)
+        {
+            var previous = _doc;
+            string? superseded = _currentFile;
+            _doc = opened ?? PdfReader.Open(path, PdfDocumentOpenMode.Modify);
+            _currentFile = path;
+            try { previous?.Close(); } catch { /* the old instance is discarded either way */ }
+            try { afterSwap?.Invoke(); }
+            finally
+            {
+                // RetireWorkingCopy skips the new current file, a page operation's held rollback
+                // point, and any file the tab does not own (the user's own is never deleted).
+                RetireWorkingCopy(superseded);
             }
-            // Placed Electronic Signature fields are positions on pages for exactly the same reason.
-            ESignDropFieldsForLayoutChange(_ctx);
-            ClearFormState();
-            // #399: rotate / delete / reorder / crop / transform all move the page geometry, so
-            // this tab's captured scroll offset now measures against a layout that no longer
-            // exists. Drop the resume point and let the next activation place the view the way it
-            // did before the feature, rather than restoring a number that means nothing.
-            _ctx.ViewCaptured = false;
-            ClearSelection();
-            MarkDirty();
-            ShowReloadedDocument(selectedIdx);
-            RetireWorkingCopy(supersededFile);
         }
 
         // Page operations hold their pre-edit working file as a rollback point until they finish;
@@ -7250,7 +7284,7 @@ namespace TDPdf
         /// PDFium, which rebuilds a valid xref and strips encryption while preserving the edit, and
         /// the open is retried; <paramref name="path"/> then names the repaired file.
         /// </summary>
-        private static PdfDocument OpenWorkingCopy(ref string path)
+        private PdfDocument OpenWorkingCopy(ref string path)
         {
             try
             {
@@ -7258,10 +7292,13 @@ namespace TDPdf
             }
             catch (Exception openEx) when (TDPdf.Services.PdfDocumentService.IsXRefException(openEx))
             {
-                var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                var fixedPath = NewTempPath("fixed");
                 if (!TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
+                {
+                    TDPdf.Services.TempFilePolicy.TryDelete(fixedPath);
+                    _ctx.TempFiles.Release(fixedPath);
                     throw; // PDFium also failed — re-throw the original reopen error
+                }
                 path = fixedPath;
                 return PdfReader.Open(path, PdfDocumentOpenMode.Modify);
             }

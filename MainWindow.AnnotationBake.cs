@@ -517,7 +517,7 @@ namespace TDPdf
 
                                     if (xImg is not null)
                                     {
-                                        int rotation = ((iea.Rotation % 360) + 360) % 360;
+                                        int rotation = TDPdf.Services.Angles.Mod360(iea.Rotation);
                                         if (rotation == 0)
                                         {
                                             gfx.DrawImage(xImg,

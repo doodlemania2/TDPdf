@@ -321,7 +321,27 @@ namespace TDPdf
             Topmost = false;
             Focus();
             if (!string.IsNullOrWhiteSpace(path) && System.IO.File.Exists(path))
-                _ = OpenRequestedPathAsync(path);
+                _ = OpenForwardedPathAsync(path);
+        }
+
+        /// <summary>
+        /// Opens a path another instance forwarded. The call is fire-and-forget, so a failure would
+        /// otherwise vanish with the discarded task and the user's double-click would do nothing
+        /// with no word why; it is caught, recorded and shown instead.
+        /// </summary>
+        private async Task OpenForwardedPathAsync(string path)
+        {
+            try
+            {
+                await OpenRequestedPathAsync(path);
+            }
+            catch (Exception ex)
+            {
+                Telemetry.TrackCrash(ex, "Open.Forwarded", recoverable: true);
+                TdpDialog.Show(this,
+                    $"TDPdf could not open \"{System.IO.Path.GetFileName(path)}\":\n{ex.Message}",
+                    "TDPdf", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         /// <summary>Replays whatever arrived during startup. A no-op in the normal case.</summary>

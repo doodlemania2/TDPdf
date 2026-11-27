@@ -21,17 +21,7 @@ namespace TDPdf.Services
     /// </remarks>
     internal static class DocumensoUi
     {
-        internal static SolidColorBrush Brush(string key)
-            => Application.Current?.TryFindResource(key) as SolidColorBrush ?? SystemBrush(key);
-
-        private static SolidColorBrush SystemBrush(string key) => key switch
-        {
-            "AccentGreen" or "AccentGreenDim" or "DangerRed" or "WarningOrange" => SystemColors.HighlightBrush,
-            "BgDark" or "BgPanel" => SystemColors.WindowBrush,
-            "BgHover" => SystemColors.ControlBrush,
-            "TextSecondary" or "TextMuted" => SystemColors.GrayTextBrush,
-            _ => SystemColors.WindowTextBrush,
-        };
+        internal static SolidColorBrush Brush(string key) => ThemeBrushes.Get(key);
 
         /// <summary>A style from the owner's resources (where MainWindow keeps them), else the app's.</summary>
         internal static Style? StyleFrom(Window? owner, string key)

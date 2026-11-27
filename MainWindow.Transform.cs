@@ -190,7 +190,7 @@ namespace TDPdf
                     double newHpt = composed.PixelHeight * sy;
 
                     // Build a one-page PDF holding the transformed image (the proven image-page pattern).
-                    string tmp = TempPdfPath("xfpage");
+                    string tmp = NewTempPath("xfpage");
                     using (var one = new PdfDocument())
                     {
                         var np = one.AddPage();
@@ -288,24 +288,29 @@ namespace TDPdf
             bool anything = _annotations.Values.Any(list => list.Count > 0) || HasPendingFormValues;
             if (!anything) return null;
 
-            var tempClean  = TempPdfPath("xfclean");
-            var tempBurned = TempPdfPath("xfburn");
+            var tempClean  = NewTempPath("xfclean");
+            var tempBurned = NewTempPath("xfburn");
             _doc.Save(tempClean);
             DrawAnnotationsOnDocument();
             _doc.Save(tempBurned);
-            _doc.Close();
+            string? unrepaired = null;
+            PdfDocument clean;
             try
             {
-                _doc = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
+                clean = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
             }
             catch (Exception xrefEx) when (PdfDocumentService.IsXRefException(xrefEx))
             {
-                var fixedPath = TempPdfPath("xffixed");
+                var fixedPath = NewTempPath("xffixed");
                 if (!PdfiumInterop.TryPdfiumRepair(tempClean, fixedPath)) throw;
+                unrepaired = tempClean;
                 tempClean = fixedPath;
-                _doc = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
+                clean = PdfReader.Open(tempClean, PdfDocumentOpenMode.Modify);
             }
-            _currentFile = tempClean;
+            // Swaps the burned-in document out for the clean copy and retires the file it was on.
+            AdoptWorkingFile(tempClean, clean);
+            // The copy PDFium had to repair is no longer wanted either; it used to be dropped on the floor.
+            RetireWorkingCopy(unrepaired);
             return tempBurned;
         }
 
@@ -498,8 +503,5 @@ namespace TDPdf
             enc.Save(ms);
             return ms.ToArray();
         }
-
-        private static string TempPdfPath(string tag) =>
-            Path.Combine(Path.GetTempPath(), $"tdpdf_{tag}_{Guid.NewGuid():N}.pdf");
     }
 }

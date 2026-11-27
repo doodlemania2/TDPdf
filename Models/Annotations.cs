@@ -266,7 +266,7 @@ namespace TDPdf
             var source = LineRects.Count > 0 ? LineRects : new List<Rect> { Bounds };
             foreach (var line in source)
             {
-                int rotation = ((Rotation % 360) + 360) % 360;
+                int rotation = TDPdf.Services.Angles.Mod360(Rotation);
                 bool vertical = rotation is 90 or 270;
                 double t = Math.Max(1.5, (vertical ? line.Width : line.Height) * 0.09);
                 switch (Style)

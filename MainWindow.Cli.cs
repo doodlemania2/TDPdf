@@ -195,41 +195,6 @@ namespace TDPdf
             return (positionals, options);
         }
 
-        /// <summary>
-        /// Parses a 1-based page range spec like "1-3,5,9-12" into sorted,
-        /// distinct 0-based indices. Returns null with a message in error when
-        /// the spec is malformed or out of range.
-        /// </summary>
-        private static List<int>? CliParsePageRange(string spec, int pageCount, out string error)
-        {
-            error = string.Empty;
-            var pages = new SortedSet<int>();
-            foreach (var rawPart in spec.Split(','))
-            {
-                var part = rawPart.Trim();
-                if (part.Length == 0) continue;
-                int a, b;
-                int dash = part.IndexOf('-');
-                if (dash > 0)
-                {
-                    if (!int.TryParse(part[..dash].Trim(), out a) ||
-                        !int.TryParse(part[(dash + 1)..].Trim(), out b))
-                    { error = $"Bad page range: \"{part}\""; return null; }
-                }
-                else
-                {
-                    if (!int.TryParse(part, out a)) { error = $"Bad page number: \"{part}\""; return null; }
-                    b = a;
-                }
-                if (a > b) (a, b) = (b, a);
-                if (a < 1 || b > pageCount)
-                { error = $"Pages {part} out of range - the document has {pageCount} pages"; return null; }
-                for (int p = a; p <= b; p++) pages.Add(p - 1);
-            }
-            if (pages.Count == 0) { error = "Empty page range"; return null; }
-            return [.. pages];
-        }
-
         // ============================================================
         // --merge <out.pdf> <in1> <in2> ...
         // ============================================================
@@ -296,8 +261,7 @@ namespace TDPdf
             if (!File.Exists(inPath)) { con.WriteLine($"Input not found: {inPath}"); return 2; }
 
             using var importDoc = PdfReader.Open(inPath, PdfDocumentOpenMode.Import);
-            var indices = CliParsePageRange(spec, importDoc.PageCount, out string err);
-            if (indices is null) { con.WriteLine(err); return 2; }
+            if (!PageRangeSpec.TryParseForCli(spec, importDoc.PageCount, out var indices, out string err)) { con.WriteLine(err); return 2; }
 
             using var newDoc = new PdfDocument();
             foreach (var idx in indices)
@@ -419,8 +383,9 @@ namespace TDPdf
             List<int>? selected = null;
             if (options.TryGetValue("--pages", out var rangeSpec))
             {
-                selected = CliParsePageRange(rangeSpec, PageImageExporter.GetPageCount(renderPath), out string err);
-                if (selected is null) { con.WriteLine(err); return 2; }
+                if (!PageRangeSpec.TryParseForCli(rangeSpec, PageImageExporter.GetPageCount(renderPath), out var parsedRange, out string err))
+                { con.WriteLine(err); return 2; }
+                selected = parsedRange;
             }
 
             string baseName = Path.GetFileNameWithoutExtension(inPath);
@@ -570,8 +535,8 @@ namespace TDPdf
                 int pageCount = dr.GetPageCount();
                 if (options.TryGetValue("--pages", out var rangeSpec))
                 {
-                    var parsed = CliParsePageRange(rangeSpec, pageCount, out string err);
-                    if (parsed is null) { con.WriteLine(err); return 2; }
+                    if (!PageRangeSpec.TryParseForCli(rangeSpec, pageCount, out var parsed, out string err))
+                    { con.WriteLine(err); return 2; }
                     selected = parsed;
                 }
                 else
@@ -696,21 +661,11 @@ namespace TDPdf
             {
                 Task.Run(async () =>
                 {
-                    using var http = MakeDownloadClient();
-                    using var resp = await http.GetAsync(url, System.Net.Http.HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-                    resp.EnsureSuccessStatusCode();
-                    var part = dest + ".part";
-                    using (var s = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
-                    using (var f = File.Create(part))
-                        await s.CopyToAsync(f).ConfigureAwait(false);
-                    if (!OcrModelCatalog.Verify(part, lang, hq))
-                    {
-                        try { File.Delete(part); } catch { /* best-effort */ }
-                        throw new InvalidDataException("the download failed its SHA-256 integrity check and was discarded");
-                    }
-                    if (File.Exists(dest)) File.Delete(dest);
-                    File.Move(part, dest);
+                    using var http = OcrModelDownloader.CreateClient();
+                    await OcrModelDownloader.DownloadAsync(http, lang, hq, dest, null, CancellationToken.None).ConfigureAwait(false);
                 }).GetAwaiter().GetResult();
+                // The GUI records a high-quality arrival so toggling the setting later does not fetch it again.
+                MarkLanguageHq(lang, hq);
                 return true;
             }
             catch (Exception ex)
@@ -780,7 +735,7 @@ namespace TDPdf
 
         private static string CliTempFile(string tag)
         {
-            string p = Path.Combine(Path.GetTempPath(), $"tdpdf_{tag}_{Guid.NewGuid():N}.pdf");
+            string p = TempFilePolicy.NewPath(tag);
             _cliTemps.Add(p);
             return p;
         }

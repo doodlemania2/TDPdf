@@ -259,12 +259,7 @@ namespace TDPdf.Services
         /// <summary>A theme brush (re-resolved each time a ghost is built, so it follows the active theme)
         /// at the given alpha; the literal fallback is only for a theme dictionary that failed to load.</summary>
         private static SolidColorBrush ThemedBrush(string key, Color fallback, byte alpha)
-        {
-            var c = (Application.Current?.TryFindResource(key) as SolidColorBrush)?.Color ?? fallback;
-            var brush = new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
-            brush.Freeze();
-            return brush;
-        }
+            => ThemeBrushes.Wash(ThemeBrushes.Get(key, fallback).Color, alpha, freeze: true);
 
         private void MakeClickThrough()
         {

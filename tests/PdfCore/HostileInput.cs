@@ -57,8 +57,8 @@ internal static class HostileInput
             const int depth = 3000;
             for (int i = 0; i < depth; i++) objs.Add($"<< /Type /Pages /Kids [{i + 3} 0 R] /Count 1 >>");
             objs.Add("<< /Type /Page /MediaBox [0 0 200 300] >>");
-            try { using var d = Open(Build(objs.ToArray())); Check("page tree: a 3000-deep chain does not overflow the stack", d.PageCount >= 0, $"pages={d.PageCount}"); }
-            catch (Exception ex) { Check("page tree: a 3000-deep chain does not overflow the stack", true, "refused: " + ex.GetType().Name); }
+            try { using var d = Open(Build(objs.ToArray())); Check("page tree: a 3000-deep chain is opened or refused, never a crash (liveness check: reaching this line is the result)", d.PageCount >= 0, $"pages={d.PageCount}"); }
+            catch (Exception ex) { Check("page tree: a 3000-deep chain is opened or refused, never a crash (liveness check: reaching this line is the result)", true, "refused: " + ex.GetType().Name); }
         }
 
         // Outlines: /Next cycle, /First pointing at itself, /First pointing at the root.
@@ -196,7 +196,7 @@ internal static class HostileInput
                 cur.Elements["/Kids"] = k; cur = next;
             }
             PdfNamedDestinations.WalkNameTree(deepRoot, (_, _) => false);
-            Check("named dest: a 5000-deep name tree walk terminates", true);
+            Check("named dest: a 5000-deep name tree walk finishes, no hang or stack overflow (liveness check: reaching this line is the result)", true);
 
             // Link rewrite after a merge still works.
             var link = new PdfDictionary(doc); doc.Internals.AddObject(link);

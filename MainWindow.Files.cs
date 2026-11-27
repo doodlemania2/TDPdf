@@ -960,9 +960,8 @@ namespace TDPdf
                 var newDoc = new PdfDocument();
                 newDoc.AddPage(); // one blank A4 page
 
-                tempPath = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(),
-                    $"tdpdf_new_{Guid.NewGuid():N}.pdf");
+                // Untracked here: the new tab owns it (see the TempFiles.Track on tab creation).
+                tempPath = TDPdf.Services.TempFilePolicy.NewPath("new");
                 newDoc.Save(tempPath);
                 newDoc.Close();
 
@@ -1246,17 +1245,15 @@ namespace TDPdf
 
         private (double WidthPt, double HeightPt)? ShowInsertPageDialog(double currentWPt, double currentHPt)
         {
-            // (Display name, width pt, height pt). Sizes are in PostScript points (72/in).
-            var sizes = new (string Name, double W, double H)[]
+            // (Display name, width pt, height pt). Sizes are in PostScript points (72/in). The presets
+            // are the standard sizes PaperSizeNames recognises, so the list and the page-size names the
+            // rest of the app shows can never drift apart.
+            var sizes = new List<(string Name, double W, double H)>
             {
                 ($"Same as current page ({currentWPt:0}×{currentHPt:0} pt)", currentWPt, currentHPt),
-                ("Letter (8.5 × 11 in)",   612, 792),
-                ("Legal (8.5 × 14 in)",    612, 1008),
-                ("Tabloid (11 × 17 in)",   792, 1224),
-                ("A3 (297 × 420 mm)",      842, 1191),
-                ("A4 (210 × 297 mm)",      595, 842),
-                ("A5 (148 × 210 mm)",      420, 595)
             };
+            foreach (var (name, shortPt, longPt) in TDPdf.Services.PaperSizeNames.Table)
+                sizes.Add((TDPdf.Services.PaperSizeNames.Label(name, shortPt, longPt), shortPt, longPt));
 
             var bgDark   = (SolidColorBrush)FindResource("BgDark");
             var bgPanel  = (SolidColorBrush)FindResource("BgPanel");
@@ -1298,7 +1295,7 @@ namespace TDPdf
             foreach (var s in sizes) sizeBox.Items.Add(s.Name);
             // "Custom…" sits one past the end of the presets, so its combo index IS sizes.Length —
             // every custom-only branch below tests that rather than a magic number.
-            int customIndex = sizes.Length;
+            int customIndex = sizes.Count;
             sizeBox.Items.Add("Custom…");
             sizeBox.SelectedIndex = 0;
             root.Children.Add(sizeBox);
@@ -2445,8 +2442,7 @@ namespace TDPdf
             if (_doc is null || string.IsNullOrEmpty(current)) return false;
             try
             {
-                var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                var fixedPath = NewTempPath("fixed");
                 bool ok = await System.Threading.Tasks.Task.Run(
                     () => TDPdf.Services.PdfiumInterop.TryPdfiumRepair(current!, fixedPath));
                 if (!ok) return false;
@@ -2592,8 +2588,7 @@ namespace TDPdf
                 }
                 catch
                 {
-                    var fixedPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                        $"tdpdf_fixed_{Guid.NewGuid():N}.pdf");
+                    var fixedPath = NewTempPath("fixed");
                     try
                     {
                         if (TDPdf.Services.PdfiumInterop.TryPdfiumRepair(path, fixedPath))
@@ -2614,9 +2609,8 @@ namespace TDPdf
                 return;
             }
 
-            _doc = reopened;
-            _currentFile = reopenedPath;
-            previous?.Close();
+            // Retires the pre-print working copy too, which used to stay in %TEMP% until the tab closed.
+            AdoptWorkingFile(reopenedPath, reopened);
         }
 
         // ============================================================
@@ -2899,7 +2893,7 @@ namespace TDPdf
             }
 
             if (outPdf.PageCount == 0) return null;
-            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_combined_{Guid.NewGuid():N}.pdf");
+            string outPath = TDPdf.Services.TempFilePolicy.NewPath("combined");
             outPdf.Save(outPath);
             return outPath;
         }
@@ -2911,7 +2905,7 @@ namespace TDPdf
             using var pdf = new PdfDocument();
             foreach (var path in imagePaths) AddImagePagesFromFile(pdf, path);
             if (pdf.PageCount == 0) throw new InvalidOperationException("No images could be read.");
-            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tdpdf_imported_{Guid.NewGuid():N}.pdf");
+            string outPath = TDPdf.Services.TempFilePolicy.NewPath("imported");
             pdf.Save(outPath);
             return outPath;
         }
