@@ -505,6 +505,7 @@ namespace TDPdf
         {
             ApplyInitialWindowChromeSettings();
             InitializeComponent();
+            ApplyStartupPlacement();
             _tabs.Add(_ctx);
             // Always on, regardless of the SingleInstanceTabs setting: that one only governs
             // whether a second LAUNCH folds into this window, but once two windows exist (via a
@@ -908,7 +909,7 @@ namespace TDPdf
         // 1.8.92 (WorkAreaFit); best-effort, a window size is never worth failing startup over.
         private void FitToStartupMonitor()
         {
-            if (WindowState != WindowState.Normal) return;
+            if (WindowState != WindowState.Normal || _placementApplied) return;
             try
             {
                 double sx = _currentDpiScale > 0 ? _currentDpiScale : 1.0;
@@ -2112,6 +2113,7 @@ namespace TDPdf
             // Closing is now committed (any dirty prompt was accepted). Decide whether to remember the
             // open documents for next launch, then persist or clear the saved session accordingly.
             HandleSessionOnClose();
+            SaveWindowPlacement();
             ThemeManager.ThemeChanged -= ThemeManager_ThemeChanged;
             _hwndSource?.RemoveHook(WndProc);
             _windowTransferServer?.Dispose();
