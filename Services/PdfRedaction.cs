@@ -227,7 +227,7 @@ namespace TDPdf.Services
                     return result;
                 }
 
-                var residual = FindResidue(verifyPath, request.RectsByPage, removedTerms);
+                var residual = FindResidue(verifyPath, request.RectsByPage, removedTerms, request.ScrubMetadata);
                 if (residual.Count > 0)
                 {
                     result.Error =

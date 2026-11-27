@@ -215,6 +215,7 @@ RegionCopy.Run(Check, tmp);
 RedactVerify.Run(Check, tmp);
 RedactAnnotations.Run(Check, tmp);
 RedactResidue.Run(Check, tmp);
+RedactCopies.Run(Check, tmp);
 PrintFlags.Run(Check, tmp);
 PrintDuplex.Run(Check);
 PrintPlan.Run(Check);
