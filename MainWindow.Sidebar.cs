@@ -548,12 +548,12 @@ namespace TDPdf
             {
                 if (System.IO.File.Exists(path))
                 {
-                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(TDPdf.Services.SystemTool.WindowsPath("explorer.exe"), $"/select,\"{path}\"") { UseShellExecute = true });
                     return;
                 }
                 string? folder = System.IO.Path.GetDirectoryName(path);
                 if (System.IO.Directory.Exists(folder))
-                    Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(TDPdf.Services.SystemTool.WindowsPath("explorer.exe"), $"\"{folder}\"") { UseShellExecute = true });
                 else
                     SetStatus("That folder is no longer available");
             }

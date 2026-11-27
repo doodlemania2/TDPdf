@@ -1558,7 +1558,7 @@ namespace TDPdf
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
 
-            var psi = new ProcessStartInfo("cmd.exe", UninstallPolicy.DeferredDeleteArguments(batName))
+            var psi = new ProcessStartInfo(TDPdf.Services.SystemTool.Path("cmd.exe"), UninstallPolicy.DeferredDeleteArguments(batName))
             {
                 WorkingDirectory = tempDir,
                 UseShellExecute  = false,   // required to pass the environment variable
