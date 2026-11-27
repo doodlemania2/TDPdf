@@ -2261,6 +2261,23 @@ namespace TDPdf
             if (!ConfirmSaveWithPendingRedactions()) return;
             if (!ConfirmSaveOverDigitalSignature()) return;
             CommitActiveTextBox();
+            // #234: resolution first. Cancelling here ends the command before any file is touched.
+            var optionSizes = GetPageSizes(_doc);
+            double autoFirst = 150, autoLargest = 150;
+            if (optionSizes.Count > 0)
+            {
+                var asTuples = optionSizes.Select(p => (p.WidthPoint, p.HeightPoint)).ToList();
+                int largestIdx = Math.Max(0, FlattenResolution.LargestPage(asTuples));
+                string readPath = _currentFile;
+                try
+                {
+                    var auto = await Task.Run(() => FlattenResolution.ReadPageDpis(readPath, asTuples, 0, new HashSet<int> { 0, largestIdx }));
+                    autoFirst = auto[0]; autoLargest = auto[largestIdx];
+                }
+                catch { /* the readout falls back to the 150 default */ }
+            }
+            if (_doc is null || _currentFile is null) return;   // closed while the readout was computed
+            if (ShowFlattenOptionsDialog(optionSizes, autoFirst, autoLargest) is not { } flattenChoice) return;
             var dlg = new SaveFileDialog { Filter = "PDF files|*.pdf", Title = "Save Flattened PDF" };
             if (!ShowPdfSaveDialog(dlg)) return;
             using var op = Telemetry.StartOperation("SaveFlattened");
@@ -2317,7 +2334,7 @@ namespace TDPdf
                     }
 
                     await _pdfDocumentService.SaveFlattenedAsync(sourcePath, targetFile, pageSizes, ct,
-                        (page, total) => SetWorkerStatus($"Flattening page {page} of {total}...  (Esc to cancel)"));
+                        (page, total) => SetWorkerStatus($"Flattening page {page} of {total}...  (Esc to cancel)"), flattenChoice);
                 }
                 finally
                 {

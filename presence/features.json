@@ -106,6 +106,15 @@
       "sources": ["MainWindow.Forms.cs", "Services/PdfFormText.cs", "Services/FormFieldSiblings.cs", "Services/PdfFieldChrome.cs", "Services/PdfFormMerge.cs"]
     },
     {
+      "id": "import-form-data",
+      "name": "Import form data",
+      "status": "ready",
+      "summary": "Fill a form from an FDF or XFDF file. Fields are matched by name, the whole import is one undo step, and any names the form does not have are listed.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Forms.cs", "Services/FormDataParsers.cs", "Services/FormImport.cs"]
+    },
+    {
       "id": "form-building",
       "name": "Create forms",
       "status": "ready",
@@ -240,6 +249,15 @@
       , "Services/PrintRaster.cs", "Services/ShellVerbCommands.cs"]
     },
     {
+      "id": "flatten-options",
+      "name": "Choose the Save Flattened resolution",
+      "status": "ready",
+      "summary": "Pick Automatic or 72, 150, 200 or 300 dpi before saving a flattened copy, and see the pixel size each choice gives for the first and the largest page.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.FlattenOptions.cs", "Services/FlattenResolution.cs"]
+    },
+    {
       "id": "locked-pdfs",
       "name": "Locked and damaged files",
       "status": "ready",
@@ -283,6 +301,15 @@
       "audiences": ["user"],
       "screens": ["export-tables"],
       "sources": ["Services/TableExtractor.cs"]
+    },
+    {
+      "id": "attachments",
+      "name": "Save attached files",
+      "status": "ready",
+      "summary": "See the files attached to a PDF with their size, date and description, and save one or all of them. Names are made safe, programs and scripts are flagged before saving, and nothing is ever opened for you.",
+      "audiences": ["user"],
+      "screens": [],
+      "sources": ["MainWindow.Attachments.cs", "Services/AttachmentNames.cs", "Services/PdfAttachments.cs"]
     },
     {
       "id": "themes",

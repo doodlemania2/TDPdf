@@ -382,6 +382,16 @@ namespace TDPdf.Properties
             set => this[nameof(AppScale)] = value;
         }
 
+        // Save Flattened resolution (#234): 0 = Automatic (each page's own choice), otherwise
+        // one of FlattenResolution.FixedChoices. Anything else reads back as Automatic.
+        [UserScopedSetting]
+        [DefaultSettingValue("0")]
+        public double FlattenDpi
+        {
+            get => (double)this[nameof(FlattenDpi)];
+            set => this[nameof(FlattenDpi)] = value;
+        }
+
         // Units for the footer's page-size readout (upstream v1.8.5). One of the
         // MainWindow.PageSizeUnit enum names: "Pixels" (default), "Inches", "Millimetres",
         // "Points". App-wide like the other view preferences — the unit someone reads paper in

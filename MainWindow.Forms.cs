@@ -1432,5 +1432,86 @@ namespace TDPdf
             }
             return false;
         }
+
+        // ============================================================
+        // Import form data from FDF / XFDF        (#225)
+        // ============================================================
+        //
+        // Tools ▸ Import Form Data… reads an FDF or XFDF file (FormDataParsers), finds the form's
+        // fields by fully qualified name over every page's widgets (FormImport.BuildTargets, so a
+        // damaged /AcroForm /Fields list does not matter) and sets the values as PENDING form values,
+        // exactly as if they had been typed: the save path writes them and builds the appearances.
+        // The whole import is one undo step (PushDocUndo) and marks the document changed. Names in
+        // the file that the form lacks are reported, never guessed at.
+
+        private void ImportFormData_Click(object sender, RoutedEventArgs e)
+        {
+            if (_doc is null || _currentFile is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
+            CommitActiveTextBox();
+
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Form data (*.fdf;*.xfdf)|*.fdf;*.xfdf|All files|*.*",
+                Title = "Import Form Data",
+            };
+            if (dlg.ShowDialog(this) != true) return;
+
+            IReadOnlyList<ImportedField> imported;
+            try
+            {
+                var info = new System.IO.FileInfo(dlg.FileName);
+                if (info.Length > FormDataParsers.MaxBytes) throw new System.IO.InvalidDataException("The file is too large to be form data.");
+                imported = FormDataParsers.Parse(System.IO.File.ReadAllBytes(dlg.FileName));
+            }
+            catch (Exception ex) when (ex is System.IO.InvalidDataException or System.IO.IOException or UnauthorizedAccessException)
+            {
+                TdpDialog.Show(this, $"The form data could not be read:\n{ex.Message}", "Import Form Data", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var targets = FormImport.BuildTargets(_doc);
+            if (targets.Count == 0)
+            {
+                TdpDialog.Show(this, "This PDF has no form fields to fill in.", "Import Form Data");
+                return;
+            }
+            var plan = FormImport.Plan(imported, targets);
+
+            if (plan.Assignments.Count > 0)
+            {
+                PushDocUndo();   // one Ctrl+Z puts every imported value back (pending values are written into the snapshot first)
+                foreach (var a in plan.Assignments)
+                {
+                    switch (a.Target.Kind)
+                    {
+                        case FormTargetKind.Text:
+                        case FormTargetKind.Choice: _formTextValues[a.Target.Key] = a.Value; break;
+                        case FormTargetKind.CheckBox: _formCheckValues[a.Target.Key] = a.Value; break;
+                        case FormTargetKind.Radio:
+                            if (a.Target.RadioName.Length > 0) _formRadioValues[a.Target.RadioName] = a.Value;
+                            break;
+                    }
+                }
+                MarkDirty();
+                foreach (int page in _renderDims.Keys.ToList())
+                {
+                    try { RestoreFormOverlays(page); } catch (Exception ex) { FaultSink.Report("Forms.ImportRefresh", ex); }
+                }
+            }
+
+            int filled = plan.Assignments.Count;
+            SetStatus($"Imported {filled} form value{(filled == 1 ? "" : "s")}" + (plan.Unmatched.Count > 0 ? $"; {plan.Unmatched.Count} not in this form" : ""));
+
+            var report = new System.Text.StringBuilder();
+            report.Append(filled == 0 ? "No form values were imported." : $"{filled} form field{(filled == 1 ? "" : "s")} filled in.");
+            static string List(IReadOnlyList<string> items) =>
+                string.Join("\n", items.Take(8).Select(n => "  " + n)) + (items.Count > 8 ? $"\n  ...and {items.Count - 8} more" : "");
+            if (plan.Unmatched.Count > 0)
+                report.Append($"\n\nNot found in this form ({plan.Unmatched.Count}):\n").Append(List(plan.Unmatched));
+            if (plan.Skipped.Count > 0)
+                report.Append($"\n\nLeft as they were ({plan.Skipped.Count}):\n").Append(List(plan.Skipped));
+            TdpDialog.Show(this, report.ToString(), "Import Form Data", MessageBoxButton.OK,
+                plan.Unmatched.Count + plan.Skipped.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        }
     }
 }
