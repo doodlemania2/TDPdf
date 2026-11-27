@@ -70,7 +70,10 @@ public static class W {
   }
 }
 "@
-Add-Type -ReferencedAssemblies System.Drawing @"
+# PowerShell 7 forwards System.Drawing to System.Drawing.Common / .Primitives, so reference the
+# assemblies that actually hold Bitmap and Rectangle.
+$drawingRefs = @([System.Drawing.Bitmap].Assembly.Location, [System.Drawing.Rectangle].Assembly.Location) | Select-Object -Unique
+Add-Type -ReferencedAssemblies $drawingRefs @"
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
