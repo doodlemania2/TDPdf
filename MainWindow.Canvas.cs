@@ -22,6 +22,7 @@ namespace TDPdf
             // Middle-mouse: modal pan in any tool. Start panning and swallow the event so
             // other handlers (Canvas_MouseLeftButtonDown, AnnotationCanvas children) don't run.
             if (_doc is null) return;
+            if (e.ChangedButton == MouseButton.Right) { SelectMarkForContextMenu(e); return; }
             if (e.ChangedButton != MouseButton.Middle) return;
             if (IsPointerOperationActive) return;
 
@@ -246,6 +247,18 @@ namespace TDPdf
                         // capture both force the classic marquee.
                         bool marqueeForced = _ocrRegionMode
                             || (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+                        bool addToSelection = (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) != 0;
+
+                        // Shift+click / Ctrl+click on a mark adds it to the selection or takes it out
+                        // (#228). Decided before the text-selection check so a modified click on a
+                        // highlight that covers text still toggles the highlight.
+                        if (underPress is not null && addToSelection && !_ocrRegionMode)
+                        {
+                            ToggleMarkSelection(underPress);
+                            e.Handled = true;
+                            break;
+                        }
+
                         bool textMayWin = underPress is null or HighlightAnnotation;
                         if (!marqueeForced && textMayWin && TryBeginTextSelection(pageIdx, pos))
                         {
@@ -256,6 +269,30 @@ namespace TDPdf
                             _annotationCanvas.CaptureMouse();
                             e.Handled = true;
                             break;
+                        }
+
+                        // A press on a mark that is already part of a multi-selection drags the whole
+                        // selection as one undo step.
+                        if (underPress is not null && IsMultiSelection && _markSelection.Contains(underPress))
+                        {
+                            BeginMultiMove(pos, underPress);
+                            e.Handled = true;
+                            break;
+                        }
+
+                        // Any member of a group picks up the whole group, and drags it.
+                        if (underPress?.GroupId is not null)
+                        {
+                            var members = ExpandToGroups(pageIdx, new[] { underPress });
+                            if (members.Count > 1)
+                            {
+                                ClearSelection();
+                                RenderAllAnnotations(pageIdx);
+                                SelectMarks(members);
+                                BeginMultiMove(pos, underPress);
+                                e.Handled = true;
+                                break;
+                            }
                         }
 
                         if (underPress is PlacedAnnotation placed)
@@ -281,6 +318,10 @@ namespace TDPdf
                         }
                         else
                         {
+                            // Shift / Ctrl keep the current selection under the box: what the box
+                            // touches is added to it on release (see the marquee release below).
+                            _marqueeBase = addToSelection && !_ocrRegionMode
+                                ? new List<PageAnnotation>(_markSelection) : null;
                             ClearSelection();
                             ClearTextSelection();
                             _isSelecting = true;
@@ -971,6 +1012,16 @@ namespace TDPdf
                 return;
             }
 
+            // Several marks dragged together
+            if (_isMovingMulti)
+            {
+                // Capture can be lost without a MouseUp ever arriving: settle the drag instead of
+                // letting the marks keep following a button that is not held.
+                if (e.LeftButton != MouseButtonState.Pressed) FinishMultiMove();
+                else MultiMoveTo(pos);
+                return;
+            }
+
             // Generic annotation move
             if (_isMovingAnnot && _movingAnnot is not null && _moveOriginalGeom is not null)
             {
@@ -1174,6 +1225,14 @@ namespace TDPdf
 
             int pageIdx = PageList.SelectedIndex;
 
+            // Finish dragging several marks together
+            if (_isMovingMulti)
+            {
+                FinishMultiMove();
+                e.Handled = true;
+                return;
+            }
+
             // Finish generic annotation move
             if (_isMovingAnnot)
             {
@@ -1279,17 +1338,29 @@ namespace TDPdf
                 bool ocrRegion = _ocrRegionMode;
                 _ocrRegionMode = false;
 
+                var marqueeBase = _marqueeBase;
+                _marqueeBase = null;
+
                 if (dragW < 5 && dragH < 5)
                 {
                     // Tiny drag = single click -> try annotation selection
                     ClearTextSelection();
-                    if (pageIdx >= 0 && _annotations.ContainsKey(pageIdx))
+                    if (marqueeBase is { Count: > 0 })
+                    {
+                        // A Shift/Ctrl click on empty page changes nothing: put the selection back.
+                        RenderAllAnnotations(marqueeBase[0].PageIndex);
+                        SelectMarks(marqueeBase);
+                    }
+                    else if (pageIdx >= 0 && _annotations.ContainsKey(pageIdx))
                     {
                         for (int i = _annotations[pageIdx].Count - 1; i >= 0; i--)
                         {
                             if (HitTestAnnotation(_annotations[pageIdx][i], _selectStart, out Rect bounds))
                             {
-                                SelectAnnotation(_annotations[pageIdx][i], bounds);
+                                if (_annotations[pageIdx][i].GroupId is not null)
+                                    SelectMarks(ExpandToGroups(pageIdx, new[] { _annotations[pageIdx][i] }));
+                                else
+                                    SelectAnnotation(_annotations[pageIdx][i], bounds);
                                 break;
                             }
                         }
@@ -1302,7 +1373,16 @@ namespace TDPdf
                         Math.Min(pos.X, _selectStart.X), Math.Min(pos.Y, _selectStart.Y),
                         dragW, dragH);
                     if (ocrRegion) ObserveOcr(OcrRegion(pageIdx, selectBounds));
-                    else ExtractTextFromRegion(pageIdx, selectBounds);
+                    else if (TrySelectMarksInBox(pageIdx, selectBounds, marqueeBase)) { }
+                    else
+                    {
+                        if (marqueeBase is { Count: > 0 })
+                        {
+                            RenderAllAnnotations(marqueeBase[0].PageIndex);
+                            SelectMarks(marqueeBase);
+                        }
+                        ExtractTextFromRegion(pageIdx, selectBounds);
+                    }
                 }
                 return;
             }

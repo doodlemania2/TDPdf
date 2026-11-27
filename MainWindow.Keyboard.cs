@@ -248,7 +248,31 @@ namespace TDPdf
             }
             else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
             {
-                CopySelectedText();
+                CopyMarksOrText();
+                e.Handled = true;
+            }
+            // Ctrl+G groups the selected marks, Ctrl+Shift+G ungroups them. Bare G is the Signature
+            // tool; the modified pair was free.
+            else if (e.Key == Key.G && _doc is not null && !IsTypingTarget()
+                     && (Keyboard.Modifiers == ModifierKeys.Control
+                         || Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)))
+            {
+                if (Keyboard.Modifiers == ModifierKeys.Control) GroupSelected();
+                else UngroupSelected();
+                e.Handled = true;
+            }
+            // Ctrl+X / Ctrl+V act on marks only when the caret is not in a text surface (the find
+            // bar, a form field, the page-jump box), where they stay ordinary cut and paste.
+            else if (e.Key == Key.X && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null
+                     && !IsTypingTarget() && HasMarkSelection)
+            {
+                CutMarks();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control && _doc is not null
+                     && !IsTypingTarget())
+            {
+                PasteFromClipboard();
                 e.Handled = true;
             }
             else if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
@@ -264,6 +288,15 @@ namespace TDPdf
             else if (e.Key == Key.Escape && ShortcutOverlay.Visibility == Visibility.Visible)
             {
                 ShortcutOverlay.Visibility = Visibility.Collapsed;
+                e.Handled = true;
+            }
+            // Esc first lets go of a mark selection (one mark or many), before anything steps down.
+            else if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None && HasMarkSelection)
+            {
+                int selPage = _markSelection[0].PageIndex;
+                ClearSelection();
+                RenderAllAnnotations(selPage);
+                SetStatus("Selection cleared");
                 e.Handled = true;
             }
             // Esc steps DOWN rather than straight out (upstream v1.6.6, adapted): the in-progress
@@ -295,9 +328,22 @@ namespace TDPdf
             {
                 e.Handled = true;
             }
-            else if (e.Key == Key.Delete && _selectedAnnotation is not null)
+            else if (e.Key == Key.Delete && HasMarkSelection)
             {
                 DeleteSelected();
+                e.Handled = true;
+            }
+            // Arrow keys nudge the selected marks (1 canvas px, 10 with Shift). They only page the
+            // document while no mark is selected, so Esc (which deselects) hands them back.
+            else if (HasMarkSelection && _doc is not null && _currentTool == EditTool.Select
+                     && Keyboard.FocusedElement is not (ComboBox or ComboBoxItem or Slider or System.Windows.Controls.Primitives.TextBoxBase)
+                     && (Keyboard.Modifiers == ModifierKeys.None || Keyboard.Modifiers == ModifierKeys.Shift)
+                     && (e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Up || e.Key == Key.Down))
+            {
+                double step = Keyboard.Modifiers == ModifierKeys.Shift ? 10 : 1;
+                NudgeSelection(
+                    e.Key == Key.Left ? -step : e.Key == Key.Right ? step : 0,
+                    e.Key == Key.Up ? -step : e.Key == Key.Down ? step : 0);
                 e.Handled = true;
             }
             // Home / End jump to the first / last page (the Acrobat / Sumatra convention). Recorded on

@@ -1260,6 +1260,8 @@ namespace TDPdf
                     // A re-edited box keeps its turn: the editor shows it upright at the same place,
                     // and committing puts it back turned.
                     Rotation = ctx?.Existing?.Rotation ?? 0,
+                    // ...and its group: editing the words of a grouped text box must not drop it out.
+                    GroupId = ctx?.Existing?.GroupId,
                     Width = double.IsNaN(width) || width <= 0 ? 0 : width,
                     HasFill = _textWhiteout
                 };

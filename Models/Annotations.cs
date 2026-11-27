@@ -36,10 +36,27 @@ namespace TDPdf
         public int PageIndex { get; set; }
 
         /// <summary>
-        /// Deep-copies this annotation. Used by the snapshot-undo subsystem so that subsequent
-        /// in-place mutations (move, resize, content edits) don't leak into the captured state.
+        /// Marks that share a non-null id are one group: the Select tool picks them up together (#227).
+        /// A group lives with the document session, like the marks themselves: saving burns every mark
+        /// into the page, so a reopened file holds ordinary page content and no groups. Null for a mark
+        /// that is not grouped, which is also what anything made before grouping existed deserializes to.
         /// </summary>
-        public abstract PageAnnotation Clone();
+        public string? GroupId { get; set; }
+
+        /// <summary>
+        /// Deep-copies this annotation, group membership included. Used by the snapshot-undo subsystem
+        /// so that subsequent in-place mutations (move, resize, content edits) don't leak into the
+        /// captured state.
+        /// </summary>
+        public PageAnnotation Clone()
+        {
+            var copy = CloneCore();
+            copy.GroupId = GroupId;
+            return copy;
+        }
+
+        /// <summary>Copies the subclass's own fields; <see cref="Clone"/> adds the group id.</summary>
+        protected abstract PageAnnotation CloneCore();
     }
 
     /// <summary>
@@ -143,7 +160,7 @@ namespace TDPdf
         public Color GetFillColor() => Color.FromArgb(FillA, FillR, FillG, FillB);
         public void SetFillColor(Color c) { FillR = c.R; FillG = c.G; FillB = c.B; FillA = c.A; }
 
-        public override PageAnnotation Clone() => new TextAnnotation
+        protected override PageAnnotation CloneCore() => new TextAnnotation
         {
             PageIndex = PageIndex, Position = Position, Content = Content, FontSize = FontSize,
             FontName = FontName, Bold = Bold, Italic = Italic, Underline = Underline,
@@ -166,7 +183,7 @@ namespace TDPdf
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
 
-        public override PageAnnotation Clone() => new InkAnnotation
+        protected override PageAnnotation CloneCore() => new InkAnnotation
         {
             PageIndex = PageIndex,
             Points = new List<Point>(Points),
@@ -186,7 +203,7 @@ namespace TDPdf
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
 
-        public override PageAnnotation Clone() => new HighlightAnnotation
+        protected override PageAnnotation CloneCore() => new HighlightAnnotation
         {
             PageIndex = PageIndex, Bounds = Bounds,
             ColorR = ColorR, ColorG = ColorG, ColorB = ColorB, ColorA = ColorA
@@ -275,7 +292,7 @@ namespace TDPdf
             }
         }
 
-        public override PageAnnotation Clone()
+        protected override PageAnnotation CloneCore()
         {
             var copy = new MarkupAnnotation
             {
@@ -294,7 +311,7 @@ namespace TDPdf
     {
         public Rect Bounds { get; set; }
 
-        public override PageAnnotation Clone() => new CropAnnotation { PageIndex = PageIndex, Bounds = Bounds };
+        protected override PageAnnotation CloneCore() => new CropAnnotation { PageIndex = PageIndex, Bounds = Bounds };
     }
 
     /// <summary>
@@ -329,7 +346,7 @@ namespace TDPdf
         public Color GetColor() => Color.FromArgb(ColorA, ColorR, ColorG, ColorB);
         public void SetColor(Color c) { ColorR = c.R; ColorG = c.G; ColorB = c.B; ColorA = c.A; }
 
-        public override PageAnnotation Clone() => new TextEditAnnotation
+        protected override PageAnnotation CloneCore() => new TextEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, Position = Position,
             NewContent = NewContent, OriginalContent = OriginalContent,
@@ -350,7 +367,7 @@ namespace TDPdf
         public string? ReplacementImagePath { get; set; }
         public bool IsDeleted { get; set; }
 
-        public override PageAnnotation Clone() => new ImageEditAnnotation
+        protected override PageAnnotation CloneCore() => new ImageEditAnnotation
         {
             PageIndex = PageIndex, OriginalBounds = OriginalBounds, TargetBounds = TargetBounds,
             Rotation = Rotation,
@@ -368,7 +385,7 @@ namespace TDPdf
         /// <summary>Base-64 encoded PNG. Non-null = image sig; null = drawn strokes.</summary>
         public string? ImageData { get; set; }
 
-        public override PageAnnotation Clone()
+        protected override PageAnnotation CloneCore()
         {
             var copy = new SignatureAnnotation
             {
@@ -450,7 +467,7 @@ namespace TDPdf
             }
         }
 
-        public override PageAnnotation Clone()
+        protected override PageAnnotation CloneCore()
         {
             var copy = new ShapeAnnotation
             {
@@ -473,7 +490,7 @@ namespace TDPdf
         /// <summary>Base-64 encoded image bytes (PNG, JPG, BMP, etc.).</summary>
         public string ImageData { get; set; } = "";
 
-        public override PageAnnotation Clone() => new ImageAnnotation
+        protected override PageAnnotation CloneCore() => new ImageAnnotation
         {
             PageIndex = PageIndex, Position = Position, Scale = Scale,
             SourceWidth = SourceWidth, SourceHeight = SourceHeight, ImageData = ImageData,

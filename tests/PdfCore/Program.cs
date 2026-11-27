@@ -198,6 +198,7 @@ Measure.Run(Check, tmp);
 PageMove.Run(Check);
 PageRemap.Run(Check);
 CanvasPixelsTests.Run(Check);
+MarkArrangeTests.Run(Check);
 HighlightMultiplyTests.Run(Check);
 LruCacheTests.Run(Check);
 CropMarginsTests.Run(Check);
