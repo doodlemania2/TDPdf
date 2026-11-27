@@ -304,7 +304,13 @@
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="4" Padding="4">
-                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                            <!-- A menu taller than the screen scrolls instead of running off it. -->
+                            <ScrollViewer Style="{x:Null}"
+                                          MaxHeight="{x:Static local:MainWindow.MenuMaxHeight}"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                            </ScrollViewer>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
@@ -347,6 +353,7 @@
                             <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.4"/>
                         </Border.Effect>
                         <ScrollViewer Style="{x:Null}"
+                                      MaxHeight="{x:Static local:MainWindow.MenuMaxHeight}"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled">
                             <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
@@ -536,7 +543,12 @@
                                             <Border.Effect>
                                                 <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.4"/>
                                             </Border.Effect>
-                                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                            <ScrollViewer Style="{x:Null}"
+                                                          MaxHeight="{x:Static local:MainWindow.MenuMaxHeight}"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                            </ScrollViewer>
                                         </Border>
                                     </Popup>
                                 </Grid>

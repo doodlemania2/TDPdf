@@ -11,6 +11,9 @@ namespace TDPdf
     // rules live in Services/WindowPlacementMath.cs; this file only gathers monitors and applies them.
     public partial class MainWindow
     {
+        /// <summary>Tallest a menu may be (DIPs): the work area less room for its border and shadow. Used by the menu templates in MainWindow.xaml so a long menu scrolls.</summary>
+        public static double MenuMaxHeight => Math.Max(200, SystemParameters.WorkArea.Height - 24);
+
         private delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdc, ref RECT lprcMonitor, IntPtr dwData);
 
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)] [DllImport("user32.dll")]
