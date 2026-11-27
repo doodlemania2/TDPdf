@@ -408,70 +408,10 @@ namespace TDPdf
 
         private void OpenSignatureCreator()
         {
-            var win = new Window
-            {
-                Title = "Create Signature",
-                Width = 460, Height = 300,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                WindowStyle = WindowStyle.None,
-                AllowsTransparency = true,
-                Background = System.Windows.Media.Brushes.Transparent
-            };
-
-            // Outer chrome
-            var outerChrome = new Border
-            {
-                Background      = BrushResource("BgDark"),
-                BorderBrush     = BrushResource("AccentGreenDim"),
-                BorderThickness = new Thickness(1),
-                CornerRadius    = new CornerRadius(6)
-            };
-            var rootStack = new StackPanel();
-
-            // Title bar
-            var titleBar = new Border
-            {
-                Background   = BrushResource("BgPanel"),
-                Padding      = new Thickness(14, 8, 8, 8),
-                CornerRadius = new CornerRadius(5, 5, 0, 0)
-            };
-            titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
-            var titleGrid = new Grid();
-            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var titleText = new TextBlock
-            {
-                Text       = "Create Signature",
-                Foreground = BrushResource("AccentGreen"),
-                FontWeight = FontWeights.SemiBold,
-                FontSize   = 13,
-                FontFamily = new FontFamily("Consolas"),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            Grid.SetColumn(titleText, 0);
-            var closeWinBtn = new Button
-            {
-                Content         = "",
-                FontFamily      = new FontFamily("Segoe MDL2 Assets"),
-                FontSize        = 10,
-                Width           = 28, Height = 28,
-                Background      = System.Windows.Media.Brushes.Transparent,
-                Foreground      = BrushResource("TextSecondary"),
-                BorderThickness = new Thickness(0),
-                Cursor          = Cursors.Hand,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            closeWinBtn.MouseEnter += (_, _2) => closeWinBtn.Foreground = BrushResource("DangerRed");
-            closeWinBtn.MouseLeave += (_, _2) => closeWinBtn.Foreground = BrushResource("TextSecondary");
+            // The shared dialog shell (design width 460 at scale 1), so this follows the app size
+            // and stays on screen; its title bar already carries the close button.
+            var (win, rootStack, closeWinBtn) = TdpDialog.CreateShellWithClose(this, "Create Signature", 460);
             closeWinBtn.Click += (_, _2) => win.Close();
-            AutomationProperties.SetName(closeWinBtn, "Close");
-            Grid.SetColumn(closeWinBtn, 1);
-            titleGrid.Children.Add(titleText);
-            titleGrid.Children.Add(closeWinBtn);
-            titleBar.Child = titleGrid;
-            rootStack.Children.Add(titleBar);
 
             var contentArea = new StackPanel();
 
@@ -630,8 +570,6 @@ namespace TDPdf
             contentArea.Children.Add(btnPanel);
 
             rootStack.Children.Add(contentArea);
-            outerChrome.Child = rootStack;
-            win.Content = outerChrome;
             win.ShowDialog();
         }
 
@@ -658,70 +596,10 @@ namespace TDPdf
             blackInk.Freeze(); blueInk.Freeze();
             SolidColorBrush inkBrush = blackInk;
 
-            var win = new Window
-            {
-                Title = "Type Signature",
-                Width = 480,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                WindowStyle = WindowStyle.None,
-                AllowsTransparency = true,
-                Background = Brushes.Transparent
-            };
-
-            var outerChrome = new Border
-            {
-                Background = BrushResource("BgDark"),
-                BorderBrush = BrushResource("AccentGreenDim"),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(6)
-            };
-            var rootStack = new StackPanel();
-
-            // Title bar (draggable)
-            var titleBar = new Border
-            {
-                Background = BrushResource("BgPanel"),
-                Padding = new Thickness(14, 8, 8, 8),
-                CornerRadius = new CornerRadius(5, 5, 0, 0)
-            };
-            titleBar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) win.DragMove(); };
-            var titleGrid = new Grid();
-            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var titleText = new TextBlock
-            {
-                Text = "Type Signature",
-                Foreground = BrushResource("AccentGreen"),
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 13,
-                FontFamily = new FontFamily("Consolas"),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            Grid.SetColumn(titleText, 0);
-            var closeWinBtn = new Button
-            {
-                Content = "",
-                FontFamily = new FontFamily("Segoe MDL2 Assets"),
-                FontSize = 10,
-                Width = 28, Height = 28,
-                Background = Brushes.Transparent,
-                Foreground = BrushResource("TextSecondary"),
-                BorderThickness = new Thickness(0),
-                Cursor = Cursors.Hand,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            closeWinBtn.MouseEnter += (_, _2) => closeWinBtn.Foreground = BrushResource("DangerRed");
-            closeWinBtn.MouseLeave += (_, _2) => closeWinBtn.Foreground = BrushResource("TextSecondary");
+            // The shared dialog shell (design width 480 at scale 1), so this follows the app size
+            // and stays on screen; its title bar already carries the close button.
+            var (win, rootStack, closeWinBtn) = TdpDialog.CreateShellWithClose(this, "Type Signature", 480);
             closeWinBtn.Click += (_, _2) => win.Close();
-            AutomationProperties.SetName(closeWinBtn, "Close");
-            Grid.SetColumn(closeWinBtn, 1);
-            titleGrid.Children.Add(titleText);
-            titleGrid.Children.Add(closeWinBtn);
-            titleBar.Child = titleGrid;
-            rootStack.Children.Add(titleBar);
 
             var contentArea = new StackPanel();
 
@@ -953,8 +831,6 @@ namespace TDPdf
             contentArea.Children.Add(btnPanel);
 
             rootStack.Children.Add(contentArea);
-            outerChrome.Child = rootStack;
-            win.Content = outerChrome;
             win.Loaded += (_, _2) => nameBox.Focus();
             win.ShowDialog();
         }

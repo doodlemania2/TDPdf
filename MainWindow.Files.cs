@@ -1255,7 +1255,6 @@ namespace TDPdf
             foreach (var (name, shortPt, longPt) in TDPdf.Services.PaperSizeNames.Table)
                 sizes.Add((TDPdf.Services.PaperSizeNames.Label(name, shortPt, longPt), shortPt, longPt));
 
-            var bgDark   = (SolidColorBrush)FindResource("BgDark");
             var bgPanel  = (SolidColorBrush)FindResource("BgPanel");
             var borderDim = (SolidColorBrush)FindResource("BorderDim");
             var textPrimary = (SolidColorBrush)FindResource("TextPrimary");
@@ -1263,19 +1262,13 @@ namespace TDPdf
             var accent = (SolidColorBrush)FindResource("AccentGreen");
             var danger = (SolidColorBrush)FindResource("DangerRed");
 
-            var win = new Window
-            {
-                Title = "Insert Blank Page",
-                Width = 380, SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = bgDark,
-                Foreground = textPrimary,
-                ShowInTaskbar = false,
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12
-            };
+            // The shared dialog shell, so this follows the app size and stays on screen. Its body is
+            // the stack below; the window-level font and foreground are inherited by the content.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Insert Blank Page");
+            win.ShowInTaskbar = false;
+            win.Foreground = textPrimary;
+            win.FontFamily = new FontFamily("Segoe UI");
+            win.FontSize = 12;
 
             var root = new StackPanel { Margin = new Thickness(16) };
 
@@ -1428,13 +1421,7 @@ namespace TDPdf
             buttons.Children.Add(okBtn);
             root.Children.Add(buttons);
 
-            win.Content = new Border
-            {
-                Background = bgPanel,
-                BorderBrush = borderDim,
-                BorderThickness = new Thickness(1),
-                Child = root
-            };
+            shellBody.Children.Add(root);
 
             // ---- Custom-size validation and state ----
             // Reads both boxes in the selected unit. Rejects anything that is not a number, plus
@@ -1554,26 +1541,19 @@ namespace TDPdf
             var doc = _doc;
             if (doc is null) { TdpDialog.Show(this, "Open a PDF first."); return; }
 
-            var bgDark        = BrushResource("BgDark");
             var bgPanel       = BrushResource("BgPanel");
             var borderDim     = BrushResource("BorderDim");
             var textPrimary   = BrushResource("TextPrimary");
             var textSecondary = BrushResource("TextSecondary");
             var accent        = BrushResource("AccentGreen");
 
-            var win = new Window
-            {
-                Title = "Document Info",
-                Width = 460, SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = bgDark,
-                Foreground = textPrimary,
-                ShowInTaskbar = false,
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12
-            };
+            // The shared dialog shell, so this follows the app size and stays on screen. Its body is
+            // the stack below; the window-level font and foreground are inherited by the content.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Document Info", 460);
+            win.ShowInTaskbar = false;
+            win.Foreground = textPrimary;
+            win.FontFamily = new FontFamily("Segoe UI");
+            win.FontSize = 12;
 
             var root = new StackPanel { Margin = new Thickness(16) };
 
@@ -1674,13 +1654,7 @@ namespace TDPdf
             buttons.Children.Add(saveBtn);
             root.Children.Add(buttons);
 
-            win.Content = new Border
-            {
-                Background = bgPanel,
-                BorderBrush = borderDim,
-                BorderThickness = new Thickness(1),
-                Child = root
-            };
+            shellBody.Children.Add(root);
 
             cancelBtn.Click += (_, _) => { win.DialogResult = false; };
             saveBtn.Click += (_, _) =>

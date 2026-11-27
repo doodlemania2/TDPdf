@@ -65,8 +65,16 @@ namespace TDPdf
         /// title bar. Returns the window plus the vertical stack each dialog fills with its body.
         /// </summary>
         internal static (Window Window, StackPanel Body) CreateShell(Window? owner, string title)
+            => CreateShell(owner, title, DefaultShellWidth);
+
+        /// <summary>
+        /// <see cref="CreateShell(Window?, string)"/> at a design width other than the usual 380 DIP
+        /// (<paramref name="width"/> at scale 1; the window is that wide times the app size, within
+        /// the owner's work area).
+        /// </summary>
+        internal static (Window Window, StackPanel Body) CreateShell(Window? owner, string title, double width)
         {
-            var (win, root, _) = BuildShell(owner, title, DefaultShellWidth, withClose: false);
+            var (win, root, _) = BuildShell(owner, title, width, withClose: false);
             return (win, root);
         }
 
@@ -189,6 +197,20 @@ namespace TDPdf
         }
 
         private const double WidestShellWidth = 460;
+
+        /// <summary>
+        /// The tallest a scrolling body can be inside a shell built for <paramref name="owner"/> and
+        /// still leave the shell (title bar and border) on screen, in the shell's own layout units.
+        /// A dialog whose content can outgrow a small screen puts that content in a ScrollViewer with
+        /// this as its MaxHeight.
+        /// </summary>
+        internal static double ScrollBodyMaxHeight(Window? owner, double designWidth = DefaultShellWidth)
+        {
+            const double ChromeAllowance = 56;   // title bar plus border, with a little air
+            double scale = CurrentScale(owner, Math.Max(WidestShellWidth, designWidth));
+            double cap = WorkAreaCap(owner)?.Height ?? SystemParameters.WorkArea.Height * 0.9;
+            return Math.Max(200, cap / scale - ChromeAllowance);
+        }
 
         // 90% of the owner's monitor work area, in DIPs.
         private static Size? WorkAreaCap(Window? owner)

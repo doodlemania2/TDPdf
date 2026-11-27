@@ -2393,17 +2393,11 @@ namespace TDPdf
 
         private void ShowSettingsDialog()
         {
-            var win = new Window
-            {
-                Title = "Settings",
-                Width = 360,
-                SizeToContent = SizeToContent.Height,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this,
-                ResizeMode = ResizeMode.NoResize,
-                Background = BrushResource("BgPanel"),
-                Foreground = BrushResource("TextPrimary")
-            };
+            // The shared dialog shell (design width 360 at scale 1), so this follows the app size and
+            // stays on screen. The settings list can be taller than a small screen, so it scrolls
+            // within the room the shell leaves.
+            var (win, shellBody) = TdpDialog.CreateShell(this, "Settings", 360);
+            win.Foreground = BrushResource("TextPrimary");
 
             var panel = new StackPanel { Margin = new Thickness(20, 16, 20, 16) };
             panel.Children.Add(new TextBlock
@@ -2650,7 +2644,13 @@ namespace TDPdf
             close.Click += (_, _) => win.Close();
             panel.Children.Add(close);
 
-            win.Content = panel;
+            shellBody.Children.Add(new ScrollViewer
+            {
+                Content = panel,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = TdpDialog.ScrollBodyMaxHeight(this),
+            });
             win.ShowDialog();
         }
 
